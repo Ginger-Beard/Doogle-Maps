@@ -39,6 +39,9 @@ class PatchTypePanel extends JPanel
 	private final ItemManager itemManager;
 	private final DoogleMapsConfig config;
 
+	/** A step lighter than ColorScheme.DARK_GRAY_COLOR, which the sidebar already uses. */
+	private static final java.awt.Color TOGGLE_BACKGROUND = new java.awt.Color(0x3A, 0x3A, 0x3A);
+
 	private final JPanel rowContainer = new JPanel();
 	private final JPanel patchToggles = new JPanel();
 	private final JLabel emptyMessage = new JLabel();
@@ -92,7 +95,7 @@ class PatchTypePanel extends JPanel
 		section.setBackground(getBackground());
 
 		toggleSetup.setFont(FontManager.getRunescapeSmallFont());
-		toggleSetup.setFocusPainted(false);
+		Controls.styleButton(toggleSetup);
 		toggleSetup.addActionListener(e ->
 		{
 			setupVisible = !setupVisible;
@@ -102,7 +105,9 @@ class PatchTypePanel extends JPanel
 		});
 
 		patchToggles.setLayout(new BoxLayout(patchToggles, BoxLayout.Y_AXIS));
-		patchToggles.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		// Lighter than the panel behind it, so the dropdown reads as its own region rather
+		// than blending into the sidebar.
+		patchToggles.setBackground(TOGGLE_BACKGROUND);
 		patchToggles.setBorder(BorderFactory.createEmptyBorder(4, 6, 6, 6));
 		patchToggles.setVisible(false);
 
@@ -141,8 +146,7 @@ class PatchTypePanel extends JPanel
 			JCheckBox box = new JCheckBox(patch.getDisplayName(), availability.isAvailable(patch));
 			box.setFont(FontManager.getRunescapeSmallFont());
 			box.setBackground(patchToggles.getBackground());
-			box.setForeground(ColorScheme.TEXT_COLOR);
-			box.setFocusPainted(false);
+			Controls.styleCheckBox(box);
 			box.setAlignmentX(Component.LEFT_ALIGNMENT);
 			box.addActionListener(e -> availability.setAvailable(patch, box.isSelected()));
 			toggleBoxes.put(patch.getKey(), box);
@@ -175,7 +179,7 @@ class PatchTypePanel extends JPanel
 	{
 		JButton button = new JButton(text);
 		button.setFont(FontManager.getRunescapeSmallFont());
-		button.setFocusPainted(false);
+		Controls.styleButton(button);
 		button.setMargin(new java.awt.Insets(0, 4, 0, 4));
 		button.addActionListener(e -> availability.setTypeAvailable(type, available));
 		return button;

@@ -18,8 +18,15 @@ import net.runelite.client.ui.ColorScheme;
  */
 public class StagedProgressBar extends JComponent
 {
-	private static final int SEGMENT_GAP = 1;
-	private static final int HEIGHT = 8;
+	/**
+	 * Gap between segments.
+	 *
+	 * <p>Two pixels, not one: the client is commonly run at fractional UI scaling, where a
+	 * single-pixel gap lands on a half pixel and can vanish entirely, leaving one
+	 * undivided green bar.
+	 */
+	private static final int SEGMENT_GAP = 2;
+	private static final int HEIGHT = 9;
 
 	/** Above this many stages the segments get too thin to read, so fill smoothly. */
 	private static final int MAX_DRAWN_SEGMENTS = 16;
@@ -51,7 +58,8 @@ public class StagedProgressBar extends JComponent
 			int width = getWidth();
 			int height = getHeight();
 
-			graphics.setColor(ColorScheme.DARKER_GRAY_COLOR);
+			// Painted behind the segments so the gaps read as dark dividers.
+			graphics.setColor(ColorScheme.DARKER_GRAY_COLOR.darker());
 			graphics.fillRect(0, 0, width, height);
 
 			int total = Math.max(stages, 1);
@@ -65,12 +73,25 @@ public class StagedProgressBar extends JComponent
 				return;
 			}
 
-			float segmentWidth = (width - (SEGMENT_GAP * (total - 1))) / (float) total;
+			// Derive each segment from exact fractional boundaries rather than stepping by a
+			// rounded width. Rounding the width and the offset independently lets the two
+			// drift into each other, closing the gap on some segments and not others — which
+			// is how the dividers vanished at fractional UI scaling.
 			for (int i = 0; i < total; i++)
 			{
+				int start = Math.round((float) width * i / total);
+				int end = Math.round((float) width * (i + 1) / total);
+
+				// Every segment but the last gives up its right edge to the divider, and the
+				// divider is never allowed to eat the whole segment on a narrow bar.
+				int segmentWidth = end - start - (i < total - 1 ? SEGMENT_GAP : 0);
+				if (segmentWidth < 1)
+				{
+					segmentWidth = 1;
+				}
+
 				graphics.setColor(i < filled ? fillColor : ColorScheme.MEDIUM_GRAY_COLOR);
-				int x = Math.round(i * (segmentWidth + SEGMENT_GAP));
-				graphics.fillRect(x, 0, Math.round(segmentWidth), height);
+				graphics.fillRect(start, 0, segmentWidth, height);
 			}
 		}
 		finally

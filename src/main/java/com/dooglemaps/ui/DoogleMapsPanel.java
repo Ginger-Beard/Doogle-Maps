@@ -79,6 +79,20 @@ public class DoogleMapsPanel extends PluginPanel
 
 		display.setBackground(ColorScheme.DARK_GRAY_COLOR);
 
+		// The scroll pane PluginPanel wraps us in spans the whole sidebar, so anything it
+		// paints around its edge reads as a border around the entire panel. Strip its
+		// border and viewport border outright, and stop it taking focus - a focusable
+		// control in a side panel also swallows keypresses meant for the game.
+		if (getScrollPane() != null)
+		{
+			getScrollPane().setBorder(BorderFactory.createEmptyBorder());
+			getScrollPane().setViewportBorder(null);
+			getScrollPane().setBackground(ColorScheme.DARK_GRAY_COLOR);
+			getScrollPane().setFocusable(false);
+			getScrollPane().getViewport().setBackground(ColorScheme.DARK_GRAY_COLOR);
+			getScrollPane().getViewport().setFocusable(false);
+		}
+
 		JPanel header = new JPanel(new BorderLayout(0, 4));
 		header.setBackground(getBackground());
 		header.add(summary, BorderLayout.NORTH);
@@ -124,6 +138,20 @@ public class DoogleMapsPanel extends PluginPanel
 		{
 			tabGroup.select(first);
 		}
+	}
+
+	/**
+	 * Logs every component in the panel that could paint a light outline.
+	 *
+	 * <p>Not called anywhere by default. Wire it into {@code startUp} when chasing a
+	 * rendering oddity: the culprit is usually a component the plugin never created — a
+	 * scroll pane, a viewport, a look-and-feel border — and this names it outright rather
+	 * than leaving it to be inferred from a screenshot.
+	 */
+	@SuppressWarnings("unused")
+	public void logDiagnostics()
+	{
+		SwingUtilities.invokeLater(() -> PanelDiagnostics.report(getWrappedPanel()));
 	}
 
 	/** Repaints the whole panel from the cache. Safe to call from any thread. */

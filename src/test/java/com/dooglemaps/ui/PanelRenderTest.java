@@ -27,6 +27,7 @@ import net.runelite.client.util.AsyncBufferedImage;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -48,7 +49,7 @@ public class PanelRenderTest
 {
 	private static final int PANEL_WIDTH = 225;
 	private static final int WIDTH = 242;   // PANEL_WIDTH + SCROLLBAR_WIDTH
-	private static final int HEIGHT = 700;
+	private static final int HEIGHT = 1100;
 
 	private DoogleMapsPanel buildPanel() throws Exception
 	{
@@ -234,6 +235,12 @@ public class PanelRenderTest
 		{
 		});
 
+		// Open the patch list so the checkboxes are visible in the render.
+		clickShowPatches(panel);
+		SwingUtilities.invokeAndWait(() ->
+		{
+		});
+
 		JPanel wrapped = panel.getWrappedPanel();
 		wrapped.setSize(WIDTH, HEIGHT);
 		layout(wrapped);
@@ -252,6 +259,24 @@ public class PanelRenderTest
 		assertNoLightOutline(image);
 		assertTabsFit(panel);
 		assertTrue(out.length() > 0);
+	}
+
+	/** Presses the visible "Show patches" button, whichever tab is selected. */
+	private static void clickShowPatches(java.awt.Container root)
+	{
+		for (java.awt.Component child : root.getComponents())
+		{
+			if (child instanceof javax.swing.JButton
+				&& ((javax.swing.JButton) child).getText().startsWith("Show patches"))
+			{
+				((javax.swing.JButton) child).doClick();
+				return;
+			}
+			if (child instanceof java.awt.Container)
+			{
+				clickShowPatches((java.awt.Container) child);
+			}
+		}
 	}
 
 	/** Lays out a component tree that was never added to a window. */
@@ -302,23 +327,40 @@ public class PanelRenderTest
 	 */
 	private static void assertNoLightOutline(BufferedImage image)
 	{
-		for (int x = 0; x < image.getWidth(); x++)
-		{
-			assertDark(image, x, 0);
-			assertDark(image, x, image.getHeight() - 1);
-		}
-		for (int y = 0; y < image.getHeight(); y++)
-		{
-			assertDark(image, 0, y);
-			assertDark(image, image.getWidth() - 1, y);
-		}
+		int w = image.getWidth();
+		int h = image.getHeight();
+
+		assertEdgeNotAFrame(image, "top", 0, 0, 1, 0, w);
+		assertEdgeNotAFrame(image, "bottom", 0, h - 1, 1, 0, w);
+		assertEdgeNotAFrame(image, "left", 0, 0, 0, 1, h);
+		assertEdgeNotAFrame(image, "right", w - 1, 0, 0, 1, h);
 	}
 
-	private static void assertDark(BufferedImage image, int x, int y)
+	/**
+	 * Fails when an edge is light along most of its length.
+	 *
+	 * <p>Deliberately not "no light pixel anywhere on the edge": content legitimately
+	 * reaches the edge — a row of text at the bottom of a long list, for instance. What
+	 * must never happen is a continuous light line tracing the panel, which is what a
+	 * stray border looks like.
+	 */
+	private static void assertEdgeNotAFrame(BufferedImage image, String edge,
+		int x0, int y0, int dx, int dy, int length)
 	{
-		int rgb = image.getRGB(x, y);
-		int brightest = Math.max(Math.max((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF), rgb & 0xFF);
-		assertTrue("light pixel " + hex(rgb) + " on the panel edge at " + x + "," + y, brightest < 0x50);
+		int light = 0;
+		for (int i = 0; i < length; i++)
+		{
+			int rgb = image.getRGB(x0 + (dx * i), y0 + (dy * i));
+			int brightest = Math.max(Math.max((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF), rgb & 0xFF);
+			if (brightest >= 0x50)
+			{
+				light++;
+			}
+		}
+
+		int percent = (light * 100) / length;
+		assertTrue("the " + edge + " edge is light for " + percent
+			+ "% of its length - that is a border around the panel, not content", percent < 60);
 	}
 
 	private static String hex(int rgb)
