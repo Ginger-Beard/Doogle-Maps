@@ -1,0 +1,59 @@
+plugins {
+	id 'java'
+}
+
+repositories {
+	mavenLocal()
+	maven {
+		url = 'https://repo.runelite.net'
+	}
+	mavenCentral()
+}
+
+def runeLiteVersion = 'latest.release'
+
+dependencies {
+	compileOnly group: 'net.runelite', name:'client', version: runeLiteVersion
+
+	compileOnly 'org.projectlombok:lombok:1.18.30'
+	annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+	testImplementation 'junit:junit:4.12'
+	testImplementation 'org.mockito:mockito-core:5.11.0'
+	testImplementation group: 'net.runelite', name:'client', version: runeLiteVersion
+	testImplementation group: 'net.runelite', name:'jshell', version: runeLiteVersion
+}
+
+group = 'com.dooglemaps'
+version = '1.0.0'
+sourceCompatibility = '11'
+
+// This repo is worked on from WSL but the client runs Windows-side, and the two cannot
+// share Gradle's state: the Windows daemon holds locks on the project cache and on the
+// class files it has loaded into a running client, which WSL then cannot delete
+// ("java.io.IOException: Input/output error" out of the file hasher).
+//
+// run-client.sh passes -PbuildSuffix=windows along with its own --project-cache-dir, so
+// each side gets its own build directory and cache and they never touch each other's.
+if (project.hasProperty('buildSuffix')) {
+	layout.buildDirectory = layout.projectDirectory.dir("build-${project.buildSuffix}")
+}
+
+tasks.withType(JavaCompile) {
+	options.encoding = 'UTF-8'
+}
+
+test {
+	// PanelRenderTest's live-window check is opt-in and needs the flag in the forked JVM.
+	systemProperty 'dooglemaps.live', System.getProperty('dooglemaps.live', 'false')
+	systemProperty 'dooglemaps.renderOut', System.getProperty('dooglemaps.renderOut', 'build/panel.png')
+}
+
+task runClient(type: JavaExec) {
+	group = 'application'
+	description = 'Run RuneLite with the plugin'
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = 'com.dooglemaps.DoogleMapsPluginTest'
+	jvmArgs = ['-ea']
+	args = ['--developer-mode']
+}

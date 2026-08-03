@@ -1,0 +1,14 @@
+.gradle/
+build/
+out/
+*.iml
+*.ipr
+*.iws
+.idea/
+.DS_Store
+hs_err_pid*.log
+
+# The Windows side builds into its own directories so its file locks never collide with
+# the WSL side's; see build.gradle.
+build-*/
+.gradle-*/
