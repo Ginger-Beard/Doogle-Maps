@@ -102,13 +102,70 @@ public class RunChoicesTest
 	public void runTypeChoicesSurviveAReload()
 	{
 		RunTypeStore store = newTypes();
-		store.setSelected(EnumSet.of(PatchImplementation.HERB, PatchImplementation.ALLOTMENT));
+		store.setSelected(new java.util.LinkedHashSet<>(java.util.Arrays.asList(
+			com.dooglemaps.data.RunOption.full(
+				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.HERB)),
+			com.dooglemaps.data.RunOption.full(
+				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.ALLOTMENT)))));
 
 		RunTypeStore reloaded = newTypes();
 		reloaded.load();
 
 		assertEquals(EnumSet.of(PatchImplementation.HERB, PatchImplementation.ALLOTMENT),
 			EnumSet.copyOf(reloaded.getSelected()));
+	}
+
+	/**
+	 * A run over a line that is not currently offered survives the boxes being touched.
+	 *
+	 * <p>Which lines exist changes: protected herbs come and go with a setting, and with the split
+	 * off there is no checkbox that can speak for them. Replacing the whole selection from the
+	 * boxes therefore discarded the protected herb run the moment anything else was ticked — and
+	 * turning the split back on did not bring it back, because it was gone from the store.
+	 */
+	@Test
+	public void aChoiceNotCurrentlyOnOfferIsNotDiscarded()
+	{
+		com.dooglemaps.data.RunOption protectedHerbs = com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.protectedOnly(PatchImplementation.HERB));
+		com.dooglemaps.data.RunOption herbs = com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.HERB));
+		com.dooglemaps.data.RunOption allotments = com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.ALLOTMENT));
+
+		RunTypeStore store = newTypes();
+		store.setSelected(new java.util.LinkedHashSet<>(
+			java.util.Arrays.asList(protectedHerbs, herbs)));
+
+		// The split is switched off, so only the unsplit lines are on show. The player ticks
+		// allotments; the protected herb line is not something these boxes can report on.
+		store.setSelected(
+			new java.util.LinkedHashSet<>(java.util.Arrays.asList(herbs, allotments)),
+			java.util.Arrays.asList(herbs, allotments));
+
+		assertTrue("the protected herb run was discarded by a box that could not see it",
+			store.isSelected(protectedHerbs));
+		assertTrue(store.isSelected(allotments));
+
+		// And it is still there after a reload, which is where it would have to survive.
+		RunTypeStore reloaded = newTypes();
+		reloaded.load();
+		assertTrue(reloaded.isSelected(protectedHerbs));
+	}
+
+	/** Unticking a line that <i>is</i> on offer still unticks it. */
+	@Test
+	public void aChoiceOnOfferIsStillCleared()
+	{
+		com.dooglemaps.data.RunOption herbs = com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.HERB));
+
+		RunTypeStore store = newTypes();
+		store.setSelected(new java.util.LinkedHashSet<>(java.util.Collections.singletonList(herbs)));
+		store.setSelected(new java.util.LinkedHashSet<>(),
+			java.util.Collections.singletonList(herbs));
+
+		assertTrue(store.getSelected().isEmpty());
 	}
 
 	/** A reload with nothing stored must not invent choices either. */

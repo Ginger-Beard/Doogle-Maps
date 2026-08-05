@@ -15,6 +15,13 @@ import net.runelite.client.ui.FontManager;
  *
  * <p>A text area wraps for real. Styled to look like a label, and non-focusable so it
  * cannot take keypresses meant for the game.
+ *
+ * <p><b>It assumes it gets the sidebar's full width.</b> {@link #WRAP_WIDTH} is fixed, so the
+ * height is computed for that width — and if the component is then laid out any narrower, the
+ * text wraps to more lines than the height allows and the last one is <i>clipped</i>, silently.
+ * That happens as soon as it sits inside a panel with its own borders, which is easy to do by
+ * accident. For a short line in a nested panel, a plain label that does not need to wrap is the
+ * safer choice.
  */
 class WrappedText extends JTextArea
 {

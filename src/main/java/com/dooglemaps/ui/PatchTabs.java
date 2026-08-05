@@ -145,9 +145,22 @@ final class PatchTabs
 	}
 
 	/** Whether a settings key is one of the patch-type toggles. */
+	/**
+	 * Keys that change which tabs exist, outside the patch-type section.
+	 *
+	 * <p>{@link #VISIBILITY_KEYS} is derived from the section a setting sits in, which is a neat
+	 * trick right up until a setting somewhere else also changes the tab strip. These two do:
+	 * splitting protected herbs adds a tab, and declaring Colosseum Champion status can be what
+	 * makes that split apply at all. Listed by hand because there is no annotation that means
+	 * "this changes the shape of the sidebar".
+	 */
+	private static final Set<String> STRUCTURE_KEYS = new HashSet<>(java.util.Arrays.asList(
+		"separateProtectedHerbs",
+		"fortisColosseumChampion"));
+
 	static boolean isTabVisibilityKey(String key)
 	{
-		return VISIBILITY_KEYS.contains(key);
+		return VISIBILITY_KEYS.contains(key) || STRUCTURE_KEYS.contains(key);
 	}
 
 	/** The tabs actually on show, honouring the settings. */

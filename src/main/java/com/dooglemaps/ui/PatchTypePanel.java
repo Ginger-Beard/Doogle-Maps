@@ -4,6 +4,8 @@ import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PlantingGroup;
+import com.dooglemaps.state.PlantingGroups;
 import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.PatchSnapshot;
 import com.dooglemaps.state.PatchStateStore;
@@ -43,6 +45,13 @@ import net.runelite.client.ui.FontManager;
 class PatchTypePanel extends JPanel
 {
 	private final PatchImplementation type;
+	private final PlantingGroup group;
+	private final PlantingGroups groups;
+	private final com.dooglemaps.state.ProtectionSelectionStore protection;
+	private final com.dooglemaps.bank.BankContents bank;
+	private final com.dooglemaps.guide.CarriedItems carried;
+	private final com.dooglemaps.data.ItemNames itemNames;
+	private final PanelLayoutStore layout;
 	/** The implementations this tab covers, {@code type} first. */
 	private final List<PatchImplementation> members;
 	private final PatchStateStore stateStore;
@@ -67,17 +76,33 @@ class PatchTypePanel extends JPanel
 
 	private boolean setupVisible;
 
-	PatchTypePanel(PatchImplementation type, PatchStateStore stateStore, AvailabilityProfile availability,
+	/** The patch rows themselves, which are the point of the tab and so start open. */
+	private final JButton toggleStatus = new JButton();
+	private boolean statusVisible;
+
+	PatchTypePanel(PanelLayoutStore layout, PlantingGroups groups, PlantingGroup group,
+		PatchStateStore stateStore, AvailabilityProfile availability,
 		GrowthTimer growthTimer, ItemManager itemManager, DoogleMapsConfig config,
 		PlantableResolver resolver, SeedInventoryStore seeds, SeedSelectionStore selection,
-		FarmingBonusStore bonuses, CompostSelectionStore compost)
+		FarmingBonusStore bonuses, CompostSelectionStore compost,
+		com.dooglemaps.state.ProtectionSelectionStore protection,
+		com.dooglemaps.bank.BankContents bank, com.dooglemaps.guide.CarriedItems carried,
+		com.dooglemaps.data.ItemNames itemNames)
 	{
 		// Nothing goes in a compost bin but buckets and weeds, so a "seeds you own" list under
 		// one was simply wrong. Derived from the seed table rather than named here.
+		this.layout = layout;
+		this.groups = groups;
+		this.group = group;
+		this.type = group.getType();
+		this.protection = protection;
+		this.bank = bank;
+		this.carried = carried;
+		this.itemNames = itemNames;
 		this.seedSelector = PatchTabs.isPlantable(type)
-			? new SeedSelectorPanel(type, resolver, seeds, selection, itemManager, compost)
+			? new SeedSelectorPanel(layout, group, resolver, seeds, selection, itemManager, compost,
+				protection, bank, carried, itemNames)
 			: null;
-		this.type = type;
 		this.members = PatchTabs.membersOf(type);
 		this.stateStore = stateStore;
 		this.availability = availability;
@@ -96,25 +121,57 @@ class PatchTypePanel extends JPanel
 
 		emptyMessage.setBorder(BorderFactory.createEmptyBorder(8, 6, 8, 6));
 
+		setupVisible = layout.isOpen(openKey("patches"), false);
+		statusVisible = layout.isOpen(openKey("status"), true);
+		toggleStatus.setFont(FontManager.getRunescapeSmallFont());
+		Controls.styleButton(toggleStatus);
+		toggleStatus.addActionListener(e ->
+		{
+			statusVisible = !statusVisible;
+			rowContainer.setVisible(statusVisible);
+			emptyMessage.setVisible(statusVisible && emptyMessage.isEnabled());
+			layout.setOpen(openKey("status"), statusVisible);
+			updateStatusToggle();
+			revalidate();
+		});
+		rowContainer.setVisible(statusVisible);
+		updateStatusToggle();
+
+		JPanel rowsWithHeading = new JPanel(new BorderLayout(0, 4));
+		rowsWithHeading.setBackground(getBackground());
+		rowsWithHeading.add(toggleStatus, BorderLayout.NORTH);
+		rowsWithHeading.add(rowContainer, BorderLayout.CENTER);
+
 		JPanel body = new JPanel(new BorderLayout(0, 6));
 		body.setBackground(getBackground());
 		body.add(emptyMessage, BorderLayout.NORTH);
-		body.add(rowContainer, BorderLayout.CENTER);
+		body.add(rowsWithHeading, BorderLayout.CENTER);
 
-		// Seeds sit directly beneath the patch rows: what is planted, then what you could
-		// plant next. The availability toggles are setup rather than run information, so they
-		// go last.
+		// Which patches you use, then which seed goes in them: the first decides what the second
+		// is even choosing between, so it reads in that order. Seeds were above it, which put the
+		// answer before the question.
 		JPanel footer = new JPanel(new BorderLayout(0, 6));
 		footer.setBackground(getBackground());
+		footer.add(buildSetupSection(), BorderLayout.NORTH);
 		if (seedSelector != null)
 		{
-			footer.add(seedSelector, BorderLayout.NORTH);
+			footer.add(seedSelector, BorderLayout.CENTER);
 		}
-		footer.add(buildSetupSection(), BorderLayout.CENTER);
 
 		add(body, BorderLayout.NORTH);
 		add(footer, BorderLayout.CENTER);
 		buildToggles();
+	}
+
+	private void updateStatusToggle()
+	{
+		toggleStatus.setText(Controls.collapseLabel("Patch status", statusVisible));
+	}
+
+	/** Namespaces a section's stored state by patch type: herb seeds and tree seeds differ. */
+	private String openKey(String section)
+	{
+		return section + "." + group.getKey();
 	}
 
 	/**
@@ -139,20 +196,52 @@ class PatchTypePanel extends JPanel
 		return patches;
 	}
 
-	/** The same, filtered to the ones the player has switched on. */
+	/**
+	 * The same, filtered to the ones the player has switched on and to this tab's group.
+	 *
+	 * <p>The group filter is what makes a split tab show only its own patches — the protected herb
+	 * tab lists Trollheim and Weiss, and the ordinary one lists everything else. With nothing
+	 * split, every patch of the type falls into the one group, so this is unchanged.
+	 */
 	private List<FarmPatch> availablePatches()
 	{
-		if (members.size() == 1)
-		{
-			return availability.getAvailablePatches(type);
-		}
-
 		List<FarmPatch> patches = new ArrayList<>();
 		for (PatchImplementation member : members)
 		{
-			patches.addAll(availability.getAvailablePatches(member));
+			for (FarmPatch patch : availability.getAvailablePatches(member))
+			{
+				// Only the grouping of *this* tab's type is meaningful. A grouped tab that also
+				// gathers other types — Gnome Stronghold's tree and fruit tree share one — keeps
+				// those whole rather than splitting them too.
+				if (member != type || groups.groupFor(patch).equals(group))
+				{
+					patches.add(patch);
+				}
+			}
 		}
 		return patches;
+	}
+
+	/**
+	 * Patches of this group a run would actually plant.
+	 *
+	 * <p>The same test the run planner uses — empty, ripe or dead — because the payment total has
+	 * to match what the run will really do. A patch mid-growth is not going to be planted today
+	 * and should not be charged for.
+	 */
+	private static int plantableCount(List<PatchProjection> projections)
+	{
+		int count = 0;
+		for (PatchProjection projection : projections)
+		{
+			if (projection.isEmpty()
+				|| projection.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE
+				|| projection.getCropState() == com.dooglemaps.data.CropState.DEAD)
+			{
+				count++;
+			}
+		}
+		return count;
 	}
 
 	private JPanel buildSetupSection()
@@ -166,6 +255,7 @@ class PatchTypePanel extends JPanel
 		{
 			setupVisible = !setupVisible;
 			patchToggles.setVisible(setupVisible);
+			layout.setOpen(openKey("patches"), setupVisible);
 			updateSetupButtonText();
 			revalidate();
 		});
@@ -188,7 +278,12 @@ class PatchTypePanel extends JPanel
 	{
 		int available = availablePatches().size();
 		int total = allPatches().size();
-		toggleSetup.setText((setupVisible ? "Hide" : "Show") + " patches (" + available + "/" + total + ")");
+		// No "Show"/"Hide" verb. The arrow and the list under it already say which way it is,
+		// and the word changing under the cursor made the button read as the thing it does rather
+		// than as the thing it contains.
+		toggleSetup.setText(Controls.collapseLabel(
+			"Patches (" + available + "/" + total + ")", setupVisible));
+		updateStatusToggle();
 	}
 
 	/**
@@ -305,6 +400,11 @@ class PatchTypePanel extends JPanel
 		updateSetupButtonText();
 		if (seedSelector != null)
 		{
+			// How many patches of this group would be planted, so the protection payment can be
+			// totalled. Counted from the projections already gathered above rather than asked of
+			// the planner: this runs on the Swing thread, and the planner is synchronised and
+			// walked from the client thread.
+			seedSelector.setPatchCount(plantableCount(projections));
 			seedSelector.refresh();
 		}
 

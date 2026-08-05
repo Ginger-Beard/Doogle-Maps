@@ -53,6 +53,11 @@ import net.runelite.client.eventbus.Subscribe;
  * rather than guessing.
  *
  * <p>Off by default: it is a development tool, not a feature. Nothing is sent anywhere.
+ *
+ * <p><b>Its job is done.</b> The last unknown — how a diseased patch is drawn — was captured on
+ * 2026-08-05 and the whole rendering is decoded in {@code NOTES.md}. Kept rather than deleted
+ * because the same probe is what would confirm a rendering change after a game update, and
+ * rebuilding it from scratch to answer one question would be worse than leaving it switched off.
  */
 @Slf4j
 @Singleton
@@ -136,6 +141,15 @@ public class GeomancyProbe
 	{
 		if (target == null)
 		{
+			return;
+		}
+
+		// Checked here as well as on the way in, so switching the probe off stops it now rather
+		// than at the end of whatever cast is in flight. It is a development aid and the thing
+		// someone wants when they turn it off is silence, not silence shortly.
+		if (!config.probeGeomancy())
+		{
+			target = null;
 			return;
 		}
 

@@ -96,7 +96,12 @@ public enum CropXp
 	PINEAPPLE(Seed.PINEAPPLE, 57.0, 4605.0, 21.5),
 	PAPAYA(Seed.PAPAYA, 72.0, 6146.6, 27.0),
 	PALM(Seed.PALM, 110.5, 10150.1, 41.5),
-	DRAGONFRUIT(Seed.DRAGONFRUIT, 140.0, 17335.0, 70.0);
+	DRAGONFRUIT(Seed.DRAGONFRUIT, 140.0, 17335.0, 70.0),
+	TEAK(Seed.TEAK, 35.0, 7290.0, 0.0),
+	MAHOGANY(Seed.MAHOGANY, 63.0, 15720.0, 0.0),
+	CAMPHOR(Seed.CAMPHOR, 88.0, 17840.0, 0.0),
+	IRONWOOD(Seed.IRONWOOD, 145.0, 20380.0, 0.0),
+	ROSEWOOD(Seed.ROSEWOOD, 252.0, 23100.0, 0.0);
 
 	private static final Map<Seed, CropXp> BY_SEED = new EnumMap<>(Seed.class);
 	private static final Map<Produce, CropXp> BY_PRODUCE = new EnumMap<>(Produce.class);

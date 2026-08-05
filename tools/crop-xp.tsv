@@ -72,3 +72,8 @@ fruit_tree	Pineapple	51	57	4605	21.5	plant,check,harvest
 fruit_tree	Papaya tree	57	72	6146.6	27	plant,check,harvest
 fruit_tree	Palm tree	68	110.5	10150.1	41.5	plant,check,harvest
 fruit_tree	Dragonfruit tree	81	140	17335	70	plant,check,harvest
+hardwood	Teak	35	35	7290	7325	plant,check,total
+hardwood	Mahogany	55	63	15720	15783	plant,check,total
+hardwood	Camphor	66	88	17840	17928	plant,check,total
+hardwood	Ironwood	80	145	20380	20525	plant,check,total
+hardwood	Rosewood	92	252	23100	23352	plant,check,total

@@ -2,6 +2,14 @@ package com.dooglemaps.ui;
 
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PlantingGroup;
+import java.util.Set;
+import java.util.LinkedHashSet;
+import javax.swing.JCheckBox;
+import com.dooglemaps.bank.BankContents;
+import com.dooglemaps.guide.CarriedItems;
+import com.dooglemaps.state.ProtectionSelectionStore;
+import com.dooglemaps.data.ProtectionPayment;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.PlantableResolver;
 import com.dooglemaps.state.PlantableResolver.Plantable;
@@ -18,6 +26,7 @@ import java.awt.event.MouseEvent;
 import java.util.List;
 import javax.swing.BorderFactory;
 import javax.swing.JComboBox;
+import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingConstants;
@@ -52,16 +61,169 @@ class SeedSelectorPanel extends JPanel
 	private final CompostSelectionStore compost;
 
 	private final JPanel rows = new JPanel();
-	private final JLabel heading = new JLabel();
+	/**
+	 * The section's own toggle, doubling as its heading.
+	 *
+	 * <p>Open to start with, unlike the setup sections below it: which seed is going in the
+	 * ground is a decision you make every run, not something you set once and forget.
+	 */
+	private final JButton heading = new JButton();
+	private final JPanel seedBody = new JPanel(new BorderLayout());
+	private final PlantingGroup group;
+	private final ProtectionSelectionStore protection;
+	private final BankContents bank;
+	private final CarriedItems carried;
+	private final com.dooglemaps.data.ItemNames itemNames;
+	private final PanelLayoutStore layout;
+	private boolean seedsVisible;
+
+	/** Kept so the heading can be relabelled on a toggle without a full refresh. */
+	private int pickedCount;
 	private final WrappedText message = new WrappedText();
 	private JComboBox<CompostTier> compostBox;
 
-	SeedSelectorPanel(PatchImplementation type, PlantableResolver resolver,
-		SeedInventoryStore seeds, SeedSelectionStore selection, ItemManager itemManager,
-		CompostSelectionStore compost)
+	/**
+	 * Whether to pay the farmer for this group.
+	 *
+	 * <p>Shown only when the picked seeds can actually be protected, and labelled with how many
+	 * payments are in the bank — because "protect these" is a decision you can only really make
+	 * knowing whether you own the fruit. Hidden entirely otherwise: herbs cannot be protected and
+	 * a permanently disabled checkbox is worse than no checkbox.
+	 */
+	private final JPanel protectPanel = new JPanel();
+
+	/**
+	 * Offers protection when it is possible, and says what it would cost from the bank.
+	 *
+	 * <p>The payment is a property of the crop rather than of the patch type — a magic tree wants
+	 * coconuts and an oak wants tomatoes — so this reads the seeds actually picked. With several
+	 * picked that want different payments it names the count of distinct ones rather than
+	 * pretending there is one answer.
+	 */
+	/**
+	 * A protect row per picked crop that has a payment.
+	 *
+	 * <p>Per crop rather than per patch type, because the payment is a property of the crop: a
+	 * magic tree wants 25 coconuts and a yew wants 10 cactus spines, so one switch for "trees"
+	 * could not say what it would cost. It also means the question is simply never asked for
+	 * herbs, which have no payment at all — nothing to show, nothing to store.
+	 *
+	 * <p>Each row says what the run would cost in that crop and how far the player's stock goes,
+	 * which is the number that decides whether to tick it.
+	 */
+	private void updateProtection()
 	{
+		protectPanel.removeAll();
+		boolean any = false;
+
+		for (Seed seed : selection.getSelectedFor(group))
+		{
+			ProtectionPayment payment = ProtectionPayment.forSeed(seed);
+			if (payment == null)
+			{
+				continue;
+			}
+
+			protectPanel.add(protectRow(seed, payment));
+			any = true;
+		}
+
+		protectPanel.setVisible(any);
+		protectPanel.revalidate();
+	}
+
+	private JCheckBox protectRow(Seed seed, ProtectionPayment payment)
+	{
+		JCheckBox box = new JCheckBox();
+		Controls.styleCheckBox(box);
+		box.setBackground(getBackground());
+		box.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
+		box.setSelected(protection.isProtecting(group, seed));
+		box.addActionListener(e -> protection.setProtecting(group, seed, box.isSelected()));
+
+		int patches = Math.max(1, patchCount);
+		int wanted = payment.getQuantity() * patches;
+		int held = bank.getCount(payment.getItemID()) + carriedCount(payment.getItemID());
+		int covers = held / payment.getQuantity();
+
+		// The payment item, not the crop being protected. getProduce() is what the payment *buys*
+		// — so this read "Protect magic (25 magic)" where it should say coconuts. The two are
+		// different halves of the same row and the accessor names do not make that obvious.
+		String noun = itemNames.get(payment.getItemID(),
+			payment.getProduce().getName()).toLowerCase();
+		box.setText("Protect " + seed.getName().toLowerCase() + " (" + wanted + " " + noun + ")");
+
+		if (!bank.hasBeenSeen())
+		{
+			box.setForeground(TEXT);
+			box.setToolTipText("Open a bank to see whether you have " + wanted);
+		}
+		else if (held < wanted)
+		{
+			// The coverage count is the useful half. "You have 75 of 150" says you are short;
+			// "covers 3 of 6" says what the run will actually do about it — the rest fall to the
+			// next crop you picked, which is the whole point of picking two.
+			box.setForeground(SHORT);
+			box.setToolTipText("<html>You have <b>" + held + "</b> of the " + wanted
+				+ " this run needs.<br>Covers " + covers + " of " + patches
+				+ (patches == 1 ? " patch" : " patches") + " at " + payment.getQuantity()
+				+ " each.<br>The rest go to the next crop you picked.</html>");
+		}
+		else
+		{
+			box.setForeground(TEXT);
+			box.setToolTipText(held + " available, " + wanted + " needed for "
+				+ patches + (patches == 1 ? " patch" : " patches"));
+		}
+		return box;
+	}
+
+	/** How many of an item are on the player, for the have-versus-need count. */
+	private int carriedCount(int itemId)
+	{
+		return carried == null ? 0 : carried.getCount(itemId);
+	}
+
+	/** Warning colour for a payment the run is short of. */
+	private static final java.awt.Color SHORT = new java.awt.Color(0xC4, 0x3B, 0x3B);
+
+	/** The sidebar's ordinary text colour, for everything that is not a warning. */
+	private static final java.awt.Color TEXT = new java.awt.Color(0xDC, 0xDC, 0xDC);
+
+	/** How many patches of this group the run would service. Set by the panel on each refresh. */
+	private int patchCount;
+
+	/**
+	 * Told how many patches this group has, so the payment total means something.
+	 *
+	 * <p>Passed in rather than worked out here: the panel already knows, and asking the planner
+	 * from a Swing component would walk the run planner from the wrong thread.
+	 */
+	void setPatchCount(int patches)
+	{
+		this.patchCount = patches;
+	}
+
+	private void updateHeading()
+	{
+		heading.setText(Controls.collapseLabel(
+			pickedCount > 0 ? "Select seed (" + pickedCount + " picked)" : "Select seed",
+			seedsVisible));
+	}
+
+	SeedSelectorPanel(PanelLayoutStore layout, PlantingGroup group, PlantableResolver resolver,
+		SeedInventoryStore seeds, SeedSelectionStore selection, ItemManager itemManager,
+		CompostSelectionStore compost, ProtectionSelectionStore protection, BankContents bank,
+		CarriedItems carried, com.dooglemaps.data.ItemNames itemNames)
+	{
+		this.layout = layout;
+		this.group = group;
+		this.protection = protection;
+		this.bank = bank;
+		this.carried = carried;
+		this.itemNames = itemNames;
 		this.compost = compost;
-		this.type = type;
+		this.type = group.getType();
 		this.resolver = resolver;
 		this.seeds = seeds;
 		this.selection = selection;
@@ -69,11 +231,31 @@ class SeedSelectorPanel extends JPanel
 
 		setLayout(new BorderLayout(0, 4));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
-		setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
+		// No gap above this. The seed list and the compost choice are both per-patch-type
+		// settings, the same as the patch status and availability sections above them, so a break
+		// here would divide things that belong together. The break moved down to sit above the
+		// run section — see RunPanel — which is where the subject actually changes.
+		setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0));
+
+		// A title rather than a sentence. It read "Seeds you own - 1 picked for the run", which
+		// described the list instead of naming it — and a description sitting where a heading
+		// belongs makes a panel feel like prose you have to read rather than a form you fill in.
+		// The count stays, in brackets, because it is the one part that changes.
+		seedsVisible = layout.isOpen("seeds." + group.getKey(), true);
+		protectPanel.setLayout(new javax.swing.BoxLayout(protectPanel, javax.swing.BoxLayout.Y_AXIS));
+		protectPanel.setBackground(getBackground());
+		protectPanel.setBorder(BorderFactory.createEmptyBorder(2, 0, 4, 0));
 
 		heading.setFont(FontManager.getRunescapeSmallFont());
-		heading.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-		heading.setBorder(BorderFactory.createEmptyBorder(0, 6, 2, 6));
+		Controls.styleButton(heading);
+		heading.addActionListener(e ->
+		{
+			seedsVisible = !seedsVisible;
+			seedBody.setVisible(seedsVisible);
+			layout.setOpen("seeds." + group.getKey(), seedsVisible);
+			updateHeading();
+			revalidate();
+		});
 
 		message.setBorder(BorderFactory.createEmptyBorder(4, 6, 6, 6));
 
@@ -81,34 +263,38 @@ class SeedSelectorPanel extends JPanel
 		rows.setBackground(getBackground());
 		rows.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
 
-		JPanel body = new JPanel(new BorderLayout());
-		body.setBackground(getBackground());
-		body.add(message, BorderLayout.NORTH);
-		body.add(rows, BorderLayout.CENTER);
+		seedBody.setBackground(getBackground());
+		seedBody.add(message, BorderLayout.NORTH);
+		seedBody.add(rows, BorderLayout.CENTER);
+		seedBody.setVisible(seedsVisible);
 
 		add(heading, BorderLayout.NORTH);
-		add(body, BorderLayout.CENTER);
+		add(seedBody, BorderLayout.CENTER);
+
+		JPanel below = new JPanel(new BorderLayout(0, 2));
+		below.setBackground(getBackground());
 		if (usesCompost())
 		{
-			add(buildCompostPicker(), BorderLayout.SOUTH);
+			below.add(buildCompostPicker(), BorderLayout.NORTH);
 		}
+		below.add(protectPanel, BorderLayout.SOUTH);
+		add(below, BorderLayout.SOUTH);
 	}
 
 	void refresh()
 	{
 		// Built once, so a profile load after construction has to be reflected here or the
 		// dropdown keeps showing what it was created with.
-		if (compostBox != null && compostBox.getSelectedItem() != compost.get(type))
+		if (compostBox != null && compostBox.getSelectedItem() != compost.get(group))
 		{
-			compostBox.setSelectedItem(compost.get(type));
+			compostBox.setSelectedItem(compost.get(group));
 		}
 
 		rows.removeAll();
 
-		int picked = selection.getSelectedFor(type).size();
-		heading.setText(picked > 0
-			? "Seeds you own - " + picked + " picked for the run"
-			: "Seeds you own - click to add to your run");
+		pickedCount = selection.getSelectedFor(group).size();
+		updateHeading();
+		updateProtection();
 
 		// With nothing ever cached we genuinely do not know what the player owns, so say
 		// that rather than showing an empty list that reads as "you have none".
@@ -183,7 +369,7 @@ class SeedSelectorPanel extends JPanel
 
 		compostBox = new JComboBox<>(CompostTier.values());
 		JComboBox<CompostTier> box = compostBox;
-		box.setSelectedItem(compost.get(type));
+		box.setSelectedItem(compost.get(group));
 		box.setFont(FontManager.getRunescapeSmallFont());
 		box.setFocusable(false);
 		Controls.styleComboBox(box);
@@ -192,7 +378,7 @@ class SeedSelectorPanel extends JPanel
 			Object picked = box.getSelectedItem();
 			if (picked instanceof CompostTier)
 			{
-				compost.set(type, (CompostTier) picked);
+				compost.set(group, (CompostTier) picked);
 			}
 		});
 
@@ -230,7 +416,7 @@ class SeedSelectorPanel extends JPanel
 		boolean usable = plantable.isLevelMet() && plantable.isUsable();
 		icon.setEnabled(usable);
 
-		applySelectionStyling(icon, selection.isSelected(seed));
+		applySelectionStyling(icon, selection.isSelected(group, seed));
 
 		if (usable)
 		{
@@ -242,7 +428,7 @@ class SeedSelectorPanel extends JPanel
 				{
 					// The store fires a change, which repaints every tab — a seed picked here
 					// is part of the run everywhere, not just on this tab.
-					selection.toggle(seed);
+					selection.toggle(group, seed);
 				}
 			});
 		}

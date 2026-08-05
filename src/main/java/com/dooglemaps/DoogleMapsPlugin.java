@@ -7,16 +7,22 @@ import com.dooglemaps.capture.PatchLocationCapture;
 import com.dooglemaps.capture.ProtectionCapture;
 import com.dooglemaps.capture.SeedCapture;
 import com.dooglemaps.bank.BankContents;
+import com.dooglemaps.bank.BankFilter;
 import com.dooglemaps.bank.BankHighlightOverlay;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.guide.GuideInventoryOverlay;
 import com.dooglemaps.guide.GuideOverlay;
+import com.dooglemaps.guide.GuideStepOverlay;
 import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.FarmingBonusStore;
+import com.dooglemaps.state.LeprechaunStore;
 import com.dooglemaps.state.PatchStateStore;
+import com.dooglemaps.state.PlayerHouse;
 import com.dooglemaps.state.PlayerLocation;
+import com.dooglemaps.state.ProtectedPatches;
+import com.dooglemaps.state.ProtectionSelectionStore;
 import com.dooglemaps.state.ProfileReset;
 import com.dooglemaps.route.BankLocationStore;
 import com.dooglemaps.route.PatchLocationStore;
@@ -106,6 +112,30 @@ public class DoogleMapsPlugin extends Plugin
 	private GuideInventoryOverlay guideInventoryOverlay;
 
 	@Inject
+	private GuideStepOverlay guideStepOverlay;
+
+	@Inject
+	private LeprechaunStore leprechaunStore;
+
+	@Inject
+	private PlayerHouse playerHouse;
+
+	@Inject
+	private ProtectedPatches protectedPatches;
+
+	@Inject
+	private com.dooglemaps.data.ItemNames itemNames;
+
+	@Inject
+	private net.runelite.client.game.ItemManager itemManager;
+
+	@Inject
+	private ProtectionSelectionStore protectionSelection;
+
+	@Inject
+	private BankFilter bankFilter;
+
+	@Inject
 	private com.dooglemaps.guide.GuideTracker guideTracker;
 
 	@Inject
@@ -193,6 +223,9 @@ public class DoogleMapsPlugin extends Plugin
 	private ReadyInfoBox readyInfoBox;
 
 	private final Runnable onStateChanged = this::refresh;
+
+	/** The protected tab can only be built once the unlocks are known, which is after startUp. */
+	private final Runnable onProtectionChanged = () -> panel.structureChanged();
 	private Instant lastIdleRefresh = Instant.EPOCH;
 
 	/**
@@ -229,7 +262,12 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(playerLocation);
 		eventBus.register(guideTracker);
 		eventBus.register(bankContents);
+		eventBus.register(leprechaunStore);
+		eventBus.register(playerHouse);
+		eventBus.register(bankFilter);
+		bankFilter.startUp();
 
+		protectedPatches.addChangeListener(onProtectionChanged);
 		stateStore.addChangeListener(onStateChanged);
 		availability.addChangeListener(onStateChanged);
 		seedStore.addChangeListener(onStateChanged);
@@ -248,6 +286,7 @@ public class DoogleMapsPlugin extends Plugin
 
 		overlayManager.add(guideOverlay);
 		overlayManager.add(guideInventoryOverlay);
+		overlayManager.add(guideStepOverlay);
 		overlayManager.add(bankHighlightOverlay);
 
 		load();
@@ -273,7 +312,12 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(playerLocation);
 		eventBus.unregister(guideTracker);
 		eventBus.unregister(bankContents);
+		eventBus.unregister(leprechaunStore);
+		eventBus.unregister(playerHouse);
+		eventBus.unregister(bankFilter);
+		bankFilter.shutDown();
 
+		protectedPatches.removeChangeListener(onProtectionChanged);
 		stateStore.removeChangeListener(onStateChanged);
 		availability.removeChangeListener(onStateChanged);
 		seedStore.removeChangeListener(onStateChanged);
@@ -281,6 +325,7 @@ public class DoogleMapsPlugin extends Plugin
 
 		overlayManager.remove(guideOverlay);
 		overlayManager.remove(guideInventoryOverlay);
+		overlayManager.remove(guideStepOverlay);
 		overlayManager.remove(bankHighlightOverlay);
 
 		infoBoxManager.removeInfoBox(readyInfoBox);
@@ -298,6 +343,9 @@ public class DoogleMapsPlugin extends Plugin
 		playerLocation.reset();
 		guideTracker.reset();
 		bankContents.reset();
+		leprechaunStore.reset();
+		playerHouse.reset();
+		protectedPatches.reset();
 		runPlanner.stop();
 	}
 
@@ -447,6 +495,13 @@ public class DoogleMapsPlugin extends Plugin
 			load();
 		}
 
+		// Which herb patches cannot be diseased, re-read rather than sampled once at login.
+		// The load fires the instant LOGGED_IN does, and the quest and diary varbits are not
+		// all synced by then — a sample taken a second early reads nothing and used to latch,
+		// which is exactly how the protected herb tab went missing for a whole session. This
+		// is on the client thread already, and the read leaves early when nothing has changed.
+		protectedPatches.refresh(client);
+
 		Instant now = Instant.now();
 		if (Duration.between(lastIdleRefresh, now).compareTo(IDLE_REFRESH_INTERVAL) >= 0)
 		{
@@ -479,11 +534,22 @@ public class DoogleMapsPlugin extends Plugin
 				seedStore.recordFarmingLevel();
 				seedStore.recordWoodcuttingLevel();
 				bonusStore.recordDiaries();
+
+				// Protection payment names, read here because getItemComposition is a client
+				// thread call and the sidebar needs them on Swing. A fixed set, read once.
+				java.util.List<Integer> paymentItems = new java.util.ArrayList<>();
+				for (com.dooglemaps.data.ProtectionPayment payment
+					: com.dooglemaps.data.ProtectionPayment.values())
+				{
+					paymentItems.add(payment.getItemID());
+				}
+				itemNames.record(itemManager, paymentItems);
 			}
 		});
 		seedSelection.load();
 		runTypes.load();
 		compostSelection.load();
+		protectionSelection.load();
 		patchLocations.load();
 		bankLocations.load();
 		harvestStats.load();

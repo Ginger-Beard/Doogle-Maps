@@ -24,6 +24,15 @@ public enum GuideAction
 	/** Take compost out of the leprechaun's storage. */
 	WITHDRAW_COMPOST("Withdraw compost"),
 
+	/**
+	 * Take a tool out of the leprechaun's storage.
+	 *
+	 * <p>Only ever raised for a tool the step in front of you cannot be done without, and only
+	 * when he is actually holding one — his store is read, not assumed. A rake you do not have
+	 * and he does not have is a problem for the bank leg, not for a step here.
+	 */
+	WITHDRAW_TOOL("Withdraw a tool"),
+
 	/** Take seeds out of the seed box. */
 	WITHDRAW_SEEDS("Empty the seed box"),
 
@@ -32,6 +41,14 @@ public enum GuideAction
 
 	/** Sow. The last thing done at a patch, and what marks it serviced. */
 	PLANT("Plant"),
+
+	/**
+	 * Pay the farmer to watch over the crop.
+	 *
+	 * <p>After planting, because there is nothing to protect until something is in the ground.
+	 * Only raised for patches that can be protected and groups the player chose to protect.
+	 */
+	PAY_FARMER("Pay the farmer"),
 
 	/** Hand the empty buckets back before leaving, so they stop costing slots. */
 	RETURN_BUCKETS("Return empty buckets");

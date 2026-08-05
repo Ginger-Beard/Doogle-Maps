@@ -2,11 +2,17 @@ package com.dooglemaps.ui;
 
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PlantingGroup;
+import com.dooglemaps.data.RunOption;
+import com.dooglemaps.state.PlantingGroups;
+import com.dooglemaps.data.ProtectionPayment;
+import com.dooglemaps.route.ProtectionBudget;
+import com.dooglemaps.state.ProtectionSelectionStore;
+import com.dooglemaps.bank.BankContents;
+import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.bank.LoadoutItem;
 import com.dooglemaps.bank.RunLoadout;
 import com.dooglemaps.data.Seed;
-import com.dooglemaps.guide.GuideStep;
-import com.dooglemaps.guide.GuideTracker;
 import com.dooglemaps.route.InventoryPlan;
 import com.dooglemaps.route.RunEstimate;
 import com.dooglemaps.route.RunPlanner;
@@ -67,14 +73,10 @@ class RunPanel extends JPanel
 		PatchImplementation.FRUIT_TREE,
 		PatchImplementation.HARDWOOD_TREE);
 
-	/** Steps shown at a stop before the list is cut short. */
-	private static final int MAX_GUIDANCE_ROWS = 4;
-
 	/** Loadout items named before the line turns into a count. */
 	private static final int LOADOUT_NAMES_SHOWN = 4;
 
 	private final RunPlanner planner;
-	private final GuideTracker guide;
 	private final RunLoadout loadout;
 	private final AvailabilityProfile availability;
 	private final SeedSelectionStore selection;
@@ -87,7 +89,7 @@ class RunPanel extends JPanel
 	/** A step lighter than the sidebar, so the expanded list reads as its own region. */
 	private static final Color LIST_BACKGROUND = new Color(0x3A, 0x3A, 0x3A);
 
-	private final Map<PatchImplementation, JCheckBox> typeBoxes = new EnumMap<>(PatchImplementation.class);
+	private final Map<RunOption, JCheckBox> optionBoxes = new java.util.LinkedHashMap<>();
 	private final JPanel typeSelection = new JPanel();
 	private final JPanel stopList = new JPanel();
 	private final WrappedText summary = new WrappedText();
@@ -100,11 +102,17 @@ class RunPanel extends JPanel
 	/**
 	 * Open to start with, now that the run has a tab to itself.
 	 *
-	 * <p>It was collapsed when this sat under a hundred patch rows in one scrolling column.
-	 * On its own page there is nothing to push down, and where the run goes is the thing you
-	 * want in front of you while deciding what to take.
+	 * <p>Closed to start with. It was opened when the run had a page to itself and nothing to
+	 * push down; folded back under the patch rows, an eleven-line list between the run controls
+	 * and everything below them is back to being in the way. The count is on the button, which is
+	 * what you want from it most of the time anyway.
 	 */
-	private boolean destinationsVisible = true;
+	private final PanelLayoutStore layout;
+	private final ProtectionSelectionStore protection;
+	private final PlantingGroups groups;
+	private final BankContents bank;
+	private final CarriedItems carried;
+	private boolean destinationsVisible;
 	private int destinationCount;
 	private int destinationPatches;
 
@@ -112,12 +120,18 @@ class RunPanel extends JPanel
 	private final RewardTable rewardTable = new RewardTable();
 	private final JButton startStop = new JButton();
 
-	RunPanel(RunPlanner planner, GuideTracker guide, RunLoadout loadout,
+	RunPanel(PanelLayoutStore layout, PlantingGroups groups,
+		ProtectionSelectionStore protection, BankContents bank,
+		CarriedItems carried, RunPlanner planner, RunLoadout loadout,
 		AvailabilityProfile availability, SeedSelectionStore selection, SeedInventoryStore seeds,
 		RunTypeStore runTypes, FarmingBonusStore bonuses, CompostSelectionStore compost)
 	{
+		this.layout = layout;
+		this.groups = groups;
+		this.protection = protection;
+		this.bank = bank;
+		this.carried = carried;
 		this.planner = planner;
-		this.guide = guide;
 		this.loadout = loadout;
 		this.availability = availability;
 		this.selection = selection;
@@ -128,9 +142,18 @@ class RunPanel extends JPanel
 
 		setLayout(new BorderLayout(0, 6));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
-		setBorder(BorderFactory.createEmptyBorder(6, 0, 6, 0));
+		// A gap at the top, dividing this from everything above it. The whole page above is
+		// per-patch-type — what is growing, which patches you use, which seed goes in them — and
+		// everything from here down is about the run as a whole. That is the one boundary on this
+		// page worth drawing, and space draws it without another heading to read.
+		setBorder(BorderFactory.createEmptyBorder(14, 0, 6, 0));
 
-		typeSelection.setLayout(new GridLayout(0, 2, 2, 0));
+		// Two across, which halves the height of a list that can now run to eleven lines. A grid
+		// gives every cell the width of the widest label, and that is what decides whether this
+		// fits: spelled out, "Fruit tree (harvest only)" made two columns want 290px of a 225px
+		// sidebar and they were clipped. Abbreviating it to "(H/O)" is what buys the second
+		// column. The render test catches exactly this, which is why it exists.
+		typeSelection.setLayout(new GridLayout(0, 2, 4, 0));
 		typeSelection.setBackground(getBackground());
 		buildTypeBoxes();
 
@@ -161,29 +184,74 @@ class RunPanel extends JPanel
 		add(body, BorderLayout.CENTER);
 	}
 
+	/**
+	 * One box per run option, which is no longer one per patch type.
+	 *
+	 * <p>A type can offer more than one line: protected herbs are a different set of patches, and
+	 * bushes and fruit trees can be run for their harvest alone. Built from
+	 * {@code PlantingGroups.runOptions} so the list cannot disagree with the tabs above it.
+	 */
+	/**
+	 * Rebuilds the run list because the lines it should offer have changed.
+	 *
+	 * <p>The same signal that rebuilds the tab strip. Without it the two disagreed: the protected
+	 * herb tab would appear at the top of the page while the run list below still had no line for
+	 * it, so the category existed and could not be run. Which lines exist is decided by a setting
+	 * and by unlocks detected after login, and neither is known when this is first built.
+	 *
+	 * <p>Ticks come back from the store rather than being carried across, so a line that
+	 * disappears and returns is still ticked. See {@code RunTypeStore.setSelected}.
+	 */
+	void structureChanged()
+	{
+		optionBoxes.clear();
+		typeSelection.removeAll();
+		buildTypeBoxes();
+		typeSelection.revalidate();
+		typeSelection.repaint();
+		refresh();
+	}
+
 	private void buildTypeBoxes()
 	{
-		for (PatchImplementation type : PatchImplementation.values())
+		for (RunOption option : groups.runOptions())
 		{
-			if (!RUNNABLE.contains(type))
-			{
-				continue;
-			}
-
 			// Ticked from the saved run, so the same circuit does not have to be re-entered
 			// before every run.
-			JCheckBox box = new JCheckBox(type.getDisplayName(), runTypes.isSelected(type));
+			JCheckBox box = new JCheckBox(option.getLabel(), runTypes.isSelected(option));
 			box.setBackground(getBackground());
 			Controls.styleCheckBox(box);
 			box.setFont(FontManager.getRunescapeSmallFont());
+			// The label is abbreviated to fit two columns, so the tooltip carries the meaning
+			// rather than merely elaborating on it.
+			box.setToolTipText(option.isHarvestOnly()
+				? "Harvest only: visit these to pick what is ready and nothing else - the patch "
+					+ "is not cleared, composted or replanted"
+				: null);
 			box.addActionListener(e ->
 			{
-				runTypes.setSelected(getSelectedTypes());
+				// Only the lines on show are replaced. A protected herb run chosen earlier must
+				// survive the split being switched off and back on, and these boxes cannot speak
+				// for a line they are not displaying.
+				runTypes.setSelected(getSelectedOptions(), optionBoxes.keySet());
 				refresh();
 			});
-			typeBoxes.put(type, box);
+			optionBoxes.put(option, box);
 			typeSelection.add(box);
 		}
+	}
+
+	private Set<RunOption> getSelectedOptions()
+	{
+		Set<RunOption> selected = new LinkedHashSet<>();
+		optionBoxes.forEach((option, box) ->
+		{
+			if (box.isSelected())
+			{
+				selected.add(option);
+			}
+		});
+		return selected;
 	}
 
 	/**
@@ -208,6 +276,7 @@ class RunPanel extends JPanel
 	 */
 	private JPanel buildDestinations()
 	{
+		destinationsVisible = layout.isOpen("destinations", false);
 		destinations.setLayout(new BorderLayout(0, 2));
 		destinations.setBackground(getBackground());
 		destinations.setBorder(BorderFactory.createEmptyBorder(2, 6, 0, 6));
@@ -219,6 +288,7 @@ class RunPanel extends JPanel
 		{
 			destinationsVisible = !destinationsVisible;
 			destinationList.setVisible(destinationsVisible);
+			layout.setOpen("destinations", destinationsVisible);
 			updateDestinationsButton();
 			revalidate();
 		});
@@ -261,9 +331,16 @@ class RunPanel extends JPanel
 				ColorScheme.TEXT_COLOR));
 		}
 
-		// Short because the row is a plain label and the sidebar clips rather than wraps; the
-		// button's tooltip carries the rest of the explanation.
-		destinationList.add(row("Order is chosen as you go.", ColorScheme.MEDIUM_GRAY_COLOR));
+		// The list looks like an itinerary and is not one, which is the thing worth being clear
+		// about: nothing here decides a route. Each leg goes to whichever remaining stop is
+		// cheapest from wherever you are standing, which only Shortest Path can answer and only
+		// once you are there.
+		//
+		// Two short labels rather than one wrapped sentence. WrappedText assumes it gets the
+		// sidebar's full width, and inside this doubly-bordered list it does not — see the note
+		// on that class. Short enough not to need wrapping is the version that cannot clip.
+		destinationList.add(row("Alphabetical, not travel order.", ColorScheme.MEDIUM_GRAY_COLOR));
+		destinationList.add(row("Route decides as you go.", ColorScheme.MEDIUM_GRAY_COLOR));
 
 		destinations.setVisible(true);
 		destinationCount = stops.size();
@@ -273,25 +350,32 @@ class RunPanel extends JPanel
 
 	private void updateDestinationsButton()
 	{
-		toggleDestinations.setText((destinationsVisible ? "Hide" : "Show") + " destinations ("
-			+ destinationCount + ")");
-		toggleDestinations.setToolTipText("<html>" + destinationCount
-			+ (destinationCount == 1 ? " stop, " : " stops, ") + destinationPatches
-			+ (destinationPatches == 1 ? " patch." : " patches.")
-			+ "<br>Listed alphabetically, not in visiting order: each leg goes to whichever stop "
-			+ "is cheapest to reach from where you are, so the order is only decided as you go."
+		// No "Show"/"Hide" verb, and the patch count promoted onto the button. What someone wants
+		// from this closed is the size of the trip, and "11 stops" alone did not give it — four
+		// tree patches in four places is a very different afternoon from eleven patches in three.
+		toggleDestinations.setText(Controls.collapseLabel("Destinations ("
+			+ destinationCount + " stops, "
+			+ destinationPatches + (destinationPatches == 1 ? " patch)" : " patches)"),
+			destinationsVisible));
+		toggleDestinations.setToolTipText("<html>Everywhere this run will take you."
 			+ "<br>Places only - which teleports to take is your call, and depends on what you "
 			+ "have unlocked.</html>");
 	}
 
+	/**
+	 * The patch types the ticked options cover.
+	 *
+	 * <p>Several options can share a type, so this is a projection rather than the selection
+	 * itself — the planner works in types plus filters, and the filters live in the store.
+	 */
 	private Set<PatchImplementation> getSelectedTypes()
 	{
 		Set<PatchImplementation> selected = EnumSet.noneOf(PatchImplementation.class);
-		typeBoxes.forEach((type, box) ->
+		optionBoxes.forEach((option, box) ->
 		{
 			if (box.isSelected())
 			{
-				selected.add(type);
+				selected.add(option.getType());
 			}
 		});
 		return selected;
@@ -316,14 +400,14 @@ class RunPanel extends JPanel
 		boolean running = planner.isActive();
 
 		startStop.setText(running ? "Stop run" : "Start run");
-		typeBoxes.forEach((type, box) ->
+		optionBoxes.forEach((option, box) ->
 		{
 			box.setEnabled(!running);
 			// Re-read rather than trusting the box: these are built once, and a profile load
 			// after that would otherwise leave them showing the state from before it.
-			if (box.isSelected() != runTypes.isSelected(type))
+			if (box.isSelected() != runTypes.isSelected(option))
 			{
-				box.setSelected(runTypes.isSelected(type));
+				box.setSelected(runTypes.isSelected(option));
 			}
 		});
 
@@ -355,10 +439,10 @@ class RunPanel extends JPanel
 			stopList.add(row(describeSupplyStop(), READY));
 		}
 
-		// What to do right here, above where to go next: while you are standing at a patch the
-		// instruction is the useful thing and the route is not.
-		appendGuidance();
-
+		// The instruction for the patch in front of you is deliberately *not* here any more. It
+		// lives on the game screen now, in GuideStepOverlay, because following a run means
+		// watching the patch rather than the sidebar — and a step you have to look away to read
+		// is one you stop reading. This list keeps the half you read while standing still.
 		for (RunStop stop : planner.getRemaining())
 		{
 			stopList.add(row(stop.getName() + "  (" + stop.getPatches().size() + ")",
@@ -370,45 +454,6 @@ class RunPanel extends JPanel
 		{
 			stopList.add(row("via " + String.join(", ", transports), ColorScheme.LIGHT_GRAY_COLOR));
 		}
-	}
-
-	/**
-	 * The instruction for the patch in front of you, and what is left at this stop.
-	 *
-	 * <p>The first line is what the overlay is highlighting, said in words — an outline tells
-	 * you <i>where</i> and this tells you <i>what</i>, and neither is much use alone. The rest
-	 * is the stop's remaining work, so it reads as a short checklist rather than a single
-	 * instruction with no sense of how much is left.
-	 */
-	private void appendGuidance()
-	{
-		List<GuideStep> steps = guide.stepsHere();
-		if (steps.isEmpty())
-		{
-			return;
-		}
-
-		stopList.add(row(steps.get(0).getText(), READY));
-		for (int i = 1; i < steps.size() && i < MAX_GUIDANCE_ROWS; i++)
-		{
-			stopList.add(row("then " + uncapitalise(steps.get(i).getText()),
-				ColorScheme.LIGHT_GRAY_COLOR));
-		}
-		if (steps.size() > MAX_GUIDANCE_ROWS)
-		{
-			stopList.add(row("+ " + (steps.size() - MAX_GUIDANCE_ROWS) + " more here",
-				ColorScheme.MEDIUM_GRAY_COLOR));
-		}
-	}
-
-	/** Lower-cases a leading capital so a sentence can be continued rather than restarted. */
-	private static String uncapitalise(String text)
-	{
-		if (text.length() < 2 || Character.isUpperCase(text.charAt(1)))
-		{
-			return text;
-		}
-		return Character.toLowerCase(text.charAt(0)) + text.substring(1);
 	}
 
 	private JLabel row(String text, Color colour)
@@ -515,14 +560,16 @@ class RunPanel extends JPanel
 		InventoryPlan plan = InventoryPlan.forRun(chosen, counts, hasSeedBox(), true, true);
 
 		StringBuilder text = new StringBuilder();
-		text.append(plan.getTotalSlots()).append(" of ").append(InventoryPlan.TOTAL_SLOTS)
-			.append(" inventory slots: ").append(plan.getSeedSlots()).append(" seeds, ")
-			.append(plan.getPaymentSlots()).append(" payments, ")
-			.append(plan.getHarvestSlots()).append(" crops home.");
 
+		// The slot breakdown — "7 of 28 inventory slots: 3 seeds, 1 payments, 3 crops home" —
+		// used to lead this. It was arithmetic the player never has to act on: the only decision
+		// it feeds is whether the run fits, and that is worth a line only when the answer is no.
+		// Sitting at the top of the panel it was the first thing read and the least useful.
 		if (!plan.isFeasible())
 		{
-			text.append("\n\nThat will not fit - drop a patch type or a seed.");
+			text.append("That will not fit (")
+				.append(plan.getTotalSlots()).append(" of ").append(InventoryPlan.TOTAL_SLOTS)
+				.append(" slots) - drop a patch type or a seed.");
 		}
 		if (!unpicked.isEmpty())
 		{
@@ -556,10 +603,65 @@ class RunPanel extends JPanel
 			return;
 		}
 
-		RunEstimate estimate = RunEstimate.forRun(
-			actionable, chosen, owned, level, bonuses.current(), compost.getAll(),
-			planner.survivalAcross(types));
+		RunEstimate estimate = estimateFor(types, owned, level);
 		rewardTable.setData(estimate, describeGear(level, estimate));
+	}
+
+	/**
+	 * Prices the run, one planting group at a time.
+	 *
+	 * <p>Each group is costed against its own seeds and its own compost, then the parts are
+	 * merged. Pricing the whole type in one go would let the seed picked for the protected
+	 * patches fill the ordinary ones too — the estimate ranks by experience and would happily put
+	 * ranarr in all eight — which is the arrangement the split exists to prevent.
+	 *
+	 * <p>With nothing split there is one group per type and this is the single call it always
+	 * was.
+	 */
+	private RunEstimate estimateFor(Set<PatchImplementation> types, Map<Seed, Integer> owned,
+		int level)
+	{
+		Map<PlantingGroup, Integer> byGroup = planner.countActionableByGroup(types);
+		List<RunEstimate> parts = new ArrayList<>();
+
+		for (Map.Entry<PlantingGroup, Integer> entry : byGroup.entrySet())
+		{
+			PlantingGroup group = entry.getKey();
+			Map<PatchImplementation, Integer> one =
+				java.util.Collections.singletonMap(group.getType(), entry.getValue());
+			Map<PatchImplementation, CompostTier> tier =
+				java.util.Collections.singletonMap(group.getType(), compost.get(group));
+
+			parts.add(RunEstimate.forRun(one, selection.getSelectedFor(group), owned, level,
+				bonuses.current(), tier, planner.survivalAcross(types), budget(group)));
+		}
+
+		return RunEstimate.merge(parts);
+	}
+
+	/**
+	 * What this group can afford to protect, as a spendable tally.
+	 *
+	 * <p>One per group rather than one for the run, because groups are priced separately and a
+	 * shared budget would let the first group priced quietly spend the second's coconuts. Two
+	 * groups genuinely competing for the same payment is possible but rare, and over-promising
+	 * within one group is the case that actually happens.
+	 */
+	private ProtectionBudget budget(PlantingGroup group)
+	{
+		Map<Integer, Integer> available = new java.util.HashMap<>();
+		for (Seed seed : selection.getSelectedFor(group))
+		{
+			ProtectionPayment payment = ProtectionPayment.forSeed(seed);
+			if (payment == null || !protection.isProtecting(group, seed))
+			{
+				continue;
+			}
+			available.put(payment.getItemID(),
+				bank.getCount(payment.getItemID()) + carried.getCount(payment.getItemID()));
+		}
+
+		return new ProtectionBudget(available, seed -> protection.isProtecting(group, seed));
 	}
 
 	/**
@@ -699,12 +801,15 @@ class RunPanel extends JPanel
 			// so silence here would read as "nothing else needed".
 			text.append("\n\nNot found anywhere: ").append(summarise(missing)).append('.');
 		}
-		if (anyUnknown)
+		// Nothing is said for the not-yet-read case. A bank is only readable while it is open, so
+		// before you have opened one this section has nothing to report — and "Open a bank and
+		// this will say what to take" was a line telling you the plugin had no information yet,
+		// which is what an empty section already says. The reason it existed still stands: the
+		// alternative of listing unread items as *missing* would read as "your secateurs are
+		// gone", and that is still avoided. Silence is simply the better way to avoid it.
+		if (anyUnknown && !toWithdraw.isEmpty())
 		{
-			// A bank is only readable while it is open, so before you have opened one there is
-			// nothing to say about what is in it. Saying that is much better than the
-			// alternative, which reads as "your secateurs are gone".
-			text.append("\n\nOpen a bank and this will say what to take.");
+			text.append(" Some of your bank has not been read yet.");
 		}
 	}
 

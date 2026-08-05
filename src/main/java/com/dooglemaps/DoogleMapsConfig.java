@@ -154,6 +154,64 @@ public interface DoogleMapsConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "filterBankToRun",
+		name = "Filter the bank to this run",
+		description = "Hide everything in the bank except what the run needs. Off by default and "
+			+ "deliberately so: a wrong highlight is ignorable, but a wrong filter hides things "
+			+ "and you cannot see what is missing. Highlighting works either way.",
+		position = 2,
+		section = guideSection
+	)
+	default boolean filterBankToRun()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "barbarianFarmingOverride",
+		name = "Barbarian farming",
+		description = "You have Otto Godblessed's Barbarian Farming, so seeds go in without a "
+			+ "dibber. The plugin works this out by itself the first time it watches you plant "
+			+ "without one - tick this to say so up front rather than waiting for that.",
+		position = 2,
+		section = guideSection
+	)
+	default boolean barbarianFarmingOverride()
+	{
+		return false;
+	}
+
+	@ConfigItem(
+		keyName = "separateProtectedHerbs",
+		name = "Separate protected herb patches",
+		description = "List the herb patches that cannot catch a disease as their own category, "
+			+ "so you can pick a different seed for them. Only the ones you have actually "
+			+ "unlocked appear - Trollheim, Weiss, Hosidius and Harmony are each detected from "
+			+ "the quest or diary that makes them safe.",
+		position = 3,
+		section = guideSection
+	)
+	default boolean separateProtectedHerbs()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "fortisColosseumChampion",
+		name = "Colosseum Champion (Fortis herb patch)",
+		description = "Champion status in the Fortis Colosseum, which needs 16,000 Glory, makes "
+			+ "the Civitas illa Fortis herb patch disease-free. Unlike the other four this cannot "
+			+ "be detected - the client exposes no varbit for it - so tick it yourself and the "
+			+ "patch joins the protected list.",
+		position = 4,
+		section = guideSection
+	)
+	default boolean fortisColosseumChampion()
+	{
+		return false;
+	}
+
+	@ConfigItem(
 		keyName = "guideHighlightStyle",
 		name = "Highlight style",
 		description = "How the patch and the leprechaun are marked",
@@ -204,7 +262,7 @@ public interface DoogleMapsConfig extends Config
 	)
 	default int guideOutlineThickness()
 	{
-		return 4;
+		return 2;
 	}
 
 	@Range(min = 0, max = 4)

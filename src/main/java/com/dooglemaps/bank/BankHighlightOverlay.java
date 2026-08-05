@@ -93,6 +93,17 @@ public class BankHighlightOverlay extends Overlay
 		}
 
 		net.runelite.api.Point mouse = client.getMouseCanvasPosition();
+
+		// Clipped to the item area. A bank holds every item's widget whether or not it is scrolled
+		// into view, and an off-screen one still reports canvas bounds — so marking it drew a
+		// highlight floating over the chat box, which is what was reported. Clipping is better
+		// than a contains() test because a row half-scrolled at the edge is genuinely half
+		// visible, and should be drawn that way rather than dropped.
+		java.awt.Shape previousClip = graphics.getClip();
+		graphics.clip(container.getBounds());
+
+		try
+		{
 		for (Widget item : container.getDynamicChildren())
 		{
 			if (item == null || item.isSelfHidden())
@@ -111,10 +122,16 @@ public class BankHighlightOverlay extends Overlay
 			// Hovering explains the colour. Without it a second colour is a puzzle rather than
 			// information — nobody should have to guess why their compost is marked differently
 			// from their seeds.
-			if (mouse != null && item.getBounds().contains(mouse.getX(), mouse.getY()))
+			if (mouse != null && container.getBounds().contains(mouse.getX(), mouse.getY())
+				&& item.getBounds().contains(mouse.getX(), mouse.getY()))
 			{
 				describe(item.getItemId(), need);
 			}
+		}
+		}
+		finally
+		{
+			graphics.setClip(previousClip);
 		}
 		return null;
 	}

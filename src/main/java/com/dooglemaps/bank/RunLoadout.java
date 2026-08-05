@@ -2,14 +2,18 @@ package com.dooglemaps.bank;
 
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.FarmPatch;
+import com.dooglemaps.data.FarmingTool;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.ProtectionPayment;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.route.RunStop;
 import com.dooglemaps.state.CompostSelectionStore;
+import com.dooglemaps.state.LeprechaunStore;
 import com.dooglemaps.state.SeedInventoryStore;
+import com.dooglemaps.state.ProtectionSelectionStore;
 import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.state.SeedSource;
 import com.dooglemaps.timer.FarmingOutfit;
@@ -71,17 +75,27 @@ public class RunLoadout
 	private final CompostSelectionStore compost;
 	private final CarriedItems carried;
 	private final BankContents bank;
+	private final ToolNeeds tools;
+	private final LeprechaunStore leprechaun;
+	private final ProtectionSelectionStore protection;
+	private final com.dooglemaps.data.ItemNames itemNames;
 
 	@Inject
 	private RunLoadout(RunPlanner planner, SeedSelectionStore selection, SeedInventoryStore seeds,
-		CompostSelectionStore compost, CarriedItems carried, BankContents bank)
+		CompostSelectionStore compost, CarriedItems carried, BankContents bank, ToolNeeds tools,
+		LeprechaunStore leprechaun, ProtectionSelectionStore protection,
+		com.dooglemaps.data.ItemNames itemNames)
 	{
+		this.protection = protection;
+		this.itemNames = itemNames;
 		this.planner = planner;
 		this.selection = selection;
 		this.seeds = seeds;
 		this.compost = compost;
 		this.carried = carried;
 		this.bank = bank;
+		this.tools = tools;
+		this.leprechaun = leprechaun;
 	}
 
 	/**
@@ -101,6 +115,7 @@ public class RunLoadout
 		addSeeds(items, types);
 		addCompost(items, types);
 		addPayments(items, types);
+		addTools(items, types);
 		addGear(items);
 		addAxe(items, types);
 		addStorage(items, types);
@@ -169,21 +184,100 @@ public class RunLoadout
 			"A grown tree has to be chopped before the patch can be replanted"));
 	}
 
+	/**
+	 * The farming tools, checked against the leprechaun's store rather than assumed to be in it.
+	 *
+	 * <p>This used to be silent, on the reasoning that the leprechaun holds every tool so there
+	 * is nothing useful to say. That is true of an account that has deposited them and false of
+	 * one that has not — and the failure is a whole trip: arriving at a weedy patch without a
+	 * rake means nothing at that stop can be raked, treated or planted.
+	 *
+	 * <p>Now his store is readable ({@link LeprechaunStore}) the common case stays quiet in a
+	 * different way: the row says <i>on site</i>, which is a statement rather than an assumption,
+	 * and the run does not go near a bank for it.
+	 */
+	private void addTools(List<LoadoutItem> items, Set<PatchImplementation> types)
+	{
+		for (ToolNeeds.Requirement requirement : tools.forRun(types))
+		{
+			FarmingTool tool = requirement.getTool();
+			items.add(new LoadoutItem(tool.getItemID(), tool.getDisplayName(),
+				LoadoutItem.Category.TOOL, needFor(requirement.getSource()), 0,
+				toolReason(tool, requirement.getSource())));
+		}
+	}
+
+	private static LoadoutItem.Need needFor(ToolNeeds.Source source)
+	{
+		switch (source)
+		{
+			case CARRIED:
+				return LoadoutItem.Need.HAVE;
+			case AT_LEPRECHAUN:
+				return LoadoutItem.Need.AT_LEPRECHAUN;
+			case BANK:
+				return LoadoutItem.Need.WITHDRAW;
+			case NOWHERE:
+				return LoadoutItem.Need.MISSING;
+			default:
+				return LoadoutItem.Need.UNKNOWN;
+		}
+	}
+
+	/**
+	 * What to do about a tool, said in the tooltip.
+	 *
+	 * <p>The {@code NOWHERE} wording is the one that earns this feature. Every other case is a
+	 * click or a withdrawal; that one means the run cannot be completed as planned and the fix is
+	 * a shop rather than a bank. Named as a shop deliberately — the plugin never suggests the
+	 * Grand Exchange, so an ironman gets the same advice as a main.
+	 */
+	private static String toolReason(FarmingTool tool, ToolNeeds.Source source)
+	{
+		switch (source)
+		{
+			case AT_LEPRECHAUN:
+				return tool.getReason() + " - the leprechaun is holding yours, so pick it up "
+					+ "at the first patch rather than banking for it";
+			case BANK:
+				return tool.getReason() + " - in your bank, and not in the leprechaun's store, "
+					+ "so it has to be withdrawn";
+			case NOWHERE:
+				return tool.getReason() + " - you do not have one anywhere. A farming shop sells "
+					+ "one for a few coins; there is one beside most patch areas";
+			case UNKNOWN:
+				return tool.getReason() + " - open a bank and this will say whether you have one";
+			default:
+				return tool.getReason();
+		}
+	}
+
 	// ---------------------------------------------------------------------- parts
 
 	private void addSeeds(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
-		Map<PatchImplementation, Integer> actionable = planner.countActionable(types);
+		// Per planting group, not per type. Two reasons, and the second is a bug this fixes.
+		//
+		// The split one: protected herbs and ordinary herbs take different seeds, and asking for
+		// each against the whole type's patch count would bank a full run's worth of both.
+		//
+		// The one that was already wrong: this loop asks for `patches * seedsPerPatch` for *every*
+		// selected seed, so picking two seeds for one type asked for two runs of seed for a
+		// one-run trip. Scoping to the group does not fix that on its own — see TODO.md, "Picking
+		// more than one seed for a patch type" — but it stops the split multiplying it.
+		Map<PlantingGroup, Integer> actionable = planner.countActionableByGroup(types);
 
-		for (PatchImplementation type : types)
+		for (Map.Entry<PlantingGroup, Integer> entry : actionable.entrySet())
 		{
-			int patches = actionable.getOrDefault(type, 0);
+			PlantingGroup group = entry.getKey();
+			int patches = entry.getValue();
+			PatchImplementation type = group.getType();
 			if (patches == 0)
 			{
 				continue;
 			}
 
-			for (Seed seed : selection.getSelectedFor(type))
+			for (Seed seed : selection.getSelectedFor(group))
 			{
 				int wanted = patches * seed.getSeedsPerPatch();
 				int owned = seeds.getOwnedPlantable(seed);
@@ -201,17 +295,24 @@ public class RunLoadout
 	}
 
 	/**
-	 * Compost, which is nearly always a leprechaun item rather than a bank one.
+	 * Compost, which is <i>usually</i> a leprechaun item rather than a bank one.
 	 *
 	 * <p>Offered anyway, marked as on-site, because "you chose ultracompost and the leprechaun
 	 * has it" is the useful thing to know — it stops you going hunting for a bucket.
+	 *
+	 * <p>"Usually" is the change. This asserted on-site unconditionally, which is right for a
+	 * stocked account and wrong in the worst direction for anyone else: told to leave the compost
+	 * in the bank, they arrive with none and every patch on the run goes in untreated. His store
+	 * is now read rather than assumed, so a tier he does not have reads as a withdrawal.
 	 */
 	private void addCompost(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
+		// Per group: a split herb type can want ultra on the protected patches and super on the
+		// rest, and both have to be banked for.
 		Set<CompostTier> wanted = new LinkedHashSet<>();
-		for (PatchImplementation type : types)
+		for (PlantingGroup group : planner.countActionableByGroup(types).keySet())
 		{
-			CompostTier tier = compost.get(type);
+			CompostTier tier = compost.get(group);
 			if (tier != CompostTier.NONE)
 			{
 				wanted.add(tier);
@@ -225,11 +326,62 @@ public class RunLoadout
 			// sent you to the leprechaun.
 			boolean have = carried.hasAny(tier.getItemID(),
 				ItemID.BOTTOMLESS_COMPOST_BUCKET, ItemID.BOTTOMLESS_COMPOST_BUCKET_FILLED);
+
 			items.add(new LoadoutItem(tier.getItemID(), tier.getDisplayName(),
-				LoadoutItem.Category.COMPOST,
-				have ? LoadoutItem.Need.HAVE : LoadoutItem.Need.AT_LEPRECHAUN, 0,
-				"The leprechaun stores 1,000 of each compost, so this rarely needs banking"));
+				LoadoutItem.Category.COMPOST, compostNeed(tier, have), 0,
+				compostReason(tier, have)));
 		}
+	}
+
+	/**
+	 * Whether the chosen compost is a click at the patch or a thing to withdraw.
+	 *
+	 * <p>The leprechaun's store is checked for the exact tier, because they are stored separately
+	 * and having a thousand buckets of ordinary compost is no help to someone who picked ultra.
+	 */
+	private LoadoutItem.Need compostNeed(CompostTier tier, boolean carrying)
+	{
+		if (carrying)
+		{
+			return LoadoutItem.Need.HAVE;
+		}
+		if (leprechaun.hasCompost(tier))
+		{
+			return LoadoutItem.Need.AT_LEPRECHAUN;
+		}
+		if (bank.has(tier.getItemID()))
+		{
+			return LoadoutItem.Need.WITHDRAW;
+		}
+
+		// He has none and neither does the bank — but stay quiet about it until both have been
+		// read. Before the first tick after login his store reads as empty, and the bank stays
+		// unknown until one is opened.
+		if (!leprechaun.hasBeenRead() || !bank.hasBeenSeen())
+		{
+			return LoadoutItem.Need.UNKNOWN;
+		}
+		return LoadoutItem.Need.MISSING;
+	}
+
+	private String compostReason(CompostTier tier, boolean carrying)
+	{
+		if (carrying)
+		{
+			return "Already on you";
+		}
+		if (leprechaun.hasCompost(tier))
+		{
+			return "The leprechaun is holding " + leprechaun.getCount(FarmingTool.forCompost(tier))
+				+ " or more, so this does not need banking";
+		}
+		if (bank.has(tier.getItemID()))
+		{
+			return "The leprechaun has none of this tier stored, so bring it from the bank - "
+				+ "one bucket per patch";
+		}
+		return "You chose " + tier.getDisplayName().toLowerCase()
+			+ " and there is none on you, in the leprechaun's store or in the bank";
 	}
 
 	/**
@@ -242,24 +394,71 @@ public class RunLoadout
 	{
 		Set<Integer> seen = new LinkedHashSet<>();
 
-		for (PatchImplementation type : types)
+		// Only for groups the player said they would pay for. Listing every possible payment was
+		// the old behaviour and it asked you to bank things you had no intention of using —
+		// which, on a tree run, is several stacks of fruit nobody wanted.
+		Map<PlantingGroup, Integer> actionable = planner.countActionableByGroup(types);
+		for (PlantingGroup group : actionable.keySet())
 		{
-			for (Seed seed : selection.getSelectedFor(type))
+			int patches = actionable.getOrDefault(group, 0);
+			for (Seed seed : selection.getSelectedFor(group))
 			{
+				if (!protection.isProtecting(group, seed))
+				{
+					continue;
+				}
+
 				ProtectionPayment payment = ProtectionPayment.forSeed(seed);
 				if (payment == null || !seen.add(payment.getItemID()))
 				{
 					continue;
 				}
 
+				// Per patch, multiplied by them. The quantity was the payment for a *single*
+				// patch however many the run had, so a four-tree run asked for 25 coconuts and
+				// needed 100 — and you would find out at the fourth tree, having already
+				// travelled there.
+				//
+				// The slot count is still one: payments may be noted, and a noted stack is one
+				// slot whatever its size. That is why this is a quantity fix rather than an
+				// inventory one.
+				int wanted = payment.getQuantity() * patches;
+				int held = carried.getCount(payment.getItemID())
+					+ bank.getCount(payment.getItemID());
+
+				// Named after the item to bring, not the crop it protects. This row said "Magic"
+				// when what you need is coconuts — the accessor is getProduce() on both halves of
+				// the payment, and it is the wrong half here.
 				items.add(new LoadoutItem(payment.getItemID(),
-					payment.getProduce().getName(), LoadoutItem.Category.PAYMENT,
-					need(carried.has(payment.getItemID()), bank.has(payment.getItemID()), false),
-					payment.getQuantity(),
-					"Protects " + seed.getName().toLowerCase()
-						+ " - may be noted, but has to be the exact item"));
+					itemNames.get(payment.getItemID(), payment.getProduce().getName()),
+					LoadoutItem.Category.PAYMENT,
+					paymentNeed(payment, wanted, held), wanted,
+					held < wanted
+						? "Protects " + seed.getName().toLowerCase() + " - you have " + held
+							+ " of the " + wanted + " this run needs"
+						: "Protects " + seed.getName().toLowerCase()
+							+ " - may be noted, but has to be the exact item"));
 			}
 		}
+	}
+
+	/**
+	 * Whether the run can actually be protected, given how many payments exist.
+	 *
+	 * <p>Short is reported as <b>missing</b> rather than as a withdrawal, even when some are in
+	 * the bank. Withdrawing 60 of the 100 coconuts a run needs leaves you paying for two trees
+	 * and finding out about the other two on arrival — which is the wasted trip this whole
+	 * section exists to prevent. Saying so before you set off is the useful answer.
+	 */
+	private LoadoutItem.Need paymentNeed(ProtectionPayment payment, int wanted, int held)
+	{
+		if (held < wanted)
+		{
+			return bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN;
+		}
+		return carried.getCount(payment.getItemID()) >= wanted
+			? LoadoutItem.Need.HAVE
+			: LoadoutItem.Need.WITHDRAW;
 	}
 
 	/**
@@ -271,13 +470,24 @@ public class RunLoadout
 	 */
 	private void addGear(List<LoadoutItem> items)
 	{
+		// Where they are decides what to say. The store is the interesting case: they are not on
+		// you, so the +10% is not applying, but the errand is a click at the first patch rather
+		// than a trip to a bank — and being sent to a bank for a pair the leprechaun is already
+		// holding is exactly the kind of wasted leg this plugin exists to remove.
+		boolean secateursCarried = carried.has(ItemID.FAIRY_ENCHANTED_SECATEURS);
+		boolean secateursStored = leprechaun.has(FarmingTool.MAGIC_SECATEURS);
 		items.add(new LoadoutItem(ItemID.FAIRY_ENCHANTED_SECATEURS, "Magic secateurs",
 			LoadoutItem.Category.GEAR,
-			carried.has(ItemID.FAIRY_ENCHANTED_SECATEURS)
+			secateursCarried
 				? LoadoutItem.Need.HAVE
-				: need(false, bank.has(ItemID.FAIRY_ENCHANTED_SECATEURS), false),
+				: secateursStored
+					? LoadoutItem.Need.AT_LEPRECHAUN
+					: need(false, bank.has(ItemID.FAIRY_ENCHANTED_SECATEURS), false),
 			0,
-			"+10% yield, and it counts in your inventory as well as worn"));
+			secateursStored && !secateursCarried
+				? "+10% yield, but only while they are on you - the leprechaun has your pair, "
+					+ "so take them out at the first patch"
+				: "+10% yield, and it counts in your inventory as well as worn"));
 
 		addFarmingOutfit(items);
 

@@ -627,7 +627,25 @@ anything derived from an item sprite has to be redone when the sprite lands.
 
 ---
 
-## Three top-level tabs — done
+## Two top-level tabs — the run folded back in
+
+The run started at the bottom of one long scrolling column, was promoted to a tab of its own, and
+has now gone back to the bottom of the Almanac page. Worth recording why the middle step was
+wrong rather than quietly reverting it.
+
+The case for a tab was that a run is a separate activity from reading the almanac, and that a
+top-level tab is a natural heading for a named section. Both true, and both beside the point:
+**deciding what to run is done while looking at what is ready**, so separating them meant
+switching pages back and forth to make one decision.
+
+The original objection to stacking still stands but was about a different arrangement — the run
+controls sat below a hundred-odd patch rows *and* the entire harvest history. Stats keeps its own
+tab, so what is under the rows now is only the run. The problem was the history, not the stacking.
+
+"Doogle Maps" survives as the section heading, which is where the rename notes always said it
+fitted best: it names the routing half, not the whole plugin.
+
+## Three top-level tabs — superseded, kept for the reasoning
 
 The sidebar is now **Almanac / Doogle Maps / Stats** rather than one scrolling column, which
 had the run controls sitting below a hundred-odd patch rows and the history below those.
@@ -1060,6 +1078,493 @@ allotment; the crops are what exist. Options, none tried:
 
 ---
 
+## The leprechaun's store is varbits, not an interface
+
+Looked into because of a play question — *"inventory the leps so we know where the player
+actually has their tools, maybe they need to get a rake from the bank"* — and the answer turned
+out to be much better than the question assumed.
+
+Every slot in the tool leprechaun's store has its own **player varbit**:
+`FARMING_TOOLS_RAKE`, `_DIBBER`, `_SPADE`, `_SECATEURS`, `_FAIRYSECATEURS`, `_WATERINGCAN`,
+`_TROWEL`, `_PLANTCURE`, `_BUCKETS`, `_COMPOST`, `_SUPERCOMPOST`, `_ULTRACOMPOST`, plus a set of
+`EXTRA*` ones. So the contents can be read **at any time from anywhere** — standing in a bank,
+before a run starts, without ever clicking him. No widget capture, no "open it once first", none
+of the ceremony the bank needs. That is the opposite of how every other container in this plugin
+works and it makes the feature far cheaper than it looked.
+
+Every leprechaun shares one store, so there is no per-location bookkeeping either.
+
+**What it fixes, which is the real point.** Three places asserted his store rather than reading
+it, and each was right for a stocked account and wrong for everyone else:
+
+- `LoadoutItem.Need.AT_LEPRECHAUN`'s own documentation said *"the tool leprechaun stores 1,000
+  buckets of each compost, every farming tool including magic secateurs, and 1,000 plant cures"*.
+  True of a veteran, false of a new ironman, and the failure mode is the bad one: told to leave
+  the compost in the bank, you arrive with none and plant the whole run untreated.
+- Tools were not mentioned at all, on the same reasoning. Arriving at a weedy patch with no rake
+  anywhere means nothing at that stop can be raked, treated or planted — a whole leg wasted for
+  want of one line before setting off.
+- Magic secateurs were a bank withdrawal or nothing. If he is holding them, the errand is a
+  click at the first patch instead of a trip.
+
+**The one thing not settled** is what the `EXTRA*` varbits mean. Each has a base and, for the
+slots whose limits were raised later, one or more extras. Whether those are additional storage
+or the high bits of one number is not documented, and cannot be worked out without an account
+holding more than the base can express. The store sums them, which is exact if they are additive
+and an underestimate if they are high bits — the safe direction, and it changes nothing today
+because every decision is "is there at least one" and both readings agree on zero. It announces
+itself in the log the first time a slot reads high, in the same spirit as the harvest log.
+
+**A rake nowhere at all** is now a `MISSING` row pointing at a **shop**, not the Grand Exchange.
+That is not a stylistic choice: the plugin's compliance line is that it never suggests the GE, so
+an ironman gets the same advice as a main, and a rake is a few coins from a farming shop anyway.
+
+**Routing knows about it too.** `ToolNeeds` is a separate class from `RunLoadout` precisely
+because two callers need the same answer and must not disagree: the loadout draws the rows and
+`RunPlanner` decides whether the run opens with a bank leg. A tool that exists only in the bank
+is a reason to visit one, exactly as a seed is. It is a leaf in the lock graph — it reads the
+stores and calls back into nothing — so the documented `RunPlanner -> ... -> PatchStateStore`
+order is unaffected.
+
+## Where the step is shown — the sidebar was the wrong place
+
+The instruction started as rows in the run panel, above the stop list. Play settled it: you
+watch the patch, not the sidebar, and a step you have to look away to read is one you stop
+reading. It is now a draggable overlay panel on the game screen, which is where Quest Helper has
+always put its own for the same reason — and following its idiom was already the stated principle
+for the highlighting, so the text sitting somewhere else was an inconsistency rather than a
+choice.
+
+The sidebar keeps what it is genuinely good at: where the run goes, what it is worth, and what
+to take from the bank. Those are read standing still.
+
+## The run list is options, not patch types
+
+Asked for from play: alongside the eight types, the list should offer **Herb (protected)**,
+**Bush (harvest only)** and **Fruit tree (harvest only)**.
+
+Those two additions are different in kind, which is worth being clear about because it decides
+the model. A {@code PlantingGroup} answers <b>which patches</b> — protected herbs are a disjoint
+set from ordinary ones. Harvest-only answers <b>what to do with them</b>, and it is a mode rather
+than a set: the same bush patches are involved either way. So `RunOption` is a group plus a mode,
+and the run selection is a set of those rather than a set of types.
+
+**Harvest-only earns its own line because bushes and fruit trees regrow.** Once one is
+established you visit it to pick fruit and nothing else — and a run offering to clear, compost
+and replant is offering to dig up a tree that took two days to grow. It narrows the trip as well
+as the work: an empty fruit tree patch is not a reason to travel when the player has said they
+are not replanting.
+
+**Not the default for those types**, deliberately. Deciding for someone that they never replant
+would be wrong in the other direction, and a dead fruit tree does need clearing.
+
+**Ticking both is a contradiction the player can express**, so it needs a reading rather than a
+guard. The full run wins: it does everything the harvest-only run does and more, so nothing that
+was asked for is skipped.
+
+**Storage stayed compatible by construction.** A full run over an unsplit type keys on the bare
+enum name — exactly what the old selection stored — so an existing profile's ticked types load
+unchanged rather than being silently cleared on upgrade.
+
+**And the render test earned its keep again.** Two columns of "Fruit tree (harvest only)" wanted
+290px of a 225px sidebar. That is invisible in a unit test and obvious in a screenshot, which is
+the whole reason that test renders pixels.
+
+## The guide and the panel now plant the same thing
+
+They did not, and both were internally consistent, which is the worst of the three possible
+states. The reward table allocated by rank and spilled when a crop ran out; the guide picked a
+single seed for the whole patch type by a different rule of its own (highest level requirement).
+So the panel could budget three magics and three yews while the guide said "plant magic" at all
+six trees — and nothing was wrong with either half on its own.
+
+`SeedAllocation` is the shared answer. The estimate works in counts because it prices a run that
+has not started; the allocation works in patches because the guide is standing in front of one.
+Both apply the same ranking and the same payment budget, and `AllocationAgreementTest` compares
+their *counts* rather than their code, so a change to one that does not change the other fails in
+the build instead of in play.
+
+**Recomputed every tick rather than remembered**, which sounds wasteful and is what makes it
+correct. As patches are planted they leave the plantable set, their seeds leave the inventory and
+their payments leave the budget — so the next allocation continues from what remains. Storing an
+assignment would mean keeping it in step with a player who plants in their own order, which is
+precisely what `GuidePlan` was designed to avoid everywhere else.
+
+**`GuidePlan.seedFor` was deleted rather than left unused.** The rule it encoded is the one that
+caused the disagreement, and leaving it there is an invitation to call it again.
+
+## Protection payments constrain seed allocation
+
+Asked for from play, and it is the first thing that makes a mixed seed selection genuinely
+useful: six tree patches, magic and yew both picked, plenty of both seeds, and 75 coconuts. The
+estimate used to promise six magic trees, because allocation was limited only by seed stock —
+and 75 coconuts protects three. The other three would have gone in unprotected, after the player
+had explicitly asked for protection.
+
+`ProtectionBudget` is a tally spent down as the allocation runs, so each crop sees what is left
+after the ones ranked above it. Whatever a crop cannot afford stays in the patch pool and is
+offered to the next one, which is the entire mechanism: the coconuts run out and the yews take
+over.
+
+**Two directions to get right, and one is a trap.** A crop the player did <b>not</b> ask to
+protect must be unconstrained — capping it to zero would stop a run planting anything there was
+no fruit for, which is backwards from the intent. And a protected crop with no payments at all
+must yield its patches rather than hold them, or the run plans nothing.
+
+**Survival stops being a guess for those patches.** Every patch the budget allocated is one it
+could pay for, so its survival is 1 by construction rather than by assumption.
+
+**The flag is keyed by group <i>and</i> seed.** The seed half is what makes it answerable — the
+payment is a property of the crop, so "protect trees" cannot say what it would cost. It is also
+what keeps the question away from crops that have no payment: a herb has none, so it is never
+asked and never stored. The group half is because the same seed in two groups can deserve
+different answers — paying to protect a patch that cannot catch a disease is money for nothing.
+
+## A "soft" dependency that was nothing of the sort — plugin would not load
+
+The bank filter needs Bank Tags. That was written up as a soft dependency, in a class comment
+saying the classes "are always present, but if the plugin is switched off the tag simply never
+opens" — and then implemented as two ordinary constructor parameters. The result:
+
+    No implementation for net.runelite.client.plugins.banktags.BankTagsService was bound
+      for the 1st parameter of com.dooglemaps.bank.BankFilter.<init>
+
+`BankTagsService` is an **interface**, bound inside the Bank Tags plugin's own injector rather
+than the parent one, so an external plugin cannot ask for it at all. And a plugin whose injector
+cannot be created does not load — so a *convenience* stopped the entire plugin appearing in the
+list. Not a degraded feature: nothing at all, and the only clue was one error at startup.
+
+**The fix is `com.google.inject.Inject(optional = true)`**, which is the only form Guice offers
+for this and works on **fields** rather than constructors — which is why those two now sit apart
+from every other dependency in the class. Null when Bank Tags is unavailable, guarded at every
+use, and it says so once in the log rather than failing quietly.
+
+**Two things worth carrying forward.** Shortest Path is a genuine soft dependency and never had
+this problem, because it is reached by *posting an event* — nothing is injected, so there is
+nothing to bind and no way to fail. Injection is the thing that turns "optional" into
+"mandatory" by default.
+
+And the comment was written before the code and never re-read against it. A class comment
+describing an intention is not evidence the intention was carried out; this one asserted a
+property the implementation directly contradicted, three lines further down the same file.
+
+## Nearest-patch was the wrong rule once it worked
+
+Two bugs in a row from the same line of code, in opposite directions.
+
+The first was comparing **regions** to decide which patch you were nearest. Every patch at a stop
+shares a region by construction, so all of them tied and "nearest" was really "first in the
+list" — stand at the herb patch, get told about an allotment. Fixed by using real coordinates.
+
+Then play found the other side of it: mid-harvest on the watermelons, walking across the area
+put you closer to the flower patch and the instruction jumped to it. Worse than the original,
+because you are usually walking *because of* the step you are on — most often to reach the
+leprechaun — so the guide was reading the player following its own instruction as a change of
+mind, and arguing with them about it.
+
+The rule that is actually wanted is **stick until done**. Distance is a good way to pick the
+first patch at a stop and a bad way to keep choosing, because after the first pick the player's
+attention is the thing being tracked, not their coordinates. So a patch is chosen once and kept
+until it has no steps left, and the choice resets on arriving at a new stop.
+
+**This is the only piece of state in guided mode**, which is worth being careful about — the
+design principle is that everything is derived from the world so nothing can get out of step with
+a player doing things in their own order. It survives: what each patch *wants* is still derived
+fresh every tick, and what is remembered is only *which patch is being asked about*, which is a
+fact about the session rather than the world. It cannot stick either, because the moment the
+remembered patch has no steps it is dropped — including when the player finishes it out of order.
+
+## The patch highlight was a grid, not a shape
+
+Reported with a screenshot: a cyan chessboard laid over the allotment. Each object making up the
+patch drew its own tile polygon with its own stroke, so every internal edge was drawn twice, once
+from each side. The fill was right and the lines were the problem.
+
+Merging the tiles into one `java.awt.geom.Area` first and drawing that once leaves only the outer
+boundary, which is the only edge that means anything — it is where the patch stops. Adjacent
+tiles share their corner coordinates exactly, both being projected by the same call from the same
+scene geometry, so the union closes without seams.
+
+Worth noting what this did *not* change: the per-object model outlines are still per object,
+because that is what traces the crops themselves and the renderer takes one object at a time.
+Only the ground shape is merged.
+
+## Barbarian Farming — observed, because the varbit does not exist
+
+Reported from play: an account with Barbarian Farming was told to fetch a seed dibber. The
+unlock — Otto Godblessed's farming section of the Barbarian Training miniquest — removes the
+dibber requirement outright.
+
+**There is no varbit to read.** `VarbitID` has no Barbarian Training entry, and
+`Quest.BARBARIAN_TRAINING` answers about the whole miniquest, which is a different question: the
+sections are independent, the farming one can be done on its own, and anyone who did any part
+before the 2024 rework had it granted retroactively. So quest state would have missed exactly the
+players this is for — as the user pointed out immediately, and they were right.
+
+So it is **learned from play**, like patch positions, bank locations and the herb sack wording
+before it: a seed going into the ground while no dibber is carried can only mean the unlock.
+There is no other way for that to happen, so it cannot false-positive, and it is stored per
+profile once seen.
+
+The honest cost is one wrong instruction, once, before the first planting is watched — against a
+varbit guess that could be wrong in the other direction and never mention a tool the player
+genuinely cannot plant without. The transition watched is narrow on purpose (an empty patch
+becoming a stage-0 crop, on the four families everyone plants with a dibber, and never during the
+catch-up burst on entering a region).
+
+## Shortest Path's answer, on screen
+
+The on-screen panel was blank for the whole journey between stops — which is the longest part of
+a run. The map had a line on it and the route's words were in the sidebar, so following it meant
+looking in a third place.
+
+Shortest Path already posts back the transports for the path it is drawing, which the sidebar was
+using. Moving that onto the panel needed one thing doing properly: the overlay draws every frame
+and `RunPlanner` is synchronised, so reading it at render time would have put the exact
+cross-thread lock traffic the freeze investigation keeps circling back onto the render path. It
+goes through the per-tick snapshot instead — `GuideStatus`, one immutable object rather than a
+handful of volatiles, so a redraw landing mid-update cannot pair "travelling" with a step list
+from a moment ago.
+
+**It turned out it can say where, too.** The long-standing assumption here was that naming the
+destination was impossible: the planner hands Shortest Path every outstanding stop and lets it
+route to whichever is cheapest, so the choice is made inside another plugin. That was recorded as
+a real limitation twice.
+
+It was wrong, and reading the source settled it in a minute. The `transports` message carries
+`origin`, `destination`, `objectInfo` and `displayInfo` — only the last was being read. The
+destination is right there.
+
+What is *not* documented is whether that destination is the point the router settled on or an
+echo of every target it was handed, since the API takes a set. So the stop is named only when
+exactly one outstanding stop matches it by region, which is correct under either reading: one
+match is unambiguous however it was produced, and anything else falls back to "the next patches".
+A confidently wrong place name sends someone across the map, which is much worse than no name.
+
+**Two lessons, both cheap.** The transports list was documented as "newest first" and is actually
+in path order — a comment written from a guess and never checked. And it was shown raw, so a
+single hop reported by several `Transport` objects with the same display string appeared as
+"portal, portal", which reads as the plugin having lost count. Both were visible in one screenshot
+from play and neither was visible from the unit tests.
+
+## Highlighting the way there, not just the thing to click
+
+Guided mode highlighted what to click at a patch and said nothing about how to reach the next
+one. The ask from play was the obvious extension — mark the teleport in the inventory, in the
+bank, in the portal nexus, in the jewellery box — and it is the same feature applied to the half
+of a run that is not standing on a patch.
+
+**It matches on the plugin's own teleport table, not on Shortest Path's transport strings.** The
+strings were tempting since they are already on screen, but they are another plugin's display
+text: matching on them means parsing them, and it breaks the first time it rewords one.
+`TeleportItems` already answers "what reaches this region", it is a table of facts about items
+rather than advice, and the bank loadout is built on it — so using it here keeps the two agreeing
+by construction.
+
+**Four surfaces, most specific first.** An open nexus wins over the inventory behind it, because
+an inventory highlight underneath an open interface is one nobody reads — the same mistake that
+made the leprechaun's compost slot invisible, which is documented above and was worth not
+repeating.
+
+**The place-name match is the fragile part, and it caught a wrong assumption.** The game and the
+plugin word things differently, so it matches by containment either way — "Catherby Teleport"
+against "Catherby". A comment written while building it claimed that also covered
+"Troll Stronghold" against the nexus's "Trollheim". It does not: those two share no substring at
+all. Checking the actual region names rather than trusting the comment turned a confident sentence
+into a two-line alias table and a test that asserts the case.
+
+**Direction was the wrong rule for the leprechaun.** After the noted-watermelon fix, the test for
+"where is this item" was written as which way the item moves — handing over means your pack,
+taking out means his store. That is wrong for the bucket return, which hands something over and is
+still a click in his store: the store opens <i>over</i> the inventory listing his own contents,
+and the bucket slot in that is the target. So the highlight sat on the bucket in the pack, behind
+the screen the player was actually looking at.
+
+The right question is **which screen is in front of you when the click happens**, which is a
+different thing from where the item currently is or which way it is about to travel. Three
+leprechaun steps now go three ways off one flag: noting points at the pack, withdrawing and
+returning both point at his store.
+
+**Highlighting an item that is not on screen — again.** "Seedbox is not highlighted", from play.
+The step named the *seed*, and the entire reason that step exists is that the seed is inside the
+box and therefore not in the inventory. So the outline had nothing to land on and drew nothing.
+
+**And a fourth: worn items were never highlighted.** `CarriedItems.has` deliberately sums the
+inventory *and* the equipment — that was itself a fix, so a Farming cape on your back stopped
+reading as something to fetch from the bank. But the highlight only ever scanned the inventory
+widget, so anything worn was confidently reported as owned and then silently failed to light up.
+An Ardougne cloak round your neck is the ordinary way to carry a teleport, so this was the common
+case rather than an edge. It now checks both equipment views as well.
+
+That is the fourth instance of one mistake this session: the watermelon searched for in the
+leprechaun's store, the nexus menu highlighted but not the nexus, the seed rather than the box,
+and the worn cloak looked for only in the pack. Each time the code named the thing the instruction was *about* rather than the thing the
+player can *click*. Those coincide often enough that the distinction is easy to lose, and every
+time they diverge the failure is silent — an outline with no target draws nothing and reports
+nothing. Worth a standing question for anything that highlights: is the named item on screen at
+the moment the step is current?
+
+**One trip to the leprechaun.** Noting crops and returning buckets were appended only at the end
+of a stop, on the reasoning that interrupting a harvest to tidy up costs more than it saves. That
+holds until something else sends you to him anyway — then the walk is already paid for, and making
+you repeat it later is the plugin wasting your time. They stay at the end when nothing else sends
+you there. Kept as separate steps rather than merged: each is its own click, and one instruction
+per click is the whole idiom.
+
+**And the first version only bundled when the leprechaun step was the *current* one.** Reported
+from play a second time: standing mid-harvest with a compost withdrawal two steps away, the visit
+was already certain and the errands still went to the bottom of the list — where the panel's
+four-line window never showed them. They now insert at the visit wherever it falls, which also
+keeps the harvest in front of you uninterrupted: you finish the patch, and the noting appears as
+you set off.
+
+Worth noting what the report got wrong, because it changes the diagnosis rather than the fix. The
+guess was that it needed the player to be *next to* him. There is no proximity test anywhere in
+this — the gate was the step's position in a list, not the player's position in the world. A
+plausible cause that happens to be wrong is still the thing that found the bug, but it would have
+sent the fix somewhere useless.
+
+**The order is note, deposit, withdraw**, and the first version got that wrong too by putting the
+errands *behind* the step that prompted the visit. Noting and depositing both free inventory
+slots; withdrawing compost fills them. Back to front, you can be told to take four buckets into a
+pack still holding four limpwurts. Hand everything over before taking anything out is the order
+that always fits, and it is now asserted rather than left to the reading — it is three lines of
+code whose regression would leave every step present and only the sequence wrong, which is
+exactly the kind of thing nobody notices.
+
+**Highlighting the menu but not the thing that opens it.** The nexus and the jewellery box were
+marked once their *interface* was open — which is useless to someone who has just teleported into
+their house and is looking at the room, because you have to click the furniture before there is a
+menu to highlight. The world objects are outlined now too, matched by name so all three tiers of
+each are covered.
+
+It is the same mistake in a new place: the feature was built from the inside out, and the step
+that gets the player to the part that works was the step nobody thought about. The house tablet
+below is the same shape of gap one link further back in the chain.
+
+**Telling you to travel to where you already are.** Arriving in the POH left the house tablet
+outlined and the panel still saying to use it. The travel hint fell back to a house teleport
+whenever nothing direct reached the destination, and never asked whether the house was already
+underfoot. It now checks, and the furniture takes over.
+
+Detecting the house is done by <b>looking for the furniture</b> rather than by region id, because
+a house is an instance and shares its region with every other house — and because the only thing
+the answer is used for is whether that furniture is usable, which is the same question as whether
+it is there.
+
+**One scan, two consumers.** The overlay and the tracker both needed it, so it moved into
+`PlayerHouse` rather than being scanned twice a tick.
+
+**The jewellery box was not outlined and the nexus was.** One name lookup working and its
+neighbour failing is the signature of an <b>impostor</b>: an object whose look varies reports its
+real identity through {@code getImpostor()}, and the base definition's name can be a placeholder.
+Handled now, and the three box object ids are matched outright as well — an id cannot half-work,
+and the name match stays so a new tier is covered without anyone noticing.
+
+**"J: Farming Guild" is not a typo**, and the reformatting of it was reverted at the reporter's
+own request once that was clear. It is Shortest Path's <b>menu option</b> — press J once the box
+is open — and the raw form matches what is on screen, which is the whole value of it. Worth
+keeping as a note: the first instinct was that the odd-looking text was a defect, and it was
+information. Prettifying it made the panel read better and match the game less.
+
+**The nexus rows were several levels down.** The widget search walked one level of children, which
+was enough for the jewellery box's flat lettered menu and not for the nexus, whose destination rows
+sit inside nested containers. So one menu highlighted and the other silently did nothing — the same
+signature as the impostor problem, and the same lesson: two things that look like one job can fail
+independently, and the working one hides the broken one.
+
+Now a bounded recursive walk from the interface root. And rather than keep guessing at the game's
+vocabulary — which is where the Trollheim alias came from — a miss logs every row that <i>was</i>
+on screen, once per destination. The game supplies its own wording instead of being predicted.
+
+**Nothing may key off a nexus row's position.** Players reorder their own nexus, so "the third
+row" and "option 4" are different places on different accounts. The name is the only stable thing
+on that screen. Written down because a positional lookup is exactly the sort of thing that looks
+like a tidy optimisation later.
+
+**A short-circuit that swallowed a highlight.** The travel highlighting stopped at the first open
+menu it found, reasoning that a menu is what the player is looking at. But "is this interface
+open" can answer yes when nothing is visible, and the early return then skipped the inventory
+highlight entirely — the teleport tab stopped being outlined at all. Everything applicable is now
+marked: when a menu really is open it covers the inventory anyway, so the redundant highlight is
+invisible, and the version that cannot fail silently beats the tidy one.
+
+**Highlighting the panel instead of the line.** Inside a jewellery box the whole category panel
+was outlined rather than the "J: Farming Guild" row. The box opens a <b>lettered option menu</b>,
+a different interface from the category buttons, so marking the category was marking the previous
+screen. Both are marked now, each at the point it is in front of you.
+
+**Both teleports lit up at once.** A house can hold a nexus and a jewellery box, and outlining
+both says "one of these two, you work out which" — which is the question the player arrived with.
+The box wins when our own table knows it reaches the stop; the nexus otherwise, since what it is
+attuned to is per-account and unknowable from outside.
+
+**And the route text outlived the route.** Reported alongside it: after teleporting to the house,
+the panel still read "via Teleport to house tablet" — an instruction to do the thing that had just
+been done. Two causes, both fixed. The stored transports were only replaced when a *reply* arrived,
+so they described the old journey in the meantime; they are now cleared when a new route is asked
+for. And nothing asked for a new route after a teleport — Shortest Path redraws its own line when
+the player moves off it, but what it had reported back to us was computed from the old position.
+A run now retargets whenever the player changes region, which is exactly what a teleport does.
+
+**The house tablet was missing, and the reason is worth keeping.** Reported from play
+immediately. The teleport table is organised by what an item <i>lands next to</i>, and by that
+rule the house belongs nowhere — it reaches no farming patch, so no region entry would ever have
+been written for it. But the portal nexus and the jewellery box are both inside it, both reach
+patches, and both had just been given highlighting. The tablet was the first step of a chain that
+was otherwise complete and unreachable.
+
+It went in as a universal entry, alongside the Dramen staff, for the same reason that one is:
+what it ultimately reaches depends on the player's own attunements and jewellery. That surfaced a
+distinction the universal bucket had not needed before — a house tablet is a thing to **click**,
+a Dramen staff is a thing to **be holding** when you click a fairy ring. Without separating them
+the fallback would cheerfully say "use your Dramen staff" to travel, which is not an instruction
+anyone can follow. Flagged on the entry rather than inferred from the name.
+
+The lesson is about the classification rather than the item: a table organised by one property
+will silently have no place for things that matter for a different reason, and the gap is
+invisible from inside the table. It took someone looking at a screen.
+
+Worth recording as a pattern rather than a one-off — it is the same shape as the transports list
+documented as "newest first" when it was in path order. A comment describing behaviour is a claim,
+and an unchecked claim in a comment is worse than none, because the next reader believes it.
+
+## Barbarian Farming got a setting as well as a detector
+
+The observation is right but it only pays out once a planting has been watched, and "still asking
+me for a dibber" came back from play before that had happened. Waiting to be observed is fine in
+principle and irritating in practice when the player has had the unlock for years and has no way
+to say so.
+
+So there is a setting that forces it on, and the detector still runs. The setting only ever
+answers *yes* — neither it nor the observation can turn the unlock off, because it is permanent.
+
+The other half of that fix is diagnostic. A detector that is silent has two very different causes
+— nothing was watched, or something was watched and the player had a dibber on them — and from
+the log they looked identical, so "it still asks me" could not be investigated without guessing.
+It now says once per session when it *did* see a planting and found a dibber, which makes the
+absence of that line meaningful.
+
+## Highlighting the item where it is, not where the click happens
+
+Reported from play: with a full inventory mid-harvest, only the leprechaun lit up — the crop to
+hand him did not.
+
+The cause was one conflated question. `GuideInventoryOverlay` asked *"is this step at the
+leprechaun"* and, if so, looked the step's item up in his store's named slots. Those slots exist
+for compost and buckets; a watermelon has none, so the lookup returned nothing and the overlay
+drew nothing at all, silently. Seeing which item to click on him is most of that instruction.
+
+The right question is **where the item is**. Of the four steps that happen at the leprechaun,
+three hand something *over* — noting a crop, returning buckets — and only the withdrawals take
+something *out*. So the old rule was wrong more often than it was right; it only ever looked
+correct because compost was the case it was written for.
+
+`GuideStep.itemIsInStore()` now answers that directly, and the two directions have tests that
+would each catch the other being broken.
+
+---
+
 ## Bank loadout and filtering — highlighting built, tag tab not started
 
 When the bank is open, show and filter to what this run actually needs. `BankTagsService` is
@@ -1363,6 +1868,54 @@ an easy out: hand-written lists, at the cost of a second place to forget.
 
 ---
 
+## Geomancy decoded — the diseased rendering, caught 2026-08-05
+
+The last unknown for the bulk refresh (§4b). Everything else had been read off earlier casts; a
+diseased patch had never been in front of one, and the probe was left running to catch it. It did,
+and the answer needed no guessing because the same cast held a dead patch and a healthy one for
+comparison.
+
+**How a patch card is drawn.** Three widgets per patch, named by RuneLite:
+
+| Widget | Carries |
+|---|---|
+| `<TYPE>_<n>_FRONT` child 0 | the location — "Falador", "Farming Guild" |
+| `<TYPE>_<n>_FRONT` child 1 | the crop — "Guam leaf", "Dead herb", "Herb patch" when empty |
+| `<TYPE>_<n>_PIC` | the produce **item id** (5982 = watermelon) |
+| `<TYPE>_<n>_BACK` child 0 | a full-card tint whose **colour is the state** |
+
+**The state is the tint colour**, and it is a 150x125 panel rather than a progress bar:
+
+- `FF3F3F` (red) — **dead**. Tooltip: `The patch is <col=7f0000>dead</col>.`
+- `7FFF7F` (green) — **diseased**. Tooltip: `The patch is <col=003f00>diseased</col>.`
+- `000000` with the parent carrying sprite 1040 — healthy, growing or empty.
+
+Green for diseased is counter-intuitive enough to be worth stating plainly, and it is not
+inference from the colour: in the same snapshot Falador's guam was green and Ardougne's guam,
+healthy at the same stage, was not, while the Farming Guild's was red and its crop label read
+"Dead herb". The tooltip captured on the same tick named Falador's as diseased.
+
+**One useful asymmetry**: a diseased patch still names its crop ("Guam leaf"), a dead one does not
+— it reads "Dead herb". So the crop label alone distinguishes dead from everything else, and the
+tint distinguishes diseased from healthy.
+
+### What this means for bulk refresh, including the part that does not work
+
+Readable for **every patch at once**, without hovering: location, crop, produce item id, and
+whether it is dead, diseased or fine.
+
+**Not readable: the growth stage.** It exists only in the hover tooltip — `Guam leaf (State: 2 /
+5)` — and the tooltip is a single floating widget that the game fills in for whatever the mouse is
+over. The always-present widgets carry no stage: the `_BACK` children are fixed-size panels, and
+`_PIC` holds only the produce id. Nothing short of hovering all forty-odd patches would collect
+it, which is not something to build.
+
+That is a real limit rather than a snag, and it shapes what the feature can honestly claim. A
+timer needs a stage, so Geomancy cannot fill one in for a patch the plugin has never seen. What it
+*can* do is fill in the things a run actually keys on — **dead, diseased, empty, and what is
+growing** — for the whole map in one cast. That is most of the value: those are exactly the
+states that make a patch actionable, and they are the ones a player wants before setting off.
+
 ## Crowdsourcing the yield answers (post-Hub idea)
 
 The open yield questions are all empirical, and `HarvestLog` already records exactly the
@@ -1444,3 +1997,30 @@ Notes worth keeping:
 
 
 ---
+
+## The one call that is not a read
+
+Asked how we could be sure the plugin was not responsible for a chatbox that had stopped saying
+"Press Enter to Chat...". The honest first answer was weaker than the one given: it rested on a
+single log line saying the bank filter had never registered, which rules out that path and no
+other.
+
+The audit that should have come first: every `client.*` call in the plugin is a getter. No widget
+mutation, no menu-entry rewriting, no key or mouse hook on the game canvas, no varc or varbit
+write. Grepping for the mutating surface returns nothing at all — except one thing.
+
+**`Quest.getState(client)` calls `client.runScript(4029, questId)`.** It is not a varbit read, and
+it is the only place the plugin asks the client to *do* something. It arrived hours earlier, in
+the fix for protected patches never being detected, and it went straight onto the game tick
+without that being noticed or mentioned.
+
+It cannot be the cause of what was reported — it postdates the report — but it is the kind of
+thing that could be, and "the plugin is read-only" was being asserted while it was running four
+times a second. It is now paced: every tick through the settling window after a login, which is
+the whole reason the once-at-login sample was wrong, then once a minute. `ProtectedPatchesTest`
+asserts the call counts directly, because the property being protected is *how often the client
+is asked to run something*, and no other kind of test would notice it changing.
+
+The general lesson is about the shape of the claim. "Not us" is a statement about the whole
+plugin and needs a whole-plugin argument; what was actually in hand was "our only known path to
+it did not run". Those are different sentences, and the gap between them was a real finding.

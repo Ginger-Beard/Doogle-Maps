@@ -146,6 +146,23 @@ public class RunEstimate
 		FarmingBonuses bonuses, Map<PatchImplementation, CompostTier> compostByType,
 		Survival survival)
 	{
+		return forRun(patchesByType, selected, ownedSeeds, farmingLevel, bonuses, compostByType,
+			survival, ProtectionBudget.NONE);
+	}
+
+	/**
+	 * Estimates a run, limited by how many patches the player can afford to protect.
+	 *
+	 * <p>The budget is what makes a mixed seed selection behave sensibly. Six tree patches with
+	 * magic and yew both picked and 75 coconuts in the bank fills three patches with magic — all
+	 * the coconuts cover — and the remaining three with yew, rather than promising six magics and
+	 * leaving three of them unprotected.
+	 */
+	public static RunEstimate forRun(Map<PatchImplementation, Integer> patchesByType,
+		Set<Seed> selected, Map<Seed, Integer> ownedSeeds, int farmingLevel,
+		FarmingBonuses bonuses, Map<PatchImplementation, CompostTier> compostByType,
+		Survival survival, ProtectionBudget protection)
+	{
 		List<Line> lines = new ArrayList<>();
 		double totalXp = 0;
 		double totalYield = 0;
@@ -168,15 +185,27 @@ public class RunEstimate
 
 				int owned = ownedSeeds.getOrDefault(seed, 0);
 				int fillable = Math.min(remaining, owned / seed.getSeedsPerPatch());
+
+				// Capped by what can be paid for, and only for crops the player asked to protect.
+				// An unprotected crop is unconstrained — capping it to zero would stop the run
+				// planting anything it could not afford to protect, which is backwards.
+				//
+				// Whatever is not affordable is left in `remaining` and offered to the next crop,
+				// which is the whole mechanism: the coconuts run out and the yews take over.
+				fillable = Math.min(fillable, protection.affordablePatches(seed));
 				if (fillable <= 0)
 				{
 					continue;
 				}
+				protection.spend(seed, fillable);
 
 				// A patch that dies gives nothing, so the harvest is worth what it yields times
 				// the chance it survives. Without this an untreated herb run reads about twice
 				// what it delivers.
-				double survives = survival.chanceFor(seed, compost);
+				// A protected patch cannot die, and by construction every patch allocated above is
+				// one the budget could cover — so this is not an assumption, it is what was just
+				// paid for.
+				double survives = protection.isProtecting(seed) ? 1 : survival.chanceFor(seed, compost);
 				double perPatchYield = yieldFor(seed, farmingLevel, bonuses, compost) * survives;
 				// The outfit multiplies experience and nothing else, so it lands here rather
 				// than anywhere near the yield.
@@ -221,12 +250,73 @@ public class RunEstimate
 	}
 
 	/**
+	 * Combines estimates priced separately, as one run.
+	 *
+	 * <p>Exists because a patch type can be split into planting groups — protected herbs get a
+	 * different seed and a different compost from ordinary ones — and each group has to be priced
+	 * against <i>its own</i> selection. Pricing them together would let the expensive seed fill
+	 * every patch of the type, which is exactly the arrangement the split exists to prevent.
+	 *
+	 * <p>Merging rather than teaching this class about groups keeps the arithmetic in one place
+	 * and untouched: every part was computed by the same method under the same rules, so summing
+	 * them cannot disagree with pricing them.
+	 */
+	public static RunEstimate merge(List<RunEstimate> parts)
+	{
+		List<Line> lines = new ArrayList<>();
+		double totalXp = 0;
+		double totalYield = 0;
+		int unfilled = 0;
+		double weightedSurvival = 0;
+		int filledPatches = 0;
+		CompostTier uniform = null;
+		boolean mixed = false;
+
+		for (RunEstimate part : parts)
+		{
+			lines.addAll(part.getLines());
+			totalXp += part.getTotalXp();
+			totalYield += part.getTotalYield();
+			unfilled += part.getUnfilledPatches();
+
+			// Re-weighted from the lines rather than averaging the averages, which would give a
+			// one-patch group the same say as a seven-patch one.
+			for (Line line : part.getLines())
+			{
+				weightedSurvival += line.getSurvivalChance() * line.getPatches();
+				filledPatches += line.getPatches();
+			}
+
+			if (part.getLines().isEmpty())
+			{
+				continue;
+			}
+			if (uniform == null)
+			{
+				uniform = part.getCompost();
+			}
+			else if (uniform != part.getCompost())
+			{
+				mixed = true;
+			}
+		}
+
+		lines.sort(Comparator
+			.comparingInt((Line line) -> line.getType().ordinal())
+			.thenComparing(Comparator.comparingDouble(Line::getExpectedXp).reversed()));
+
+		return new RunEstimate(lines, totalXp, totalYield,
+			filledPatches == 0 ? 1 : weightedSurvival / filledPatches,
+			unfilled, mixed || uniform == null ? CompostTier.NONE : uniform);
+	}
+
+	/**
 	 * The picked seeds for one patch type, most experience per patch first.
 	 *
 	 * <p>Seeds the player cannot yet plant are left out entirely: including them would have
 	 * the estimate quietly assume a patch gets filled with something unplantable.
 	 */
-	private static List<Seed> bestFirst(Set<Seed> selected, PatchImplementation type, int level)
+	static List<Seed> bestFirst(Set<Seed> selected, PatchImplementation type, int level)
 	{
 		List<Seed> usable = new ArrayList<>();
 		for (Seed seed : selected)

@@ -2,6 +2,7 @@ package com.dooglemaps.state;
 
 import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.CompostTier;
+import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.PatchImplementation;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
@@ -49,6 +50,14 @@ public class CompostSelectionStore
 	private final ConfigManager configManager;
 	private final Gson gson;
 
+	/**
+	 * Per-group choices, for groups that have been set explicitly.
+	 *
+	 * <p>Sparse on purpose: anything absent falls back to the type's choice, which is what makes
+	 * the protected split reversible without losing a setting.
+	 */
+	private final Map<String, CompostTier> byGroup = new java.util.LinkedHashMap<>();
+
 	private final Map<PatchImplementation, CompostTier> chosen =
 		new EnumMap<>(PatchImplementation.class);
 
@@ -69,6 +78,43 @@ public class CompostSelectionStore
 	public void removeChangeListener(Runnable listener)
 	{
 		changeListeners.remove(listener);
+	}
+
+	/**
+	 * The compost chosen for one planting group.
+	 *
+	 * <p>Falls back to the type's choice for any group never set, so splitting protected herbs out
+	 * starts both tabs from what was already chosen rather than resetting one to untreated. That
+	 * matters more here than for seeds: an unnoticed reset to NONE is a whole run planted
+	 * untreated.
+	 */
+	public synchronized CompostTier get(PlantingGroup group)
+	{
+		CompostTier tier = byGroup.get(group.getKey());
+		return tier != null ? tier : get(group.getType());
+	}
+
+	public void set(PlantingGroup group, CompostTier tier)
+	{
+		synchronized (this)
+		{
+			byGroup.put(group.getKey(), tier);
+			// The type-wide choice tracks the unsplit group, so anything still asking by type —
+			// and turning the split back off — sees the answer the player last gave for "all of
+			// them" rather than one they gave for a subset.
+			if (!group.isProtectedOnly())
+			{
+				set(group.getType(), tier);
+				return;
+			}
+			save();
+		}
+
+		log.debug("{} will be treated with {}", group.getKey(), tier);
+		for (Runnable listener : changeListeners)
+		{
+			listener.run();
+		}
 	}
 
 	public synchronized CompostTier get(PatchImplementation type)

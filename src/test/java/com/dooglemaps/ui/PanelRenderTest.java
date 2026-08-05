@@ -113,7 +113,11 @@ public class PanelRenderTest
 				Mockito.mock(net.runelite.api.Client.class));
 		com.dooglemaps.route.RunPlanner runPlanner = construct(com.dooglemaps.route.RunPlanner.class,
 			availability, patchLocations, bankLocations, selection, seeds, store, timer, router,
-			playerLocation);
+			playerLocation, Mockito.mock(com.dooglemaps.bank.ToolNeeds.class),
+			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
+			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
+			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
 
 		// A plain mock answers false for every boolean, which would switch off all 22 patch
 		// types and render an empty sidebar. In the client those come from the interface's
@@ -143,16 +147,30 @@ public class PanelRenderTest
 			construct(com.dooglemaps.state.RunTypeStore.class, configManager, gson);
 		// Ticked so the run section renders its reward table, which is the widest thing in
 		// the panel and the most likely to overflow the sidebar.
-		runTypes.setSelected(java.util.EnumSet.of(
-			com.dooglemaps.data.PatchImplementation.HERB,
-			com.dooglemaps.data.PatchImplementation.ALLOTMENT));
+		runTypes.setSelected(new java.util.LinkedHashSet<>(java.util.Arrays.asList(
+			com.dooglemaps.data.RunOption.full(com.dooglemaps.data.PlantingGroup.of(
+				com.dooglemaps.data.PatchImplementation.HERB)),
+			com.dooglemaps.data.RunOption.full(com.dooglemaps.data.PlantingGroup.of(
+				com.dooglemaps.data.PatchImplementation.ALLOTMENT)))));
 
 		return construct(DoogleMapsPanel.class, store, availability, timer, itemManager, config,
 			resolver, seeds, selection, runPlanner, bonuses, runTypes,
 			construct(com.dooglemaps.state.CompostSelectionStore.class, configManager, gson),
 			stockedHarvestStats(configManager, gson),
-			Mockito.mock(com.dooglemaps.guide.GuideTracker.class),
-			Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
+			Mockito.mock(com.dooglemaps.bank.RunLoadout.class),
+			// A real store over the mocked config, so the render exercises the same
+			// defaults-on-first-read path the client does rather than a stub that always agrees.
+			construct(PanelLayoutStore.class, configManager),
+			// Real, not mocked: the split is what decides how many tabs get built, and a mock
+			// returning an empty group list would render a sidebar with no patch tabs at all —
+			// which would pass every assertion here while showing nothing.
+			construct(com.dooglemaps.state.PlantingGroups.class, config,
+				construct(com.dooglemaps.state.ProtectedPatches.class, configManager),
+				availability),
+			construct(com.dooglemaps.state.ProtectionSelectionStore.class, configManager, gson),
+			construct(com.dooglemaps.bank.BankContents.class),
+			construct(com.dooglemaps.guide.CarriedItems.class),
+			construct(com.dooglemaps.data.ItemNames.class));
 	}
 
 	/**

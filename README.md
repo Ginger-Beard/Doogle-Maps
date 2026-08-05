@@ -29,10 +29,11 @@ guided farm-run helper.
 
 Multiple accounts need no setup: RuneLite scopes the cache per profile.
 
-### Three tabs
+### Two tabs
 
-**Almanac** is the overview above. **Doogle Maps** plans and follows a run. **Stats** is what
-your patches have actually given you.
+**Almanac** is the overview above, with **Doogle Maps** — planning and following a run — at the
+bottom of the same page, because choosing what to run is done while looking at what is ready.
+**Stats** is what your patches have actually given you.
 
 ### Planning a run
 

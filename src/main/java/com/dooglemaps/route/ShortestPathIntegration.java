@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -60,6 +61,9 @@ public class ShortestPathIntegration
 	private static final String KEY_TARGET = "target";
 	private static final String KEY_CONFIG = "config";
 
+	private static final String KEY_DISPLAY_INFO = "displayInfo";
+	private static final String KEY_DESTINATION = "destination";
+
 	private static final String CONFIG_POST_TRANSPORTS = "postTransports";
 	private static final String CONFIG_INCLUDE_BANK_PATH = "includeBankPath";
 
@@ -67,11 +71,34 @@ public class ShortestPathIntegration
 	private final ClientThread clientThread;
 
 	/**
-	 * Transports the current path uses, newest first, as reported back by Shortest Path.
+	 * Transports the current path uses, <b>in path order</b>, as reported back by Shortest Path.
 	 * Empty when it is not installed, or before it has produced a path.
+	 *
+	 * <p>Path order, not "newest first", which is what this used to claim — it is built by
+	 * walking the path from the first step forward. Worth having right, because it means the list
+	 * reads as a journey rather than as an unordered set of hops.
+	 *
+	 * <p>De-duplicated. One edge of a path can produce several {@code Transport} objects sharing a
+	 * display string, so a single portal could be listed twice in a row — which is exactly how it
+	 * looked in play, and reads as the plugin having lost count rather than as two real hops.
 	 */
 	@Getter
 	private volatile List<String> currentTransports = new ArrayList<>();
+
+	/**
+	 * Where Shortest Path says the path it is drawing ends.
+	 *
+	 * <p>The thing that was assumed unobtainable. The run hands over every outstanding stop and
+	 * lets the router pick the cheapest, so nothing here knew which one it chose — but the
+	 * transports message carries a {@code destination} alongside the display strings, so it can
+	 * simply be read.
+	 *
+	 * <p>A list, because the API takes a set of targets and this may well be echoing all of them
+	 * back rather than naming the one that won. Callers must cope with both; see
+	 * {@code GuideTracker}, which only names a stop when exactly one matches.
+	 */
+	@Getter
+	private volatile Set<WorldPoint> currentDestinations = new HashSet<>();
 
 	@Inject
 	private ShortestPathIntegration(EventBus eventBus, ClientThread clientThread)
@@ -139,6 +166,14 @@ public class ShortestPathIntegration
 		}
 		data.put(KEY_CONFIG, configOverride);
 
+		// The old path's transports describe a route from where the player used to be, so they
+		// stop being true the moment a new one is asked for. Reported from play: after teleporting
+		// to the house, the panel still read "via Teleport to house tablet" — an instruction to do
+		// the thing that had just been done. Cleared here rather than on arrival of the reply,
+		// because the gap between the two is exactly when the stale list was being shown.
+		currentTransports = new ArrayList<>();
+		currentDestinations = new HashSet<>();
+
 		log.debug("Routing to {} target(s){}", targets.size(),
 			mayVisitBank ? ", bank detours allowed" : "");
 		post(new PluginMessage(NAMESPACE, MESSAGE_PATH, data));
@@ -180,11 +215,15 @@ public class ShortestPathIntegration
 	}
 
 	/**
-	 * Picks up the transport list Shortest Path posts for the path it just found.
+	 * Picks up what Shortest Path posts about the path it just found.
 	 *
-	 * <p>This is the piggyback the spec hoped for but did not expect to get: it means the
-	 * panel can say "this run uses the Fairy ring to Harmony" without us knowing anything
-	 * about teleports ourselves.
+	 * <p>This is the piggyback the spec hoped for but did not expect to get: the panel can say
+	 * "this run uses the Fairy ring to Harmony" without us knowing anything about teleports
+	 * ourselves — and, it turns out, can say where the path ends too.
+	 *
+	 * <p>The message carries {@code origin}, {@code destination}, {@code objectInfo} and
+	 * {@code displayInfo}. Two of those are read here; the other two are left alone rather than
+	 * decoded speculatively.
 	 */
 	@Subscribe
 	public void onPluginMessage(PluginMessage event)
@@ -194,22 +233,67 @@ public class ShortestPathIntegration
 			return;
 		}
 
-		Object displayInfo = event.getData().get("displayInfo");
+		currentTransports = readTransports(event);
+		currentDestinations = readDestinations(event);
+
+		log.debug("Path uses {} transport(s), ending at {} point(s)",
+			currentTransports.size(), currentDestinations.size());
+	}
+
+	/**
+	 * The transports the path uses, in order and without repeats.
+	 *
+	 * <p>De-duplicated because one edge can yield several {@code Transport} objects sharing a
+	 * display string — a portal listed twice running is one hop reported twice, not two hops, and
+	 * shown raw it reads as a counting bug. Insertion order is kept, so the list still reads as
+	 * the journey.
+	 */
+	private static List<String> readTransports(PluginMessage event)
+	{
+		Object displayInfo = event.getData().get(KEY_DISPLAY_INFO);
 		if (!(displayInfo instanceof List))
 		{
-			return;
+			return new ArrayList<>();
 		}
 
-		List<String> transports = new ArrayList<>();
+		Set<String> seen = new LinkedHashSet<>();
 		for (Object entry : (List<?>) displayInfo)
 		{
 			if (entry instanceof String && !((String) entry).isEmpty())
 			{
-				transports.add((String) entry);
+				seen.add((String) entry);
 			}
 		}
+		return new ArrayList<>(seen);
+	}
 
-		currentTransports = transports;
-		log.debug("Path uses {} transport(s)", transports.size());
+	/**
+	 * Where the path ends, as far as Shortest Path will say.
+	 *
+	 * <p>Deliberately tolerant about what arrives. It may be the single point the router settled
+	 * on, or it may be every target it was handed — the API takes a set, so both are plausible
+	 * and the difference is not documented. Reading it as a set and letting the caller decide
+	 * what a set of two means is the version of this that cannot be wrong.
+	 */
+	private static Set<WorldPoint> readDestinations(PluginMessage event)
+	{
+		Set<WorldPoint> destinations = new HashSet<>();
+
+		Object destination = event.getData().get(KEY_DESTINATION);
+		if (destination instanceof WorldPoint)
+		{
+			destinations.add((WorldPoint) destination);
+		}
+		else if (destination instanceof Collection)
+		{
+			for (Object entry : (Collection<?>) destination)
+			{
+				if (entry instanceof WorldPoint)
+				{
+					destinations.add((WorldPoint) entry);
+				}
+			}
+		}
+		return destinations;
 	}
 }

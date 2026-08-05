@@ -125,7 +125,11 @@ public class RunPlannerTest
 		playerLocation = construct(com.dooglemaps.state.PlayerLocation.class, client);
 		planner = construct(RunPlanner.class, availability, locations, banks, selection,
 			seedInventory, stateStore, timer, router,
-			playerLocation);
+			playerLocation, Mockito.mock(com.dooglemaps.bank.ToolNeeds.class),
+			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
+			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
+			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
 	}
 
 	/** Puts the local player somewhere in the given map region. */

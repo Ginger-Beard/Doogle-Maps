@@ -6,20 +6,24 @@ import com.dooglemaps.data.FarmRegion;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
+import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.route.RunPlanner;
+import com.dooglemaps.state.BarbarianFarming;
 import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.validate.HarvestLog;
 import com.dooglemaps.timer.GrowthTimer;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
-import net.runelite.api.Varbits;
 import net.runelite.api.WidgetNode;
+import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
@@ -59,6 +63,8 @@ public class PatchInteractionTracker
 	private final GrowthTimer growthTimer;
 	private final RunPlanner runPlanner;
 	private final HarvestLog harvestLog;
+	private final BarbarianFarming barbarianFarming;
+	private final CarriedItems carried;
 
 	/** Last raw varbit value seen per patch key, to spot transitions. */
 	private final Map<String, Integer> lastVarbitValues = new HashMap<>();
@@ -70,8 +76,11 @@ public class PatchInteractionTracker
 
 	@Inject
 	private PatchInteractionTracker(Client client, PatchStateStore stateStore,
-		GrowthTimer growthTimer, RunPlanner runPlanner, HarvestLog harvestLog)
+		GrowthTimer growthTimer, RunPlanner runPlanner, HarvestLog harvestLog,
+		BarbarianFarming barbarianFarming, CarriedItems carried)
 	{
+		this.barbarianFarming = barbarianFarming;
+		this.carried = carried;
 		this.client = client;
 		this.stateStore = stateStore;
 		this.growthTimer = growthTimer;
@@ -121,7 +130,9 @@ public class PatchInteractionTracker
 			ticksSinceModalClose++;
 		}
 
-		growthTimer.setAutoweed(client.getVarbitValue(Varbits.AUTOWEED));
+		// VarbitID rather than the deprecated Varbits class. Same varbit, 5557 either way -
+		// constant names move between RuneLite versions, the underlying numbers do not.
+		growthTimer.setAutoweed(client.getVarbitValue(VarbitID.FARMING_BLOCKWEEDS));
 
 		scan(client.getLocalPlayer().getWorldLocation());
 	}
@@ -186,11 +197,12 @@ public class PatchInteractionTracker
 		Integer previousValue = lastVarbitValues.put(patch.getKey(), varbitValue);
 		if (previousValue != null && previousValue != varbitValue)
 		{
+			ProduceState previous = patch.getImplementation().forVarbitValue(previousValue);
 			maybeObserveGrowthTick(patch, previousValue, decoded);
 			// A patch that stops holding its crop has finished being harvested, which is what
 			// closes a validation record.
-			harvestLog.onPatchState(patch,
-				patch.getImplementation().forVarbitValue(previousValue), decoded);
+			harvestLog.onPatchState(patch, previous, decoded);
+			maybeObserveBarbarianFarming(patch, previous, decoded);
 		}
 
 		boolean changed = stateStore.recordVarbit(patch, varbitValue, decoded);
@@ -203,6 +215,79 @@ public class PatchInteractionTracker
 			runPlanner.markServiced(patch);
 		}
 	}
+
+	/**
+	 * The patch types whose seeds go in with a dibber, and so can prove the unlock.
+	 *
+	 * <p>Deliberately the four obvious ones rather than everything that is not a sapling. A
+	 * conservative list only delays noticing the unlock until the next herb or allotment goes in,
+	 * which on a farm run is minutes; a list that wrongly included a patch planted some other way
+	 * would record the unlock for someone who does not have it, and then never ask for the dibber
+	 * they actually need. Otto's own task names these as the example, which is a fair hint that
+	 * they are the uncontroversial set.
+	 */
+	private static final java.util.Set<com.dooglemaps.data.PatchImplementation> DIBBER_PLANTED =
+		java.util.EnumSet.of(
+			com.dooglemaps.data.PatchImplementation.HERB,
+			com.dooglemaps.data.PatchImplementation.ALLOTMENT,
+			com.dooglemaps.data.PatchImplementation.FLOWER,
+			com.dooglemaps.data.PatchImplementation.HOPS);
+
+	/**
+	 * Watches for a seed going into the ground with no dibber in the pack.
+	 *
+	 * <p>Which can only mean Barbarian Farming — see {@link BarbarianFarming} for why that is
+	 * observed here rather than read from a varbit.
+	 *
+	 * <p>The transition is the narrow part: an empty patch becoming a crop at stage 0. Weeds
+	 * growing back, a crop advancing, and the burst of varbits that arrives on entering a region
+	 * all look different from that, and the last of those is why {@code newRegionLoaded} is
+	 * checked — catching up on a patch someone else planted days ago is not a planting we saw.
+	 */
+	private void maybeObserveBarbarianFarming(FarmPatch patch, @Nullable ProduceState previous,
+		ProduceState current)
+	{
+		if (newRegionLoaded
+			|| barbarianFarming.isUnlocked()
+			|| !DIBBER_PLANTED.contains(patch.getImplementation())
+			|| previous == null)
+		{
+			return;
+		}
+
+		boolean wasEmpty = previous.getProduce() == Produce.WEEDS;
+		boolean nowPlanted = current.getProduce() != Produce.WEEDS
+			&& current.getProduce().isCrop()
+			&& current.getCropState() == CropState.GROWING
+			&& current.getStage() == 0;
+
+		if (!wasEmpty || !nowPlanted)
+		{
+			return;
+		}
+
+		if (!carried.has(ItemID.DIBBER))
+		{
+			barbarianFarming.observePlantedWithoutDibber();
+			return;
+		}
+
+		// Says so once per session when a planting *was* seen and a dibber was in the pack. The
+		// detection is silent by design, and silence has two very different causes — nothing was
+		// watched, or something was watched and the player simply had a dibber. Without this line
+		// the two are indistinguishable from the log, and "it still asks me for a dibber" cannot
+		// be diagnosed without guessing.
+		if (!loggedPlantWithDibber)
+		{
+			loggedPlantWithDibber = true;
+			log.info("Watched {} planted with a dibber carried, so nothing to learn about "
+				+ "Barbarian Farming. If you have the unlock, tick 'Barbarian farming' "
+				+ "in the settings.", current.getProduce().getName());
+		}
+	}
+
+	/** So the planted-with-a-dibber note is said once a session rather than every planting. */
+	private boolean loggedPlantWithDibber;
 
 	/** Whether a patch in this state still wants something doing to it. */
 	private static boolean isActionable(ProduceState decoded)

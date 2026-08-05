@@ -7,7 +7,10 @@ import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
 import com.dooglemaps.data.Seed;
+import com.dooglemaps.data.FarmingTool;
+import com.dooglemaps.state.BarbarianFarming;
 import com.dooglemaps.state.CompostSelectionStore;
+import com.dooglemaps.state.LeprechaunStore;
 import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.SeedSource;
@@ -16,14 +19,18 @@ import com.dooglemaps.timer.PatchProjection;
 import com.google.gson.Gson;
 import java.lang.reflect.Constructor;
 import java.util.List;
+import net.runelite.api.Client;
+import net.runelite.api.GameState;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
+import net.runelite.api.events.GameTick;
 import net.runelite.client.config.ConfigManager;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -49,12 +56,26 @@ public class GuidePlanTest
 	private GrowthTimer growthTimer;
 	private CarriedItems carried;
 
+	/** Empty by default: an unticked store holds nothing, so no tool step ever fires. */
+	private LeprechaunStore leprechaun;
+
+	/** Locked by default, so the dibber is asked for unless a test says otherwise. */
+	private BarbarianFarming barbarian;
+
 	@Before
 	public void setUp() throws Exception
 	{
 		ConfigManager configManager = Mockito.mock(ConfigManager.class);
 		when(configManager.getRSProfileConfiguration(anyString(), anyString(), eq(int.class)))
 			.thenReturn(85);
+
+		// A backing map for the flags that are written and read back — Barbarian Farming is
+		// persisted, so a mock that forgets what it was told would make the unlock untestable.
+		java.util.Map<String, Object> profile = new java.util.HashMap<>();
+		Mockito.doAnswer(i -> profile.put(i.getArgument(0) + "." + i.getArgument(1), i.getArgument(2)))
+			.when(configManager).setRSProfileConfiguration(anyString(), anyString(), Mockito.any());
+		when(configManager.getRSProfileConfiguration(anyString(), anyString(), eq(boolean.class)))
+			.thenAnswer(i -> profile.get(i.getArgument(0) + "." + i.getArgument(1)));
 
 		Gson gson = new Gson();
 		patches = construct(PatchStateStore.class, configManager, gson);
@@ -65,6 +86,9 @@ public class GuidePlanTest
 		compost.load();
 		growthTimer = construct(GrowthTimer.class, configManager);
 		carried = construct(CarriedItems.class);
+		leprechaun = leprechaunHolding();
+		barbarian = construct(BarbarianFarming.class, configManager,
+			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 	}
 
 	@Test
@@ -97,6 +121,166 @@ public class GuidePlanTest
 			Produce.POTATO.getItemID(), step.getItemId());
 		assertTrue("pointing at the patch would be pointing the wrong way",
 			!step.highlightsPatch());
+
+		// The bug this covers: the overlay asked "is this step at the leprechaun" and, being
+		// told yes, went looking for a potato in his store. There is no potato slot in it, so it
+		// drew nothing — he lit up and the crop you are supposed to click did not, which is most
+		// of the instruction missing. The crop is in your pack; that is why you are visiting him.
+		assertFalse("the crop is in the pack, not in his store", step.itemIsInStore());
+	}
+
+	/**
+	 * Withdrawing is the one direction where the item really is in his store.
+	 *
+	 * <p>The pair to the test above. Both cases are steps "at the leprechaun" and they highlight
+	 * in opposite places, which is exactly why where the click happens is the wrong question.
+	 */
+	@Test
+	public void withdrawingCompostLooksInHisStore()
+	{
+		FarmPatch patch = statePatch(3);   // raked, empty
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
+		stockInventory(Seed.POTATO, 3);
+		carrying();
+
+		GuideStep step = firstStep(patch, Seed.POTATO);
+		assertEquals(GuideAction.WITHDRAW_COMPOST, step.getAction());
+		assertTrue("this one really does come out of his store", step.itemIsInStore());
+	}
+
+	/**
+	 * A tool you are not carrying is fetched from him before the step that needs it.
+	 *
+	 * <p>Ordinarily silent, because the tool is already in the pack. The case it exists for is
+	 * the one that otherwise wastes the stop: standing at a weedy patch with no rake, where every
+	 * later instruction — treat, plant — is on ground the game will not accept them on.
+	 */
+	@Test
+	public void aRakeIsFetchedFromHisStoreBeforeRaking() throws Exception
+	{
+		FarmPatch patch = statePatch(0);   // weeds
+		carrying();
+		leprechaun = leprechaunHolding(FarmingTool.RAKE);
+
+		List<GuideStep> steps = steps(patch, Seed.POTATO);
+		assertEquals("the rake comes first - you cannot rake without one",
+			GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
+		assertTrue("and it is in his store, so that is where to look",
+			steps.get(0).itemIsInStore());
+		assertEquals(GuideAction.CLEAR, steps.get(1).getAction());
+	}
+
+	/**
+	 * A rake he does not have is not a step at the patch.
+	 *
+	 * <p>There is nothing useful to say at a weedy patch about a rake sitting in your bank. That
+	 * belongs to the loadout, before you set off, and telling you here would be an instruction
+	 * you cannot follow.
+	 */
+	@Test
+	public void aRakeHeDoesNotHaveIsNotMentionedAtThePatch()
+	{
+		FarmPatch patch = statePatch(0);   // weeds
+		carrying();
+
+		assertEquals("straight to raking, with no errand he cannot fulfil",
+			GuideAction.CLEAR, firstStep(patch, Seed.POTATO).getAction());
+	}
+
+	/** Carrying one already means no errand at all — the usual case, and it stays quiet. */
+	@Test
+	public void aRakeYouAreCarryingIsNotFetched() throws Exception
+	{
+		FarmPatch patch = statePatch(0);   // weeds
+		carrying(net.runelite.api.gameval.ItemID.RAKE, 1);
+		leprechaun = leprechaunHolding(FarmingTool.RAKE);
+
+		assertEquals(GuideAction.CLEAR, firstStep(patch, Seed.POTATO).getAction());
+	}
+
+	/**
+	 * Barbarian Farming means the dibber is never asked for.
+	 *
+	 * <p>Reported from play: an account with the unlock was told to fetch a seed dibber from the
+	 * leprechaun. It has not needed one in years, and being sent for a tool you made obsolete is
+	 * how a player learns to stop reading the guidance.
+	 */
+	@Test
+	public void barbarianFarmingSkipsTheDibber() throws Exception
+	{
+		FarmPatch patch = statePatch(3);   // raked, empty
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.NONE);
+		stockInventory(Seed.POTATO, 3);
+		carrying();
+		leprechaun = leprechaunHolding(FarmingTool.SEED_DIBBER);
+
+		assertEquals("without the unlock, the dibber is fetched first",
+			GuideAction.WITHDRAW_TOOL, firstStep(patch, Seed.POTATO).getAction());
+
+		barbarian.observePlantedWithoutDibber();
+
+		assertEquals("with it, planting is the only step", GuideAction.PLANT,
+			firstStep(patch, Seed.POTATO).getAction());
+	}
+
+	/**
+	 * The setting says so without waiting to be watched.
+	 *
+	 * <p>The observation only fires once a planting has been seen, which is fine in principle and
+	 * irritating for someone who has had the unlock for years and is being asked for a dibber in
+	 * the meantime.
+	 */
+	@Test
+	public void theSettingAloneSkipsTheDibber() throws Exception
+	{
+		FarmPatch patch = statePatch(3);   // raked, empty
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.NONE);
+		stockInventory(Seed.POTATO, 3);
+		carrying();
+		leprechaun = leprechaunHolding(FarmingTool.SEED_DIBBER);
+
+		com.dooglemaps.DoogleMapsConfig config =
+			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class);
+		when(config.barbarianFarmingOverride()).thenReturn(true);
+		barbarian = construct(BarbarianFarming.class,
+			Mockito.mock(ConfigManager.class), config);
+
+		assertEquals(GuideAction.PLANT, firstStep(patch, Seed.POTATO).getAction());
+	}
+
+	/**
+	 * The seed box is what gets clicked, not the seed inside it.
+	 *
+	 * <p>Reported from play as "seedbox is not highlighted", and the cause is the step naming the
+	 * seed. The whole reason this step exists is that the seed is <i>in the box</i> and so not in
+	 * the inventory — meaning there was nothing on screen for the outline to find, and it drew
+	 * nothing at all rather than failing loudly.
+	 */
+	@Test
+	public void theSeedBoxStepHighlightsTheBox()
+	{
+		FarmPatch patch = statePatch(3);   // raked, empty
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.NONE);
+		stock(SeedSource.SEED_BOX, Seed.POTATO, 20);
+		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
+
+		GuideStep step = firstStep(patch, Seed.POTATO);
+		assertEquals(GuideAction.WITHDRAW_SEEDS, step.getAction());
+		assertEquals("the box is the thing you click, and the only one on screen",
+			net.runelite.api.gameval.ItemID.SEED_BOX, step.getItemId());
+	}
+
+	/** An open box is a different item id, and it is the one that would be on screen. */
+	@Test
+	public void anOpenSeedBoxIsMatchedToo()
+	{
+		FarmPatch patch = statePatch(3);
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.NONE);
+		stock(SeedSource.SEED_BOX, Seed.POTATO, 20);
+		carrying(net.runelite.api.gameval.ItemID.SEED_BOX_OPEN, 1);
+
+		assertEquals(net.runelite.api.gameval.ItemID.SEED_BOX_OPEN,
+			firstStep(patch, Seed.POTATO).getItemId());
 	}
 
 	/**
@@ -219,7 +403,8 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), Seed.POTATO, seeds, compost, carried, 4);
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 4);
 
 		assertEquals(GuideAction.WITHDRAW_COMPOST, steps.get(0).getAction());
 		assertTrue("and it should ask for the three still missing, not all four: "
@@ -236,7 +421,8 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), Seed.POTATO, seeds, compost, carried, 4);
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 4);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
 	}
@@ -271,7 +457,8 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), Seed.POTATO, seeds, compost, carried, 4);
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 4);
 
 		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("4"));
 	}
@@ -390,13 +577,36 @@ public class GuidePlanTest
 
 	// ------------------------------------------------------------------- helpers
 
+	/**
+	 * A leprechaun's store holding exactly these tools.
+	 *
+	 * <p>Driven through the real varbit read rather than by poking the map, so the test also
+	 * covers the thing most likely to break: which varbits each tool is made of.
+	 */
+	private LeprechaunStore leprechaunHolding(FarmingTool... tools) throws Exception
+	{
+		Client client = Mockito.mock(Client.class);
+		when(client.getGameState()).thenReturn(GameState.LOGGED_IN);
+		for (FarmingTool tool : tools)
+		{
+			for (int varbit : tool.getVarbits())
+			{
+				when(client.getVarbitValue(varbit)).thenReturn(1);
+			}
+		}
+
+		LeprechaunStore store = construct(LeprechaunStore.class, client);
+		store.onGameTick(new GameTick());
+		return store;
+	}
+
 	private List<GuideStep> steps(FarmPatch patch, Seed chosen)
 	{
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		assertNotNull("fixture patch has no projection", projection);
 		return GuidePlan.forPatch(projection,
 			patches.get(patch) == null ? null : patches.get(patch).getCompost(),
-			chosen, seeds, compost, carried, 1);
+			group(patch), chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1);
 	}
 
 	private GuideStep firstStep(FarmPatch patch, Seed chosen)
@@ -407,6 +617,12 @@ public class GuidePlanTest
 	}
 
 	/** Puts Falador's north allotment into the state the given varbit value decodes to. */
+	/** The plain group for a patch, which is what every test here expects (nothing is split). */
+	private static com.dooglemaps.data.PlantingGroup group(FarmPatch patch)
+	{
+		return com.dooglemaps.data.PlantingGroup.of(patch.getImplementation());
+	}
+
 	private FarmPatch statePatch(int varbitValue)
 	{
 		FarmPatch patch = FarmingWorldData.getPatch(FALADOR_NORTH);

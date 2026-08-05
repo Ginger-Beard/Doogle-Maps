@@ -7,9 +7,9 @@ import javax.swing.AbstractButton;
 import javax.swing.BorderFactory;
 import java.awt.Color;
 import java.awt.Component;
-import javax.swing.BorderFactory;
 import javax.swing.DefaultListCellRenderer;
 import javax.swing.JCheckBox;
+import javax.swing.JRadioButton;
 import javax.swing.JComboBox;
 import javax.swing.JList;
 import javax.swing.JComponent;
@@ -52,6 +52,23 @@ final class Controls
 		button.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
 		button.setContentAreaFilled(true);
 		button.setOpaque(true);
+	}
+
+	/**
+	 * Labels a collapsible section, with a caret saying which way it is.
+	 *
+	 * <p>Without one a section header is indistinguishable from a button that does something, and
+	 * a closed section is indistinguishable from an empty one. The caret is the convention
+	 * everywhere else, so it needs no explaining.
+	 *
+	 * <p>Pointing <b>down when open</b> and <b>right when closed</b>, which is the way round every
+	 * file tree does it: the caret shows where the content is, not which way the click will move
+	 * it. The opposite convention exists and is a coin toss on its own, but matching the thing
+	 * players already use every day is not.
+	 */
+	static String collapseLabel(String text, boolean expanded)
+	{
+		return (expanded ? "\u25BE " : "\u25B8 ") + text;
 	}
 
 	static void makeNonFocusable(JComponent component)
@@ -127,6 +144,22 @@ final class Controls
 		if (component instanceof AbstractButton)
 		{
 			((AbstractButton) component).setFocusPainted(false);
+		}
+
+		// Checkboxes and radio buttons are styled by FlatRadioButtonUI, which has no focusWidth
+		// property at all — so this style threw UnknownStyleException on every one of them. Not
+		// caught here either: FlatLaf applies styles from a property-change listener and logs the
+		// failure itself at SEVERE, so the try/catch below never saw it and the client log filled
+		// up with stack traces every time the sidebar rebuilt.
+		//
+		// Skipped rather than given a different style string, because there is nothing left for it
+		// to do: the component is already non-focusable and non-focus-painted above, and a control
+		// that cannot take focus cannot draw a focus ring. The style was redundant for these two
+		// and, since FlatLaf abandons the rest of a style string after a bad key, it was never
+		// applying the innerFocusWidth either.
+		if (component instanceof JCheckBox || component instanceof JRadioButton)
+		{
+			return;
 		}
 
 		try

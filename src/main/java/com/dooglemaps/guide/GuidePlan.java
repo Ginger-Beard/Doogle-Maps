@@ -3,10 +3,16 @@ package com.dooglemaps.guide;
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropState;
 import com.dooglemaps.data.FarmPatch;
+import com.dooglemaps.data.FarmingTool;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.Produce;
+import com.dooglemaps.data.ProtectionPayment;
+import com.dooglemaps.timer.DiseaseRisk;
 import com.dooglemaps.data.Seed;
+import com.dooglemaps.state.BarbarianFarming;
 import com.dooglemaps.state.CompostSelectionStore;
+import com.dooglemaps.state.LeprechaunStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.state.SeedSource;
@@ -59,8 +65,10 @@ public final class GuidePlan
 	 *                       withdrawal can name a number rather than leaving you guessing
 	 */
 	public static List<GuideStep> forPatch(PatchProjection projection, CompostTier applied,
-		Seed chosen, SeedInventoryStore seeds, CompostSelectionStore compostChoice,
-		CarriedItems carried, int patchesToTreat)
+		PlantingGroup group, Seed chosen, SeedInventoryStore seeds,
+		CompostSelectionStore compostChoice,
+		CarriedItems carried, LeprechaunStore leprechaun, BarbarianFarming barbarianFarming,
+		boolean protecting, boolean harvestOnly, int patchesToTreat)
 	{
 		List<GuideStep> steps = new ArrayList<>();
 		if (projection == null)
@@ -85,6 +93,7 @@ public final class GuidePlan
 		// would not accept either on. Never seen in play because autoweed was on.
 		if (projection.getProduce() == Produce.WEEDS && projection.getStage() > 0)
 		{
+			addToolStep(steps, patch, FarmingTool.RAKE, carried, leprechaun);
 			steps.add(GuideStep.of(GuideAction.CLEAR, patch, "Rake the weeds."));
 			return steps;
 		}
@@ -106,10 +115,19 @@ public final class GuidePlan
 			return steps;
 		}
 
+		// Harvest-only stops here. Everything below clears, treats or replants, and on a bush or
+		// a fruit tree that means digging up something that took two days to grow — which is the
+		// opposite of what "come back and pick the fruit" asked for.
+		if (harvestOnly)
+		{
+			return steps;
+		}
+
 		// 2. Anything left in the ground has to come out before anything goes in. Dead crops
 		//    and weeds are the same job from the player's side, so they read the same.
 		if (projection.getCropState() == CropState.DEAD)
 		{
+			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
 			steps.add(GuideStep.of(GuideAction.CLEAR, patch,
 				"Clear the dead " + projection.getProduce().getName().toLowerCase() + "."));
 			return steps;
@@ -119,13 +137,15 @@ public final class GuidePlan
 		// about the patches a run actually services.
 		if (!projection.isEmpty())
 		{
+			addProtectionStep(steps, projection, carried, protecting);
+
 			// One exception: a seed that has just gone in, on a patch that was never treated.
 			// Compost works just as well applied after planting — the wiki's own herb-run guide
 			// sows first and composts second — so someone following that order used to get
 			// silence here, and an untreated patch, precisely because they did it the other
 			// way round. Limited to the first growth stage so it cannot start nagging about a
 			// crop planted days ago.
-			CompostTier wantedAfterPlanting = compostChoice.get(patch.getImplementation());
+			CompostTier wantedAfterPlanting = compostChoice.get(group);
 			if (projection.getStage() == 0 && wantedAfterPlanting != CompostTier.NONE
 				&& applied != wantedAfterPlanting
 				&& projection.getCropState() == CropState.GROWING)
@@ -143,7 +163,7 @@ public final class GuidePlan
 		// 3. Compost, then the seed. Preferred in that order because it is one fewer thing to
 		//    remember once a crop is in the ground — but not required: see the just-planted
 		//    case above, which catches anyone doing it the wiki's way round.
-		CompostTier wanted = compostChoice.get(patch.getImplementation());
+		CompostTier wanted = compostChoice.get(group);
 		if (wanted != CompostTier.NONE && applied != wanted)
 		{
 			addCompostSteps(steps, patch, wanted, carried, patchesToTreat);
@@ -156,14 +176,98 @@ public final class GuidePlan
 		if (seeds.getCount(chosen, SeedSource.INVENTORY) < perPatch
 			&& seeds.getCount(chosen, SeedSource.SEED_BOX) >= perPatch)
 		{
-			steps.add(GuideStep.withItem(GuideAction.WITHDRAW_SEEDS, patch,
-				chosen.getPlantedItemID(),
+			// The box, not the seed. Highlighting the seed was the bug: the whole reason this step
+			// exists is that the seed is *inside the box* and therefore not in the inventory, so
+			// there was nothing on screen for the outline to land on and it silently drew nothing.
+			// The thing to click is the box.
+			steps.add(GuideStep.withItem(GuideAction.WITHDRAW_SEEDS, patch, seedBoxCarried(carried),
 				"Empty your seed box to get the " + chosen.getName().toLowerCase() + "."));
+		}
+
+		// A dibber for anything sown from a seed. Saplings go in by hand, so a tree patch is
+		// deliberately silent here rather than asking for a tool it does not use — and so is
+		// every patch once Barbarian Farming has been seen, since it removes the requirement.
+		if (!chosen.isSapling() && !barbarianFarming.isUnlocked())
+		{
+			addToolStep(steps, patch, FarmingTool.SEED_DIBBER, carried, leprechaun);
 		}
 
 		steps.add(GuideStep.withItem(GuideAction.PLANT, patch, chosen.getPlantedItemID(),
 			plantText(chosen, perPatch)));
 		return steps;
+	}
+
+	/**
+	 * Paying the farmer, for a crop already in the ground.
+	 *
+	 * <p>Separate from the planting sequence because it applies to a <b>growing</b> patch, which
+	 * every other branch above deliberately leaves alone. A tree you planted last night is
+	 * exactly the case: nothing else about it wants doing, and the payment is the one thing still
+	 * outstanding.
+	 *
+	 * <p>Silent unless the player asked for this group to be protected, the patch can actually be
+	 * protected, and the payment is in the pack. The last of those is the interesting one — being
+	 * told to pay with fruit you did not bring is an instruction you cannot follow, and the
+	 * loadout is where that should have been caught.
+	 */
+	private static void addProtectionStep(List<GuideStep> steps, PatchProjection projection,
+		CarriedItems carried, boolean protecting)
+	{
+		FarmPatch patch = projection.getPatch();
+		if (!protecting || projection.getProduce() == null
+			|| !DiseaseRisk.isProtectable(patch))
+		{
+			return;
+		}
+
+		ProtectionPayment payment = ProtectionPayment.forProduce(projection.getProduce());
+		if (payment == null || carried.getCount(payment.getItemID()) < payment.getQuantity())
+		{
+			return;
+		}
+
+		steps.add(GuideStep.atNpc(GuideAction.PAY_FARMER, patch, payment.getItemID(),
+			patch.getFarmer(),
+			"Pay the farmer " + payment.getQuantity() + " "
+				+ payment.getProduce().getName().toLowerCase()
+				+ " to protect the " + projection.getProduce().getName().toLowerCase() + "."));
+	}
+
+	/**
+	 * Asks for a tool the next step cannot be done without, when the leprechaun has one.
+	 *
+	 * <p>Inserted <i>before</i> the step that needs it, so the order reads the way the clicks go:
+	 * fetch the rake, then rake the weeds. Ordinarily this adds nothing at all, because the tool
+	 * is already in the pack — which is exactly the right amount of noise for something that is
+	 * usually a non-issue and occasionally the whole reason a stop cannot be finished.
+	 *
+	 * <p>Silent when he has none either. There is nothing useful to say at a patch about a rake
+	 * that is in your bank; that belongs to the loadout, before you set off, and
+	 * {@code ToolNeeds} puts it there.
+	 */
+	private static void addToolStep(List<GuideStep> steps, FarmPatch patch, FarmingTool tool,
+		CarriedItems carried, LeprechaunStore leprechaun)
+	{
+		if (carried.has(tool.getItemID()) || !leprechaun.has(tool))
+		{
+			return;
+		}
+
+		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_TOOL, patch, tool.getItemID(), null,
+			"Get your " + tool.getDisplayName().toLowerCase()
+				+ " from the tool leprechaun - you are not carrying one."));
+	}
+
+	/**
+	 * Whichever form of the seed box the player is carrying.
+	 *
+	 * <p>Two ids for one item, and the difference is only whether it is open. Defaulting to the
+	 * closed one when neither is found is harmless: the step is only reached when the seeds are
+	 * known to be in a box, so one of them is there.
+	 */
+	private static int seedBoxCarried(CarriedItems carried)
+	{
+		return carried.has(ItemID.SEED_BOX_OPEN) ? ItemID.SEED_BOX_OPEN : ItemID.SEED_BOX;
 	}
 
 	/**
@@ -224,28 +328,4 @@ public final class GuidePlan
 			: "Plant " + perPatch + " " + seed.getName().toLowerCase() + " " + noun + "s.";
 	}
 
-	/**
-	 * The seed the run will put in this patch, or null if none was picked for it.
-	 *
-	 * <p>Best of what was selected for that patch type and is actually plantable — a tree seed
-	 * that has not been potted cannot be the answer, however many you own.
-	 */
-	@Nullable
-	public static Seed seedFor(PatchImplementation type, SeedSelectionStore selection,
-		SeedInventoryStore seeds)
-	{
-		Seed best = null;
-		for (Seed seed : selection.getSelectedFor(type))
-		{
-			if (seeds.getOwnedPlantable(seed) < seed.getSeedsPerPatch())
-			{
-				continue;
-			}
-			if (best == null || seed.getLevelRequirement() > best.getLevelRequirement())
-			{
-				best = seed;
-			}
-		}
-		return best;
-	}
 }

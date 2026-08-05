@@ -2,6 +2,9 @@ package com.dooglemaps.state;
 
 import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PlantingGroup;
+import com.dooglemaps.data.RunOption;
+import javax.annotation.Nullable;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
@@ -39,7 +42,15 @@ public class RunTypeStore
 	private final ConfigManager configManager;
 	private final Gson gson;
 
-	private final Set<PatchImplementation> selected = EnumSet.noneOf(PatchImplementation.class);
+	/**
+	 * Selected option keys rather than patch types.
+	 *
+	 * <p>Keys because a line in that list is no longer just a type: it can be a planting group —
+	 * protected herbs — or a mode, such as harvesting a bush without replanting it. A key that
+	 * happens to be a bare enum name is a full run over an unsplit type, which is exactly what
+	 * was stored before, so an existing profile loads unchanged.
+	 */
+	private final Set<String> selected = new java.util.LinkedHashSet<>();
 
 	@Inject
 	private RunTypeStore(ConfigManager configManager, Gson gson)
@@ -48,31 +59,126 @@ public class RunTypeStore
 		this.gson = gson;
 	}
 
+	/**
+	 * The patch types the run covers, for everything that still works in types.
+	 *
+	 * <p>Derived rather than stored: several selections can share a type — protected herbs and
+	 * ordinary ones both being herbs — and the planner's job is to visit the patches, which is a
+	 * question about types plus filters rather than about the lines a player ticked.
+	 */
 	public synchronized Set<PatchImplementation> getSelected()
 	{
-		// copyOf is safe on an empty EnumSet, unlike an empty ordinary collection.
-		return EnumSet.copyOf(selected);
+		Set<PatchImplementation> types = EnumSet.noneOf(PatchImplementation.class);
+		for (String key : selected)
+		{
+			PatchImplementation type = typeOf(key);
+			if (type != null)
+			{
+				types.add(type);
+			}
+		}
+		return types;
 	}
 
-	public synchronized boolean isSelected(PatchImplementation type)
+	public synchronized boolean isSelected(RunOption option)
 	{
-		return selected.contains(type);
+		return selected.contains(option.getKey());
+	}
+
+	/**
+	 * Whether this group is being run for its harvest alone.
+	 *
+	 * <p>True only when the harvest-only line is ticked and the full one is not. Ticking both is
+	 * a contradiction the player can express, and the full run is the safe reading of it: it does
+	 * everything the harvest-only run does and more, so nothing is skipped that was asked for.
+	 */
+	public synchronized boolean isHarvestOnly(PlantingGroup group)
+	{
+		return selected.contains(RunOption.harvestOnly(group).getKey())
+			&& !selected.contains(RunOption.full(group).getKey());
+	}
+
+	/** The patch type a stored key belongs to, or null if it names one this build has lost. */
+	@Nullable
+	private static PatchImplementation typeOf(String key)
+	{
+		String name = key;
+		for (String suffix : new String[]{"#harvest", "#protected"})
+		{
+			name = name.replace(suffix, "");
+		}
+
+		try
+		{
+			return PatchImplementation.valueOf(name);
+		}
+		catch (IllegalArgumentException e)
+		{
+			return null;
+		}
 	}
 
 	/** Replaces the whole selection, which is how the checkboxes report themselves. */
-	public void setSelected(Set<PatchImplementation> types)
+	public void setSelected(Set<RunOption> options)
+	{
+		replace(keysOf(options));
+	}
+
+	/**
+	 * Replaces the selection <b>within the lines currently on offer</b>, leaving the rest alone.
+	 *
+	 * <p>Which lines exist is not fixed: protected herbs appear and disappear with a setting. The
+	 * checkboxes can only report on what they are showing, so replacing the whole selection from
+	 * them silently discards anything not currently listed — turn the split off, touch any box,
+	 * and the protected herb run you had chosen is gone for good, including when you turn it back
+	 * on.
+	 *
+	 * <p>Keeping the unoffered keys is safe because nothing acts on a line the player cannot see:
+	 * with the split off, protected patches are part of the ordinary herb group anyway, so the
+	 * stored key contributes no patches until it is on offer again.
+	 */
+	public void setSelected(Set<RunOption> ticked, java.util.Collection<RunOption> offered)
+	{
+		Set<String> offeredKeys = keysOf(offered);
+		Set<String> keys = new java.util.LinkedHashSet<>();
+
+		synchronized (this)
+		{
+			for (String key : selected)
+			{
+				if (!offeredKeys.contains(key))
+				{
+					keys.add(key);
+				}
+			}
+		}
+		keys.addAll(keysOf(ticked));
+		replace(keys);
+	}
+
+	private static Set<String> keysOf(java.util.Collection<RunOption> options)
+	{
+		Set<String> keys = new java.util.LinkedHashSet<>();
+		for (RunOption option : options)
+		{
+			keys.add(option.getKey());
+		}
+		return keys;
+	}
+
+	private void replace(Set<String> keys)
 	{
 		synchronized (this)
 		{
-			if (selected.equals(types))
+			if (selected.equals(keys))
 			{
 				return;
 			}
 			selected.clear();
-			selected.addAll(types);
+			selected.addAll(keys);
 			save();
 		}
-		log.debug("Run covers {}", types);
+		log.debug("Run covers {}", keys);
 	}
 
 	public void load()
@@ -94,13 +200,12 @@ public class RunTypeStore
 				{
 					for (String name : names)
 					{
-						try
+						// Kept whatever it says, provided it still names a type this build knows.
+						// Unrecognised keys are dropped rather than throwing: a selection saved by
+						// a newer build must not stop an older one loading the rest.
+						if (typeOf(name) != null)
 						{
-							selected.add(PatchImplementation.valueOf(name));
-						}
-						catch (IllegalArgumentException e)
-						{
-							// A patch type that no longer exists; drop it.
+							selected.add(name);
 						}
 					}
 				}
@@ -114,11 +219,7 @@ public class RunTypeStore
 
 	private synchronized void save()
 	{
-		List<String> names = new ArrayList<>();
-		for (PatchImplementation type : selected)
-		{
-			names.add(type.name());
-		}
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, TYPES_KEY, gson.toJson(names));
+		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, TYPES_KEY,
+			gson.toJson(new ArrayList<>(selected)));
 	}
 }

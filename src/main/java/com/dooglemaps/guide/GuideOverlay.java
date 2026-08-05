@@ -3,11 +3,13 @@ package com.dooglemaps.guide;
 import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.route.PatchLocationStore;
+import com.dooglemaps.state.PlayerHouse;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
 import java.awt.Polygon;
 import java.awt.Shape;
+import java.awt.geom.Area;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -63,11 +65,13 @@ public class GuideOverlay extends Overlay
 	private final DoogleMapsConfig config;
 	private final ModelOutlineRenderer outlineRenderer;
 	private final PatchLocationStore locations;
+	private final PlayerHouse house;
 
 	@Inject
 	private GuideOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
-		ModelOutlineRenderer outlineRenderer, PatchLocationStore locations)
+		ModelOutlineRenderer outlineRenderer, PatchLocationStore locations, PlayerHouse house)
 	{
+		this.house = house;
 		this.locations = locations;
 		this.client = client;
 		this.tracker = tracker;
@@ -87,13 +91,21 @@ public class GuideOverlay extends Overlay
 			return null;
 		}
 
+		Color colour = config.guideHighlightColour();
+
 		GuideStep step = tracker.getCurrentStep();
 		if (step == null)
 		{
+			// Travelling. The teleport furniture in a player's house is the one thing worth
+			// lighting up out here — everything else about a journey is Shortest Path's job.
+			//
+			// This was the hole in the travel highlighting: the nexus and the jewellery box were
+			// marked once their *interface* was open, which is no help at all to someone who has
+			// just teleported in and is looking at the room. You have to click the thing before
+			// there is a menu to highlight.
+			highlightHouseTeleports(graphics, colour);
 			return null;
 		}
-
-		Color colour = config.guideHighlightColour();
 
 		if (step.highlightsPatch())
 		{
@@ -132,38 +144,77 @@ public class GuideOverlay extends Overlay
 			return;
 		}
 
-		for (TileObject object : objects)
-		{
-			// The ground the patch occupies, always. A model outline is invisible on an empty
-			// patch — bare soil is a flat decal with no silhouette to trace — which is why
-			// crops highlighted and cleared patches did not, with no "nothing found" warning
-			// because the objects were there all along.
-			//
-			// It also answers the earlier ask: an allotment now reads as one lit patch rather
-			// than a dozen lit watermelons, because the tiles join up where the models do not.
-			Polygon tile = object.getCanvasTilePoly();
-			if (tile != null)
-			{
-				OverlayUtil.renderPolygon(graphics, tile, colour,
-					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
-			}
+		// The ground the patch occupies, always. A model outline is invisible on an empty patch —
+		// bare soil is a flat decal with no silhouette to trace — which is why crops highlighted
+		// and cleared patches did not, with no "nothing found" warning because the objects were
+		// there all along.
+		//
+		// Drawn as ONE shape rather than one per object. Outlining each tile separately drew a
+		// cyan grid over the allotment — every internal edge stroked twice, once from each side —
+		// which read as a chessboard laid on the patch rather than as a patch that was lit up.
+		// Merging first means the only line drawn is the outside edge, which is the only edge
+		// that means anything: it is where the patch stops.
+		fillAndOutline(graphics, mergedTiles(objects), colour);
 
-			// Then the model on top, where there is one to trace.
-			if (style == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+		if (style == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+		{
+			// Then the models on top, where there is one to trace. Per object here, deliberately:
+			// this traces the crops themselves, and the renderer takes one object at a time.
+			for (TileObject object : objects)
 			{
 				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
 					config.guideOutlineFeathering());
 			}
-			else
+		}
+		else
+		{
+			// Clickboxes merged for the same reason as the tiles.
+			Area boxes = new Area();
+			for (TileObject object : objects)
 			{
 				Shape clickbox = object.getClickbox();
 				if (clickbox != null)
 				{
-					OverlayUtil.renderPolygon(graphics, clickbox, colour,
-						ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
+					boxes.add(new Area(clickbox));
 				}
 			}
+			fillAndOutline(graphics, boxes, colour);
 		}
+	}
+
+	/**
+	 * Every tile the patch covers, merged into one shape.
+	 *
+	 * <p>Adjacent tiles share their corner coordinates exactly — both are projected from the same
+	 * scene geometry by the same call — so the union closes cleanly rather than leaving seams
+	 * between them.
+	 */
+	private static Area mergedTiles(List<TileObject> objects)
+	{
+		Area merged = new Area();
+		for (TileObject object : objects)
+		{
+			Polygon tile = object.getCanvasTilePoly();
+			if (tile != null)
+			{
+				merged.add(new Area(tile));
+			}
+		}
+		return merged;
+	}
+
+	/** Fills a shape and draws its outline, in the guide's colour. */
+	private static void fillAndOutline(Graphics2D graphics, Area shape, Color colour)
+	{
+		if (shape.isEmpty())
+		{
+			return;
+		}
+
+		graphics.setColor(ColorUtil.colorWithAlpha(colour, FILL_ALPHA));
+		graphics.fill(shape);
+		graphics.setColor(colour);
+		graphics.draw(shape);
 	}
 
 	/**
@@ -290,6 +341,62 @@ public class GuideOverlay extends Overlay
 			}
 		}
 		return found;
+	}
+
+	/**
+	 * Outlines the teleport furniture in a player-owned house.
+	 *
+	 * <p>Only while travelling, and only when there is somewhere to travel to — standing in your
+	 * house between runs should light nothing up.
+	 *
+	 * <p>Matched by <b>name</b> rather than by object id, the same way the leprechaun is. A
+	 * jewellery box comes in three tiers and a nexus can be built at three levels, each a
+	 * different object; matching the word means the next tier added is covered without anyone
+	 * noticing it needs to be. It also means this cannot claim a house has a nexus when it does
+	 * not — an object that is not there cannot be found.
+	 */
+	private void highlightHouseTeleports(Graphics2D graphics, Color colour)
+	{
+		TravelHint hint = tracker.getStatus().getTravelHint();
+		if (hint == null)
+		{
+			return;
+		}
+
+		// The one that reaches where you are going, not everything in the room. A house can hold
+		// both a nexus and a jewellery box, and outlining both says "one of these two, you work
+		// out which" — which is the question the player came here with.
+		//
+		// The box is preferred when it is known to reach the stop, because that is a fact from our
+		// own table. The nexus otherwise: what it is attuned to is per-account and unknowable from
+		// outside, so it is the honest default rather than a claim.
+		List<TileObject> furniture =
+			HouseTeleports.reachableByJewelleryBox(hint.getDestination())
+				? house.getJewelleryBoxes()
+				: house.getNexuses();
+
+		// A house with only the other kind still gets its furniture marked: pointing at the one
+		// teleport in the room beats pointing at nothing.
+		if (furniture.isEmpty())
+		{
+			furniture = house.getTeleports();
+		}
+
+		for (TileObject object : furniture)
+		{
+			Shape clickbox = object.getClickbox();
+			if (clickbox != null)
+			{
+				OverlayUtil.renderPolygon(graphics, clickbox, colour,
+					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
+			}
+
+			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+			{
+				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
+					config.guideOutlineFeathering());
+			}
+		}
 	}
 
 	/** Outlines the nearest tool leprechaun, for the noting and withdrawing steps. */

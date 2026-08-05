@@ -44,12 +44,32 @@ public final class TeleportItems
 		private final int itemId;
 		private final String name;
 		private final int regionId;
+		private final boolean teleportsYou;
 
 		Teleport(int itemId, String name, int regionId)
+		{
+			this(itemId, name, regionId, true);
+		}
+
+		Teleport(int itemId, String name, int regionId, boolean teleportsYou)
 		{
 			this.itemId = itemId;
 			this.name = name;
 			this.regionId = regionId;
+			this.teleportsYou = teleportsYou;
+		}
+
+		/**
+		 * Whether clicking this is the teleport, as opposed to merely allowing one.
+		 *
+		 * <p>The distinction only matters for the universal entries, and it is the difference
+		 * between an instruction that works and one that cannot be followed. A house tablet is a
+		 * thing to click; a Dramen staff is a thing to be holding when you click a fairy ring.
+		 * Telling someone to "use your Dramen staff" to travel would be nonsense.
+		 */
+		public boolean teleportsYou()
+		{
+			return teleportsYou;
 		}
 
 		public int getItemId()
@@ -86,7 +106,12 @@ public final class TeleportItems
 	 */
 	private static void add(int itemId, String name, int regionId)
 	{
-		Teleport teleport = new Teleport(itemId, name, regionId);
+		add(new Teleport(itemId, name, regionId));
+	}
+
+	private static void add(Teleport teleport)
+	{
+		int regionId = teleport.getRegionId();
 		ALL.add(teleport);
 
 		for (int region : regionsSharingPlaceWith(regionId))
@@ -176,14 +201,31 @@ public final class TeleportItems
 		add(ItemID.NZONE_TELETAB_TAVERLEY, "Taverley teleport tablet", 11573);
 		add(ItemID.NZONE_TELETAB_RIMMINGTON, "Rimmington teleport tablet", 11570);
 
-		// A fairy ring reaches a good many patches, but only with a staff in hand.
+		// A fairy ring reaches a good many patches, but only with a staff in hand. Flagged as not
+		// being the teleport itself: it is what lets you use one.
 		for (int staff : new int[]{
 			ItemID.DRAMEN_STAFF, ItemID.DRAMEN_STAFF_AIR,
 			ItemID.DRAMEN_STAFF_FIRE, ItemID.DRAMEN_STAFF_WATER,
 		})
 		{
-			add(staff, "Dramen staff (fairy rings)", -1);
+			add(new Teleport(staff, "Dramen staff (fairy rings)", -1, false));
 		}
+
+		// --- Your house, which is a destination in its own right on the way to somewhere else.
+		//
+		// It reaches no farming patch directly, which is why it took a report from play to notice
+		// it was missing: the table is organised by what a teleport *lands next to*, and by that
+		// rule the house belongs nowhere. But the portal nexus and the jewellery box are both in
+		// it, both reach farming patches, and both are already highlighted once you are standing
+		// there — so the tablet is the step before a chain that was otherwise built and
+		// unreachable.
+		//
+		// Universal rather than per-region for the same reason the Dramen staff is: what it can
+		// ultimately reach depends on the player's own nexus attunements and jewellery, which is
+		// their business and not something to guess at.
+		add(ItemID.POH_TABLET_TELEPORTTOHOUSE, "Teleport to house tablet", -1);
+		add(ItemID.SKILLCAPE_CONSTRUCTION, "Construction cape", -1);
+		add(ItemID.SKILLCAPE_CONSTRUCTION_TRIMMED, "Construction cape (t)", -1);
 	}
 
 	private TeleportItems()

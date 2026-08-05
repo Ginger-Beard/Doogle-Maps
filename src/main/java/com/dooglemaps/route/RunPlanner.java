@@ -1,5 +1,6 @@
 package com.dooglemaps.route;
 
+import com.dooglemaps.bank.ToolNeeds;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmRegion;
 import com.dooglemaps.data.PatchImplementation;
@@ -10,6 +11,12 @@ import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.state.SeedSource;
 import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.state.PlayerLocation;
+import com.dooglemaps.data.PlantingGroup;
+import com.dooglemaps.state.PlantingGroups;
+import com.dooglemaps.state.ProtectedPatches;
+import com.dooglemaps.state.ProtectionSelectionStore;
+import com.dooglemaps.state.RunTypeStore;
+import com.dooglemaps.data.CropState;
 import com.dooglemaps.timer.DiseaseRisk;
 import com.dooglemaps.timer.GrowthTimer;
 import com.dooglemaps.timer.PatchProjection;
@@ -68,6 +75,24 @@ public class RunPlanner
 	private final ShortestPathIntegration router;
 	private final PlayerLocation playerLocation;
 
+	/**
+	 * Which farming tools the run needs and where they are.
+	 *
+	 * <p>A one-way edge, like everything else this class calls: {@code ToolNeeds} holds no
+	 * reference back here and reads only leaf stores, so it cannot take the locks in the other
+	 * order. See {@code NOTES.md} on lock ordering.
+	 */
+	private final ToolNeeds tools;
+
+	/** Which herb patches this account's unlocks make immune. A leaf, like everything else here. */
+	private final ProtectedPatches protectedPatches;
+	private final PlantingGroups groups;
+	private final ProtectionSelectionStore protection;
+
+	/** The player's ticked run options, for the harvest-only filter. Named apart from the
+	 * planner's own {@code runTypes} field, which is the live run's patch types. */
+	private final RunTypeStore runOptions;
+
 	/** Stops still to do, keyed by region id so a patch can be found quickly. */
 	private final Map<Integer, RunStop> stops = new LinkedHashMap<>();
 
@@ -94,8 +119,14 @@ public class RunPlanner
 	private RunPlanner(AvailabilityProfile availability, PatchLocationStore locations,
 		BankLocationStore banks, SeedSelectionStore selection, SeedInventoryStore seedInventory,
 		PatchStateStore stateStore, GrowthTimer growthTimer, ShortestPathIntegration router,
-		PlayerLocation playerLocation)
+		PlayerLocation playerLocation, ToolNeeds tools, ProtectedPatches protectedPatches,
+		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions)
 	{
+		this.runOptions = runOptions;
+		this.protection = protection;
+		this.groups = groups;
+		this.protectedPatches = protectedPatches;
+		this.tools = tools;
 		this.playerLocation = playerLocation;
 		this.availability = availability;
 		this.locations = locations;
@@ -142,16 +173,14 @@ public class RunPlanner
 
 		// At INFO, and deliberately verbose, because "why did it send me to a bank" has cost
 		// several rounds of guessing and every input to that decision is on this one line.
+		// Tools are on it for the same reason: they are now one of the things that can send you
+		// to a bank, so leaving them off would put the line back to being half an answer.
 		log.info("Run planned: {} stops {}; you are in region {} which is {}; "
-				+ "seeds picked for this run: {}; still to collect: {} -> {}",
+				+ "seeds picked for this run: {}; still to collect: {}; tools: {} -> {}",
 			stops.size(), stopRegions(), playerLocation.getRegionId(),
 			here ? "a stop on this run" : "not a stop on this run",
-			describeSelectedForThisRun(), getSupplySources(),
+			describeSelectedForThisRun(), getSupplySources(), describeTools(),
 			atBankLeg ? "starting at a bank" : "starting where you are");
-
-		synchronized (this)
-		{
-		}
 
 		// Outside the lock, deliberately, and for the same reason markServiced and leaveBank
 		// do it that way: retargeting posts across threads into another plugin's event bus,
@@ -245,15 +274,48 @@ public class RunPlanner
 	}
 
 	/**
+	 * The same counts, split by planting group.
+	 *
+	 * <p>What the estimate needs once protected patches are their own decision: eight herb patches
+	 * might be two protected and six ordinary, and those get different seeds. Groups with nothing
+	 * to do are left out, the same way empty types are.
+	 */
+	public synchronized Map<PlantingGroup, Integer> countActionableByGroup(
+		Set<PatchImplementation> types)
+	{
+		Map<PlantingGroup, Integer> counts = new LinkedHashMap<>();
+		for (PatchImplementation type : types)
+		{
+			for (FarmPatch patch : availability.getAvailablePatches(type))
+			{
+				if (!isActionable(patch))
+				{
+					continue;
+				}
+
+				// Falls back to the plain group rather than trusting the grouper to answer. A
+				// null key here would propagate into the estimate and the loadout — both of which
+				// then ask it for a patch type — and turn a grouping question into an NPE two
+				// classes away from the cause.
+				PlantingGroup group = groups.groupFor(patch);
+				counts.merge(group != null ? group : PlantingGroup.of(type), 1, Integer::sum);
+			}
+		}
+		return counts;
+	}
+
+	/**
 	 * How likely a crop is to survive across the patches this run will actually visit.
 	 *
 	 * <p>Averaged over them, because the same seed behaves differently depending on where it
 	 * goes: a ranarr in Weiss cannot be diseased at all, one in Falador has about a coin's
 	 * chance untreated. Averaging is right here because the run plants in all of them.
 	 *
-	 * <p>Whether a farmer will be paid is <b>not</b> assumed. Protection is bought during the
-	 * run and nothing has been bought yet, so assuming it would quietly cancel the whole
-	 * disease discount for every protectable crop.
+	 * <p>Whether a farmer will be paid is <b>asked</b> rather than assumed. It used to be assumed
+	 * false, on the reasoning that nothing has been bought yet at the moment a run is priced —
+	 * true, but it left the estimate discounting a loss that cannot happen for anyone who always
+	 * pays, which is most people growing anything expensive. The choice is per planting group;
+	 * see {@code ProtectionSelectionStore}.
 	 */
 	public synchronized RunEstimate.Survival survivalAcross(Set<PatchImplementation> types)
 	{
@@ -278,7 +340,10 @@ public class RunPlanner
 				{
 					continue;
 				}
-				total += DiseaseRisk.survivalChance(patch, seed.getProduce(), compost, false);
+				boolean paid = protection.isProtecting(groups.groupFor(patch), seed)
+					&& DiseaseRisk.isProtectable(patch);
+				total += DiseaseRisk.survivalChance(patch, seed.getProduce(), compost, paid,
+					groups.isProtected(patch));
 				counted++;
 			}
 			return counted == 0 ? 1 : total / counted;
@@ -291,6 +356,27 @@ public class RunPlanner
 		if (projection == null)
 		{
 			// Never seen it. Worth a look: it may well be empty.
+			return true;
+		}
+
+		// Harvest-only: ripe counts and nothing else does. An empty bush patch is not a reason to
+		// travel when the player has said they are not replanting, and a *grown* one is precisely
+		// what they came for — so this narrows the trip rather than merely changing what happens
+		// once you arrive.
+		if (runOptions.isHarvestOnly(groups.groupFor(patch)))
+		{
+			return projection.isReady() || projection.getCropState() == CropState.HARVESTABLE;
+		}
+
+		// Finished growing counts, even while the varbit still says GROWING. A tree that is fully
+		// grown but not yet health-checked reads as GROWING at its last stage — only the *checked*
+		// states are HARVESTABLE — so a run skipped every grown tree and priced a tree run at one
+		// patch when there were seven to chop, dig and replant. Reported from play.
+		//
+		// isReady() is the almanac's own test for this and is what puts "ready" on those rows, so
+		// using it here makes the run agree with what the panel above it already says.
+		if (projection.isReady())
+		{
 			return true;
 		}
 
@@ -316,6 +402,18 @@ public class RunPlanner
 	 */
 	private boolean needsSupplyTrip()
 	{
+		// A tool that exists only in the bank is as much a reason to open at one as a seed is:
+		// arriving at a weedy patch without a rake means nothing at that stop can be done. Asked
+		// first because it holds whether or not any seed was picked.
+		//
+		// The common case answers no without a bank in sight — the leprechaun stores every tool,
+		// and now that his store is read rather than assumed, "he has it" is a fact rather than a
+		// hope. See ToolNeeds.
+		if (tools.anyOnlyInBank(runTypesSnapshot()))
+		{
+			return true;
+		}
+
 		if (selectedForThisRun().isEmpty())
 		{
 			// Nothing picked for anything this run visits, so we cannot know what it needs.
@@ -324,6 +422,28 @@ public class RunPlanner
 			return true;
 		}
 		return !getSupplySources().isEmpty();
+	}
+
+	/** Each tool the run wants and where it is, for the {@code Run planned:} line. */
+	private String describeTools()
+	{
+		List<String> parts = new ArrayList<>();
+		for (ToolNeeds.Requirement requirement : tools.forRun(runTypesSnapshot()))
+		{
+			parts.add(requirement.getTool().getDisplayName() + "=" + requirement.getSource());
+		}
+		return parts.isEmpty() ? "none needed" : String.join(", ", parts);
+	}
+
+	/** The run's patch types, copied under the lock so callers can walk them without it. */
+	private Set<PatchImplementation> runTypesSnapshot()
+	{
+		synchronized (this)
+		{
+			Set<PatchImplementation> copy = EnumSet.noneOf(PatchImplementation.class);
+			copy.addAll(runTypes);
+			return copy;
+		}
 	}
 
 	/**
@@ -677,6 +797,18 @@ public class RunPlanner
 	public Collection<String> getCurrentTransports()
 	{
 		return router.getCurrentTransports();
+	}
+
+	/**
+	 * Where Shortest Path says the current leg ends, if it has said.
+	 *
+	 * <p>Not necessarily one point — see {@code ShortestPathIntegration}. The planner passes it
+	 * straight through rather than interpreting it, because deciding what a set of two means
+	 * needs the stop list, which the caller has.
+	 */
+	public Collection<WorldPoint> getCurrentDestinations()
+	{
+		return router.getCurrentDestinations();
 	}
 
 	@Nullable

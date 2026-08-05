@@ -1,6 +1,7 @@
 package com.dooglemaps.bank;
 
 import com.dooglemaps.data.CompostTier;
+import com.dooglemaps.data.FarmingTool;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
@@ -13,6 +14,7 @@ import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.route.ShortestPathIntegration;
 import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.CompostSelectionStore;
+import com.dooglemaps.state.LeprechaunStore;
 import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.SeedSelectionStore;
@@ -61,6 +63,16 @@ public class RunLoadoutTest
 	private CarriedItems carried;
 	private BankContents bank;
 	private RunLoadout loadout;
+	private com.dooglemaps.state.ProtectionSelectionStore protection;
+
+	/**
+	 * The leprechaun's store, empty to begin with and stocked per test.
+	 *
+	 * <p>Empty is the interesting default now that it is read rather than assumed: an account
+	 * that has never deposited a bucket is exactly the case the loadout used to get wrong.
+	 */
+	private LeprechaunStore leprechaun;
+	private final java.util.Map<Integer, Integer> leprechaunVarbits = new java.util.HashMap<>();
 
 	@Before
 	public void setUp() throws Exception
@@ -93,18 +105,38 @@ public class RunLoadoutTest
 			selection, seeds, patches, construct(GrowthTimer.class, configManager),
 			construct(ShortestPathIntegration.class, Mockito.mock(EventBus.class),
 				Mockito.mock(net.runelite.client.callback.ClientThread.class)),
-			playerLocation);
+			playerLocation, Mockito.mock(ToolNeeds.class),
+			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
+			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
+			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
 
 		carried = construct(CarriedItems.class);
 		bank = construct(BankContents.class);
-		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank);
+
+		net.runelite.api.Client leprechaunClient = Mockito.mock(net.runelite.api.Client.class);
+		when(leprechaunClient.getGameState()).thenReturn(net.runelite.api.GameState.LOGGED_IN);
+		when(leprechaunClient.getVarbitValue(Mockito.anyInt()))
+			.thenAnswer(i -> leprechaunVarbits.getOrDefault(i.getArgument(0), 0));
+		leprechaun = construct(LeprechaunStore.class, leprechaunClient);
+		leprechaun.onGameTick(new net.runelite.api.events.GameTick());
+
+		ToolNeeds toolNeeds = construct(ToolNeeds.class, leprechaun, carried, bank, selection,
+			construct(GrowthTimer.class, configManager),
+			construct(com.dooglemaps.state.BarbarianFarming.class, configManager,
+				Mockito.mock(com.dooglemaps.DoogleMapsConfig.class)));
+		protection = construct(com.dooglemaps.state.ProtectionSelectionStore.class,
+			configManager, gson);
+		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
+			toolNeeds, leprechaun, protection,
+			construct(com.dooglemaps.data.ItemNames.class));
 	}
 
 	/**
-	 * Compost is never a withdrawal, because the leprechaun has it.
+	 * Compost he is holding is not a withdrawal, whatever the bank has.
 	 *
-	 * <p>1,000 buckets of each tier are stored on site. A loadout that told you to bank
-	 * ultracompost would be worse than saying nothing at all.
+	 * <p>The point of the row is to stop you hunting for a bucket you can pick up on site.
+	 * Telling you to bank ultracompost he already has would be worse than saying nothing.
 	 */
 	@Test
 	public void compostIsReportedAsOnSiteRatherThanAsSomethingToWithdraw()
@@ -113,11 +145,91 @@ public class RunLoadoutTest
 		selection.toggle(Seed.RANARR);
 		compost.set(PatchImplementation.HERB, CompostTier.ULTRACOMPOST);
 		bankHolds(CompostTier.ULTRACOMPOST.getItemID(), 500);
+		leprechaunHolds(FarmingTool.ULTRACOMPOST, 1000);
 
 		LoadoutItem entry = find(LoadoutItem.Category.COMPOST);
 		assertNotNull("the chosen compost should still be mentioned", entry);
 		assertEquals("even with 500 in the bank, the leprechaun is the answer",
 			LoadoutItem.Need.AT_LEPRECHAUN, entry.getNeed());
+	}
+
+	/**
+	 * Compost he does <b>not</b> have is a withdrawal, and this is the case that was wrong.
+	 *
+	 * <p>On-site was asserted unconditionally, so an account that had never deposited a bucket
+	 * was told to leave its compost in the bank — and then arrived with none and planted every
+	 * patch on the run untreated. His store is read now, so absence is noticed.
+	 */
+	@Test
+	public void compostTheLeprechaunDoesNotHaveIsAWithdrawal()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		compost.set(PatchImplementation.HERB, CompostTier.ULTRACOMPOST);
+		bankHolds(CompostTier.ULTRACOMPOST.getItemID(), 500);
+
+		LoadoutItem entry = find(LoadoutItem.Category.COMPOST);
+		assertNotNull(entry);
+		assertEquals("he has none of this tier, so it has to come from the bank",
+			LoadoutItem.Need.WITHDRAW, entry.getNeed());
+	}
+
+	/**
+	 * The tier is what is checked, not compost in general.
+	 *
+	 * <p>They are stored in separate slots, and a thousand buckets of ordinary compost is no use
+	 * at all to someone who picked ultra.
+	 */
+	@Test
+	public void aDifferentTierInHisStoreDoesNotCount()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		compost.set(PatchImplementation.HERB, CompostTier.ULTRACOMPOST);
+		bankHolds(CompostTier.ULTRACOMPOST.getItemID(), 500);
+		leprechaunHolds(FarmingTool.COMPOST, 1000);
+
+		assertEquals(LoadoutItem.Need.WITHDRAW, find(LoadoutItem.Category.COMPOST).getNeed());
+	}
+
+	/** A tool he is holding is collected at the patch, not banked for. */
+	@Test
+	public void aToolInHisStoreIsNotAWithdrawal()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		leprechaunHolds(FarmingTool.RAKE, 1);
+		leprechaunHolds(FarmingTool.SPADE, 1);
+		leprechaunHolds(FarmingTool.SEED_DIBBER, 1);
+
+		for (LoadoutItem item : itemsIn(LoadoutItem.Category.TOOL))
+		{
+			assertEquals(item.getName(), LoadoutItem.Need.AT_LEPRECHAUN, item.getNeed());
+		}
+	}
+
+	/**
+	 * A tool nowhere at all is called missing, which is the whole point of reading his store.
+	 *
+	 * <p>This is the trip that would otherwise be wasted: arriving at a weedy patch with no rake
+	 * on you, none stored and none in the bank means nothing at that stop can be raked, treated
+	 * or planted. It is worth one line before setting off.
+	 */
+	@Test
+	public void aToolYouOwnNowhereIsReportedMissing()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		bankHolds(ItemID.SPADE, 1);
+
+		LoadoutItem rake = find(LoadoutItem.Category.TOOL, "Rake");
+		assertNotNull("a rake is needed and should be named", rake);
+		assertEquals(LoadoutItem.Need.MISSING, rake.getNeed());
+		assertTrue("the fix is a shop, not a bank",
+			rake.getReason().toLowerCase().contains("shop"));
+
+		assertEquals("the spade is in the bank, so that one is a withdrawal",
+			LoadoutItem.Need.WITHDRAW, find(LoadoutItem.Category.TOOL, "Spade").getNeed());
 	}
 
 	/**
@@ -229,6 +341,7 @@ public class RunLoadoutTest
 		readyHerbPatch();
 		selection.toggle(Seed.RANARR);
 		compost.set(PatchImplementation.HERB, CompostTier.ULTRACOMPOST);
+		leprechaunHolds(FarmingTool.ULTRACOMPOST, 1000);
 
 		int bucket = CompostTier.ULTRACOMPOST.getItemID();
 		assertEquals("marked, so it shows up in the bank",
@@ -251,7 +364,7 @@ public class RunLoadoutTest
 		bankHolds(ItemID.RUNE_AXE, 1);
 		woodcuttingLevel(99);
 
-		LoadoutItem axe = firstOf(trees, LoadoutItem.Category.TOOL);
+		LoadoutItem axe = axeIn(trees);
 		assertNotNull(axe);
 		assertEquals("Dragon axe", axe.getName());
 		assertEquals(LoadoutItem.Need.WITHDRAW, axe.getNeed());
@@ -266,8 +379,7 @@ public class RunLoadoutTest
 		bankHolds(ItemID.RUNE_AXE, 1);
 		woodcuttingLevel(45);
 
-		assertEquals("dragon wants 61 Woodcutting", "Rune axe",
-			firstOf(trees, LoadoutItem.Category.TOOL).getName());
+		assertEquals("dragon wants 61 Woodcutting", "Rune axe", axeIn(trees).getName());
 	}
 
 	/** A herb run has nothing to chop, so no axe is suggested. */
@@ -279,7 +391,10 @@ public class RunLoadoutTest
 		bankHolds(ItemID.DRAGON_AXE, 1);
 		woodcuttingLevel(99);
 
-		assertTrue(itemsIn(LoadoutItem.Category.TOOL).isEmpty());
+		// Not "no tools" — a herb run still wants a rake and a spade, and both are listed. The
+		// requirement is that nothing on it needs chopping.
+		assertNull("nothing on a herb run has to be cut down",
+			axeIn(EnumSet.of(PatchImplementation.HERB)));
 	}
 
 	/**
@@ -468,6 +583,39 @@ public class RunLoadoutTest
 	private void woodcuttingLevel(int level)
 	{
 		stored.put("dooglemaps.woodcuttingLevel", level);
+	}
+
+	/**
+	 * The axe suggested for a run, or null if none was.
+	 *
+	 * <p>Named rather than taken as "the first tool", which is what these tests used to do. That
+	 * worked only while the axe was the sole entry in the category; the farming tools are listed
+	 * there too now, and an assertion that breaks when a neighbouring row appears was never
+	 * really asserting anything about axes.
+	 */
+	/**
+	 * Puts something in the leprechaun's store.
+	 *
+	 * <p>Written to the base varbit and read back through the store's own tick handler, so the
+	 * test exercises the real path rather than a shortcut into the map.
+	 */
+	private void leprechaunHolds(FarmingTool tool, int count)
+	{
+		leprechaunVarbits.put(tool.getVarbits()[0], count);
+		leprechaun.onGameTick(new net.runelite.api.events.GameTick());
+	}
+
+	private LoadoutItem axeIn(Set<PatchImplementation> types)
+	{
+		for (LoadoutItem item : loadout.forRun(types))
+		{
+			if (item.getCategory() == LoadoutItem.Category.TOOL
+				&& item.getName().toLowerCase().contains("axe"))
+			{
+				return item;
+			}
+		}
+		return null;
 	}
 
 	private LoadoutItem find(LoadoutItem.Category category)

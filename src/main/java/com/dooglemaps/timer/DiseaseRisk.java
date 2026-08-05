@@ -103,7 +103,25 @@ public final class DiseaseRisk
 	public static double survivalChance(FarmPatch patch, Produce produce, CompostTier compost,
 		boolean protectedByFarmer)
 	{
-		if (produce == null || isInherentlySafe(patch, produce) || protectedByFarmer)
+		return survivalChance(patch, produce, compost, protectedByFarmer, false);
+	}
+
+	/**
+	 * As above, told separately whether this patch is disease-free for <i>this</i> account.
+	 *
+	 * <p>Needed because {@link #isInherentlySafe} can only cover the patches whose unlock is
+	 * provable from the patch existing at all — Trollheim and Weiss. Hosidius and Harmony are
+	 * disease-free on a diary you can stand in the region without having, so whether they are
+	 * safe is a fact about the player rather than about the patch, and it has to come from
+	 * outside. See {@code ProtectedPatches}.
+	 *
+	 * @param diseaseFreeForPlayer whether the account's unlocks make this patch immune
+	 */
+	public static double survivalChance(FarmPatch patch, Produce produce, CompostTier compost,
+		boolean protectedByFarmer, boolean diseaseFreeForPlayer)
+	{
+		if (produce == null || isInherentlySafe(patch, produce) || protectedByFarmer
+			|| diseaseFreeForPlayer)
 		{
 			return 1;
 		}

@@ -53,7 +53,9 @@ public class GuideStep
 	 */
 	public boolean highlightsPatch()
 	{
-		return !isAtLeprechaun();
+		// Paying happens at the farmer standing beside the patch, so lighting the patch as well
+		// would be two targets for one click. The farmer is named on the step itself.
+		return !isAtLeprechaun() && action != GuideAction.PAY_FARMER;
 	}
 
 	/**
@@ -68,6 +70,39 @@ public class GuideStep
 	{
 		return action == GuideAction.NOTE_AT_LEPRECHAUN
 			|| action == GuideAction.WITHDRAW_COMPOST
+			|| action == GuideAction.WITHDRAW_TOOL
+			|| action == GuideAction.RETURN_BUCKETS;
+	}
+
+	/**
+	 * Whether the item should be looked for in the leprechaun's store rather than the inventory.
+	 *
+	 * <p>A separate question from {@link #isAtLeprechaun()}, and conflating the two cost a bug:
+	 * every step at the leprechaun looked its item up in his store, so a full inventory told you
+	 * to note your watermelons and then highlighted nothing, because a watermelon has no slot in
+	 * his store — it is in your pack, which is the whole reason he is being visited.
+	 *
+	 * <p>Both halves of that instruction only work together. He is outlined so you know who to
+	 * click; the item is outlined so you know what to click <i>on</i> him.
+	 *
+	 * <p>The right test turned out not to be which <i>direction</i> the item moves, which is what
+	 * this was first written as — handing over versus taking out. It is <b>which screen is in
+	 * front of you when the click happens</b>, and those are not the same question:
+	 *
+	 * <ul>
+	 *   <li><b>Noting a crop</b> is an inventory click. You use the crop on him, and the pack is
+	 *       what you are looking at.</li>
+	 *   <li><b>Returning buckets</b> is not, even though it also hands something over. His store
+	 *       opens over the inventory, listing his own contents, and the bucket slot in <i>that</i>
+	 *       is what gets clicked. Reported from play, and it is why direction was the wrong
+	 *       rule.</li>
+	 *   <li><b>Withdrawing</b> anything is likewise a click in his store.</li>
+	 * </ul>
+	 */
+	public boolean itemIsInStore()
+	{
+		return action == GuideAction.WITHDRAW_COMPOST
+			|| action == GuideAction.WITHDRAW_TOOL
 			|| action == GuideAction.RETURN_BUCKETS;
 	}
 
@@ -79,6 +114,12 @@ public class GuideStep
 	static GuideStep withItem(GuideAction action, FarmPatch patch, int itemId, String text)
 	{
 		return new GuideStep(action, patch, itemId, -1, text);
+	}
+
+	/** A step performed on a named NPC beside the patch, such as paying the farmer. */
+	static GuideStep atNpc(GuideAction action, FarmPatch patch, int itemId, int npcId, String text)
+	{
+		return new GuideStep(action, patch, itemId, npcId, text);
 	}
 
 	static GuideStep atLeprechaun(GuideAction action, FarmPatch patch, int itemId,
