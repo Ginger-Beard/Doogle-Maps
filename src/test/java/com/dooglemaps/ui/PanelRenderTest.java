@@ -5,7 +5,10 @@ import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.ProduceState;
 import com.dooglemaps.state.AvailabilityProfile;
+import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.PatchStateStore;
+import com.dooglemaps.state.PlantableResolver;
+import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.timer.GrowthTimer;
 import com.google.gson.Gson;
 import java.awt.Color;
@@ -72,25 +75,153 @@ public class PanelRenderTest
 		seed(store, "10548.4774", 171);  // dead
 		seed(store, "14391.4774", 3);    // raked, empty
 
+		// Catherby's allotment, protected, so the gardener's chathead badge is in the picture.
+		// Allotments are the only rendered patch type that can be paid for - herbs cannot.
+		seed(store, "11062.4771", 11);   // potatoes, growing
+		store.recordProtected(FarmingWorldData.getPatch("11062.4771"), true);
+
 		ItemManager itemManager = Mockito.mock(ItemManager.class);
 		ClientThread clientThread = Mockito.mock(ClientThread.class);
 		when(itemManager.getImage(anyInt())).thenAnswer(invocation -> swatch(clientThread));
+		when(itemManager.getImage(anyInt(), anyInt(), Mockito.anyBoolean()))
+			.thenAnswer(invocation -> swatch(clientThread, invocation.getArgument(1)));
 
-		DoogleMapsConfig config = Mockito.mock(DoogleMapsConfig.class);
+		// A farming level, so seeds render as usable rather than all level-locked.
+		when(configManager.getRSProfileConfiguration(
+			eq("dooglemaps"), eq("farmingLevel"), eq(int.class))).thenReturn(99);
+
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class,
+			Mockito.mock(net.runelite.api.Client.class), configManager, gson);
+		stockBank(seeds);
+		PlantableResolver resolver = construct(PlantableResolver.class, seeds);
+		com.dooglemaps.state.SeedSelectionStore selection =
+			construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson);
+		// Two picked, so the render shows both the highlighted and unhighlighted states.
+		selection.toggle(Seed.RANARR);
+		selection.toggle(Seed.SNAPDRAGON);
+
+		com.dooglemaps.route.PatchLocationStore patchLocations =
+			construct(com.dooglemaps.route.PatchLocationStore.class, configManager, gson);
+		com.dooglemaps.route.BankLocationStore bankLocations =
+			construct(com.dooglemaps.route.BankLocationStore.class, configManager, gson);
+		com.dooglemaps.route.ShortestPathIntegration router = construct(
+			com.dooglemaps.route.ShortestPathIntegration.class,
+			Mockito.mock(net.runelite.client.eventbus.EventBus.class),
+			Mockito.mock(ClientThread.class));
+		com.dooglemaps.state.PlayerLocation playerLocation =
+			construct(com.dooglemaps.state.PlayerLocation.class,
+				Mockito.mock(net.runelite.api.Client.class));
+		com.dooglemaps.route.RunPlanner runPlanner = construct(com.dooglemaps.route.RunPlanner.class,
+			availability, patchLocations, bankLocations, selection, seeds, store, timer, router,
+			playerLocation);
+
+		// A plain mock answers false for every boolean, which would switch off all 22 patch
+		// types and render an empty sidebar. In the client those come from the interface's
+		// own defaults, so the patch-type section is answered true here and the rest are
+		// left to the explicit stubs below.
+		DoogleMapsConfig config = Mockito.mock(DoogleMapsConfig.class, invocation ->
+		{
+			net.runelite.client.config.ConfigItem item =
+				invocation.getMethod().getAnnotation(net.runelite.client.config.ConfigItem.class);
+			return item != null && "patchTypes".equals(item.section())
+				? Boolean.TRUE
+				: Mockito.RETURNS_DEFAULTS.answer(invocation);
+		});
 		when(config.showTimers()).thenReturn(true);
 		when(config.sortProblemsFirst()).thenReturn(true);
 		when(config.showStaleness()).thenReturn(true);
 
-		return construct(DoogleMapsPanel.class, store, availability, timer, itemManager, config);
+		// Secateurs and cape on, so the rendered rows show the yield estimate at its most
+		// crowded — that is the width the sidebar actually has to survive.
+		when(configManager.getRSProfileConfiguration(
+			eq("dooglemaps"), Mockito.startsWith("has"), eq(boolean.class))).thenReturn(true);
+		com.dooglemaps.state.FarmingBonusStore bonuses = construct(
+			com.dooglemaps.state.FarmingBonusStore.class, configManager, store, itemManager,
+			Mockito.mock(net.runelite.api.Client.class));
+
+		com.dooglemaps.state.RunTypeStore runTypes =
+			construct(com.dooglemaps.state.RunTypeStore.class, configManager, gson);
+		// Ticked so the run section renders its reward table, which is the widest thing in
+		// the panel and the most likely to overflow the sidebar.
+		runTypes.setSelected(java.util.EnumSet.of(
+			com.dooglemaps.data.PatchImplementation.HERB,
+			com.dooglemaps.data.PatchImplementation.ALLOTMENT));
+
+		return construct(DoogleMapsPanel.class, store, availability, timer, itemManager, config,
+			resolver, seeds, selection, runPlanner, bonuses, runTypes,
+			construct(com.dooglemaps.state.CompostSelectionStore.class, configManager, gson),
+			stockedHarvestStats(configManager, gson),
+			Mockito.mock(com.dooglemaps.guide.GuideTracker.class),
+			Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
+	}
+
+	/**
+	 * A harvest history with something in it, so the panel renders its real state.
+	 *
+	 * <p>Seeded through the config rather than by replaying harvests: the store's own load path
+	 * is what the client uses, and going through it means the fixture cannot drift from the
+	 * stored format.
+	 */
+	private static com.dooglemaps.validate.HarvestStatsStore stockedHarvestStats(
+		ConfigManager configManager, Gson gson) throws Exception
+	{
+		when(configManager.getRSProfileConfiguration("dooglemaps", "harvestStats")).thenReturn(
+			"{\"Ranarr weed|ULTRACOMPOST\":{\"crop\":\"Ranarr weed\",\"compost\":\"ULTRACOMPOST\","
+				+ "\"harvests\":14,\"items\":128,\"predicted\":126.4,\"xp\":1820.0,\"best\":13,"
+				+ "\"worst\":6,\"partialItems\":4,\"partialXp\":52.0},"
+				+ "\"Ranarr weed|NONE\":{\"crop\":\"Ranarr weed\",\"compost\":\"NONE\","
+				+ "\"harvests\":3,\"items\":13,\"predicted\":14.2,\"xp\":390.0,\"best\":6,"
+				+ "\"worst\":3},"
+				+ "\"Watermelon|ULTRACOMPOST\":{\"crop\":\"Watermelon\",\"compost\":"
+				+ "\"ULTRACOMPOST\",\"harvests\":8,\"items\":92,\"predicted\":88.8,"
+				+ "\"xp\":1160.0,\"best\":15,\"worst\":9}}");
+
+		com.dooglemaps.validate.HarvestStatsStore stats =
+			construct(com.dooglemaps.validate.HarvestStatsStore.class, configManager, gson);
+		stats.load();
+		return stats;
+	}
+
+	/** Puts a few herb seeds in the bank so the seed grid has something to draw. */
+	private static void stockBank(SeedInventoryStore seeds)
+	{
+		net.runelite.api.ItemContainer bank = Mockito.mock(net.runelite.api.ItemContainer.class);
+		when(bank.getItems()).thenReturn(new net.runelite.api.Item[]{
+			new net.runelite.api.Item(Seed.GUAM.getItemID(), 412),
+			new net.runelite.api.Item(Seed.RANARR.getItemID(), 40),
+			new net.runelite.api.Item(Seed.SNAPDRAGON.getItemID(), 12),
+			new net.runelite.api.Item(Seed.TORSTOL.getItemID(), 3),
+			new net.runelite.api.Item(Seed.AVANTOE.getItemID(), 118),
+			new net.runelite.api.Item(Seed.IRIT.getItemID(), 7),
+			new net.runelite.api.Item(Seed.KWUARM.getItemID(), 25),
+		});
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(), bank);
 	}
 
 	/** A recognisable stand-in for an item sprite. */
 	private static AsyncBufferedImage swatch(ClientThread clientThread)
 	{
+		return swatch(clientThread, 0);
+	}
+
+	/**
+	 * Stands in for an item sprite, with the stack number drawn on when there is one.
+	 *
+	 * <p>The real ItemManager renders the quantity in the game's own font; this only needs
+	 * to be close enough to check the grid's layout.
+	 */
+	private static AsyncBufferedImage swatch(ClientThread clientThread, int quantity)
+	{
 		AsyncBufferedImage image = new AsyncBufferedImage(clientThread, 36, 32, BufferedImage.TYPE_INT_ARGB);
 		Graphics2D g = image.createGraphics();
 		g.setColor(new Color(0x7F, 0xB2, 0x4A));
 		g.fillOval(4, 2, 28, 28);
+		if (quantity > 0)
+		{
+			g.setColor(new Color(0xFF, 0xFF, 0x00));
+			g.setFont(g.getFont().deriveFont(9f));
+			g.drawString(String.valueOf(quantity), 1, 9);
+		}
 		g.dispose();
 		return image;
 	}
@@ -223,6 +354,13 @@ public class PanelRenderTest
 		});
 	}
 
+	/**
+	 * Renders each of the three top-level tabs to its own PNG.
+	 *
+	 * <p>All three, not just the one that opens by default: the run controls carry the widest
+	 * thing in the panel — the reward table — and moving them behind a tab would otherwise
+	 * take them out of the width guard along with the view.
+	 */
 	@Test
 	public void rendersTheSidebar() throws Exception
 	{
@@ -241,24 +379,68 @@ public class PanelRenderTest
 		{
 		});
 
-		JPanel wrapped = panel.getWrappedPanel();
-		wrapped.setSize(WIDTH, HEIGHT);
-		layout(wrapped);
+		for (String section : new String[]{"Almanac", "Doogle Maps", "Stats"})
+		{
+			selectSection(panel, section);
+			SwingUtilities.invokeAndWait(() ->
+			{
+			});
 
-		BufferedImage image = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_RGB);
-		Graphics2D g = image.createGraphics();
-		wrapped.printAll(g);
-		g.dispose();
+			JPanel wrapped = panel.getWrappedPanel();
+			wrapped.setSize(WIDTH, HEIGHT);
+			layout(wrapped);
 
-		File out = new File(System.getProperty("dooglemaps.renderOut", "build/panel.png"));
-		out.getParentFile().mkdirs();
-		ImageIO.write(image, "png", out);
-		System.out.println("wrote " + out.getAbsolutePath());
+			BufferedImage image = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_RGB);
+			Graphics2D g = image.createGraphics();
+			wrapped.printAll(g);
+			g.dispose();
 
-		reportEdgePixels(image);
-		assertNoLightOutline(image);
+			// The default tab keeps the plain name, so the usual place to look is unchanged.
+			String base = System.getProperty("dooglemaps.renderOut", "build/panel.png");
+			File out = "Almanac".equals(section)
+				? new File(base)
+				: new File(base.replace(".png", "-" + section.toLowerCase().replace(' ', '-') + ".png"));
+			out.getParentFile().mkdirs();
+			ImageIO.write(image, "png", out);
+			System.out.println("wrote " + out.getAbsolutePath());
+
+			reportEdgePixels(image);
+			assertNoLightOutline(image);
+			assertTrue(out.length() > 0);
+		}
+
+		selectSection(panel, "Almanac");
 		assertTabsFit(panel);
-		assertTrue(out.length() > 0);
+	}
+
+	/**
+	 * Switches to one of the Almanac / Doogle Maps / Stats tabs.
+	 *
+	 * <p>{@code MaterialTab} is a {@code JLabel}, so the tabs are found by their text — which
+	 * is also what makes them findable at all, since the group exposes them only by index.
+	 *
+	 * <p>It has to be the <i>group</i> that selects. {@code MaterialTab.select()} only marks
+	 * the tab itself, and worse, marking it first makes the group's own select a no-op, so the
+	 * strip highlights the new tab while the old page stays on screen.
+	 */
+	private static void selectSection(java.awt.Container root, String name)
+	{
+		for (java.awt.Component child : root.getComponents())
+		{
+			if (child instanceof net.runelite.client.ui.components.materialtabs.MaterialTab
+				&& name.equals(((javax.swing.JLabel) child).getText()))
+			{
+				net.runelite.client.ui.components.materialtabs.MaterialTab tab =
+					(net.runelite.client.ui.components.materialtabs.MaterialTab) child;
+				((net.runelite.client.ui.components.materialtabs.MaterialTabGroup) tab.getParent())
+					.select(tab);
+				return;
+			}
+			if (child instanceof java.awt.Container)
+			{
+				selectSection((java.awt.Container) child, name);
+			}
+		}
 	}
 
 	/** Presses the visible "Show patches" button, whichever tab is selected. */
@@ -312,13 +494,49 @@ public class PanelRenderTest
 	 */
 	private static void assertTabsFit(DoogleMapsPanel panel)
 	{
-		for (java.awt.Component child : panel.getComponents())
+		StringBuilder offenders = new StringBuilder();
+		findTooWide(panel, "", offenders);
+		assertTrue("these want more than the " + PANEL_WIDTH + "px sidebar and will be clipped:"
+			+ offenders, offenders.length() == 0);
+	}
+
+	/** Names the narrowest component that is still too wide — the actual cause. */
+	private static void findTooWide(java.awt.Container container, String path, StringBuilder out)
+	{
+		for (java.awt.Component child : container.getComponents())
 		{
 			int wanted = child.getPreferredSize().width;
-			assertTrue("a " + child.getClass().getSimpleName() + " wants " + wanted
-					+ "px, wider than the " + PANEL_WIDTH + "px sidebar - it will be clipped",
-				wanted <= PANEL_WIDTH);
+			if (wanted <= PANEL_WIDTH)
+			{
+				continue;
+			}
+
+			String here = path + "/" + child.getClass().getSimpleName();
+			boolean blamedAChild = false;
+			if (child instanceof java.awt.Container)
+			{
+				int before = out.length();
+				findTooWide((java.awt.Container) child, here, out);
+				blamedAChild = out.length() > before;
+			}
+
+			if (!blamedAChild)
+			{
+				String detail = child instanceof javax.swing.JLabel
+					? " text=\"" + abbreviate(((javax.swing.JLabel) child).getText()) + "\""
+					: "";
+				out.append("\n  ").append(here).append(" wants ").append(wanted).append("px").append(detail);
+			}
 		}
+	}
+
+	private static String abbreviate(String text)
+	{
+		if (text == null)
+		{
+			return "";
+		}
+		return text.length() <= 60 ? text : text.substring(0, 60) + "...";
 	}
 
 	/**

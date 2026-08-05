@@ -2,8 +2,11 @@ package com.dooglemaps.timer;
 
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.Produce;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import java.util.Map;
 import java.util.Set;
 
 /** Which crops and patches disease can touch, for the confidence tiers in {@link Confidence}. */
@@ -50,8 +53,89 @@ public final class DiseaseRisk
 		7223    // Kourend vinery, gardener protects grapes for free
 	);
 
+	/**
+	 * Chance per growth tick of catching something, in 128ths, before compost.
+	 *
+	 * <p>Only where Jagex has published it. Herbs are the one that matters most — 27/128 a tick
+	 * over three vulnerable ticks is a coin flip on whether an untreated patch survives at all.
+	 *
+	 * <p>Crops absent from here are treated as safe rather than guessed at. That understates
+	 * the risk for allotments and hops, which is the direction that at least does not invent a
+	 * penalty; see {@link #isRiskKnown}.
+	 */
+	private static final Map<PatchImplementation, Integer> BASE_RISK =
+		ImmutableMap.of(
+			PatchImplementation.HERB, 27,
+			PatchImplementation.FRUIT_TREE, 18,
+			PatchImplementation.CORAL, 8);
+
+	/** Trees differ by species rather than by patch, and only two are published. */
+	private static final Map<Produce, Integer> TREE_RISK =
+		ImmutableMap.of(Produce.MAPLE, 13, Produce.MAGIC, 9);
+
 	private DiseaseRisk()
 	{
+	}
+
+	/** Whether a published disease rate exists for this crop at all. */
+	public static boolean isRiskKnown(Produce produce)
+	{
+		if (produce == null || produce.getPatchImplementation() == null)
+		{
+			return false;
+		}
+		return TREE_RISK.containsKey(produce)
+			|| BASE_RISK.containsKey(produce.getPatchImplementation());
+	}
+
+	/**
+	 * The chance a freshly planted crop reaches harvest.
+	 *
+	 * <p>Disease is rolled once per growth tick, but neither the first stage nor a fully grown
+	 * crop can catch anything, so a five-stage herb rolls three times. Compost is the whole
+	 * defence: it cuts the rate by half, four fifths or nine tenths, which turns an untreated
+	 * herb's 49% survival into 95%.
+	 *
+	 * <p>Returns 1 where nothing can go wrong — an immune crop, a disease-free patch, or one a
+	 * farmer has been paid to watch — and also where no rate is published, since inventing a
+	 * penalty would be worse than omitting one.
+	 */
+	public static double survivalChance(FarmPatch patch, Produce produce, CompostTier compost,
+		boolean protectedByFarmer)
+	{
+		if (produce == null || isInherentlySafe(patch, produce) || protectedByFarmer)
+		{
+			return 1;
+		}
+
+		Integer base = TREE_RISK.containsKey(produce)
+			? TREE_RISK.get(produce)
+			: BASE_RISK.get(produce.getPatchImplementation());
+		if (base == null)
+		{
+			return 1;
+		}
+
+		// Rounded down to the nearest 128th after the reduction, as the wiki states.
+		int rate = (int) Math.floor(base * remainingRisk(compost));
+		int rolls = Math.max(0, produce.getStages() - 2);
+		return Math.pow(1 - (rate / 128.0), rolls);
+	}
+
+	/** What share of the base rate survives a tier of compost. */
+	private static double remainingRisk(CompostTier compost)
+	{
+		if (compost == null)
+		{
+			return 1;
+		}
+		switch (compost)
+		{
+			case COMPOST: return 0.5;
+			case SUPERCOMPOST: return 0.2;
+			case ULTRACOMPOST: return 0.1;
+			default: return 1;
+		}
 	}
 
 	/** Whether disease is impossible here, ignoring farmer payment. */

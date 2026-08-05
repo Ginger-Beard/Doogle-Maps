@@ -1,0 +1,42 @@
+# Chance-to-save constants per seed, in 1/256 units.
+# Source: {{Farming yield calculator|low=|high=}} on each seed's OSRS Wiki page, which
+# cites Mod Easty's figures on Talk:Farming. Huasca has no such page and comes from the
+# wiki's Module:Herb Farming calculator.
+#
+# family decides which boosts apply: the Farming cape is herb-only, and magic secateurs
+# are ignored underwater, so giant seaweed takes neither.
+seed	family	cts_low	cts_high
+POTATO	allotment	101	180
+ONION	allotment	105	180
+CABBAGE	allotment	107	180
+TOMATO	allotment	112	180
+SWEETCORN	allotment	88	180
+STRAWBERRY	allotment	103	180
+WATERMELON	allotment	126	180
+SNAPE_GRASS	allotment	148	195
+BARLEY	hops	103	180
+HAMMERSTONE	hops	104	180
+ASGARNIAN	hops	108	180
+JUTE	hops	113	180
+YANILLIAN	hops	116	180
+FLAX	hops	140	194
+KRANDORIAN	hops	121	180
+WILDBLOOD	hops	128	180
+HEMP	hops	120	178
+COTTON	hops	82	142
+GUAM	herb	25	80
+MARRENTILL	herb	28	80
+TARROMIN	herb	31	80
+HARRALANDER	herb	36	80
+RANARR	herb	39	80
+TOADFLAX	herb	43	80
+IRIT	herb	46	80
+AVANTOE	herb	50	80
+KWUARM	herb	54	80
+SNAPDRAGON	herb	57	80
+CADANTINE	herb	60	80
+LANTADYME	herb	64	80
+DWARF_WEED	herb	67	80
+TORSTOL	herb	71	80
+SEAWEED	seaweed	150	210
+HUASCA	herb	58	80

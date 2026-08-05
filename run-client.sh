@@ -13,6 +13,11 @@
 # Usage:
 #   ./run-client.sh            # build and launch
 #   ./run-client.sh --refresh  # also re-resolve dependencies
+#   ./run-client.sh --debug    # also listen on port 5005 for a debugger
+#
+# --debug lets an IDE hot-swap changed classes into the running client, so a relaunch is
+# only needed for changes hot-swap cannot take. See "Iterating without relaunching" in
+# README.md for what that covers and what it does not.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -36,9 +41,17 @@ windows_root="$(wslpath -w "$repo_root")"
 # daemon locks its project cache, and a running client holds its class files open, neither
 # of which WSL can then delete. See the note in build.gradle.
 gradle_args=(runClient --project-cache-dir .gradle-windows -PbuildSuffix=windows)
-if [[ "${1:-}" == "--refresh" ]]; then
-	gradle_args+=(--refresh-dependencies)
-fi
+for arg in "$@"; do
+	case "$arg" in
+		--refresh) gradle_args+=(--refresh-dependencies) ;;
+		--debug)   gradle_args+=(-PdebugClient) ;;
+		*)
+			echo "unknown option: $arg" >&2
+			echo "usage: ./run-client.sh [--refresh] [--debug]" >&2
+			exit 1
+			;;
+	esac
+done
 
 echo "Launching RuneLite from $windows_root"
 echo "(first run downloads the RuneLite deps into the Windows Gradle cache, so give it a minute)"

@@ -265,6 +265,30 @@ public class GrowthTimer
 			? Math.min(phaseStage, growthStages - 1)
 			: growthStages - 1;
 
+		// A harvestable crop's phase stage counts its remaining harvests, and for crops that
+		// regrow it climbs back up over time. Worth surfacing: someone farming coconuts for
+		// magic tree payments wants to know when the next lot is back, not to clear the tree.
+		int livesRemaining = 0;
+		long regrowEstimate = 0;
+		if (cropState == CropState.HARVESTABLE)
+		{
+			// The harvest stage counts states, and the two crop families number them
+			// differently. A fruit tree holds at most six fruit but has seven states, because
+			// "no fruit on the tree" is one of them - so the stage IS the stock. A herb patch
+			// has three states and three lives, and is never harvestable with zero left, so
+			// there the stage is one below the count. Verified for fruit trees against the
+			// wiki: "to a maximum of six".
+			boolean regrows = produce.getRegrowTickrate() > 0;
+			int maximum = regrows ? produce.getHarvestStages() - 1 : produce.getHarvestStages();
+
+			livesRemaining = Math.max(0, Math.min(regrows ? phaseStage : phaseStage + 1, maximum));
+
+			if (regrows && livesRemaining < maximum)
+			{
+				regrowEstimate = getTickTime(produce.getRegrowTickrate(), 1, now);
+			}
+		}
+
 		boolean stale = snapshot.getLastSeen() < now - 60;
 
 		return new PatchProjection(
@@ -274,6 +298,8 @@ public class GrowthTimer
 			stage,
 			growthStages,
 			doneEstimate,
+			livesRemaining,
+			regrowEstimate,
 			confidenceFor(patch, snapshot, produce, cropState, stage, growthStages),
 			stale,
 			snapshot.getLastSeen()

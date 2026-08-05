@@ -151,6 +151,17 @@ public class AvailabilityProfile
 		return result;
 	}
 
+	/** Forgets every explicit on/off, falling back to "show what we have seen". */
+	public void clear()
+	{
+		synchronized (this)
+		{
+			toggles.clear();
+			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, AVAILABILITY_KEY);
+		}
+		fireChanged();
+	}
+
 	public void load()
 	{
 		doLoad();

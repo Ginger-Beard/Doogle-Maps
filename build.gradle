@@ -54,6 +54,12 @@ task runClient(type: JavaExec) {
 	description = 'Run RuneLite with the plugin'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'com.dooglemaps.DoogleMapsPluginTest'
-	jvmArgs = ['-ea']
 	args = ['--developer-mode']
+
+	// -PdebugClient opens a debugger port so an IDE can hot-swap changed classes into the
+	// running client, which saves a relaunch for anything that only changes a method body.
+	// suspend=n so the client still starts on its own if nothing ever attaches.
+	jvmArgs = project.hasProperty('debugClient')
+		? ['-ea', '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005']
+		: ['-ea']
 }

@@ -1,0 +1,74 @@
+# Farming XP per seed, scraped from the OSRS Wiki '<Type> patch/Seeds' subpages.
+# Regenerate: see TODO.md. Values are per seed/crop, not per patch.
+# 'check' is the one-off check-health XP; ordinary trees give no per-harvest XP at all.
+#
+# Fruit trees are the exception: they pay a check award AND per fruit. The patch/Seeds page
+# gives only one unlabelled total, so those rows come from each seed's own page, which states
+# the three components separately. Six of the eight reconcile exactly against the summary
+# table's total (plant + check + 6 x harvest), which is what makes the split trustworthy.
+# Two do not, and the gap is in the check figure both times:
+#   Pineapple  seed page 4605    -> total implies 4605.7
+#   Papaya     seed page 6146.6  -> total implies 6146.4
+# The seed pages are used, being the ones that state the components rather than deriving them.
+# A single clean check-health XP drop settles either outright - no averaging needed - and
+# HarvestLog warns on any mismatch, so playing normally will answer it.
+patch_type	seed	level	xp1	xp2	xp3	columns
+herb	Guam	9	11	12.5	111	plant,harvest,total
+herb	Marrentill	14	13.5	15	133.5	plant,harvest,total
+herb	Tarromin	19	16	18	160	plant,harvest,total
+herb	Harralander	26	21.5	24	213.5	plant,harvest,total
+herb	Gout tuber	29	105	45	465	plant,harvest,total
+herb	Ranarr	32	27	30.5	271	plant,harvest,total
+herb	Toadflax	38	34	38.5	342	plant,harvest,total
+herb	Irit	44	43	48.5	431	plant,harvest,total
+herb	Avantoe	50	54.5	61.5	546.5	plant,harvest,total
+herb	Kwuarm	56	69	78	693	plant,harvest,total
+herb	Snapdragon	62	87.5	98.5	875.5	plant,harvest,total
+herb	Huasca	65	86.5	110	966.5	plant,harvest,total
+herb	Cadantine	67	106.5	120	1066.5	plant,harvest,total
+herb	Lantadyme	73	134.5	151.5	1346.5	plant,harvest,total
+herb	Dwarf weed	79	170.5	192	1706.5	plant,harvest,total
+herb	Torstol	85	199.5	224.5	1995.5	plant,harvest,total
+allotment	Potato	1	8	9		plant,harvest
+allotment	Onion	5	9.5	10.5		plant,harvest
+allotment	Cabbage	7	10	11.5		plant,harvest
+allotment	Tomato	12	12.5	14		plant,harvest
+allotment	Sweetcorn	20	17	19		plant,harvest
+allotment	Strawberry	31	26	29		plant,harvest
+allotment	Watermelon	47	48.5	54.5		plant,harvest
+allotment	Snape grass	61	82	82		plant,harvest
+hops	Barley	3	8.5	9.5		plant,harvest
+hops	Hammerstone	4	9	10		plant,harvest
+hops	Asgarnian	8	10.9	12		plant,harvest
+hops	Jute	13	13	14.5		plant,harvest
+hops	Yanillian	16	14.5	16		plant,harvest
+hops	Flax	18	16	17.5		plant,harvest
+hops	Krandorian	21	17.5	19.5		plant,harvest
+hops	Wildblood	28	23	26		plant,harvest
+hops	Hemp	37	33	37		plant,harvest
+hops	Cotton	71	72	82		plant,harvest
+bush	Redberry	10	11.5	64	4.5	plant,check,harvest
+bush	Cadavaberry	22	18	102.5	7	plant,check,harvest
+bush	Dwellberry	36	31.5	177.5	12	plant,check,harvest
+bush	Jangerberry	48	50.5	284.5	19	plant,check,harvest
+bush	Whiteberry	59	78	437.5	29	plant,check,harvest
+bush	Poison ivy	70	120	675	45	plant,check,harvest
+flower	Marigold	2	8.5	47	55.5	plant,harvest
+flower	Rosemary	11	12	66.5	78.5	plant,harvest
+flower	Nasturtium	24	19.5	111	130.5	plant,harvest
+flower	Woad	25	20.5	115.5	136	plant,harvest
+flower	Limpwurt	26	21.5	120	141.5	plant,harvest
+flower	White lily	58	42	250	292	plant,harvest
+tree	Acorn	15	14	467.3	481.3	plant,check,total
+tree	Willow	30	25	1456.5	1481.5	plant,check,total
+tree	Maple	45	45	3403.4	3448.4	plant,check,total
+tree	Yew	60	81	7069.9	7150.9	plant,check,total
+tree	Magic	75	145.5	13768.3	13913.8	plant,check,total
+fruit_tree	Apple tree	27	22	1199.5	8.5	plant,check,harvest
+fruit_tree	Banana tree	33	28	1750.5	10.5	plant,check,harvest
+fruit_tree	Orange tree	39	35.5	2470.2	13.5	plant,check,harvest
+fruit_tree	Curry tree	42	40	2906.9	15	plant,check,harvest
+fruit_tree	Pineapple	51	57	4605	21.5	plant,check,harvest
+fruit_tree	Papaya tree	57	72	6146.6	27	plant,check,harvest
+fruit_tree	Palm tree	68	110.5	10150.1	41.5	plant,check,harvest
+fruit_tree	Dragonfruit tree	81	140	17335	70	plant,check,harvest

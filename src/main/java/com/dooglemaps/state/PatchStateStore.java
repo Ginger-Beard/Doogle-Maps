@@ -5,12 +5,15 @@ import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropState;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
+import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -97,6 +100,12 @@ public class PatchStateStore
 		return snapshots.get(patchKey);
 	}
 
+	/** Every patch we have ever seen, as a copy so callers cannot mutate the cache. */
+	public synchronized Collection<PatchSnapshot> getAll()
+	{
+		return new ArrayList<>(snapshots.values());
+	}
+
 	// ----------------------------------------------------------------- writes
 
 	/**
@@ -122,6 +131,7 @@ public class PatchStateStore
 	private synchronized boolean applyVarbit(FarmPatch patch, int varbitValue, ProduceState decoded)
 	{
 		PatchSnapshot snapshot = snapshots.computeIfAbsent(patch.getKey(), PatchStateStore::blank);
+		Produce previousProduce = snapshot.getProduce();
 
 		boolean changed = snapshot.getVarbitValue() != varbitValue
 			|| snapshot.getProduce() != decoded.getProduce()
@@ -134,16 +144,34 @@ public class PatchStateStore
 		snapshot.setStage(decoded.getStage());
 		snapshot.setLastSeen(Instant.now().getEpochSecond());
 
-		// Emptying, dying or ripening ends the current crop's treatment: compost is
-		// consumed by the next planting and protection was bought for the crop that just
-		// finished. Mirrors how core Time Tracking clears the same two flags.
-		if (decoded.getCropState() == CropState.EMPTY
-			|| decoded.getCropState() == CropState.DEAD
-			|| decoded.getCropState() == CropState.HARVESTABLE
-			|| !decoded.getProduce().isCrop())
+		// Compost and protection expire at different moments, and conflating them loses real
+		// information.
+		//
+		// Protection buys immunity from disease, which is a growing-phase concern. Once the
+		// crop is ripe it can no longer catch anything, so the payment is spent.
+		//
+		// Compost is not spent then. Its main effect is extra harvest lives, and those are
+		// used one per pick — that is, entirely *after* the crop turns harvestable. Clearing
+		// it at that point drops the treatment exactly when the yield estimate needs it, and
+		// understates an ultracomposted patch by three items.
+		//
+		// So compost survives until the crop itself is gone. That cannot be spotted from the
+		// state alone, because an emptied allotment reads as weeds and a freshly raked one
+		// does too — and composting before planting is the normal order of play, so treating
+		// weeds as "forget the treatment" would wipe it a tick after it was applied. It is
+		// the *transition* from holding a crop to not holding one that ends the cycle.
+		boolean cropJustLeft = previousProduce != null && previousProduce.isCrop()
+			&& !decoded.getProduce().isCrop();
+
+		if (cropJustLeft)
 		{
-			changed |= snapshot.getCompost() != CompostTier.NONE || snapshot.isPatchProtected();
+			changed |= snapshot.getCompost() != CompostTier.NONE;
 			snapshot.setCompost(CompostTier.NONE);
+		}
+
+		if (cropJustLeft || decoded.getCropState() == CropState.HARVESTABLE)
+		{
+			changed |= snapshot.isPatchProtected();
 			snapshot.setPatchProtected(false);
 		}
 

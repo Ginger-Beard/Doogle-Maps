@@ -29,6 +29,18 @@ public class PatchProjection
 	 */
 	long doneEstimate;
 
+	/**
+	 * Harvests left before the patch is used up, for crops that give several. 0 when the
+	 * crop is not harvestable or gives only one.
+	 */
+	int livesRemaining;
+
+	/**
+	 * Epoch seconds when the next harvest grows back, for crops that regrow — a fruit tree
+	 * you want to keep rather than clear. 0 when nothing is regrowing.
+	 */
+	long regrowEstimate;
+
 	Confidence confidence;
 
 	/** Whether the patch was still advancing when we last had real information. */
@@ -46,5 +58,23 @@ public class PatchProjection
 	public boolean isEmpty()
 	{
 		return produce == null || !produce.isCrop();
+	}
+
+	/**
+	 * Whether this kind of crop grows more produce back rather than being used up.
+	 *
+	 * <p>A property of the crop, not of its current state — a fruit tree with a full load
+	 * still regrows, it just has no room to right now. Distinct from {@link #isRegrowing()},
+	 * which is about whether something is on its way.
+	 */
+	public boolean regrows()
+	{
+		return produce != null && produce.getRegrowTickrate() > 0;
+	}
+
+	/** Whether more produce is currently on its way. False when the plant is already full. */
+	public boolean isRegrowing()
+	{
+		return regrowEstimate > 0;
 	}
 }

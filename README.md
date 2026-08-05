@@ -3,8 +3,9 @@
 A RuneLite plugin that keeps a live overview of every farming patch you use, so you can
 see your whole farm without running around it.
 
-The name is a play on the OSRS *doogle leaves*. What it actually does is farming: a
-patch-state overview and, in time, a guided farm-run helper.
+The name is a play on the OSRS *doogle leaves*, coined by **Sitta mango** from the
+author's clan. What it actually does is farming: a patch-state overview and, in time, a
+guided farm-run helper.
 
 ## What it does today
 
@@ -28,6 +29,44 @@ patch-state overview and, in time, a guided farm-run helper.
 
 Multiple accounts need no setup: RuneLite scopes the cache per profile.
 
+### Three tabs
+
+**Almanac** is the overview above. **Doogle Maps** plans and follows a run. **Stats** is what
+your patches have actually given you.
+
+### Planning a run
+
+- **Pick the patch types and the seeds**, per tab, and the panel prices the trip up: expected
+  yield and experience per crop, inventory slots needed against the 28 you have, and every
+  destination the run will visit before you set off.
+- **Yield is computed, not guessed.** Chance-to-save from the published constants, with magic
+  secateurs, the Farming cape, attas, the Farmer's outfit and the Kandarin and Kourend diary
+  bonuses all *detected* rather than asked for. Compost is the one thing you choose, per patch
+  type, because it has not been applied yet.
+- **Discounted for disease**, using the real per-crop rates and where each patch is — a ranarr
+  in Weiss cannot be diseased at all.
+- **Routing through Shortest Path**, as a soft dependency. It is handed the whole outstanding
+  set and picks the cheapest next stop, so there is no route-ordering guesswork here.
+- **A bank loadout**: seeds, protection payments, the best axe you can actually swing, storage,
+  and any teleport you own that reaches somewhere this run goes. Items still to withdraw are
+  highlighted in the bank; things the tool leprechaun already holds are marked differently, so
+  you leave them alone.
+
+### Guided mode
+
+Follows Quest Helper's idiom, because that is the one players already read: the patch, the
+leprechaun or the inventory item you need next is outlined, one step at a time, with the same
+instruction in words in the sidebar. Harvest, note at the leprechaun when the pack fills, rake,
+compost, plant — and the empty buckets handed back before you move on.
+
+Nothing is clicked for you.
+
+### Harvest history
+
+Every patch picked clean is recorded with what was predicted for it, so the Stats tab doubles
+as a running check on the estimates: totals, per-crop averages against prediction, and a
+per-compost split. Kept locally; nothing is sent anywhere.
+
 ### Existing accounts start populated
 
 RuneLite's built-in Time Tracking has quietly been recording the same varbits for as long
@@ -37,9 +76,9 @@ the map. It only ever fills gaps, and never writes to Time Tracking's data.
 
 ## Planned
 
-Seed inventory cache, plantable-seed selector, run loadouts with a pre-run gather list and
-bank highlighting, route planning via Shortest Path, and a guided "lazy mode" that walks
-you through a run step by step. See `doogle-maps-plugin-spec.md`.
+Bulk refresh from the Geomancy interface, a bank tag tab to filter rather than only highlight,
+and crowdsourced yield data once the plugin is on the Hub. See `TODO.md` for what is open and
+`doogle-maps-plugin-spec.md` for the original spec.
 
 ## Compliance
 
@@ -67,6 +106,7 @@ working directory, so Gradle's `runClient` cannot start a Windows JVM from the W
 ```bash
 ./run-client.sh            # build and launch RuneLite with the plugin side-loaded
 ./run-client.sh --refresh  # also re-resolve dependencies
+./run-client.sh --debug    # also listen on port 5005 for a debugger
 ```
 
 That wraps `cmd.exe /c "pushd <windows path> && gradlew.bat runClient"`, which starts
@@ -75,6 +115,40 @@ It needs a Windows JDK 11 on `PATH` (Temurin at
 `C:\Program Files\Eclipse Adoptium\jdk-11.0.29.7-hotspot`).
 
 The jar lands in `build/libs/` (WSL) or `build-windows/libs/` (Windows).
+
+### Iterating without relaunching
+
+Relaunching for every change is slow, and most of the time it is avoidable. In rough order
+of how much time each saves:
+
+**1. Do not launch the client at all.** Most panel work does not need it. `PanelRenderTest`
+renders the whole sidebar headlessly to `build/panel.png`, so layout, colours, wording and
+sizing can be checked in a few seconds:
+
+```bash
+./gradlew test --tests '*PanelRenderTest*'   # writes build/panel.png
+```
+
+It also fails the build if anything wants more than the 225px the sidebar has, which is the
+mistake that is otherwise only visible in-client.
+
+**2. Hot-swap into the running client.** Launch with `--debug` and attach a debugger to
+`localhost:5005`; in IntelliJ that is a "Remote JVM Debug" configuration. Recompile, then
+"Reload Changed Classes", and the running client picks the change up.
+
+The limit is worth knowing before relying on it: stock HotSwap replaces **method bodies
+only**. Adding or removing a field or a method, changing a signature, or editing an enum
+needs a relaunch — which, in a codebase with this much generated data, is a lot of changes.
+The JetBrains Runtime supports rather more than the stock JVM if you want to push it.
+
+**3. Toggle the plugin off and on.** In RuneLite's plugin list. This re-runs `shutDown` and
+`startUp`, which rebuilds the panel, re-registers the event subscribers and reloads every
+store. It does *not* reload classes, so on its own it changes nothing — but after a
+hot-swap it is what makes constructor and `startUp` changes actually take effect.
+
+**4. Use the client's own tools.** `--developer-mode` is already on, so the Widget Inspector
+and Var Inspector are available. For anything to do with widgets or varbits, they answer
+questions live that would otherwise mean adding logging and relaunching.
 
 ### Why the two sides have separate build directories
 
@@ -156,6 +230,10 @@ agree, also confirm the existing predicates did not change:
 diff <(grep -A25 'public boolean isInBounds' <old sources>/FarmingWorld.java | grep -E 'loc\.|return ') \
      <(grep -A25 'public boolean isInBounds' /tmp/rl-src/.../FarmingWorld.java | grep -E 'loc\.|return ')
 ```
+
+## Licence
+
+BSD 2-Clause. See [LICENSE](LICENSE).
 
 ## Attribution
 

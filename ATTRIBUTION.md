@@ -1,5 +1,10 @@
 # Attribution
 
+## The name
+
+"Doogle Maps" was coined by **Sitta mango**, from the author's clan — a play on the OSRS
+*doogle leaves*.
+
 ## RuneLite core — Time Tracking (farming)
 
 The farming data spine in `com.dooglemaps.data` is mirrored from RuneLite core's
@@ -39,12 +44,50 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ## Shortest Path
 
-Route planning is a planned feature and will delegate navigation to the
-[Shortest Path](https://github.com/Skretzo/shortest-path) plugin as a soft dependency,
-following the integration pattern used by Quest Helper and Shortest Clue. No pathfinding
-of our own.
+Route planning delegates all navigation to the
+[Shortest Path](https://github.com/Skretzo/shortest-path) plugin (Runemoro, Skretzo,
+FIrgolitsch, wvanderp), as a soft dependency. No pathfinding of our own.
+
+Integration is over its documented `PluginMessage` API in the `shortestpath` namespace —
+`path` with a target set, `clear`, per-request config overrides, and the `transports` event
+it posts back. Handing it a *set* of targets and letting it pick the cheapest is what
+supplies the visiting order for a run.
+
+`BankLocations` is derived from that project's
+`src/main/resources/destinations/game_features/bank.tsv`, filtered to the banks with no
+skill, quest or varbit requirement. Licensed BSD 2-Clause.
 
 ## OSRS Wiki
 
 Crop growth times, seed level requirements and protection payments are cross-checked
 against the OSRS Wiki's Farming pages.
+
+Two tables are scraped from it outright and kept in `tools/` alongside the code that turns
+them into Java:
+
+- `tools/crop-xp.tsv` — Farming experience per seed, from the `<Type> patch/Seeds` subpages.
+- `tools/crop-yield.tsv` — chance-to-save constants, from the `{{Farming yield calculator}}`
+  template on each seed's page, which in turn cites figures Mod Easty gave the wiki and
+  which are reproduced on [Talk:Farming](https://oldschool.runescape.wiki/w/Talk:Farming).
+  Huasca is the one crop with no such page; its constants come from the wiki's
+  `Module:Herb Farming calculator`.
+
+The yield formula in `YieldEstimate` follows the Farming article's "Variable crop yield"
+section, including the ordering of boosts that Mod Ash confirmed on Twitter.
+
+Wiki content is available under CC BY-NC-SA 3.0.
+
+### Gardener chatheads
+
+`src/main/resources/com/dooglemaps/chatheads/` holds one portrait per gardener who protects
+a farming patch, so a protected patch can show the face of whoever was actually paid. They
+are fetched by `tools/fetch_chatheads.py`, which resolves each NPC id against the wiki and
+records what it took in `tools/chatheads.tsv` — nothing here is hand-maintained.
+
+These are bundled rather than rendered because they cannot be rendered: chatheads are 3D
+model renders, and while the RuneLite API exposes `NPCComposition.getChatheadModels()` and
+`Client.loadModel`, it has nothing that rasterises a `Model` to an image.
+
+The underlying artwork is Jagex's, hosted by the wiki. Forty-eight of the forty-nine
+gardeners have one; the Tortugan who tends the coral patch has no wiki page yet, and the
+plugin falls back to a plain shield for them.

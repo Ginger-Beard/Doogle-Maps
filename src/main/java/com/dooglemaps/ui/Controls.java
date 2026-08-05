@@ -1,13 +1,21 @@
 package com.dooglemaps.ui;
 
+import com.dooglemaps.data.CompostTier;
+
 import com.formdev.flatlaf.FlatClientProperties;
 import javax.swing.AbstractButton;
 import javax.swing.BorderFactory;
 import java.awt.Color;
+import java.awt.Component;
+import javax.swing.BorderFactory;
+import javax.swing.DefaultListCellRenderer;
 import javax.swing.JCheckBox;
+import javax.swing.JComboBox;
+import javax.swing.JList;
 import javax.swing.JComponent;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.ui.ColorScheme;
+import net.runelite.client.ui.FontManager;
 
 /** Shared setup for the interactive bits of the sidebar. */
 @Slf4j
@@ -54,21 +62,55 @@ final class Controls
 	/**
 	 * A checkbox that is actually visible against the sidebar.
 	 *
-	 * <p>RuneLite's look and feel paints checkboxes with {@code icon.background} at
-	 * #1E1E1E and {@code icon.borderColor} at #171717 — near-black on the near-black
-	 * sidebar, so the boxes all but disappear. This lifts the box and its border, and
-	 * puts a plain white tick in it: white has the most contrast against the dark box, and
-	 * a tinted tick just muddies it.
+	 * <p>The tick is an explicit icon rather than a themed one — see {@link CheckIcon} for
+	 * why the look and feel cannot be styled into doing it.
 	 */
 	static void styleCheckBox(JCheckBox box)
 	{
 		box.setForeground(TEXT);
-		style(box, NO_FOCUS_STYLE
-			+ "; icon.background: #3C3C3C"
-			+ "; icon.borderColor: #6E6E6E"
-			+ "; icon.selectedBackground: #3C3C3C"
-			+ "; icon.selectedBorderColor: #8E8E8E"
-			+ "; icon.checkmarkColor: #FFFFFF");
+		box.setIcon(CheckIcon.unchecked());
+		box.setSelectedIcon(CheckIcon.checked());
+		box.setDisabledIcon(CheckIcon.unchecked());
+		box.setIconTextGap(6);
+		style(box, NO_FOCUS_STYLE);
+	}
+
+	/**
+	 * A dropdown that matches the sidebar rather than the platform.
+	 *
+	 * <p>Drawn rather than themed, for the same reason as the checkboxes and the scrollbar: the
+	 * look and feel's shared delegates have not reliably reached components this panel creates,
+	 * and a combo box that comes out in system colours is far more obvious than a checkbox
+	 * doing the same.
+	 */
+	static void styleComboBox(JComboBox<?> box)
+	{
+		box.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		box.setForeground(TEXT);
+		box.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+		box.setFocusable(false);
+		box.setRequestFocusEnabled(false);
+
+		// The renderer is what the closed box and every list row are painted with, so styling
+		// it covers both without touching the look and feel.
+		box.setRenderer(new DefaultListCellRenderer()
+		{
+			@Override
+			public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+				boolean selected, boolean focused)
+			{
+				super.getListCellRendererComponent(list, value, index, selected, focused);
+				setFont(FontManager.getRunescapeSmallFont());
+				setBackground(selected ? ColorScheme.MEDIUM_GRAY_COLOR : ColorScheme.DARKER_GRAY_COLOR);
+				setForeground(TEXT);
+				setBorder(BorderFactory.createEmptyBorder(1, 4, 1, 4));
+				if (value instanceof CompostTier)
+				{
+					setText(((CompostTier) value).getDisplayName());
+				}
+				return this;
+			}
+		});
 	}
 
 	/**

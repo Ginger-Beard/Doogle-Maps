@@ -6,7 +6,9 @@ import com.dooglemaps.data.FarmRegion;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
+import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.state.PatchStateStore;
+import com.dooglemaps.validate.HarvestLog;
 import com.dooglemaps.timer.GrowthTimer;
 import java.util.Collection;
 import java.util.HashMap;
@@ -55,6 +57,8 @@ public class PatchInteractionTracker
 	private final Client client;
 	private final PatchStateStore stateStore;
 	private final GrowthTimer growthTimer;
+	private final RunPlanner runPlanner;
+	private final HarvestLog harvestLog;
 
 	/** Last raw varbit value seen per patch key, to spot transitions. */
 	private final Map<String, Integer> lastVarbitValues = new HashMap<>();
@@ -65,11 +69,14 @@ public class PatchInteractionTracker
 	private boolean modalWasOpen;
 
 	@Inject
-	private PatchInteractionTracker(Client client, PatchStateStore stateStore, GrowthTimer growthTimer)
+	private PatchInteractionTracker(Client client, PatchStateStore stateStore,
+		GrowthTimer growthTimer, RunPlanner runPlanner, HarvestLog harvestLog)
 	{
 		this.client = client;
 		this.stateStore = stateStore;
 		this.growthTimer = growthTimer;
+		this.runPlanner = runPlanner;
+		this.harvestLog = harvestLog;
 	}
 
 	public void reset()
@@ -180,9 +187,36 @@ public class PatchInteractionTracker
 		if (previousValue != null && previousValue != varbitValue)
 		{
 			maybeObserveGrowthTick(patch, previousValue, decoded);
+			// A patch that stops holding its crop has finished being harvested, which is what
+			// closes a validation record.
+			harvestLog.onPatchState(patch,
+				patch.getImplementation().forVarbitValue(previousValue), decoded);
 		}
 
-		stateStore.recordVarbit(patch, varbitValue, decoded);
+		boolean changed = stateStore.recordVarbit(patch, varbitValue, decoded);
+
+		// A patch that has just stopped being actionable is one the player has dealt with,
+		// which is exactly what advances a run to its next stop.
+		if (changed && previousValue != null && previousValue != varbitValue
+			&& !isActionable(decoded))
+		{
+			runPlanner.markServiced(patch);
+		}
+	}
+
+	/** Whether a patch in this state still wants something doing to it. */
+	private static boolean isActionable(ProduceState decoded)
+	{
+		switch (decoded.getCropState())
+		{
+			case HARVESTABLE:
+			case DISEASED:
+			case DEAD:
+			case EMPTY:
+				return true;
+			default:
+				return !decoded.getProduce().isCrop();
+		}
 	}
 
 	/**

@@ -14,6 +14,7 @@ import org.junit.Test;
 import org.mockito.Mockito;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -197,6 +198,85 @@ public class GrowthTimerTest
 		// if a whole tick were skipped.
 		assertTrue("estimate " + remaining + "s is too short", remaining > 60 * 60);
 		assertTrue("estimate " + remaining + "s exceeds the nominal grow time", remaining <= 80 * 60);
+	}
+
+	/**
+	 * A fully stocked fruit tree still counts as a crop that regrows.
+	 *
+	 * <p>The two ideas came out conflated the first time: "this crop regrows" is a property
+	 * of the crop, while "more is on the way" is about right now. A full palm has nothing on
+	 * the way, and reporting it as not-a-regrowing-crop hid the coconut count exactly when
+	 * it was most worth seeing.
+	 */
+	@Test
+	public void aFullyStockedFruitTreeStillCountsAsRegrowing()
+	{
+		FarmPatch fruitPatch = FarmingWorldData.getPatch("11317.4771");
+		assertNotNull(fruitPatch);
+
+		// Seven states, six fruit: the top state is a full tree.
+		long now = Instant.now().getEpochSecond();
+		int fullTree = Produce.PALM.getHarvestStages() - 1;
+		PatchProjection projection = timer.project(fruitPatch,
+			snapshot(Produce.PALM, CropState.HARVESTABLE, fullTree, now));
+
+		assertNotNull(projection);
+		assertTrue("a palm tree is a crop that regrows", projection.regrows());
+		assertFalse("but a full one has nothing on the way", projection.isRegrowing());
+		assertEquals("a full palm holds six coconuts, not seven", 6, projection.getLivesRemaining());
+	}
+
+	@Test
+	public void aPartlyPickedFruitTreeIsRegrowing()
+	{
+		FarmPatch fruitPatch = FarmingWorldData.getPatch("11317.4771");
+		assertNotNull(fruitPatch);
+
+		long now = Instant.now().getEpochSecond();
+		PatchProjection projection = timer.project(fruitPatch,
+			snapshot(Produce.PALM, CropState.HARVESTABLE, 2, now));
+
+		assertNotNull(projection);
+		assertTrue(projection.regrows());
+		assertTrue("picked from, so more is coming", projection.isRegrowing());
+		assertEquals("the stage is the fruit count for a regrowing crop", 2,
+			projection.getLivesRemaining());
+	}
+
+	/** Herbs do not regrow, so their "lives" must never be presented as a live count. */
+	@Test
+	public void herbsDoNotRegrow()
+	{
+		long now = Instant.now().getEpochSecond();
+		PatchProjection projection = timer.project(herbPatch(),
+			snapshot(Produce.RANARR, CropState.HARVESTABLE, 2, now));
+
+		assertNotNull(projection);
+		assertFalse(projection.regrows());
+		assertFalse(projection.isRegrowing());
+		assertEquals("three states, three lives - the stage is one below the count", 3,
+			projection.getLivesRemaining());
+	}
+
+	/**
+	 * A fruit tree with nothing on it reads as zero, not one.
+	 *
+	 * <p>The state that used to be reported as "1 fruit" is really "no fruit yet", which is
+	 * the whole reason the two families cannot share the same arithmetic.
+	 */
+	@Test
+	public void anEmptyFruitTreeHoldsNothing()
+	{
+		FarmPatch fruitPatch = FarmingWorldData.getPatch("11317.4771");
+		assertNotNull(fruitPatch);
+
+		long now = Instant.now().getEpochSecond();
+		PatchProjection projection = timer.project(fruitPatch,
+			snapshot(Produce.PALM, CropState.HARVESTABLE, 0, now));
+
+		assertNotNull(projection);
+		assertEquals(0, projection.getLivesRemaining());
+		assertTrue("empty, so fruit is on its way", projection.isRegrowing());
 	}
 
 	@Test
