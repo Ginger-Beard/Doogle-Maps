@@ -101,7 +101,9 @@ public enum CropXp
 	MAHOGANY(Seed.MAHOGANY, 63.0, 15720.0, 0.0),
 	CAMPHOR(Seed.CAMPHOR, 88.0, 17840.0, 0.0),
 	IRONWOOD(Seed.IRONWOOD, 145.0, 20380.0, 0.0),
-	ROSEWOOD(Seed.ROSEWOOD, 252.0, 23100.0, 0.0);
+	ROSEWOOD(Seed.ROSEWOOD, 252.0, 23100.0, 0.0),
+	CACTUS(Seed.CACTUS, 66.5, 374.0, 25.0),
+	POTATO_CACTUS(Seed.POTATO_CACTUS, 68.0, 230.0, 68.0);
 
 	private static final Map<Seed, CropXp> BY_SEED = new EnumMap<>(Seed.class);
 	private static final Map<Produce, CropXp> BY_PRODUCE = new EnumMap<>(Produce.class);

@@ -360,6 +360,188 @@ type generically once the data exists, as adding the hardwoods showed.
 layout question rather than a reason not to do it, but it wants an answer before the change lands
 rather than after.
 
+## Farmer contracts in guided runs
+
+Guildmaster Jane's contract asks for one crop, and the reward — seed packs, and the Farming Guild
+reputation that unlocks the tiers — makes it the single highest-value thing in a run. The plugin
+does not know contracts exist, which means two failures at once: it never tells you to plant one,
+and it will happily fill the very patch the contract needs with something else.
+
+**The contract is planted first, and it is what the Farming Guild stop opens with.** Not merely
+included — ordered. A contract wants a specific patch type, and the guild has exactly one of most
+of them, so any ordinary planting done first takes the only patch available and the contract waits
+a full growth cycle for a mistake that cost nothing to avoid. This is the one place in the run
+where order is load-bearing rather than convenient.
+
+### Reading it needs no dependency, which is the good news
+
+RuneLite's Time Tracking plugin already tracks this — `FarmingContractManager` watches for
+Guildmaster Jane's dialogue and stores the result. **It stores it in ordinary config**, which
+means it can simply be read:
+
+```
+configManager.getRSProfileConfiguration("timetracking", "contract")  ->  item id, as a string
+```
+
+That is the whole integration. No injection, no `PluginManager` lookup, and specifically none of
+the injector trouble the bank filter ran into — `FarmingContractManager` lives inside the Time
+Tracking plugin's own injector and must not be asked for directly. A config read is a config read.
+
+The item id maps to the crop. `Produce` has an `itemID` field but no lookup by it, so that wants
+adding — a small static map, same shape as the other lookups on that class.
+
+**Two things to confirm in play before relying on it:**
+
+- **Time Tracking is a core plugin and on by default, but it can be switched off**, and then the
+  key simply stops updating. The failure is silent and looks like "no contract", which is the safe
+  direction — but it should be *said*, not guessed at, the same way the bank filter now names the
+  reason it is off.
+- **Whether the key is cleared on completion**, or left holding the last contract. `handleContractState`
+  suggests it is managed, but a stale key would have the run insisting on a crop already handed in.
+
+**The fallback, if the config route disappoints**, is to capture it ourselves: the assignment
+dialogue is a fixed pattern (`We need you to grow...` / `Please could you grow...`) and the
+completion line is `You'll be wanting a reward then. Here you go.` That is the same capture
+machinery `ProtectionCapture` already uses, so it is known ground — but it should only be built if
+reading the config proves unreliable, because duplicating another plugin's parsing is how the two
+end up disagreeing.
+
+### Should it be its own patch category?
+
+Proposed, and it is the right shape — but it turns entirely on one invariant, so it is worth
+being explicit about which version works.
+
+**A patch belongs to exactly one planting group.** `PlantingGroups.groupFor(patch)` returns one
+answer, and everything downstream leans on that: which tab lists the patch, which seed the guide
+plants in it, which compost the run assumes, and which count the estimate prices. Two groups
+claiming the same patch is precisely the arrangement that produces a plugin telling you to plant
+something it did not budget for — the failure the protected-herb split was designed to avoid.
+
+So:
+
+- **Wrong version**: a contract category that *also* contains the Farming Guild herb patch while
+  the herb category still lists it. Now two groups price the same patch, two seed selections
+  compete for it, and the run plants one while the projection promises the other.
+- **Right version**: the patch **moves**. While a contract is assigned, that patch leaves its
+  ordinary group and joins the contract group. One patch, one group, invariant intact — and every
+  consequence the proposal wants falls straight out of machinery that already exists:
+  - it gets a tab, because tabs are built per group;
+  - it gets a line in the run list, because run options are built per group — *"picked up by the
+    run reqs"* needs no new concept at all;
+  - the ordinary herb group stops counting it, so the estimate cannot promise a snapdragon in a
+    patch that is spoken for. **This is the reservation problem solving itself**, rather than
+    needing separate handling in `SeedAllocation`.
+
+**The key scheme already accommodates it.** `PlantingGroup` is `(type, protectedOnly)` keyed as
+`HERB` or `HERB#protected`; a contract is `HERB#contract` by the same rule, and the third state
+wants `protectedOnly` replaced with a small enum rather than a second boolean — two booleans
+would allow a protected-and-contract combination that means nothing.
+
+**Settled: the group takes the contract's own patch type.** A herb contract is `HERB#contract`, a
+bush contract `BUSH#contract`. So there is no single stable "Contract" tab — it moves with the
+assignment — and that is the point rather than a cost, because **the type is what scopes the seed
+list**. `Seed.forPatchType` on the group's type gives exactly the seeds that can go in that
+patch, so the selector, the compost dropdown, the yield model and the estimate all key off the
+same thing they already do. A contract group with no type would need a null case in every one of
+those lookups, and would have nothing to build a seed list from.
+
+**The seed list is filtered to one, and that one is selected.** The group's type narrows it to
+that patch's seeds; the contract narrows it to exactly the crop asked for. So the tab shows a
+single seed, already picked.
+
+**Derived, not stored.** `SeedSelectionStore.getSelectedFor(group)` should answer with the
+contract crop for a contract group rather than the tab writing a selection into the store on the
+player's behalf. Two reasons, and both have bitten this codebase before:
+
+- writing it means a selection the player never made is persisted, and is then stale the moment
+  the contract changes or is handed in;
+- it is the same rule `SeedAllocation` already follows — recomputed rather than remembered — and
+  the two must not disagree about what is going in that patch.
+
+The seed still renders as picked, because it *is* picked. It simply should not be clickable:
+there is no other answer to offer.
+
+**Compost and protection keep their dropdowns, remembered per assigned patch type** — and this
+needs no new mechanism, because the group key already carries the type. `CompostSelectionStore`
+keys on `group.getKey()`, so a herb contract remembers `HERB#contract` and a bush contract
+`BUSH#contract`, independently. `ProtectionSelectionStore` keys on `group.getKey() + "|" + seed`,
+so the same holds there.
+
+**And the first contract of a type starts from a sensible answer rather than untreated.** The
+compost store already falls back to the patch type's own choice for any group never set
+explicitly — the mechanism built so splitting protected herbs would not silently reset one tab to
+NONE. A brand-new `HERB#contract` therefore inherits whatever you treat herbs with, until you say
+otherwise. That fallback is worth keeping in mind as the reason not to give contracts their own
+storage key scheme.
+
+**What to think through before building it:**
+
+- **It appears and disappears.** `structureChanged()` already handles the tab strip and the run
+  list rebuilding together, so the mechanism is there — but a group vanishing mid-run wants
+  thinking about, since the run may have been planned around it.
+- **Nothing is lost when it disappears.** Selections are stored per group key, and
+  `RunTypeStore.setSelected` deliberately keeps keys that are not currently on offer, so a
+  contract group's ticks survive it going away and coming back.
+
+### The guide has to close the loop, not just plant it
+
+Planting the contract is the middle of the job. The guide needs both ends:
+
+- **Hand in a finished one.** The crop is grown and picked, and nothing has happened until you
+  walk back to Guildmaster Jane. Forgetting is easy — the patch looks done, the run moves on, and
+  the reward sits unclaimed until the next time you happen to be in the guild.
+- **Take a new one.** Once handed in, the next contract is one dialogue away, and taking it
+  *before* leaving is what makes it plantable on this trip rather than in three days.
+
+Both are steps at an NPC in a known place, which is machinery that exists: `PAY_FARMER` already
+highlights a farmer and names what to hand over. Two more {@code GuideAction} values, and a
+{@code GuideStep} whose target is an NPC rather than a patch.
+
+**What is known, from `FarmingContractManager`:**
+
+- Guildmaster Jane is NPC **8628**, in region **4922** — the guild's central area, so she is on
+  the way whichever tier you are heading for.
+- The reward line is `You'll be wanting a reward then. Here you go.`, and assignment matches
+  `(?:We need you to grow|Please could you grow) (?:some|a|an) ([a-zA-Z ]+)(?: for us\?|\.)`.
+  Both are usable as capture signals if the config key proves lossy.
+
+**What needs settling in play, because the state machine turns on it:**
+
+- **What actually completes a contract.** Growing it, or harvesting it, or checking its health —
+  this is not the same across patch types, and a tree contract completing on check-health while a
+  herb needs harvesting would make one rule wrong for the other. `FarmingContractManager` tracks
+  a `SummaryState` (COMPLETED / IN_PROGRESS / OCCUPIED / EMPTY / UNKNOWN) and a `CropState`, but
+  neither is written to config — only the crop's item id is. So completion has to be derived from
+  our own patch state, and the rule for deriving it wants confirming rather than assuming.
+- **Whether the config key clears on hand-in.** If it does, "no contract stored" is the signal to
+  offer taking a new one, and the whole state machine is two states. If it does not, a handed-in
+  contract is indistinguishable from an outstanding one and the guide would keep insisting on a
+  crop already dealt with. This is the single most important thing to check first.
+- **Difficulty is the player's choice.** Jane offers easy, medium and hard, and they draw from
+  different crop pools. The guide must not pick — it can say "ask Jane for a new contract" and
+  stop there. Choosing for someone is both wrong and outside what this plugin does.
+
+**Ordering, which is the part that makes it worth building:** the hand-in and the new contract
+belong at the *end* of the guild stop, after everything is planted — but the new contract, once
+taken, may want a patch on the same trip. So either the guild stop can be re-entered once, or the
+new contract is deliberately left for next time and the guide says so. The second is simpler and
+honest; the first is what a player would actually want. Worth deciding before building, because
+it is the difference between a linear stop and a stop that can loop.
+
+### What the run has to do with it
+
+- **The Farming Guild becomes a stop with an order**, which no stop currently has. `RunStop` holds
+  a set of patches; this needs "this one first". That is the same gap already noted for step
+  ordering within a stop, and the contract is the case that forces it.
+- **Reserving the patch is free** if the contract is a planting group, per above: moving the patch
+  out of its ordinary group is what stops the estimate promising a snapdragon in it. Only if the
+  category idea is dropped does this need doing by hand in `SeedAllocation`.
+- **The loadout has to carry the seed**, and say so plainly when you do not own one. A contract
+  you cannot fulfil is worth knowing at the bank rather than at the patch.
+- **It is a suggestion, not a rule.** Someone may not want to do the contract, and the plugin
+  should not insist. A toggle, on by default, in the same section as the other guided-run
+  switches.
+
 ## Stats tab — what else the data can answer
 
 The tab shows lifetime totals and a crop / n / got / avg table with a per-compost tooltip. That
@@ -376,6 +558,157 @@ things a player would actually want to know about their own farming.
   attas, lives, predicted, actual, predicted_xp, actual_xp, completed. Richer, unbounded, and not
   currently read back by anything.
 
+### The shape it should take: sections, not one table
+
+Asked for outright, so this is the frame the rest of the list hangs off. Four sections down the
+tab, each answering a different question, in this order:
+
+1. **Lifetime** — what you have actually got, per crop, with a total.
+2. **Luck** — where you landed against expectation, as a distribution rather than a mean.
+3. **Expected** — what your remaining seeds are worth, level-ups included.
+4. **Validation** — the existing crop / n / got / avg table, which is the developer's view and
+   belongs at the bottom now rather than being the whole tab.
+
+The tab's tooltip is **"Nerd."** and that is the design brief. This is the one place in the
+plugin where the answer being long is the point — everything else is a run you are in the middle
+of; this is the thing you read when you are not farming.
+
+### Section 1 — Lifetime totals, per crop
+
+Everything you have harvested since the plugin was installed, one row per crop, totalled at the
+bottom.
+
+- Columns: **crop, patches, items, xp**. Sorted by xp, because that is what the reader is
+  scanning for.
+- `getTotalItems`, `getTotalXp` and `getTotalHarvests` already exist for the footer, and
+  `CropHarvestStats` is already per crop — so the rows are a regroup of what is stored, not new
+  capture. **The one wrinkle**: the store keys on crop *and compost tier*, so a crop farmed with
+  two tiers is two entries and has to be summed for this view.
+- Include `partialItems` and `partialXp` in the totals here, and **only** here.
+  {@code totalItems()} and {@code totalXp()} on `CropHarvestStats` already do this. They are
+  deliberately excluded from the averages — a part-picked patch is not a fair sample of a full
+  one — but for "what have I actually got", a watermelon you picked three of is three
+  watermelons.
+- **Honest about its start date.** `firstHarvest` is stored, so the section can say *"since 4
+  August"* rather than implying it covers an account's whole history. Without that line the
+  numbers read as a lifetime total and are not one.
+
+### Section 2 — Luck, as a distribution
+
+The nerdy one, and the reason to build the tab at all. Not "you are 47 ahead" — *where you fell*.
+
+- Per crop: **actual against expected, as a percentile**. The store holds `items` and `predicted`
+  summed, so the ratio is free; the interesting version needs the spread, not just the mean.
+- **This needs per-patch rows, so it is Tier 2** — `harvests.csv` has one line per patch with
+  both predicted and actual. From those: a histogram of actual-minus-expected per crop, and a
+  statement like *"your ranarr patches land above expectation 54% of the time"*.
+#### No aggregate data is needed, and that is the whole point
+
+The obvious assumption is that "luck" needs a population to compare against — how did *other*
+players do. It does not, because the thing to compare against is not other players. It is the
+game's own RNG, which is fully specified.
+
+A patch is harvested by rolling chance-to-save until the lives run out, so the item count is a
+**negative binomial**: trials until `r` failures, where `r` is the lives and `p` is the save
+chance. {@code YieldEstimate.expectedHarvest} already computes `lives / (1 - save)`, which is
+exactly that distribution's mean — so the variance is `r·p / (1-p)²`, free, from the two numbers
+already in hand.
+
+That gives the null model outright:
+
+- Per patch, from the level, compost and gear stored on its `harvests.csv` row: mean `μᵢ` and
+  variance `σᵢ²`.
+- Over `n` patches of a crop, all independent: total mean `Σμᵢ`, total variance `Σσᵢ²`. Different
+  levels and tiers across the rows are fine — they simply have different parameters.
+- The player's actual total lands at `z = (actual − Σμᵢ) / √(Σσᵢ²)`, which is a percentile.
+  Normal approximation is sound by the central limit theorem once `n` is a few dozen, which is
+  the same floor the sample-size rule already imposes.
+
+So a single account's own history is sufficient, and the answer is exact rather than relative:
+*"you are at the 71st percentile of where this many patches should land"* — not "luckier than
+other players", which would be a much weaker claim even with the data to make it.
+
+**What a population would actually be for** is the other question, and it is worth not confusing
+the two: aggregate data would test whether the *published constants* are right — whether the
+wiki's chance-to-save figures and the disease rates match reality. That is validating the model,
+not measuring the player against it. It is also the one thing this plugin will not do: it is
+read-only and sends nothing anywhere, and collecting play data from users to answer a curiosity
+would trade that for very little.
+
+- **The sample-size rule is doing the real work**, then, and is not a caveat. `√(Σσᵢ²)` grows
+  like `√n` while the total grows like `n`, so the percentile is meaningless at small `n` and
+  tightens quickly — which is exactly why a figure over four patches must not be shown at all.
+
+#### Storage: one more accumulator beats a better file format
+
+The instinct is that per-patch analysis needs a queryable store rather than an append-only CSV.
+For the headline number it does not, and the reason is the same property the maths above turns
+on: **variance is additive over independent patches**, exactly as the mean already is.
+
+`CropHarvestStats` already accumulates `items` and `predicted` per crop and tier. Adding a third
+running total — `predictedVariance`, summing `r·p/(1-p)²` at the moment each harvest is recorded,
+where the level, compost and gear are all in hand — makes the percentile computable from the
+rolled-up store alone. No file is read, nothing is parsed, and it stays bounded at ~50 crops x 4
+tiers like the rest of it. **Build this first**: it is a few lines, and it delivers the whole of
+"where did I land" without touching the storage question.
+
+**What genuinely needs the per-patch rows** is anything about *shape* or *sequence*, which no
+running total can reconstruct:
+
+- the histogram, as opposed to the percentile — where your patches actually clustered;
+- runs, which are found by clustering timestamps;
+- yield against level, which needs each row's level, not the aggregate.
+
+**For those, the CSV is adequate and the format is not the problem.** A heavy farmer writes
+perhaps a hundred rows a day — roughly 4MB a year, parsed once in milliseconds. What is wrong
+with it today is smaller and more specific than "it should be a database":
+
+- **It is read by column position**, so inserting a column silently reinterprets every historic
+  row. Read the header and map by name; the header is already written.
+- **It has no version marker.** One `version` column costs nothing and makes a future format
+  change survivable rather than a migration.
+- **It is unbounded**, which is fine for size and not fine forever. Rotating at some row count is
+  the cheap answer, and losing the oldest rows costs little because the aggregates already hold
+  the lifetime totals.
+- **It must be read once on load, never on a panel refresh.** That is the mistake to avoid, and
+  it is a caller mistake rather than a format one.
+
+**A real database is not worth it here.** SQLite means a native dependency in a plugin that
+currently has none, for a dataset that fits comfortably in memory; and the plugin's own constraint
+— read-only, nothing leaves the machine — means there is never a bigger corpus to scale to. If
+the CSV is ever genuinely outgrown, JSON Lines is the honest next step: still append-only, still
+a text file, but self-describing per row, so schema changes stop being a positional puzzle.
+- **Sample size is the whole risk.** Thirty patches cannot distinguish luck from a modelling
+  error, and a percentile computed over four patches is noise presented as insight. Every figure
+  here needs an n beside it, and below some floor — 20 patches, say — it should say *"not enough
+  yet"* and nothing else. Getting this wrong turns the section into a machine for inventing
+  patterns.
+- Cheap wins that belong in this section and need no CSV: **cumulative luck** (actual minus
+  predicted, summed), **best and worst single patch** per crop, and **patches walked away from**
+  (`partialItems`, real lost yield and the only actionable line on the tab).
+
+### Section 3 — Expected yield from the seeds you hold
+
+What your bank is worth if you plant all of it through this plugin.
+
+- Every seed you own, run through `CropYieldModel.expected` against your patch count, compost
+  choice and detected gear — the same arithmetic the run projection uses, so the two cannot
+  disagree.
+- **Accounting for level-ups mid-cycle is the actual problem here**, and it is not a detail. A
+  full bank of guam planted at level 30 finishes somewhere north of 40, and chance-to-save moves
+  with the level, so a single-level calculation understates the total. The honest version
+  iterates: plant a cycle at the current level, add the xp, recompute the level, repeat until the
+  seeds run out. That is a loop over `CropXp` and the xp table, and it is the difference between
+  a number that is roughly right and one that is right.
+- **Two figures, not one**: the naive "at your current level" and the iterated "planting it all
+  out". The gap between them is itself interesting, and showing both makes the assumption
+  visible instead of buried.
+- **What it must not do** is imply a schedule. This is "what these seeds are worth", not "you
+  will have this by Tuesday" — growth time is real but so is logging off, and a time estimate
+  would be the tab's first dishonest number.
+- Ordering by xp per seed makes it a planting guide as a side effect: it answers *"which of these
+  should I actually be planting"* without being asked.
+
 ### Tier 1 — from the rolled-up store, no new capture
 
 - **What compost is actually worth, measured.** The one worth building first. The store already
@@ -384,13 +717,9 @@ things a player would actually want to know about their own farming.
   question anyone asks about compost. **Caveat that shapes it:** most players use one tier
   forever, so for many accounts one column is empty and the comparison cannot be drawn. It has to
   degrade to "you have only ever used ultracompost" rather than to a misleading half-answer.
-- **Luck, cumulative.** Actual minus predicted, summed. *"47 herbs ahead of expectation."* Free —
-  both halves are already stored, and it is the single most fun number here because it is the
-  thing a farmer feels and cannot otherwise check.
-- **Patches you walked away from.** `partialItems` is already tracked and deliberately kept out
-  of the averages, but never shown. *"You have left 14 patches part-picked"* is real lost yield
-  and the only actionable line in this list.
-- **Best and worst single patch**, per crop. Stored, unsurfaced.
+- **Luck, cumulative**, **best and worst single patch**, and **patches walked away from** are all
+  stored and unsurfaced, and all belong in Section 2 above. Listed here because they need nothing
+  new — they are the part of that section that can ship before the CSV is ever read.
 - **How long you have been at it, and how often.** First and last harvest are stored, so patches
   per week falls out. Cheap, and it makes the tab feel like a record rather than a table.
 

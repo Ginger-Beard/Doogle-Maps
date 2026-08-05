@@ -4,6 +4,7 @@ import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PatchRequirements;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
@@ -48,6 +49,23 @@ public class AvailabilityProfile
 	private final Gson gson;
 	private final PatchStateStore stateStore;
 
+	/**
+	 * The account's Farming level, for the Farming Guild's tier doors.
+	 *
+	 * <p>A supplier rather than the store that owns it. {@code SeedInventoryStore} is a leaf and
+	 * this class sits above {@code PatchStateStore} in the lock order; taking a reference to
+	 * another store would add an edge to a graph that is deliberately kept a line. Reading one
+	 * int through a lambda keeps this a leaf-plus-a-number. See {@code NOTES.md} on lock
+	 * ordering.
+	 */
+	private java.util.function.IntSupplier farmingLevel = () -> 0;
+
+	/** Told where to read the Farming level from, once the store that knows it exists. */
+	public void setFarmingLevel(java.util.function.IntSupplier farmingLevel)
+	{
+		this.farmingLevel = farmingLevel;
+	}
+
 	/** Explicit player choices only; absent means "fall back to whether we've seen it". */
 	private final Map<String, Boolean> toggles = new HashMap<>();
 
@@ -71,8 +89,21 @@ public class AvailabilityProfile
 		changeListeners.remove(listener);
 	}
 
+	/**
+	 * Whether this patch exists for this account.
+	 *
+	 * <p>The level gate comes first and cannot be overridden. Everything else here is the
+	 * player's own choice, but a Farming Guild tier is a locked door: a level-50 account cannot
+	 * visit the redwood patch however firmly it ticks the box, and letting it try would route
+	 * someone to a wall. See {@link PatchRequirements}.
+	 */
 	public synchronized boolean isAvailable(FarmPatch patch)
 	{
+		if (!PatchRequirements.isReachable(patch, farmingLevel.getAsInt()))
+		{
+			return false;
+		}
+
 		Boolean explicit = toggles.get(patch.getKey());
 		if (explicit != null)
 		{

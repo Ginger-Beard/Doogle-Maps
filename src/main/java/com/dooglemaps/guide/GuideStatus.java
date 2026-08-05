@@ -22,7 +22,7 @@ public class GuideStatus
 {
 	private static final GuideStatus IDLE =
 		new GuideStatus(Collections.emptyList(), false, false, 0, Collections.emptyList(), null,
-			null, null);
+			null, null, Collections.emptyList());
 
 	/** Outstanding steps at the stop you are standing in. Empty while travelling. */
 	List<GuideStep> steps;
@@ -71,6 +71,16 @@ public class GuideStatus
 	 */
 	@javax.annotation.Nullable
 	String location;
+
+	/**
+	 * What to take out of the bank, in words, or empty when that is not the question.
+	 *
+	 * <p>Strings rather than the loadout itself, and built in {@code LoadoutSummary} rather than
+	 * here or in the overlay. This used to be a block of text in the sidebar; it is on screen now,
+	 * and the plan is a side-pane checklist that shows the same steps again. Wording written
+	 * inside a renderer can only ever belong to that renderer.
+	 */
+	List<String> supplies;
 
 	/** Nothing happening: no run, or no client. */
 	public static GuideStatus idle()

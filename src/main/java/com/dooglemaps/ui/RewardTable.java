@@ -2,11 +2,8 @@ package com.dooglemaps.ui;
 
 import com.dooglemaps.route.RunEstimate;
 import java.awt.BorderLayout;
-import javax.swing.BorderFactory;
-import javax.swing.JLabel;
 import javax.swing.JPanel;
 import net.runelite.client.ui.ColorScheme;
-import net.runelite.client.ui.FontManager;
 
 /**
  * What each crop in the run is worth.
@@ -22,20 +19,24 @@ import net.runelite.client.ui.FontManager;
  */
 class RewardTable extends JPanel
 {
-	private final DataTable table = new DataTable("crop", "yield", "xp");
-	private final JLabel caption = new JLabel();
+	/**
+	 * Headed as estimates, because that is what they are.
+	 *
+	 * <p>"yield" and "xp" read as counts of something that has happened; every figure here is a
+	 * projection of a run not yet done. "Est" is doing real work in a column heading three
+	 * characters wide.
+	 */
+	private final DataTable table = new DataTable("Projected", "Est Yield", "Est XP");
 
 	RewardTable()
 	{
 		setLayout(new BorderLayout(0, 2));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
 
-		caption.setFont(FontManager.getRunescapeSmallFont());
-		caption.setForeground(ColorScheme.MEDIUM_GRAY_COLOR);
-		caption.setBorder(BorderFactory.createEmptyBorder(2, 2, 0, 2));
-
+		// No caption. It said "what this assumes" and carried the gear tooltip, which the whole
+		// table carries anyway - so it was a line of sidebar spent pointing at a hover that is
+		// already there.
 		add(table, BorderLayout.CENTER);
-		add(caption, BorderLayout.SOUTH);
 	}
 
 	/**
@@ -64,8 +65,6 @@ class RewardTable extends JPanel
 			String.valueOf(Math.round(estimate.getTotalYield())),
 			DataTable.shortNumber(estimate.getTotalXp()));
 
-		caption.setText("what this assumes");
-		caption.setToolTipText(gearTooltip);
 		setToolTipText(gearTooltip);
 		setVisible(true);
 	}

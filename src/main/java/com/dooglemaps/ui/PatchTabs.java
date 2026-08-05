@@ -160,7 +160,12 @@ final class PatchTabs
 
 	static boolean isTabVisibilityKey(String key)
 	{
-		return VISIBILITY_KEYS.contains(key) || STRUCTURE_KEYS.contains(key);
+		// The location keys too. They do not change which tabs exist, but they change what every
+		// tab contains, and the panel only redraws the one you are looking at — so without this
+		// the tab you toggled from would be right and the other twenty stale.
+		return VISIBILITY_KEYS.contains(key)
+			|| STRUCTURE_KEYS.contains(key)
+			|| Locations.isLocationKey(key);
 	}
 
 	/** The tabs actually on show, honouring the settings. */

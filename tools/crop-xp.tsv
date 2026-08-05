@@ -77,3 +77,5 @@ hardwood	Mahogany	55	63	15720	15783	plant,check,total
 hardwood	Camphor	66	88	17840	17928	plant,check,total
 hardwood	Ironwood	80	145	20380	20525	plant,check,total
 hardwood	Rosewood	92	252	23100	23352	plant,check,total
+cactus	Cactus	55	66.5	374	25	plant,check,harvest
+cactus	Potato cactus	64	68	230	68	plant,check,harvest

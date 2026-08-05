@@ -205,6 +205,13 @@ public class GuideStepOverlay extends OverlayPanel
 		if (status.isAtBankLeg())
 		{
 			line("Collect your supplies.", java.awt.Color.WHITE);
+			// What to take, which used to be a block of text in the sidebar. It belongs with the
+			// instruction to go and get it rather than on a panel you are not looking at while
+			// standing at a bank.
+			for (String supply : status.getSupplies())
+			{
+				line(supply, java.awt.Color.LIGHT_GRAY);
+			}
 		}
 		else if (status.getDestination() != null)
 		{

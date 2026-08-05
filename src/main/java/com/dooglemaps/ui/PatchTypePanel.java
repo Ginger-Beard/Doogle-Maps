@@ -64,17 +64,12 @@ class PatchTypePanel extends JPanel
 	private final SeedSelectorPanel seedSelector;
 
 	/** A step lighter than ColorScheme.DARK_GRAY_COLOR, which the sidebar already uses. */
-	private static final java.awt.Color TOGGLE_BACKGROUND = new java.awt.Color(0x3A, 0x3A, 0x3A);
 
 	private final JPanel rowContainer = new JPanel();
-	private final JPanel patchToggles = new JPanel();
 	private final WrappedText emptyMessage = new WrappedText();
-	private final JButton toggleSetup = new JButton();
 
 	private final Map<String, PatchRow> rows = new HashMap<>();
-	private final Map<String, JCheckBox> toggleBoxes = new HashMap<>();
 
-	private boolean setupVisible;
 
 	/** The patch rows themselves, which are the point of the tab and so start open. */
 	private final JButton toggleStatus = new JButton();
@@ -121,7 +116,6 @@ class PatchTypePanel extends JPanel
 
 		emptyMessage.setBorder(BorderFactory.createEmptyBorder(8, 6, 8, 6));
 
-		setupVisible = layout.isOpen(openKey("patches"), false);
 		statusVisible = layout.isOpen(openKey("status"), true);
 		toggleStatus.setFont(FontManager.getRunescapeSmallFont());
 		Controls.styleButton(toggleStatus);
@@ -129,7 +123,7 @@ class PatchTypePanel extends JPanel
 		{
 			statusVisible = !statusVisible;
 			rowContainer.setVisible(statusVisible);
-			emptyMessage.setVisible(statusVisible && emptyMessage.isEnabled());
+			showEmptyMessage();
 			layout.setOpen(openKey("status"), statusVisible);
 			updateStatusToggle();
 			revalidate();
@@ -152,7 +146,6 @@ class PatchTypePanel extends JPanel
 		// answer before the question.
 		JPanel footer = new JPanel(new BorderLayout(0, 6));
 		footer.setBackground(getBackground());
-		footer.add(buildSetupSection(), BorderLayout.NORTH);
 		if (seedSelector != null)
 		{
 			footer.add(seedSelector, BorderLayout.CENTER);
@@ -160,18 +153,70 @@ class PatchTypePanel extends JPanel
 
 		add(body, BorderLayout.NORTH);
 		add(footer, BorderLayout.CENTER);
-		buildToggles();
 	}
 
+	/**
+	 * The section heading, which now carries the count the separate Patches list used to.
+	 *
+	 * <p>"14/18" is the one thing that list said which the rows do not say for themselves — you
+	 * can see which patches are washed red, but not at a glance how many of the type you have
+	 * switched on.
+	 */
 	private void updateStatusToggle()
 	{
-		toggleStatus.setText(Controls.collapseLabel("Patch status", statusVisible));
+		int on = availablePatches().size();
+		int total = groupPatches().size();
+		toggleStatus.setText(Controls.collapseLabel(
+			"Patch status (" + on + "/" + total + ")", statusVisible));
+		// Says how to switch a patch off, because nothing else does. The rows are the control
+		// now and a row does not look like a button - the only cue is the cursor, which you
+		// have to already be hovering to see.
+		toggleStatus.setToolTipText("<html>" + on + " of " + total + " patches switched on.<br>"
+			+ "<b>Click a row</b> to switch that patch off - it turns red and drops to the "
+			+ "bottom.<br>Click it again to switch it back on.<br><br>"
+			+ "A switched-off patch is left out of runs, counts and everything else.</html>");
 	}
 
-	/** Namespaces a section's stored state by patch type: herb seeds and tree seeds differ. */
-	private String openKey(String section)
+	/**
+	 * A section's stored state, shared by every patch group.
+	 *
+	 * <h2>Not namespaced by patch type, which it used to be</h2>
+	 *
+	 * The reasoning for namespacing was that herb seeds and tree seeds are different questions —
+	 * true of the <i>contents</i>, and irrelevant to whether the section is folded up. Collapsing
+	 * is a statement about how much of the sidebar you want the patch list taking, and someone who
+	 * has decided that has decided it for the whole panel. Per type it meant collapsing the same
+	 * section twenty-two times, one tab at a time, to get the layout you had already chosen once.
+	 *
+	 * <p>The seed list is included. It is the section most obviously "about" its type, and it is
+	 * still the one people wanted uniform: you are either working from the list or you are not.
+	 */
+	private static String openKey(String section)
 	{
-		return section + "." + group.getKey();
+		return section;
+	}
+
+	/**
+	 * Adopts the current collapse state, which another tab may have changed.
+	 *
+	 * <p>Needed because these are separate panels, one per group, each holding its own idea of
+	 * what is open. Sharing the stored key makes them <i>agree</i> on the next read; it does not
+	 * make a panel that is already built notice. Called when a tab is selected, so the state is
+	 * adopted at the only moment it could be seen to be wrong.
+	 */
+	void applyLayout()
+	{
+		statusVisible = layout.isOpen(openKey("status"), true);
+
+		rowContainer.setVisible(statusVisible);
+		showEmptyMessage();
+		updateStatusToggle();
+
+		if (seedSelector != null)
+		{
+			seedSelector.applyLayout();
+		}
+		revalidate();
 	}
 
 	/**
@@ -210,6 +255,12 @@ class PatchTypePanel extends JPanel
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(member))
 			{
+				// The location filter first: a place you have hidden should not contribute rows
+				// here or to the count in the heading.
+				if (!Locations.isEnabled(config, patch))
+				{
+					continue;
+				}
 				// Only the grouping of *this* tab's type is meaningful. A grouped tab that also
 				// gathers other types — Gnome Stronghold's tree and fruit tree share one — keeps
 				// those whole rather than splitting them too.
@@ -244,109 +295,22 @@ class PatchTypePanel extends JPanel
 		return count;
 	}
 
-	private JPanel buildSetupSection()
-	{
-		JPanel section = new JPanel(new BorderLayout(0, 4));
-		section.setBackground(getBackground());
-
-		toggleSetup.setFont(FontManager.getRunescapeSmallFont());
-		Controls.styleButton(toggleSetup);
-		toggleSetup.addActionListener(e ->
-		{
-			setupVisible = !setupVisible;
-			patchToggles.setVisible(setupVisible);
-			layout.setOpen(openKey("patches"), setupVisible);
-			updateSetupButtonText();
-			revalidate();
-		});
-
-		patchToggles.setLayout(new BoxLayout(patchToggles, BoxLayout.Y_AXIS));
-		// Lighter than the panel behind it, so the dropdown reads as its own region rather
-		// than blending into the sidebar.
-		patchToggles.setBackground(TOGGLE_BACKGROUND);
-		patchToggles.setBorder(BorderFactory.createEmptyBorder(4, 6, 6, 6));
-		patchToggles.setVisible(false);
-
-		section.add(toggleSetup, BorderLayout.NORTH);
-		section.add(patchToggles, BorderLayout.CENTER);
-
-		updateSetupButtonText();
-		return section;
-	}
-
-	private void updateSetupButtonText()
-	{
-		int available = availablePatches().size();
-		int total = allPatches().size();
-		// No "Show"/"Hide" verb. The arrow and the list under it already say which way it is,
-		// and the word changing under the cursor made the button read as the thing it does rather
-		// than as the thing it contains.
-		toggleSetup.setText(Controls.collapseLabel(
-			"Patches (" + available + "/" + total + ")", setupVisible));
-		updateStatusToggle();
-	}
-
 	/**
-	 * Builds the on/off checkboxes once.
+	 * Repaints every row against the current cache. Must run on the EDT.
 	 *
-	 * <p>The patch list is fixed, so these are created up front and only their ticked
-	 * state is synced afterwards. Rebuilding them on every refresh would replace the
-	 * components under the player's cursor mid-click.
+	 * <h2>One list, not two</h2>
+	 *
+	 * This used to show the switched-on patches and offer a separate collapsible list of
+	 * checkboxes underneath for switching them on and off — the same patches twice, once to read
+	 * and once to edit. Switching one off made it vanish from the list you were looking at, and
+	 * the only way to find out why was to open the other one.
+	 *
+	 * <p>Now the row is the control. Switched-off patches stay exactly where they were, washed
+	 * red, and clicking one puts it back. That also means a patch you have never seen is visible
+	 * and clickable rather than being hidden by {@code hideEmptyPatches} — a filter for tidying
+	 * away patches you do not care about must not be able to hide the thing you would use to say
+	 * that you do.
 	 */
-	private void buildToggles()
-	{
-		JPanel bulk = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-		bulk.setBackground(patchToggles.getBackground());
-		bulk.add(bulkButton("All", true));
-		bulk.add(bulkButton("None", false));
-		bulk.setAlignmentX(Component.LEFT_ALIGNMENT);
-		patchToggles.add(bulk);
-
-		for (FarmPatch patch : allPatches())
-		{
-			JCheckBox box = new JCheckBox(patch.getDisplayName(), availability.isAvailable(patch));
-			box.setFont(FontManager.getRunescapeSmallFont());
-			box.setBackground(patchToggles.getBackground());
-			Controls.styleCheckBox(box);
-			box.setAlignmentX(Component.LEFT_ALIGNMENT);
-			box.addActionListener(e -> availability.setAvailable(patch, box.isSelected()));
-			toggleBoxes.put(patch.getKey(), box);
-			patchToggles.add(box);
-		}
-	}
-
-	/** Syncs the checkboxes to the profile without replacing them. */
-	private void syncToggles()
-	{
-		for (FarmPatch patch : allPatches())
-		{
-			JCheckBox box = toggleBoxes.get(patch.getKey());
-			if (box == null)
-			{
-				continue;
-			}
-			boolean available = availability.isAvailable(patch);
-			if (box.isSelected() != available)
-			{
-				box.setSelected(available);
-			}
-			box.setToolTipText(availability.isExplicitlySet(patch)
-				? null
-				: "Switched on because we have seen this patch before.");
-		}
-	}
-
-	private JButton bulkButton(String text, boolean available)
-	{
-		JButton button = new JButton(text);
-		button.setFont(FontManager.getRunescapeSmallFont());
-		Controls.styleButton(button);
-		button.setMargin(new java.awt.Insets(0, 4, 0, 4));
-		button.addActionListener(e -> availability.setTypeAvailable(type, available));
-		return button;
-	}
-
-	/** Repaints every row against the current cache. Must run on the EDT. */
 	void refresh()
 	{
 		List<FarmPatch> patches = availablePatches();
@@ -383,21 +347,22 @@ class PatchTypePanel extends JPanel
 		rowContainer.removeAll();
 		for (PatchProjection projection : projections)
 		{
-			FarmPatch patch = projection.getPatch();
-			PatchRow row = rows.computeIfAbsent(patch.getKey(),
-				key -> new PatchRow(patch, itemManager, config, seeds, bonuses));
-			row.update(projection, snapshots.get(patch.getKey()));
-			row.setAlignmentX(Component.LEFT_ALIGNMENT);
-			row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
-			rowContainer.add(row);
-			rowContainer.add(javax.swing.Box.createVerticalStrut(3));
+			addRow(projection.getPatch(), projection, snapshots.get(projection.getPatch().getKey()),
+				false);
+		}
+
+		// The switched-off ones last, in a stable order, so turning one off moves it out of the
+		// way rather than leaving it among the patches you are actually farming.
+		for (FarmPatch patch : offPatches())
+		{
+			PatchSnapshot snapshot = stateStore.get(patch);
+			addRow(patch, growthTimer.project(patch, snapshot), snapshot, true);
 		}
 
 		emptyMessage.setText(emptyMessageFor(patches.size(), projections.size()));
-		emptyMessage.setVisible(projections.isEmpty());
+		showEmptyMessage();
 
-		syncToggles();
-		updateSetupButtonText();
+		updateStatusToggle();
 		if (seedSelector != null)
 		{
 			// How many patches of this group would be planted, so the protection payment can be
@@ -412,6 +377,86 @@ class PatchTypePanel extends JPanel
 		rowContainer.repaint();
 	}
 
+	private void addRow(FarmPatch patch, @javax.annotation.Nullable PatchProjection projection,
+		@javax.annotation.Nullable PatchSnapshot snapshot, boolean off)
+	{
+		PatchRow row = rows.computeIfAbsent(patch.getKey(),
+			key -> new PatchRow(patch, itemManager, config, seeds, bonuses));
+		row.update(projection, snapshot);
+		row.setOff(off);
+		row.setOnToggle(() -> availability.setAvailable(patch, off));
+		row.setAlignmentX(Component.LEFT_ALIGNMENT);
+		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+		rowContainer.add(row);
+		rowContainer.add(javax.swing.Box.createVerticalStrut(3));
+	}
+
+	/**
+	 * This tab's patches that are switched off, in the order the data lists them.
+	 *
+	 * <p>Not sorted by state like the rest: they are not part of the run, so how soon they are due
+	 * is not information anyone is acting on, and a stable order means one does not jump around
+	 * as it grows.
+	 */
+	private List<FarmPatch> offPatches()
+	{
+		List<FarmPatch> off = new ArrayList<>();
+		for (FarmPatch patch : groupPatches())
+		{
+			if (!availability.isAvailable(patch))
+			{
+				off.add(patch);
+			}
+		}
+		return off;
+	}
+
+	/**
+	 * Every patch this tab is responsible for, switched on or not.
+	 *
+	 * <p>{@link #allPatches} without the group filter would offer a split tab the chance to switch
+	 * on a patch belonging to the other one — the protected herb tab listing Ardougne, which it
+	 * does not own. Same test the visible rows use, so the two lists cannot drift.
+	 */
+	private List<FarmPatch> groupPatches()
+	{
+		List<FarmPatch> patches = new ArrayList<>();
+		for (FarmPatch patch : allPatches())
+		{
+			if (!Locations.isEnabled(config, patch))
+			{
+				continue;
+			}
+			if (patch.getImplementation() != type || groups.groupFor(patch).equals(group))
+			{
+				patches.add(patch);
+			}
+		}
+		return patches;
+	}
+
+	/**
+	 * Shows the "nothing here yet" line only when there is something to say.
+	 *
+	 * <h2>The bug this replaces</h2>
+	 *
+	 * Two of the three places that set this visibility asked {@code emptyMessage.isEnabled()},
+	 * which is a Swing property nothing in this class ever sets — so it is always true, and the
+	 * condition reduced to "the status section is open". One of those two is {@link #applyLayout},
+	 * which runs on <b>every tab select</b>. Clicking through the patch types therefore made an
+	 * empty message visible on each one: no text, but an 8px border top and bottom and a line's
+	 * worth of height, appearing as a gap between the tab strip and the Patch status heading. The
+	 * next refresh set it correctly again, which is why it came and went.
+	 *
+	 * <p>The condition that was meant is "does it have a message", and {@link #emptyMessageFor}
+	 * already answers that by returning an empty string when there are rows to show. Asked in one
+	 * place now, so the three callers cannot disagree again.
+	 */
+	private void showEmptyMessage()
+	{
+		emptyMessage.setVisible(statusVisible && !emptyMessage.getText().isEmpty());
+	}
+
 	private String emptyMessageFor(int availableCount, int shownCount)
 	{
 		if (shownCount > 0)
@@ -420,8 +465,10 @@ class PatchTypePanel extends JPanel
 		}
 		if (availableCount == 0)
 		{
+			// Points at the rows, because there is no longer a second list to point at. If every
+			// patch is off they are all still here, washed red, and clicking one is the answer.
 			return "No " + type.getDisplayName().toLowerCase()
-				+ " patches switched on yet. Use the list below to pick the ones you use.";
+				+ " patches switched on yet. Click one below to switch it on.";
 		}
 		return "Nothing seen here yet. Walk past a patch, or cast Geomancy, to fill this in.";
 	}

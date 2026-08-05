@@ -205,6 +205,62 @@ public class PatchStateStore
 		return true;
 	}
 
+	/**
+	 * Fills in protection and compost we never saw, from Time Tracking's own record.
+	 *
+	 * <p>Our capture only knows what it watched happen, so a patch paid for or composted before
+	 * this plugin was installed reads as bare forever. Time Tracking has been recording both for
+	 * years and stores them per profile. See {@link TimeTrackingState}.
+	 *
+	 * <p><b>Only fills gaps.</b> Anything we have observed ourselves wins, because ours is live
+	 * and theirs is whatever was last written — so this never overwrites a fact, only supplies a
+	 * missing one. Called on load rather than per tick: it answers a question about the past, and
+	 * the past does not change.
+	 */
+	public void backfillFrom(TimeTrackingState timeTracking)
+	{
+		int filled = 0;
+		synchronized (this)
+		{
+			for (FarmPatch patch : FarmingWorldData.getAllPatches())
+			{
+				PatchSnapshot snapshot = snapshots.get(patch.getKey());
+				if (snapshot == null)
+				{
+					// Never seen the patch at all. Recording compost for somewhere we have no
+					// state for would invent a patch we cannot say anything else about.
+					continue;
+				}
+
+				Boolean paid = timeTracking.isProtected(patch);
+				if (paid != null && paid && !snapshot.isPatchProtected())
+				{
+					snapshot.setPatchProtected(true);
+					filled++;
+				}
+
+				CompostTier tier = timeTracking.compost(patch);
+				if (tier != null && snapshot.getCompost() == CompostTier.NONE
+					&& tier != CompostTier.NONE)
+				{
+					snapshot.setCompost(tier);
+					filled++;
+				}
+			}
+
+			if (filled > 0)
+			{
+				save();
+			}
+		}
+
+		if (filled > 0)
+		{
+			log.info("Filled in {} compost and protection facts from Time Tracking", filled);
+			fireChanged();
+		}
+	}
+
 	public void recordProtected(FarmPatch patch, boolean isProtected)
 	{
 		if (applyProtected(patch, isProtected))

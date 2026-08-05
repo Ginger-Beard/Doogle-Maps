@@ -124,6 +124,9 @@ public class DoogleMapsPlugin extends Plugin
 	private ProtectedPatches protectedPatches;
 
 	@Inject
+	private com.dooglemaps.state.TimeTrackingState timeTracking;
+
+	@Inject
 	private com.dooglemaps.data.ItemNames itemNames;
 
 	@Inject
@@ -522,6 +525,12 @@ public class DoogleMapsPlugin extends Plugin
 		}
 
 		stateStore.load();
+		// Anything Time Tracking recorded that we never watched happen. After the load, because
+		// it fills gaps in what was just read rather than replacing it.
+		stateStore.backfillFrom(timeTracking);
+		// Wired before the load, so the very first availability question already knows the level.
+		// The Farming Guild's tiers are doors rather than preferences; see PatchRequirements.
+		availability.setFarmingLevel(seedStore::getFarmingLevel);
 		availability.load();
 		seedStore.load();
 		// The Farming level is only otherwise learned from a Farming XP drop, which may not

@@ -10,10 +10,8 @@ import com.dooglemaps.route.ProtectionBudget;
 import com.dooglemaps.state.ProtectionSelectionStore;
 import com.dooglemaps.bank.BankContents;
 import com.dooglemaps.guide.CarriedItems;
-import com.dooglemaps.bank.LoadoutItem;
 import com.dooglemaps.bank.RunLoadout;
 import com.dooglemaps.data.Seed;
-import com.dooglemaps.route.InventoryPlan;
 import com.dooglemaps.route.RunEstimate;
 import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.route.RunStop;
@@ -52,9 +50,15 @@ import net.runelite.client.ui.FontManager;
 /**
  * Plan a run, then follow it.
  *
- * <p>Two states in one panel: before a run it is a list of patch types to tick and a
- * feasibility summary; during one it is the list of stops with the current target at the
- * top. That mirrors how a run actually goes — you decide once, then stop deciding.
+ * <p>Two states in one panel: before a run it is a list of patch types to tick with the
+ * projection under it; during one it is the list of stops still to visit. That mirrors how a run
+ * actually goes — you decide once, then stop deciding.
+ *
+ * <p><b>Nothing here narrates the run.</b> There used to be a block of text above the projection
+ * — the current leg, what to take from the bank, which patches had no seed — and all of it went
+ * to the on-screen panel, because following a run means watching the game rather than the
+ * sidebar. The wording lives in {@code LoadoutSummary} rather than in either renderer, so the
+ * side-pane checklist this is heading towards can show the same steps in the same words.
  */
 class RunPanel extends JPanel
 {
@@ -73,9 +77,6 @@ class RunPanel extends JPanel
 		PatchImplementation.FRUIT_TREE,
 		PatchImplementation.HARDWOOD_TREE);
 
-	/** Loadout items named before the line turns into a count. */
-	private static final int LOADOUT_NAMES_SHOWN = 4;
-
 	private final RunPlanner planner;
 	private final RunLoadout loadout;
 	private final AvailabilityProfile availability;
@@ -83,6 +84,9 @@ class RunPanel extends JPanel
 	private final SeedInventoryStore seeds;
 
 	private final RunTypeStore runTypes;
+
+	/** For the patch-type toggles, which decide which lines are offered at all. */
+	private final com.dooglemaps.DoogleMapsConfig config;
 	private final FarmingBonusStore bonuses;
 	private final CompostSelectionStore compost;
 
@@ -91,8 +95,18 @@ class RunPanel extends JPanel
 
 	private final Map<RunOption, JCheckBox> optionBoxes = new java.util.LinkedHashMap<>();
 	private final JPanel typeSelection = new JPanel();
+
+	/**
+	 * Which of the ticked types have no seed chosen, in red, directly under the boxes.
+	 *
+	 * <p>The one line kept back when the rest of the pre-run narration moved to the on-screen
+	 * panel, and it is kept for a different reason from the rest: it is not a step, it is a
+	 * mistake. A run with a type ticked and no seed picked for it will visit those patches and
+	 * plant nothing, and the place to say so is under the tick that caused it rather than
+	 * further down among the projections.
+	 */
+	private final WrappedText noSeeds = new WrappedText();
 	private final JPanel stopList = new JPanel();
-	private final WrappedText summary = new WrappedText();
 
 	/** Everywhere the planned run will go, before it starts. See {@link #buildDestinations}. */
 	private final JPanel destinations = new JPanel();
@@ -124,8 +138,10 @@ class RunPanel extends JPanel
 		ProtectionSelectionStore protection, BankContents bank,
 		CarriedItems carried, RunPlanner planner, RunLoadout loadout,
 		AvailabilityProfile availability, SeedSelectionStore selection, SeedInventoryStore seeds,
-		RunTypeStore runTypes, FarmingBonusStore bonuses, CompostSelectionStore compost)
+		RunTypeStore runTypes, FarmingBonusStore bonuses, CompostSelectionStore compost,
+		com.dooglemaps.DoogleMapsConfig config)
 	{
+		this.config = config;
 		this.layout = layout;
 		this.groups = groups;
 		this.protection = protection;
@@ -157,10 +173,12 @@ class RunPanel extends JPanel
 		typeSelection.setBackground(getBackground());
 		buildTypeBoxes();
 
+		noSeeds.setForeground(BAD);
+		noSeeds.setBorder(BorderFactory.createEmptyBorder(4, 6, 0, 6));
+		noSeeds.setVisible(false);
+
 		stopList.setLayout(new BoxLayout(stopList, BoxLayout.Y_AXIS));
 		stopList.setBackground(getBackground());
-
-		summary.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
 
 		rewardTable.setBackground(getBackground());
 		rewardTable.setBorder(BorderFactory.createEmptyBorder(0, 6, 4, 6));
@@ -169,12 +187,16 @@ class RunPanel extends JPanel
 		Controls.styleButton(startStop);
 		startStop.addActionListener(e -> toggleRun());
 
+		JPanel choices = new JPanel(new BorderLayout(0, 0));
+		choices.setBackground(getBackground());
+		choices.add(typeSelection, BorderLayout.NORTH);
+		choices.add(noSeeds, BorderLayout.CENTER);
+
 		JPanel body = new JPanel(new BorderLayout(0, 4));
 		body.setBackground(getBackground());
-		body.add(typeSelection, BorderLayout.NORTH);
+		body.add(choices, BorderLayout.NORTH);
 		JPanel plan = new JPanel(new BorderLayout(0, 2));
 		plan.setBackground(getBackground());
-		plan.add(summary, BorderLayout.NORTH);
 		plan.add(rewardTable, BorderLayout.CENTER);
 		plan.add(buildDestinations(), BorderLayout.SOUTH);
 		body.add(plan, BorderLayout.CENTER);
@@ -212,9 +234,100 @@ class RunPanel extends JPanel
 		refresh();
 	}
 
+	/**
+	 * Lays the run options out two across, with each pair on its own row.
+	 *
+	 * <h2>Why the grid needs help</h2>
+	 *
+	 * A {@code GridLayout} fills row by row, so a list containing three pairs and seven singles
+	 * puts them wherever the count happens to land — "Fruit tree" ended up in the left column with
+	 * "Fruit tree (H/O)" in the right of the <i>same</i> row only by luck, while "Bush" and
+	 * "Bush (H/O)" straddled a row break. The two halves of one decision read as unrelated
+	 * entries.
+	 *
+	 * <p>So a pair is pushed to the start of a row, padding the gap it leaves. It rarely has to:
+	 * {@code PlantingGroups.runOptions} now groups the paired types at the end of the list, so the
+	 * singles fill whole rows ahead of them and there is at most one gap to pad. The padding stays
+	 * because the layout must not depend on that ordering holding — switching a patch type off in
+	 * the settings changes how many singles there are.
+	 */
 	private void buildTypeBoxes()
 	{
+		List<RunOption> options = offeredOptions();
+		int column = 0;
+
+		for (RunOption option : options)
+		{
+			// A harvest-only line is drawn as part of its pair, when the full line reaches it.
+			if (option.isHarvestOnly())
+			{
+				continue;
+			}
+
+			RunOption paired = hasHarvestOnly(options, option)
+				? RunOption.harvestOnly(option.getGroup())
+				: null;
+
+			// Start a fresh row for a pair, so the two halves are side by side rather than
+			// wrapped across the break.
+			if (paired != null && column == 1)
+			{
+				typeSelection.add(filler());
+				column = 0;
+			}
+
+			addOptionBox(option);
+			column = (column + 1) % 2;
+
+			if (paired != null)
+			{
+				addOptionBox(paired);
+				column = (column + 1) % 2;
+			}
+		}
+	}
+
+	/**
+	 * The run lines to show, honouring the patch types switched off in the settings.
+	 *
+	 * <p>This filter was missing, and the result was a run you could start and not configure:
+	 * hiding the bush tab took away the only place to pick a bush seed or its compost, while
+	 * "Bush" and "Bush (H/O)" stayed in the list underneath. The two are one decision — a type
+	 * you have hidden is one you are not farming.
+	 *
+	 * <p>Nothing is lost by hiding one. The stored selection keeps keys that are not currently on
+	 * offer, so switching the type back on brings its ticks back with it. See
+	 * {@code RunTypeStore.setSelected}.
+	 */
+	private List<RunOption> offeredOptions()
+	{
+		List<RunOption> offered = new ArrayList<>();
 		for (RunOption option : groups.runOptions())
+		{
+			if (PatchTabs.isEnabled(config, option.getType()))
+			{
+				offered.add(option);
+			}
+		}
+		return offered;
+	}
+
+	/** Whether this full-run line has a harvest-only counterpart on offer. */
+	private static boolean hasHarvestOnly(List<RunOption> options, RunOption full)
+	{
+		return options.contains(RunOption.harvestOnly(full.getGroup()));
+	}
+
+	/** An empty cell, so the next pair starts a row. */
+	private JPanel filler()
+	{
+		JPanel blank = new JPanel();
+		blank.setBackground(getBackground());
+		return blank;
+	}
+
+	private void addOptionBox(RunOption option)
+	{
 		{
 			// Ticked from the saved run, so the same circuit does not have to be re-entered
 			// before every run.
@@ -230,6 +343,10 @@ class RunPanel extends JPanel
 				: null);
 			box.addActionListener(e ->
 			{
+				if (box.isSelected())
+				{
+					untick(counterpartOf(option));
+				}
 				// Only the lines on show are replaced. A protected herb run chosen earlier must
 				// survive the split being switched off and back on, and these boxes cannot speak
 				// for a line they are not displaying.
@@ -238,6 +355,34 @@ class RunPanel extends JPanel
 			});
 			optionBoxes.put(option, box);
 			typeSelection.add(box);
+		}
+	}
+
+	/**
+	 * The other half of a type's pair: full for harvest-only, and harvest-only for full.
+	 *
+	 * <p>They are mutually exclusive rather than merely contradictory, which is the player's
+	 * point: if you are replanting you have to harvest first, so the full run already includes
+	 * the harvest; and if you are only harvesting, you have specifically decided not to replant.
+	 * There is no run that wants both, so ticking one unticks the other.
+	 *
+	 * <p>This replaces a rule that resolved the contradiction after the fact — full wins — which
+	 * was a reasonable reading of an impossible state but still let the player express it. Not
+	 * being able to say it at all is better than being told what it was taken to mean.
+	 */
+	private static RunOption counterpartOf(RunOption option)
+	{
+		return option.isHarvestOnly()
+			? RunOption.full(option.getGroup())
+			: RunOption.harvestOnly(option.getGroup());
+	}
+
+	private void untick(RunOption option)
+	{
+		JCheckBox other = optionBoxes.get(option);
+		if (other != null && other.isSelected())
+		{
+			other.setSelected(false);
 		}
 	}
 
@@ -415,21 +560,93 @@ class RunPanel extends JPanel
 		if (running)
 		{
 			rewardTable.setVisible(false);
+			noSeeds.setVisible(false);
 			// The stop list below is the live version of the same thing, current target first,
 			// so a second static copy of it would only be a staler duplicate.
 			destinations.setVisible(false);
 			buildStopList();
-			summary.setText(describeProgress());
 		}
 		else
 		{
-			summary.setText(describePlan());
 			rebuildRewardTable(getSelectedTypes());
 			rebuildDestinations(getSelectedTypes());
+			updateNoSeeds(getSelectedTypes());
 		}
 
 		revalidate();
 		repaint();
+	}
+
+	/**
+	 * Names the ticked types nothing will be planted in.
+	 *
+	 * <p>Asked per type rather than per group: a type with a seed picked for one of its groups and
+	 * not the other is a subtler thing than this line is for, and the group with no seed still
+	 * gets its patches counted as unfilled in the projection below.
+	 */
+	private void updateNoSeeds(Set<PatchImplementation> types)
+	{
+		List<String> unpicked = new ArrayList<>();
+		for (PatchImplementation type : types)
+		{
+			// A type in the run only for its harvest needs no seed, so saying one is missing is
+			// telling the player to fix something that is not wrong.
+			if (onlyHarvestedFor(type))
+			{
+				continue;
+			}
+			if (selection.getSelectedFor(type).isEmpty())
+			{
+				unpicked.add(type.getDisplayName().toLowerCase());
+			}
+		}
+
+		noSeeds.setVisible(!unpicked.isEmpty());
+		if (!unpicked.isEmpty())
+		{
+			noSeeds.setText("No seed picked for: " + String.join(", ", unpicked) + ".");
+		}
+	}
+
+	/**
+	 * Whether every group of this type in the run is harvest-only.
+	 *
+	 * <p>Every group, not any: a type with a full run over one group and a harvest-only pass over
+	 * another does still want a seed, for the group that plants.
+	 */
+	private boolean onlyHarvestedFor(PatchImplementation type)
+	{
+		boolean any = false;
+		for (PlantingGroup group : groups.groupsFor(type))
+		{
+			if (!runTypes.isSelected(RunOption.full(group))
+				&& !runTypes.isSelected(RunOption.harvestOnly(group)))
+			{
+				continue;
+			}
+			any = true;
+			if (!runTypes.isHarvestOnly(group))
+			{
+				return false;
+			}
+		}
+		return any;
+	}
+
+	/** Whether any group in the run is being visited for its harvest alone. */
+	private boolean anyHarvestOnly()
+	{
+		for (PatchImplementation type : getSelectedTypes())
+		{
+			for (PlantingGroup group : groups.groupsFor(type))
+			{
+				if (runTypes.isHarvestOnly(group))
+				{
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	private void buildStopList()
@@ -490,98 +707,6 @@ class RunPanel extends JPanel
 		return "Bank first - grab seeds and payments";
 	}
 
-	private String describeProgress()
-	{
-		int remaining = planner.getRemaining().size();
-		if (planner.isAtBankLeg())
-		{
-			Set<SeedSource> sources = planner.getSupplySources();
-			if (sources.contains(SeedSource.SEED_VAULT) && !sources.contains(SeedSource.BANK))
-			{
-				return "Your seeds are in the seed vault, so the run starts at the Farming Guild.";
-			}
-			if (sources.contains(SeedSource.SEED_VAULT))
-			{
-				return "Some seeds are banked and some are in the vault - the Farming Guild has "
-					+ "both, its bank chest is right next to the vault.";
-			}
-			// Worth separating, because they feel identical from the sidebar and are not. With
-			// nothing picked the plugin cannot know what the trip needs, so a bank is a guess
-			// rather than a plan - and someone who already has their seeds should be told that
-			// picking them is what skips the detour, not left wondering why it wants a bank.
-			if (!selection.hasAnySelection())
-			{
-				return "No seeds picked, so this heads for a bank. Click the seeds you want on "
-					+ "each patch tab and the run will go straight to the patches instead.";
-			}
-			return "Heading to the nearest bank. The run continues once you get there.";
-		}
-		return remaining == 1
-			? "One stop left."
-			: remaining + " stops left.";
-	}
-
-	/**
-	 * What the selected run would involve, before committing to it.
-	 *
-	 * <p>The interesting number is inventory slots, because a mixed run is limited by what
-	 * it can carry home rather than by anything about the route.
-	 */
-	private String describePlan()
-	{
-		Set<PatchImplementation> types = getSelectedTypes();
-		if (types.isEmpty())
-		{
-			return "Pick the patch types you want to run.";
-		}
-
-		// Only the seeds the player actually picked, and only for the types in this run.
-		Set<Seed> chosen = new LinkedHashSet<>();
-		Map<PatchImplementation, Integer> counts = new EnumMap<>(PatchImplementation.class);
-		List<String> unpicked = new ArrayList<>();
-
-		for (PatchImplementation type : types)
-		{
-			counts.put(type, availability.getAvailablePatches(type).size());
-
-			Set<Seed> forType = selection.getSelectedFor(type);
-			if (forType.isEmpty())
-			{
-				unpicked.add(type.getDisplayName().toLowerCase());
-			}
-			chosen.addAll(forType);
-		}
-
-		if (chosen.isEmpty())
-		{
-			return "Now pick your seeds - click them in the seed list on each patch tab.";
-		}
-
-		InventoryPlan plan = InventoryPlan.forRun(chosen, counts, hasSeedBox(), true, true);
-
-		StringBuilder text = new StringBuilder();
-
-		// The slot breakdown — "7 of 28 inventory slots: 3 seeds, 1 payments, 3 crops home" —
-		// used to lead this. It was arithmetic the player never has to act on: the only decision
-		// it feeds is whether the run fits, and that is worth a line only when the answer is no.
-		// Sitting at the top of the panel it was the first thing read and the least useful.
-		if (!plan.isFeasible())
-		{
-			text.append("That will not fit (")
-				.append(plan.getTotalSlots()).append(" of ").append(InventoryPlan.TOTAL_SLOTS)
-				.append(" slots) - drop a patch type or a seed.");
-		}
-		if (!unpicked.isEmpty())
-		{
-			text.append("\n\nNo seed picked for: ").append(String.join(", ", unpicked)).append('.');
-		}
-
-		appendLoadout(text, types);
-
-		appendReward(text, types);
-		return text.toString();
-	}
-
 	/**
 	 * Prices every crop in the run, using what the player said they would treat it with.
 	 *
@@ -597,7 +722,10 @@ class RunPanel extends JPanel
 		Map<Seed, Integer> owned = ownedSeeds();
 		int level = seeds.getFarmingLevel();
 
-		if (actionable.isEmpty() || chosen.isEmpty() || level <= 0)
+		// A seed selection is not required any more. A harvest-only run has nothing to plant by
+		// definition — the crop is already in the ground — and hiding the table because nothing
+		// was picked priced a bush run at nothing, which is precisely the run it was asked about.
+		if (actionable.isEmpty() || level <= 0 || (chosen.isEmpty() && !anyHarvestOnly()))
 		{
 			rewardTable.setVisible(false);
 			return;
@@ -627,13 +755,26 @@ class RunPanel extends JPanel
 		for (Map.Entry<PlantingGroup, Integer> entry : byGroup.entrySet())
 		{
 			PlantingGroup group = entry.getKey();
+
+			// Priced against what is growing rather than against a seed, because there is no seed
+			// in a harvest-only trip and asking for one is what made these read as zero.
+			if (runTypes.isHarvestOnly(group))
+			{
+				parts.add(RunEstimate.forHarvest(planner.ripeProduceIn(group), level,
+					bonuses.current()));
+				continue;
+			}
+
 			Map<PatchImplementation, Integer> one =
 				java.util.Collections.singletonMap(group.getType(), entry.getValue());
 			Map<PatchImplementation, CompostTier> tier =
 				java.util.Collections.singletonMap(group.getType(), compost.get(group));
 
+			// Survival over this group's own patches, not the whole type. The protected herbs
+			// cannot be diseased and the ordinary ones can, so one blended figure was wrong for
+			// both of them.
 			parts.add(RunEstimate.forRun(one, selection.getSelectedFor(group), owned, level,
-				bonuses.current(), tier, planner.survivalAcross(types), budget(group)));
+				bonuses.current(), tier, planner.survivalIn(group), budget(group)));
 		}
 
 		return RunEstimate.merge(parts);
@@ -674,8 +815,10 @@ class RunPanel extends JPanel
 	private String describeGear(int level, RunEstimate estimate)
 	{
 		FarmingBonuses carried = bonuses.current();
-		StringBuilder text = new StringBuilder("<html>At Farming level ").append(level)
-			.append(", with:<br>");
+		StringBuilder text = new StringBuilder(
+			"<html>Estimated yield and XP, from your Farming level, gear, diaries, compost and "
+				+ "protection.<br>Harvest-only runs count the harvest award alone.<br><br>")
+			.append("At Farming level ").append(level).append(", with:<br>");
 
 		text.append(carried.isMagicSecateurs()
 			? "&bull; magic secateurs (+10% yield)<br>"
@@ -692,15 +835,16 @@ class RunPanel extends JPanel
 
 		if (estimate.getSurvivalChance() < 0.999)
 		{
+			// The old wording said paying farmers was not assumed and would raise this. It had
+			// been true once and was not any more: protection is read from the Protect boxes and
+			// applied per patch, along with the compost and whichever patches this account's
+			// unlocks make disease-free.
 			text.append(String.format("<br>Discounted for disease: about %d%% of patches "
-					+ "should reach harvest.<br>Paying farmers is not assumed, and would raise "
-					+ "this.<br>",
+					+ "should reach harvest.<br>Protected patches are already counted as "
+					+ "surviving.<br>",
 				Math.round(estimate.getSurvivalChance() * 100)));
 		}
 
-		text.append("<br>Secateurs count in your inventory as well as worn. The cape, outfit and "
-			+ "attas are read from your equipment and your anima patch. Diary rewards are applied "
-			+ "per patch, so Catherby, Hosidius and the Farming Guild differ.");
 		return text.append("</html>").toString();
 	}
 
@@ -731,100 +875,6 @@ class RunPanel extends JPanel
 		return text.toString();
 	}
 
-	/**
-	 * What the run is worth, over every patch it will actually visit.
-	 *
-	 * <p>The per-patch figures are already on each row's tooltip; this is the question those
-	 * cannot answer, which is whether the whole circuit is worth doing before logging out.
-	 */
-	private void appendReward(StringBuilder text, Set<PatchImplementation> types)
-	{
-		RunEstimate estimate = RunEstimate.forRun(
-			planner.countActionable(types),
-			selection.getSelected(),
-			ownedSeeds(),
-			seeds.getFarmingLevel(),
-			bonuses.current());
-
-		// Everything per-crop is in the table below, so only what the table cannot say goes
-		// here - which is the patches nothing will be planted in.
-		int unfilled = estimate.getUnfilledPatches();
-		if (unfilled > 0)
-		{
-			text.append("\n\n").append(unfilled)
-				.append(unfilled == 1 ? " patch has" : " patches have")
-				.append(" no seed to fill them.");
-		}
-	}
-
-	/**
-	 * What is still to be pulled out of the bank, in one line.
-	 *
-	 * <p>Only the count and the first few names. The bank itself highlights them, which is where
-	 * you actually need to see them; this exists so you know to open a bank at all, and so the
-	 * things the plugin cannot highlight — something you own none of — still get said.
-	 */
-	private void appendLoadout(StringBuilder text, Set<PatchImplementation> types)
-	{
-		List<LoadoutItem> items = loadout.forRun(types);
-		if (items.isEmpty())
-		{
-			return;
-		}
-
-		List<String> toWithdraw = new ArrayList<>();
-		List<String> missing = new ArrayList<>();
-		boolean anyUnknown = false;
-		for (LoadoutItem item : items)
-		{
-			if (item.getNeed() == LoadoutItem.Need.WITHDRAW)
-			{
-				toWithdraw.add(item.getName().toLowerCase());
-			}
-			else if (item.getNeed() == LoadoutItem.Need.MISSING)
-			{
-				missing.add(item.getName().toLowerCase());
-			}
-			else if (item.getNeed() == LoadoutItem.Need.UNKNOWN)
-			{
-				anyUnknown = true;
-			}
-		}
-
-		if (!toWithdraw.isEmpty())
-		{
-			text.append("\n\nFrom the bank: ").append(summarise(toWithdraw)).append('.');
-		}
-		if (!missing.isEmpty())
-		{
-			// Worth saying out loud: an item you own none of cannot be highlighted in the bank,
-			// so silence here would read as "nothing else needed".
-			text.append("\n\nNot found anywhere: ").append(summarise(missing)).append('.');
-		}
-		// Nothing is said for the not-yet-read case. A bank is only readable while it is open, so
-		// before you have opened one this section has nothing to report — and "Open a bank and
-		// this will say what to take" was a line telling you the plugin had no information yet,
-		// which is what an empty section already says. The reason it existed still stands: the
-		// alternative of listing unread items as *missing* would read as "your secateurs are
-		// gone", and that is still avoided. Silence is simply the better way to avoid it.
-		if (anyUnknown && !toWithdraw.isEmpty())
-		{
-			text.append(" Some of your bank has not been read yet.");
-		}
-	}
-
-	/** A few names and a count, rather than a list that outgrows the sidebar. */
-	private static String summarise(List<String> names)
-	{
-		if (names.size() <= LOADOUT_NAMES_SHOWN)
-		{
-			return String.join(", ", names);
-		}
-		return String.join(", ", names.subList(0, LOADOUT_NAMES_SHOWN))
-			+ " and " + (names.size() - LOADOUT_NAMES_SHOWN) + " more";
-	}
-
-	/** How many of every seed the account has, for working out how far the picked ones stretch. */
 	private Map<Seed, Integer> ownedSeeds()
 	{
 		Map<Seed, Integer> owned = new EnumMap<>(Seed.class);
@@ -842,16 +892,4 @@ class RunPanel extends JPanel
 			: String.format("%,d", Math.round(value));
 	}
 
-	/** Whether any seed is sitting in a seed box, which is worth five slots. */
-	private boolean hasSeedBox()
-	{
-		for (Seed seed : Seed.values())
-		{
-			if (seeds.getCount(seed, com.dooglemaps.state.SeedSource.SEED_BOX) > 0)
-			{
-				return true;
-			}
-		}
-		return false;
-	}
 }

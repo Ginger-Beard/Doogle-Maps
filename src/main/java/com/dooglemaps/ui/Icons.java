@@ -83,9 +83,10 @@ final class Icons
 			return icon;
 		}
 
-		// Just under half the tab, which is large enough to read at a glance and small enough to
-		// leave the crop sprite recognisable — the tab still has to say "herb" first.
-		int badgeSize = Math.max(8, size * 9 / 20);
+		// Half the tab. Large enough for the shield's flat top and point to survive the scale
+		// down, small enough to leave the crop sprite recognisable — the tab still has to say
+		// "herb" first. Nine pixels was under the size the shape needs to read as anything.
+		int badgeSize = Math.max(10, size / 2);
 		BufferedImage shield = ShieldIcon.create(badgeSize, SHIELD);
 
 		BufferedImage combined = new BufferedImage(

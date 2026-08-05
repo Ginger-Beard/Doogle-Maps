@@ -117,9 +117,21 @@ public class CompostSelectionStore
 		}
 	}
 
+	/**
+	 * The compost this patch type will be treated with.
+	 *
+	 * <p>NONE for a type where treating it changes nothing the plugin can tell you — no lives
+	 * mechanic and no published disease rate. Those have no dropdown, so any stored value is one
+	 * the player can no longer see or alter, and the default is ultracompost: left alone it would
+	 * have the estimate quietly assuming a treatment nobody chose. Everywhere the dropdown <i>is</i>
+	 * offered the choice is honoured in full, including the types where it buys survival rather
+	 * than yield. See {@code CropYieldModel.compostMatters}.
+	 */
 	public synchronized CompostTier get(PatchImplementation type)
 	{
-		return chosen.getOrDefault(type, DEFAULT);
+		return com.dooglemaps.timer.CropYieldModel.compostMatters(type)
+			? chosen.getOrDefault(type, DEFAULT)
+			: CompostTier.NONE;
 	}
 
 	/** What every selected type is treated with, for pricing a whole run. */
@@ -160,6 +172,7 @@ public class CompostSelectionStore
 		synchronized (this)
 		{
 			chosen.clear();
+			byGroup.clear();
 
 			String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, COMPOST_KEY);
 			if (json == null || json.isEmpty())
@@ -172,15 +185,29 @@ public class CompostSelectionStore
 				Map<String, String> loaded = gson.fromJson(json, NAME_MAP_TYPE);
 				if (loaded != null)
 				{
-					loaded.forEach((type, tier) ->
+					loaded.forEach((key, tier) ->
 					{
+						CompostTier parsed;
 						try
 						{
-							chosen.put(PatchImplementation.valueOf(type), CompostTier.valueOf(tier));
+							parsed = CompostTier.valueOf(tier);
 						}
 						catch (IllegalArgumentException e)
 						{
-							// A type or tier that no longer exists; drop it.
+							// A tier that no longer exists; drop it.
+							return;
+						}
+
+						// A bare enum name is a patch type; anything else is a planting group.
+						// Same rule as save, and it is what lets a file written before groups
+						// existed load unchanged.
+						try
+						{
+							chosen.put(PatchImplementation.valueOf(key), parsed);
+						}
+						catch (IllegalArgumentException e)
+						{
+							byGroup.put(key, parsed);
 						}
 					});
 				}
@@ -192,10 +219,27 @@ public class CompostSelectionStore
 		}
 	}
 
+	/**
+	 * Writes both maps, keyed the same way they are read back.
+	 *
+	 * <h2>The group choices used to be written nowhere</h2>
+	 *
+	 * This serialised {@link #chosen} alone, so a compost picked on the protected herb tab lived
+	 * in memory and was gone at the next login — silently, because the fallback is to the type's
+	 * choice and that always answers something. The protected patches then quietly used whatever
+	 * the ordinary ones were set to, and the estimate below the run went with it. Nothing looked
+	 * broken; the numbers were just for a compost you had not chosen.
+	 *
+	 * <p>One map rather than two config keys, because the two are read as one question and a
+	 * half-written pair is worse than either. A bare enum name is a type and anything else is a
+	 * group key, which is the same rule {@code load} applies — and it means everything written by
+	 * an older build still reads correctly.
+	 */
 	private synchronized void save()
 	{
 		Map<String, String> names = new HashMap<>();
 		chosen.forEach((type, tier) -> names.put(type.name(), tier.name()));
+		byGroup.forEach((key, tier) -> names.put(key, tier.name()));
 		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, COMPOST_KEY, gson.toJson(names));
 	}
 }

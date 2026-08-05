@@ -4,6 +4,7 @@ import com.dooglemaps.bank.ToolNeeds;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmRegion;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.SeedInventoryStore;
@@ -16,6 +17,7 @@ import com.dooglemaps.state.PlantingGroups;
 import com.dooglemaps.state.ProtectedPatches;
 import com.dooglemaps.state.ProtectionSelectionStore;
 import com.dooglemaps.state.RunTypeStore;
+import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropState;
 import com.dooglemaps.timer.DiseaseRisk;
 import com.dooglemaps.timer.GrowthTimer;
@@ -305,6 +307,37 @@ public class RunPlanner
 	}
 
 	/**
+	 * What is actually growing in this group's actionable patches, by crop.
+	 *
+	 * <p>For a harvest-only run there is no seed to price against — the crop is already in the
+	 * ground and the whole point is that you are not planting anything. The projection therefore
+	 * has to be built from what is <i>there</i>, which only the state store knows, so it is
+	 * answered here rather than reconstructed from a seed selection that is legitimately empty.
+	 *
+	 * <p>Patches with nothing identifiable growing are left out rather than guessed at.
+	 */
+	public synchronized Map<Produce, Integer> ripeProduceIn(PlantingGroup group)
+	{
+		Map<Produce, Integer> byProduce = new LinkedHashMap<>();
+		for (FarmPatch patch : availability.getAvailablePatches(group.getType()))
+		{
+			PlantingGroup patchGroup = groups.groupFor(patch);
+			if (patchGroup == null || !patchGroup.equals(group) || !isActionable(patch))
+			{
+				continue;
+			}
+
+			PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
+			if (projection == null || projection.getProduce() == null || projection.isEmpty())
+			{
+				continue;
+			}
+			byProduce.merge(projection.getProduce(), 1, Integer::sum);
+		}
+		return byProduce;
+	}
+
+	/**
 	 * How likely a crop is to survive across the patches this run will actually visit.
 	 *
 	 * <p>Averaged over them, because the same seed behaves differently depending on where it
@@ -321,33 +354,80 @@ public class RunPlanner
 	{
 		return (seed, compost) ->
 		{
-			if (seed == null || seed.getProduce() == null)
+			if (seed == null || !types.contains(seed.getPatchType()))
 			{
 				return 1;
 			}
-
-			PatchImplementation type = seed.getPatchType();
-			if (!types.contains(type))
-			{
-				return 1;
-			}
-
-			double total = 0;
-			int counted = 0;
-			for (FarmPatch patch : availability.getAvailablePatches(type))
-			{
-				if (!isActionable(patch))
-				{
-					continue;
-				}
-				boolean paid = protection.isProtecting(groups.groupFor(patch), seed)
-					&& DiseaseRisk.isProtectable(patch);
-				total += DiseaseRisk.survivalChance(patch, seed.getProduce(), compost, paid,
-					groups.isProtected(patch));
-				counted++;
-			}
-			return counted == 0 ? 1 : total / counted;
+			return survivalOver(availability.getAvailablePatches(seed.getPatchType()), seed,
+				compost);
 		};
+	}
+
+	/**
+	 * The same, over one planting group's patches rather than the whole type.
+	 *
+	 * <h2>Why the type is the wrong unit</h2>
+	 *
+	 * Averaging across the type blends groups that have nothing in common. With protected herbs
+	 * split out, Trollheim and Weiss cannot be diseased at all and Ardougne very much can — so the
+	 * average came out somewhere in the middle and was then applied to <i>both</i> groups. The
+	 * protected patches were quietly discounted for a risk they do not carry, and the ordinary
+	 * ones were credited with safety they do not have.
+	 *
+	 * <p>Each group is already priced separately, against its own seeds and its own compost, so
+	 * its survival belongs on the same footing.
+	 */
+	public synchronized RunEstimate.Survival survivalIn(PlantingGroup group)
+	{
+		return (seed, compost) ->
+		{
+			if (seed == null || group == null || seed.getPatchType() != group.getType())
+			{
+				return 1;
+			}
+
+			List<FarmPatch> patches = new ArrayList<>();
+			for (FarmPatch patch : availability.getAvailablePatches(group.getType()))
+			{
+				PlantingGroup patchGroup = groups.groupFor(patch);
+				if (patchGroup != null && patchGroup.equals(group))
+				{
+					patches.add(patch);
+				}
+			}
+			return survivalOver(patches, seed, compost);
+		};
+	}
+
+	/**
+	 * Mean chance this crop reaches harvest across the patches the run will actually visit.
+	 *
+	 * <p>Every input the model has is applied per patch, because all three vary by patch: the
+	 * compost chosen for the group, whether the player is paying a farmer for this crop, and
+	 * whether the patch is disease-free for this account at all.
+	 */
+	private double survivalOver(List<FarmPatch> patches, Seed seed, CompostTier compost)
+	{
+		if (seed.getProduce() == null)
+		{
+			return 1;
+		}
+
+		double total = 0;
+		int counted = 0;
+		for (FarmPatch patch : patches)
+		{
+			if (!isActionable(patch))
+			{
+				continue;
+			}
+			boolean paid = protection.isProtecting(groups.groupFor(patch), seed)
+				&& DiseaseRisk.isProtectable(patch);
+			total += DiseaseRisk.survivalChance(patch, seed.getProduce(), compost, paid,
+				groups.isProtected(patch));
+			counted++;
+		}
+		return counted == 0 ? 1 : total / counted;
 	}
 
 	private boolean isActionable(FarmPatch patch)

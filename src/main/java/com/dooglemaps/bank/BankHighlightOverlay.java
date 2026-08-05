@@ -44,6 +44,9 @@ public class BankHighlightOverlay extends Overlay
 	private final DoogleMapsConfig config;
 	private final RunLoadout loadout;
 	private final RunTypeStore runTypes;
+
+	/** Whether a run is actually under way; the highlighting means nothing otherwise. */
+	private final com.dooglemaps.route.RunPlanner planner;
 	private final ItemManager itemManager;
 	private final TooltipManager tooltips;
 
@@ -59,8 +62,10 @@ public class BankHighlightOverlay extends Overlay
 
 	@Inject
 	private BankHighlightOverlay(Client client, DoogleMapsConfig config, RunLoadout loadout,
-		RunTypeStore runTypes, ItemManager itemManager, TooltipManager tooltips)
+		RunTypeStore runTypes, ItemManager itemManager, TooltipManager tooltips,
+		com.dooglemaps.route.RunPlanner planner)
 	{
+		this.planner = planner;
 		this.tooltips = tooltips;
 		this.client = client;
 		this.config = config;
@@ -76,6 +81,15 @@ public class BankHighlightOverlay extends Overlay
 	public Dimension render(Graphics2D graphics)
 	{
 		if (!config.highlightBankItems())
+		{
+			return null;
+		}
+
+		// Only while a run is under way. This asked nothing about the run, so it marked items for
+		// whatever patch types were ticked whether or not you were doing anything — and Stop Run
+		// left the bank still highlighted, through closing and reopening it, with no way to make
+		// it stop short of clearing the ticks. "What this run needs" has to mean a run.
+		if (!planner.isActive())
 		{
 			return null;
 		}

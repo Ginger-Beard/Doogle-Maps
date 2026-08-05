@@ -35,9 +35,19 @@ public interface DoogleMapsConfig extends Config
 	String patchTypeSection = "patchTypes";
 
 	@ConfigSection(
+		name = "Locations",
+		description = "Which places show their patches. A coarser cut than the per-patch switches "
+			+ "on the rows themselves: turn off somewhere you never farm and it stops appearing "
+			+ "on every tab at once, rather than being switched off a patch at a time.",
+		position = 3,
+		closedByDefault = true
+	)
+	String locationSection = "locations";
+
+	@ConfigSection(
 		name = "Guided run",
 		description = "Highlighting what to click at each patch while a run is under way",
-		position = 3,
+		position = 4,
 		closedByDefault = true
 	)
 	String guideSection = "guide";
@@ -45,7 +55,7 @@ public interface DoogleMapsConfig extends Config
 	@ConfigSection(
 		name = "Maintenance",
 		description = "Clearing cached data, and development aids",
-		position = 4,
+		position = 5,
 		closedByDefault = true
 	)
 	String resetSection = "reset";
@@ -553,6 +563,438 @@ public interface DoogleMapsConfig extends Config
 		section = patchTypeSection
 	)
 	default boolean showCompost()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationAlKharid",
+		name = "Al Kharid",
+		description = "Show the patches at Al Kharid",
+		position = 0,
+		section = locationSection
+	)
+	default boolean showLocationAlKharid()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationAldarin",
+		name = "Aldarin",
+		description = "Show the patches at Aldarin",
+		position = 1,
+		section = locationSection
+	)
+	default boolean showLocationAldarin()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationAnglersRetreat",
+		name = "Anglers' Retreat",
+		description = "Show the patches at Anglers' Retreat",
+		position = 2,
+		section = locationSection
+	)
+	default boolean showLocationAnglersRetreat()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationArdougne",
+		name = "Ardougne",
+		description = "Show the patches at Ardougne",
+		position = 3,
+		section = locationSection
+	)
+	default boolean showLocationArdougne()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationAuburnvale",
+		name = "Auburnvale",
+		description = "Show the patches at Auburnvale",
+		position = 4,
+		section = locationSection
+	)
+	default boolean showLocationAuburnvale()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationAviumSavannah",
+		name = "Avium Savannah",
+		description = "Show the patches at Avium Savannah",
+		position = 5,
+		section = locationSection
+	)
+	default boolean showLocationAviumSavannah()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationBrimhaven",
+		name = "Brimhaven",
+		description = "Show the patches at Brimhaven",
+		position = 6,
+		section = locationSection
+	)
+	default boolean showLocationBrimhaven()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationCatherby",
+		name = "Catherby",
+		description = "Show the patches at Catherby",
+		position = 7,
+		section = locationSection
+	)
+	default boolean showLocationCatherby()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationChampionsGuild",
+		name = "Champions' Guild",
+		description = "Show the patches at Champions' Guild",
+		position = 8,
+		section = locationSection
+	)
+	default boolean showLocationChampionsGuild()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationCivitasIllaFortis",
+		name = "Civitas illa Fortis",
+		description = "Show the patches at Civitas illa Fortis",
+		position = 9,
+		section = locationSection
+	)
+	default boolean showLocationCivitasIllaFortis()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationDraynorManor",
+		name = "Draynor Manor",
+		description = "Show the patches at Draynor Manor",
+		position = 10,
+		section = locationSection
+	)
+	default boolean showLocationDraynorManor()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationEntrana",
+		name = "Entrana",
+		description = "Show the patches at Entrana",
+		position = 11,
+		section = locationSection
+	)
+	default boolean showLocationEntrana()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationEtceteria",
+		name = "Etceteria",
+		description = "Show the patches at Etceteria",
+		position = 12,
+		section = locationSection
+	)
+	default boolean showLocationEtceteria()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationFalador",
+		name = "Falador",
+		description = "Show the patches at Falador",
+		position = 13,
+		section = locationSection
+	)
+	default boolean showLocationFalador()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationFarmingGuild",
+		name = "Farming Guild",
+		description = "Show the patches at Farming Guild",
+		position = 14,
+		section = locationSection
+	)
+	default boolean showLocationFarmingGuild()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationFossilIsland",
+		name = "Fossil Island",
+		description = "Show the patches at Fossil Island",
+		position = 15,
+		section = locationSection
+	)
+	default boolean showLocationFossilIsland()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationGnomeStronghold",
+		name = "Gnome Stronghold",
+		description = "Show the patches at Gnome Stronghold",
+		position = 16,
+		section = locationSection
+	)
+	default boolean showLocationGnomeStronghold()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationGreatConch",
+		name = "Great Conch",
+		description = "Show the patches at Great Conch",
+		position = 17,
+		section = locationSection
+	)
+	default boolean showLocationGreatConch()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationHarmony",
+		name = "Harmony",
+		description = "Show the patches at Harmony",
+		position = 18,
+		section = locationSection
+	)
+	default boolean showLocationHarmony()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationKastori",
+		name = "Kastori",
+		description = "Show the patches at Kastori",
+		position = 19,
+		section = locationSection
+	)
+	default boolean showLocationKastori()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationKourend",
+		name = "Kourend",
+		description = "Show the patches at Kourend",
+		position = 20,
+		section = locationSection
+	)
+	default boolean showLocationKourend()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationLletya",
+		name = "Lletya",
+		description = "Show the patches at Lletya",
+		position = 21,
+		section = locationSection
+	)
+	default boolean showLocationLletya()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationLumbridge",
+		name = "Lumbridge",
+		description = "Show the patches at Lumbridge",
+		position = 22,
+		section = locationSection
+	)
+	default boolean showLocationLumbridge()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationMorytania",
+		name = "Morytania",
+		description = "Show the patches at Morytania",
+		position = 23,
+		section = locationSection
+	)
+	default boolean showLocationMorytania()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationPortSarim",
+		name = "Port Sarim",
+		description = "Show the patches at Port Sarim",
+		position = 24,
+		section = locationSection
+	)
+	default boolean showLocationPortSarim()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationPrifddinas",
+		name = "Prifddinas",
+		description = "Show the patches at Prifddinas",
+		position = 25,
+		section = locationSection
+	)
+	default boolean showLocationPrifddinas()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationRimmington",
+		name = "Rimmington",
+		description = "Show the patches at Rimmington",
+		position = 26,
+		section = locationSection
+	)
+	default boolean showLocationRimmington()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationSeaweed",
+		name = "Seaweed",
+		description = "Show the patches at Seaweed",
+		position = 27,
+		section = locationSection
+	)
+	default boolean showLocationSeaweed()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationSeersVillage",
+		name = "Seers' Village",
+		description = "Show the patches at Seers' Village",
+		position = 28,
+		section = locationSection
+	)
+	default boolean showLocationSeersVillage()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationTaiBwoWannai",
+		name = "Tai Bwo Wannai",
+		description = "Show the patches at Tai Bwo Wannai",
+		position = 29,
+		section = locationSection
+	)
+	default boolean showLocationTaiBwoWannai()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationTaverley",
+		name = "Taverley",
+		description = "Show the patches at Taverley",
+		position = 30,
+		section = locationSection
+	)
+	default boolean showLocationTaverley()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationTreeGnomeVillage",
+		name = "Tree Gnome Village",
+		description = "Show the patches at Tree Gnome Village",
+		position = 31,
+		section = locationSection
+	)
+	default boolean showLocationTreeGnomeVillage()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationTrollStronghold",
+		name = "Troll Stronghold",
+		description = "Show the patches at Troll Stronghold",
+		position = 32,
+		section = locationSection
+	)
+	default boolean showLocationTrollStronghold()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationVarrock",
+		name = "Varrock",
+		description = "Show the patches at Varrock",
+		position = 33,
+		section = locationSection
+	)
+	default boolean showLocationVarrock()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationWeiss",
+		name = "Weiss",
+		description = "Show the patches at Weiss",
+		position = 34,
+		section = locationSection
+	)
+	default boolean showLocationWeiss()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "showLocationYanille",
+		name = "Yanille",
+		description = "Show the patches at Yanille",
+		position = 35,
+		section = locationSection
+	)
+	default boolean showLocationYanille()
 	{
 		return true;
 	}

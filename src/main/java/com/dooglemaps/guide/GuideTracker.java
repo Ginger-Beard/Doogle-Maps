@@ -78,8 +78,9 @@ public class GuideTracker
 		CompostSelectionStore compost, CarriedItems carried, PlayerLocation playerLocation,
 		LeprechaunStore leprechaun, BarbarianFarming barbarianFarming, BankContents bank,
 		PlayerHouse house, PlantingGroups groups, ProtectionSelectionStore protection,
-		com.dooglemaps.state.RunTypeStore runTypes)
+		com.dooglemaps.state.RunTypeStore runTypes, com.dooglemaps.bank.RunLoadout loadout)
 	{
+		this.loadout = loadout;
 		this.runTypes = runTypes;
 		this.protection = protection;
 		this.groups = groups;
@@ -107,6 +108,8 @@ public class GuideTracker
 	 * is pointless cross-thread lock traffic. And with two overlays now sharing the answer,
 	 * caching in one of them would leave the other recomputing it.
 	 */
+	private final com.dooglemaps.bank.RunLoadout loadout;
+
 	private volatile GuideStatus status = GuideStatus.idle();
 
 	/**
@@ -145,7 +148,23 @@ public class GuideTracker
 
 		status = new GuideStatus(steps, planner.isActive(), planner.isAtBankLeg(),
 			remaining.size(), new ArrayList<>(planner.getCurrentTransports()),
-			destination, hint, here == null ? null : here.getName());
+			destination, hint, here == null ? null : here.getName(), supplyLines());
+	}
+
+	/**
+	 * What the bank leg needs, or nothing when the run is not on it.
+	 *
+	 * <p>Built here rather than by the overlay because it walks the loadout, which walks the
+	 * planner and both item stores — client-thread work, sampled once a tick like the rest of the
+	 * snapshot. See {@link GuideStatus}.
+	 */
+	private java.util.List<String> supplyLines()
+	{
+		if (!planner.isActive() || !planner.isAtBankLeg())
+		{
+			return java.util.Collections.emptyList();
+		}
+		return com.dooglemaps.bank.LoadoutSummary.forItems(loadout.forRun(runTypes.getSelected()));
 	}
 
 	/**

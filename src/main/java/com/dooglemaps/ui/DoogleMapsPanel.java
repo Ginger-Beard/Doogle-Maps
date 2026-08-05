@@ -167,7 +167,7 @@ public class DoogleMapsPanel extends PluginPanel
 		this.carriedItems = carriedItems;
 		this.itemNames = itemNames;
 		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems, runPlanner, loadout, availability, selection, seeds, runTypes,
-			bonuses, compost);
+			bonuses, compost, config);
 		this.statsPanel = new HarvestStatsPanel(harvestStats);
 
 		setLayout(new BorderLayout(0, 4));
@@ -199,6 +199,7 @@ public class DoogleMapsPanel extends PluginPanel
 			// Metal colours, the same way the checkboxes did, and it scrolled a pixel per
 			// wheel notch. See DarkScrollBarUI.
 			DarkScrollBarUI.install(getScrollPane().getVerticalScrollBar());
+			fillTheViewport();
 		}
 
 		sectionDisplay.setLayout(new BorderLayout());
@@ -209,6 +210,43 @@ public class DoogleMapsPanel extends PluginPanel
 
 		add(sectionTabs, BorderLayout.NORTH);
 		add(sectionDisplay, BorderLayout.CENTER);
+	}
+
+	/**
+	 * Lets the panel use the sidebar's full height rather than only its content's.
+	 *
+	 * <h2>Why anything is needed</h2>
+	 *
+	 * {@code PluginPanel} puts itself into a {@code BorderLayout} wrapper at <b>NORTH</b> and
+	 * scrolls that. NORTH gives a component exactly its preferred height, so the panel is always
+	 * as tall as its contents and never taller — and "the bottom of the panel" is therefore
+	 * wherever the contents happen to end, not the bottom of the sidebar. No amount of layout
+	 * inside the panel can anchor anything to the foot of a container that has no foot.
+	 *
+	 * <p>Moving it to CENTER hands it whatever height the viewport has, which is what
+	 * {@link PageLayout} needs to push the run controls down. When the contents are taller than
+	 * the viewport, CENTER still yields the preferred height and it scrolls exactly as before.
+	 *
+	 * <p>Guarded rather than assumed. This reaches into another class's construction, so every
+	 * step is checked and doing nothing leaves the old top-anchored behaviour — a layout that is
+	 * merely less pretty, rather than a panel that fails to build.
+	 */
+	private void fillTheViewport()
+	{
+		java.awt.Component view = getScrollPane().getViewport().getView();
+		if (!(view instanceof JPanel) || !(((JPanel) view).getLayout() instanceof BorderLayout))
+		{
+			return;
+		}
+
+		JPanel wrapper = (JPanel) view;
+		if (getParent() != wrapper)
+		{
+			return;
+		}
+
+		wrapper.remove(this);
+		wrapper.add(this, BorderLayout.CENTER);
 	}
 
 	/**
@@ -238,11 +276,21 @@ public class DoogleMapsPanel extends PluginPanel
 		tabStrip.add(tabGroup, BorderLayout.CENTER);
 		header.add(tabStrip, BorderLayout.CENTER);
 
-		JPanel almanac = new JPanel(new BorderLayout(0, 4));
+		JPanel top = new JPanel(new BorderLayout(0, 4));
+		top.setBackground(ColorScheme.DARK_GRAY_COLOR);
+		top.add(header, BorderLayout.NORTH);
+		top.add(display, BorderLayout.CENTER);
+
+		// The run sits at the bottom of the sidebar rather than directly under the rows. On a tab
+		// with three patches the rows used to end a third of the way down and the run controls sat
+		// with them, leaving two thirds of the panel empty beneath — so the whole page moved up and
+		// down as you clicked between a three-patch tab and a twenty-patch one.
+		//
+		// The glue takes whatever height is spare and gives it back when there is none, so the run
+		// is pinned to the bottom when everything fits and pushed off it into the scroll when it
+		// does not. See PageLayout for why this cannot simply be BorderLayout.SOUTH.
+		JPanel almanac = new PageLayout(top, runPanel);
 		almanac.setBackground(ColorScheme.DARK_GRAY_COLOR);
-		almanac.add(header, BorderLayout.NORTH);
-		almanac.add(display, BorderLayout.CENTER);
-		almanac.add(runPanel, BorderLayout.SOUTH);
 		return almanac;
 	}
 
@@ -266,8 +314,9 @@ public class DoogleMapsPanel extends PluginPanel
 		List<MaterialTab> tabs = new ArrayList<>();
 		tabs.add(sectionTab(ALMANAC_TAB, buildAlmanac(),
 			"Every patch you use, what is growing in it, and your run"));
-		tabs.add(sectionTab(STATS_TAB, statsPanel,
-			"What your patches have actually given you"));
+		// "Nerd." The tooltip described the tab, which the tab's own name already does. This one
+		// tells you what you are in for.
+		tabs.add(sectionTab(STATS_TAB, statsPanel, "Nerd."));
 
 		sizeSectionTabs(tabs);
 		sectionTabs.select(tabs.get(0));
@@ -433,6 +482,10 @@ public class DoogleMapsPanel extends PluginPanel
 		tab.setOnSelectEvent(() ->
 		{
 			selected = group.getKey();
+			// Collapsed sections are shared across the tabs, and each tab is a separate panel
+			// built at a different time. Sharing the stored key makes them agree on the next
+			// read; adopting it here is what makes an already-built tab notice.
+			panel.applyLayout();
 			refreshSelected();
 			return true;
 		});

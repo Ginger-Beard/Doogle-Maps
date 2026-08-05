@@ -181,6 +181,55 @@ public final class CropYieldModel
 	}
 
 	/**
+	 * Whether treating this patch type changes anything the plugin can actually tell you.
+	 *
+	 * <p>Two separate ways it can: the <b>yield</b>, through the lives mechanic, which only herbs,
+	 * allotments, hops and giant seaweed have; and the <b>disease</b> chance, which compost cuts
+	 * on every patch that can catch one. The second is why the dropdown belongs on trees despite a
+	 * tree giving one log however it was treated.
+	 *
+	 * <p>Both halves are asked of the data rather than listed. Disease is asked of
+	 * {@link DiseaseRisk#isRiskKnown}, not of "can this be diseased in game" — Jagex has published
+	 * a rate for herbs, fruit trees, coral and two of the trees, and for everything else the model
+	 * returns certain survival. Offering the control where no rate exists would put a dropdown in
+	 * front of the player that provably cannot move a number, which is the thing being fixed.
+	 */
+	public static boolean compostMatters(PatchImplementation type)
+	{
+		for (Seed seed : Seed.forPatchType(type))
+		{
+			if (respondsToCompost(seed) || DiseaseRisk.isRiskKnown(seed.getProduce()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Whether compost is worth applying here for disease alone.
+	 *
+	 * <p>True exactly where the dropdown is offered but the yield will not move, which is the
+	 * case worth saying out loud — someone treating a fruit tree with ultracompost is buying
+	 * survival, not fruit, and the projection moving only a little would otherwise look wrong.
+	 */
+	public static boolean compostOnlyHelpsDisease(PatchImplementation type)
+	{
+		if (!compostMatters(type))
+		{
+			return false;
+		}
+		for (Seed seed : Seed.forPatchType(type))
+		{
+			if (respondsToCompost(seed))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
 	 * How many times the harvest award is actually paid for one patch.
 	 *
 	 * <p>Not the same as the yield. A flower patch pays its harvest experience <b>once</b>

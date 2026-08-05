@@ -98,7 +98,8 @@ public class PlantingGroups
 		PatchImplementation.BUSH,
 		PatchImplementation.TREE,
 		PatchImplementation.FRUIT_TREE,
-		PatchImplementation.HARDWOOD_TREE);
+		PatchImplementation.HARDWOOD_TREE,
+		PatchImplementation.CACTUS);
 
 	/**
 	 * Types whose crops regrow, so picking them clean is a run in its own right.
@@ -107,36 +108,78 @@ public class PlantingGroups
 	 * common case and involves no seed, no compost and no clearing — which is why it is offered
 	 * separately rather than folded into the full cycle.
 	 */
-	private static final java.util.Set<PatchImplementation> REGROWS = java.util.EnumSet.of(
-		PatchImplementation.BUSH,
-		PatchImplementation.FRUIT_TREE);
+	private static final java.util.Set<PatchImplementation> REGROWS = regrowingTypes();
+
+	/**
+	 * Derived from the produce data rather than listed by hand.
+	 *
+	 * <p>A hand-written pair missed the cactus patch, which regrows exactly like a bush and had
+	 * no harvest-only line to offer — and nothing could have caught that, because the list was
+	 * the only statement of what belonged in it. {@code getRegrowTickrate() > 0} is the game's
+	 * own answer to "does this come back", so the set cannot fall behind the data again.
+	 */
+	private static java.util.Set<PatchImplementation> regrowingTypes()
+	{
+		java.util.Set<PatchImplementation> types =
+			java.util.EnumSet.noneOf(PatchImplementation.class);
+		for (com.dooglemaps.data.Produce produce : com.dooglemaps.data.Produce.values())
+		{
+			if (produce.getRegrowTickrate() > 0 && produce.getPatchImplementation() != null)
+			{
+				types.add(produce.getPatchImplementation());
+			}
+		}
+		return java.util.Collections.unmodifiableSet(types);
+	}
 
 	/**
 	 * Every line the run's patch-type list should offer.
 	 *
-	 * <p>Order matters: the full run for a type, then its variants directly beneath, so the list
-	 * reads as a type with options rather than as unrelated entries that happen to share a name.
+	 * <h2>The types with a harvest-only variant come last</h2>
+	 *
+	 * Every option is a single line except those three, which are a pair — and mixing pairs in
+	 * among singles is what pushes them across the two-column grid's row breaks. Grouped at the
+	 * bottom, the singles fill whole rows between them and each pair lands on a row of its own,
+	 * so the list reads as "the ordinary runs, then the three that can be picked clean".
+	 *
+	 * <p>Within each half the order is still the enum's, which is the tab strip's, so nothing is
+	 * scrambled beyond the one grouping this is for.
 	 */
 	public java.util.List<com.dooglemaps.data.RunOption> runOptions()
 	{
 		java.util.List<com.dooglemaps.data.RunOption> options = new ArrayList<>();
+
+		// The types with no harvest-only variant first, then the ones that have it — each
+		// immediately followed by its own variant. Within each half the order is the enum's, so
+		// it still reads the way the tab strip does.
 		for (PatchImplementation type : PatchImplementation.values())
 		{
-			if (!RUNNABLE.contains(type))
+			if (RUNNABLE.contains(type) && !REGROWS.contains(type))
+			{
+				addFullRuns(options, type);
+			}
+		}
+
+		for (PatchImplementation type : PatchImplementation.values())
+		{
+			if (!RUNNABLE.contains(type) || !REGROWS.contains(type))
 			{
 				continue;
 			}
-
-			for (PlantingGroup group : groupsFor(type))
-			{
-				options.add(com.dooglemaps.data.RunOption.full(group));
-			}
-			if (REGROWS.contains(type))
-			{
-				options.add(com.dooglemaps.data.RunOption.harvestOnly(PlantingGroup.of(type)));
-			}
+			addFullRuns(options, type);
+			options.add(com.dooglemaps.data.RunOption.harvestOnly(PlantingGroup.of(type)));
 		}
+
 		return options;
+	}
+
+	private void addFullRuns(java.util.List<com.dooglemaps.data.RunOption> options,
+		PatchImplementation type)
+	{
+		for (PlantingGroup group : groupsFor(type))
+		{
+			options.add(com.dooglemaps.data.RunOption.full(group));
+		}
 	}
 
 	/** The patches this group covers, out of the ones the account uses. */

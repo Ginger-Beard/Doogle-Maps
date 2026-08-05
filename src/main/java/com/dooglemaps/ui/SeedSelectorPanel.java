@@ -16,6 +16,7 @@ import com.dooglemaps.state.PlantableResolver.Plantable;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.SeedSelectionStore;
+import com.dooglemaps.timer.CropYieldModel;
 import com.dooglemaps.state.SeedSource;
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -81,6 +82,15 @@ class SeedSelectorPanel extends JPanel
 	private int pickedCount;
 	private final WrappedText message = new WrappedText();
 	private JComboBox<CompostTier> compostBox;
+
+	/**
+	 * Says what compost is doing here, when what it is doing is not the obvious thing.
+	 *
+	 * <p>Shown only on the types whose yield compost cannot move, and only once something other
+	 * than untreated is picked — before that there is nothing to explain. Orange rather than red:
+	 * it is telling you what you bought, not telling you off.
+	 */
+	private final WrappedText compostNote = new WrappedText();
 
 	/**
 	 * Whether to pay the farmer for this group.
@@ -204,6 +214,48 @@ class SeedSelectorPanel extends JPanel
 		this.patchCount = patches;
 	}
 
+	/**
+	 * Shared by every patch group rather than kept per type.
+	 *
+	 * <p>Whether the seed list is folded up is a statement about the sidebar, not about herbs —
+	 * see {@code PatchTypePanel.openKey}. Per type it had to be collapsed once per tab.
+	 */
+	private static final String SEEDS_KEY = "seeds";
+
+	/** Adopts the current collapse state, which another tab may have changed. */
+	void applyLayout()
+	{
+		seedsVisible = layout.isOpen(SEEDS_KEY, true);
+		seedBody.setVisible(seedsVisible);
+		updateHeading();
+		revalidate();
+	}
+
+	/** Amber, so it reads as a note rather than the red used for a mistake. */
+	private static final java.awt.Color NOTE = new java.awt.Color(0xC8, 0xA2, 0x2D);
+
+	/**
+	 * Shows or hides the "disease only" note for the tier currently picked.
+	 *
+	 * <p>The second half is not a general hint — it is what the estimate does. A protected crop
+	 * survives outright, so the discount compost buys is one the payment has already bought, and
+	 * treating the patch as well changes nothing at all. Worth saying before the buckets are
+	 * carried rather than after.
+	 */
+	private void updateCompostNote()
+	{
+		boolean say = compostBox != null
+			&& CropYieldModel.compostOnlyHelpsDisease(type)
+			&& compost.get(group) != CompostTier.NONE;
+
+		compostNote.setVisible(say);
+		if (say)
+		{
+			compostNote.setText("Only lowers disease chance here, not yield. "
+				+ "Not needed if you are paying for protection.");
+		}
+	}
+
 	private void updateHeading()
 	{
 		heading.setText(Controls.collapseLabel(
@@ -241,7 +293,11 @@ class SeedSelectorPanel extends JPanel
 		// described the list instead of naming it — and a description sitting where a heading
 		// belongs makes a panel feel like prose you have to read rather than a form you fill in.
 		// The count stays, in brackets, because it is the one part that changes.
-		seedsVisible = layout.isOpen("seeds." + group.getKey(), true);
+		seedsVisible = layout.isOpen(SEEDS_KEY, true);
+		compostNote.setForeground(NOTE);
+		compostNote.setBorder(BorderFactory.createEmptyBorder(2, 6, 0, 6));
+		compostNote.setVisible(false);
+
 		protectPanel.setLayout(new javax.swing.BoxLayout(protectPanel, javax.swing.BoxLayout.Y_AXIS));
 		protectPanel.setBackground(getBackground());
 		protectPanel.setBorder(BorderFactory.createEmptyBorder(2, 0, 4, 0));
@@ -252,7 +308,7 @@ class SeedSelectorPanel extends JPanel
 		{
 			seedsVisible = !seedsVisible;
 			seedBody.setVisible(seedsVisible);
-			layout.setOpen("seeds." + group.getKey(), seedsVisible);
+			layout.setOpen(SEEDS_KEY, seedsVisible);
 			updateHeading();
 			revalidate();
 		});
@@ -277,6 +333,7 @@ class SeedSelectorPanel extends JPanel
 		{
 			below.add(buildCompostPicker(), BorderLayout.NORTH);
 		}
+		below.add(compostNote, BorderLayout.CENTER);
 		below.add(protectPanel, BorderLayout.SOUTH);
 		add(below, BorderLayout.SOUTH);
 	}
@@ -289,6 +346,7 @@ class SeedSelectorPanel extends JPanel
 		{
 			compostBox.setSelectedItem(compost.get(group));
 		}
+		updateCompostNote();
 
 		rows.removeAll();
 
@@ -342,11 +400,25 @@ class SeedSelectorPanel extends JPanel
 	 * <p>You cannot compost a spirit tree or a compost bin, and offering the choice would
 	 * imply the estimate changes with it.
 	 */
+	/**
+	 * Whether treating this kind of patch is a decision worth offering.
+	 *
+	 * <h2>Asked of the yield model rather than listed</h2>
+	 *
+	 * It used to be "anything with a seed that is not a compost bin", which offered the dropdown
+	 * on sixteen patch types where every value in it produced the same projection. Compost raises
+	 * a yield through the lives mechanic, and most types do not have one — a tree gives one log
+	 * however it was treated, and a grown bush holds a fixed stock. Only herbs, allotments, hops
+	 * and giant seaweed actually respond.
+	 *
+	 * <p>Compost has a second effect, though, and it is why this is not simply "does the yield
+	 * move": it also cuts the chance of disease. A fruit tree gives the same fruit however it was
+	 * treated and is still very much worth composting, so the dropdown stays there and
+	 * {@link #compostNote} says what it is buying. See {@code CropYieldModel.compostMatters}.
+	 */
 	private boolean usesCompost()
 	{
-		return !Seed.forPatchType(type).isEmpty()
-			&& type != PatchImplementation.COMPOST
-			&& type != PatchImplementation.BIG_COMPOST;
+		return CropYieldModel.compostMatters(type);
 	}
 
 	/**
@@ -379,6 +451,7 @@ class SeedSelectorPanel extends JPanel
 			if (picked instanceof CompostTier)
 			{
 				compost.set(group, (CompostTier) picked);
+				updateCompostNote();
 			}
 		});
 

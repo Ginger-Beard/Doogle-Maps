@@ -127,7 +127,11 @@ public class PanelRenderTest
 		{
 			net.runelite.client.config.ConfigItem item =
 				invocation.getMethod().getAnnotation(net.runelite.client.config.ConfigItem.class);
-			return item != null && "patchTypes".equals(item.section())
+			// Both sections default to true on the real interface. A plain mock answers false,
+			// which would switch off all 22 patch types and all 36 locations and render an
+			// empty sidebar - a passing test of nothing.
+			return item != null
+				&& ("patchTypes".equals(item.section()) || "locations".equals(item.section()))
 				? Boolean.TRUE
 				: Mockito.RETURNS_DEFAULTS.answer(invocation);
 		});

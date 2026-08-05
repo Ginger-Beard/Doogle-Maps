@@ -7,10 +7,11 @@ import java.util.Set;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.Client;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.WidgetClosed;
-import net.runelite.api.events.WidgetLoaded;
 import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.widgets.Widget;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginManager;
@@ -83,6 +84,10 @@ public class BankFilter
 
 	private TagManager tagManager;
 
+	private final Client client;
+
+	/** Whether a run is under way; the filter is meaningless otherwise. */
+	private final com.dooglemaps.route.RunPlanner planner;
 	private final PluginManager pluginManager;
 	private final RunLoadout loadout;
 	private final RunTypeStore runTypes;
@@ -102,9 +107,12 @@ public class BankFilter
 	private boolean open;
 
 	@Inject
-	private BankFilter(PluginManager pluginManager, RunLoadout loadout, RunTypeStore runTypes,
+	private BankFilter(Client client, com.dooglemaps.route.RunPlanner planner,
+		PluginManager pluginManager, RunLoadout loadout, RunTypeStore runTypes,
 		DoogleMapsConfig config)
 	{
+		this.planner = planner;
+		this.client = client;
 		this.pluginManager = pluginManager;
 		this.loadout = loadout;
 		this.runTypes = runTypes;
@@ -124,7 +132,7 @@ public class BankFilter
 		{
 			tagManager.registerTag(TAG, itemId -> wanted.contains(itemId));
 			registered = true;
-			log.debug("Bank filtering is available");
+			log.info("Bank filtering is available ({})", bankTags.getClass().getSimpleName());
 		}
 		catch (RuntimeException e)
 		{
@@ -178,21 +186,22 @@ public class BankFilter
 		}
 	}
 
-	@Subscribe
-	public void onWidgetLoaded(WidgetLoaded event)
+	/**
+	 * Whether the bank is on screen, asked of the widget rather than of an event.
+	 *
+	 * <p>This used to open the tag from {@code WidgetLoaded}, and that is a worse hook than it
+	 * looks. Bank Tags listens to the same event and does its own setup from it, so which of the
+	 * two runs first is a matter of subscriber order — and a tag opened before Bank Tags has
+	 * built the bank is a tag it then builds over. Nothing errors; the filter simply does not
+	 * appear, which is exactly the symptom.
+	 *
+	 * <p>The highlighting has always polled this widget, and it has always worked. Doing the same
+	 * puts the open a tick after the bank exists rather than in the middle of it being made.
+	 */
+	private boolean bankIsOpen()
 	{
-		if (event.getGroupId() != InterfaceID.BANKMAIN)
-		{
-			return;
-		}
-
-		// Rebuilt before opening rather than on a timer, so the first thing shown is right. A
-		// filter that is briefly wrong is worse than one that appears a moment later.
-		refresh();
-		if (registered && config.filterBankToRun() && !wanted.isEmpty())
-		{
-			open();
-		}
+		Widget items = client.getWidget(InterfaceID.Bankmain.ITEMS);
+		return items != null && !items.isHidden();
 	}
 
 	/**
@@ -218,6 +227,22 @@ public class BankFilter
 	{
 		if (!open)
 		{
+			if (bankIsOpen())
+			{
+				// Rebuilt before opening rather than on a timer, so the first thing shown is
+				// right. A filter that is briefly wrong is worse than one that appears a moment
+				// later.
+				refresh();
+				openIfWanted();
+			}
+			return;
+		}
+
+		if (!bankIsOpen() || !planner.isActive())
+		{
+			// Stopping a run puts the bank back immediately, rather than leaving it filtered
+			// until something else happens to close the tag.
+			close();
 			return;
 		}
 
@@ -250,6 +275,58 @@ public class BankFilter
 		}
 	}
 
+	/**
+	 * Opens the filter, or says why it did not.
+	 *
+	 * <p>Four things have to be true and every one of them used to fail silently — two of them at
+	 * {@code debug}, which in practice means invisibly. A feature that is off for a reason nobody
+	 * can see is indistinguishable from a feature that is broken, and this one spent a long time
+	 * being reported as the second when it was the first.
+	 *
+	 * <p>Logged once per bank rather than per tick, and only when something is actually stopping
+	 * it — the working case is silent.
+	 */
+	private void openIfWanted()
+	{
+		if (!planner.isActive())
+		{
+			// Same rule as the highlighting: a filter for "this run" means nothing without one.
+			logOnce("No run is under way, so there is nothing to filter the bank to - press "
+				+ "Start run first");
+			return;
+		}
+		if (!registered)
+		{
+			logOnce("Bank Tags did not accept the filter tag, so filtering is unavailable");
+			return;
+		}
+		if (!config.filterBankToRun())
+		{
+			logOnce("Bank filtering is switched off in the settings (Guided run > Filter the "
+				+ "bank to this run)");
+			return;
+		}
+		if (wanted.isEmpty())
+		{
+			logOnce("The run needs nothing from the bank, so there is nothing to filter to - "
+				+ "pick a run type and a seed first");
+			return;
+		}
+		open();
+	}
+
+	/** The last thing said about why the filter is off, so it is said once and not every bank. */
+	private String lastComplaint;
+
+	private void logOnce(String message)
+	{
+		if (!message.equals(lastComplaint))
+		{
+			lastComplaint = message;
+			log.info("{}", message);
+		}
+	}
+
 	private void open()
 	{
 		try
@@ -259,10 +336,29 @@ public class BankFilter
 			bankTags.openBankTag(TAG,
 				BankTagsService.OPTION_HIDE_TAG_NAME | BankTagsService.OPTION_NO_LAYOUT);
 			open = true;
+			lastComplaint = null;
+
+			// Asked back rather than assumed. openBankTag returns void and Bank Tags declines
+			// quietly in several places — an unregistered tag, a bank it does not think is ready
+			// — so "we called it" and "it took" are different facts, and only the second one is
+			// the feature working. This is the line that says which.
+			String active = bankTags.getActiveTag();
+			if (TAG.equals(active))
+			{
+				log.debug("Bank filtered to {} items", wanted.size());
+			}
+			else
+			{
+				log.warn("Bank Tags did not take the filter: asked for \"{}\", active tag is "
+					+ "\"{}\". Filtering will not appear.", TAG, active);
+				open = false;
+			}
 		}
 		catch (RuntimeException e)
 		{
-			log.debug("Could not open the bank filter", e);
+			// Not debug. This is the call that either works or does not, and burying its failure
+			// is how the feature came to look like it was working when it had never run.
+			log.warn("Could not open the bank filter", e);
 		}
 	}
 

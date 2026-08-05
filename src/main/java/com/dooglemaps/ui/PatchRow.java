@@ -115,6 +115,122 @@ class PatchRow extends JPanel
 	}
 
 	/**
+	 * Whether this patch is switched off, which the row shows rather than hides.
+	 *
+	 * <p>A switched-off patch used to disappear from here and reappear as a checkbox in a second
+	 * list underneath. Two lists of the same patches, one to read and one to edit, and you had to
+	 * open the second to discover why something was missing from the first.
+	 */
+	private boolean off;
+
+	/** Told when the row is clicked, so the panel can flip the patch. */
+	private Runnable onToggle;
+
+	void setOnToggle(Runnable onToggle)
+	{
+		if (this.onToggle == null)
+		{
+			// The listener is added once, not per refresh. Rows are cached and reused, and adding
+			// one each time meant a single click firing as many times as the row had been drawn.
+			listenForClicks(this);
+			setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
+		}
+		this.onToggle = onToggle;
+	}
+
+	/**
+	 * Listens on the row <b>and every part of it</b>.
+	 *
+	 * <h2>Why the row alone is not enough</h2>
+	 *
+	 * Swing delivers a click to the deepest component under the cursor that is listening, and
+	 * walks up to a parent only when nothing below it is. That is usually enough — plain labels
+	 * listen to nothing, so a click on the text reaches the panel behind it.
+	 *
+	 * <p>These labels are not plain. {@link javax.swing.JComponent#setToolTipText} quietly
+	 * registers {@code ToolTipManager} as a mouse listener on the component, and {@link #update}
+	 * puts a tooltip on the produce icon, the progress bar and both badges — which between them
+	 * cover nearly the whole row. So every click landed on something that was listening for its
+	 * own reasons and went no further, and the row's own listener fired only on the few pixels of
+	 * bare panel in the gaps. From play that is indistinguishable from the click doing nothing,
+	 * which is exactly how it was reported.
+	 *
+	 * <p>Attaching to the descendants sidesteps the question rather than reasoning about which of
+	 * them happens to have a tooltip this frame. Only one fires per click — the deepest — so the
+	 * toggle still runs exactly once.
+	 */
+	private void listenForClicks(java.awt.Component component)
+	{
+		component.addMouseListener(new java.awt.event.MouseAdapter()
+		{
+			@Override
+			public void mouseReleased(java.awt.event.MouseEvent e)
+			{
+				// Released, not clicked. AWT only synthesises MOUSE_CLICKED when the pointer has
+				// not moved between press and release — one pixel of drift makes it a drag
+				// instead, and the click is never delivered. On a trackpad, or any mouse held
+				// loosely, that is most clicks, which is how this read as "sometimes nothing
+				// happens".
+				//
+				// Still bounded by the row: pressing here and releasing somewhere else is a drag
+				// the player aborted, and should not toggle anything.
+				java.awt.Point onRow = javax.swing.SwingUtilities.convertPoint(
+					e.getComponent(), e.getPoint(), PatchRow.this);
+				if (contains(onRow) && onToggle != null)
+				{
+					onToggle.run();
+				}
+			}
+		});
+
+		if (component instanceof java.awt.Container)
+		{
+			for (java.awt.Component child : ((java.awt.Container) component).getComponents())
+			{
+				listenForClicks(child);
+			}
+		}
+	}
+
+	void setOff(boolean off)
+	{
+		this.off = off;
+		repaint();
+	}
+
+	/**
+	 * Washes the row red when the patch is switched off.
+	 *
+	 * <p>Painted over the finished row rather than by restyling its parts. The row has a dozen
+	 * coloured pieces — the progress bar, the status text, two badges — and grey-out would have
+	 * meant a disabled variant of each, which is both a lot of code and a worse result: the point
+	 * is that you can still read the patch's state while seeing it is not in your run.
+	 */
+	@Override
+	protected void paintChildren(java.awt.Graphics graphics)
+	{
+		super.paintChildren(graphics);
+		if (!off)
+		{
+			return;
+		}
+
+		java.awt.Graphics2D g = (java.awt.Graphics2D) graphics.create();
+		try
+		{
+			g.setColor(OFF_WASH);
+			g.fillRect(0, 0, getWidth(), getHeight());
+		}
+		finally
+		{
+			g.dispose();
+		}
+	}
+
+	/** Red enough to read as "excluded", light enough to leave the row legible underneath. */
+	private static final Color OFF_WASH = new Color(0xC0, 0x39, 0x2B, 0x4D);
+
+	/**
 	 * Repaints the row for the current projection.
 	 *
 	 * @param projection the patch brought up to date, or null if never seen

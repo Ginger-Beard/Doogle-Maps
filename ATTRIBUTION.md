@@ -91,3 +91,19 @@ model renders, and while the RuneLite API exposes `NPCComposition.getChatheadMod
 The underlying artwork is Jagex's, hosted by the wiki. Forty-eight of the forty-nine
 gardeners have one; the Tortugan who tends the coral patch has no wiki page yet, and the
 plugin falls back to a plain shield for them.
+
+## Quest Helper
+
+[Quest Helper](https://github.com/Zoinkwiz/quest-helper) by Zoinkwiz, BSD 2-Clause.
+
+No source is copied. What was taken is a **fact**: its `PaymentTracker` reads whether a farmer has
+been paid from RuneLite's own Time Tracking config, at
+`timetracking` / `<regionId>.<varbit>.protected`. That key — and the matching `.compost` one — is
+what `TimeTrackingState` reads, and it answers the one question this plugin's own capture cannot,
+namely what happened before it was installed.
+
+Credited because that is where the approach came from, not because the licence compels it for a
+config key. The run helpers themselves were looked at and deliberately not reused: they are built
+on Quest Helper's own step and requirement framework, and their patch routing is a fixed region
+order, which is the design this plugin explicitly rejected in favour of handing every outstanding
+target to Shortest Path.

@@ -3,6 +3,7 @@ package com.dooglemaps.route;
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropXp;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.timer.CropYieldModel;
 import com.dooglemaps.timer.FarmingBonuses;
@@ -353,6 +354,59 @@ public class RunEstimate
 		CropXp xp = CropXp.forSeed(seed);
 		// Flowers pay their harvest award once for the patch, not per item picked.
 		return xp == null ? 0 : xp.totalFor(CropYieldModel.xpHarvestsFor(seed, expectedYield));
+	}
+
+	/**
+	 * Prices a harvest-only trip, against what is already growing.
+	 *
+	 * <h2>Why this cannot go through {@link #forRun}</h2>
+	 *
+	 * That method starts from the seeds the player picked and fills empty patches with them. A
+	 * harvest-only run has no seed by definition — you are going to pick fruit off trees that are
+	 * already there — so it produced no lines at all, and the panel, seeing an empty selection,
+	 * hid the table. The run was priced at nothing because it was being asked the wrong question.
+	 *
+	 * <p>Two differences beyond the starting point, and both matter:
+	 *
+	 * <ul>
+	 *   <li><b>Harvest experience only.</b> Nothing is planted and nothing is checked, so the
+	 *       plant and check awards are not paid. For a fruit tree those are most of the total —
+	 *       counting them would roughly quadruple the figure.</li>
+	 *   <li><b>Nothing can die.</b> The crop is grown and in the ground; disease is a risk while
+	 *       growing, and this trip does not involve any growing.</li>
+	 * </ul>
+	 */
+	public static RunEstimate forHarvest(Map<Produce, Integer> ripeByProduce, int farmingLevel,
+		FarmingBonuses bonuses)
+	{
+		List<Line> lines = new ArrayList<>();
+		double totalXp = 0;
+		double totalYield = 0;
+		for (Map.Entry<Produce, Integer> entry : ripeByProduce.entrySet())
+		{
+			Seed seed = Seed.forProduce(entry.getKey());
+			CropXp xp = CropXp.forSeed(seed);
+			if (seed == null || xp == null)
+			{
+				continue;
+			}
+
+			int count = entry.getValue();
+			// No compost: a grown bush or fruit tree holds a fixed stock, and compost only ever
+			// acted on the roll that filled it — which happened when it was planted, not now.
+			double perPatchYield = CropYieldModel.expected(seed, farmingLevel, CompostTier.NONE,
+				bonuses);
+			double perPatchXp = bonuses.applyOutfit(
+				xp.getHarvestXp() * CropYieldModel.xpHarvestsFor(seed, perPatchYield));
+
+			lines.add(new Line(seed.getPatchType(), seed, count,
+				perPatchYield * count, perPatchXp * count, 1));
+			totalYield += perPatchYield * count;
+			totalXp += perPatchXp * count;
+		}
+
+		lines.sort(Comparator.comparingDouble(Line::getExpectedXp).reversed());
+		return new RunEstimate(lines, totalXp, totalYield, 1, 0, CompostTier.NONE);
 	}
 
 	/** Somewhere to start from when nothing is picked. */

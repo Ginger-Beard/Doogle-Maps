@@ -371,6 +371,170 @@ sidebar is told. Expect the "0 of 4" line **not** to appear at all on a normal l
 minute. That is a wrong varbit or quest constant, not a timing problem, and the named line says
 which one to go and look at.
 
+### 1a-xiv-b. One patch list, and the Locations section — new
+
+**The separate "Patches (n/m)" dropdown is gone.** The status rows are the control now.
+
+- **Pass**: clicking a row switches that patch off. It stays where you can see it, washed
+  translucent red, and moves to the bottom of the list. Clicking it again puts it back.
+- **Pass**: the count moved into the heading — *Patch status (14/18)*. That was the one thing the
+  old list said which the rows do not say for themselves.
+- **Pass, and this is the one that used to be impossible**: a patch you have never visited can be
+  switched off and on. Under the old arrangement `Hide empty patches` could hide the row while the
+  checkbox list still listed it, which is how the same patch could be in two states at once.
+- **Pass**: click through the patch tabs, then click back through them again. No gap opens between
+  the tab strip and the *Patch status* heading. Two of the three places setting the "nothing here
+  yet" line's visibility asked `isEnabled()` — a property nothing sets, so always true — and one of
+  them runs on every tab select. The empty line has an 8px border top and bottom, so it read as
+  padding appearing from nowhere. **The second lap is the one to watch**: a tab is refreshed on
+  select only while it is stale, so the first visit corrected itself and revisiting did not.
+- **Fail signature**: a switched-off patch disappearing rather than going red. That is the old
+  behaviour, and it is the reason for the change: the list you were reading and the list you
+  edited were different lists, so switching something off looked like losing it.
+
+**Settings → Locations** is a coarser cut: 36 places, all on by default.
+
+- **Pass**: turning off somewhere you never farm removes its patches from **every** tab at once,
+  and from the heading counts.
+- **Display only, and worth being clear about**: this hides rows. It does not change what a run
+  does — that is the per-patch switch on the row. A location you hide while its patches are still
+  switched on is still routed to. The two answer different questions: whether you can reach a
+  patch, and how much of the sidebar you want it taking.
+- **Fail signature**: a place with no setting. `LocationsTest` fails the build if the generated
+  region list and the hand-written settings ever drift, which they will the next time Jagex adds a
+  farming area.
+
+### 1a-xiv-c. Patch rows, run options and guild tiers — new
+
+**Clicking a row now works.** It did not, and the cause was worth finding: `setToolTipText`
+quietly registers `ToolTipManager` as a mouse listener, and the row puts tooltips on the produce
+icon, the progress bar and the badges. Swing delivers a click to the deepest component that is
+listening, so every click landed on one of those and stopped. The row's own listener fired only
+on the bare pixels between them.
+
+- **Pass**: clicking anywhere on a row — the icon, the name, the bar, the shield — switches the
+  patch off, washes it red, and drops it to the bottom of the list. The projection below changes
+  with it.
+- **Fail signature**: clicking the name working but the progress bar doing nothing. That is the
+  same bug with a narrower blast radius.
+
+**Cactus is a run type, with a harvest-only line.** It regrows exactly like a bush and had
+neither. The harvest-only set is derived from the produce data now rather than hand-listed, so it
+cannot fall behind again.
+
+- **Pass**: *Cactus* and *Cactus (H/O)* both appear, and the projection is non-zero — cactus
+  experience data was missing entirely, which is why it was left out before.
+
+**Pairs sit side by side.** *Bush* and *Bush (H/O)* share a row, as do the fruit tree and cactus
+pairs. A two-column grid fills row by row, so where a pair landed depended on how many single
+options happened to precede it — one shared a row by luck while another straddled the break.
+
+- **Pass**: every *(H/O)* line is immediately to the right of its full run, on the same row.
+- **Pass, and this is the one that used to drift**: switch patch types off in the settings and the
+  pairs stay aligned. Hiding a type removes its line and shifts everything after it by a cell.
+- **Pass**: a patch type switched off is **no longer offered as a run at all**. It was, which
+  meant a run you could start and not configure — the tab is the only place to pick that type's
+  seed or compost. Switching it back on brings its ticks back; nothing is lost by hiding one.
+
+**Full and harvest-only are mutually exclusive.** Ticking one unticks the other.
+
+- **Pass**: tick *Bush*, then *Bush (H/O)* — the first clears. And back the other way.
+- **Why**: replanting means harvesting first, so the full run already includes the harvest;
+  choosing harvest-only is choosing not to replant. Both was previously expressible and silently
+  resolved as "full wins".
+
+**"Treat with" only appears where compost changes a number the plugin produces.** It was offered
+on sixteen types where every value gave the same projection. Two reasons it can matter:
+
+- **Yield**, via the lives mechanic — herbs, allotments, hops, giant seaweed. No note.
+- **Disease chance** — fruit trees, trees and coral, wherever Jagex has published a rate. The
+  dropdown stays, and an amber line appears under it once you pick anything but untreated:
+  *"Only lowers disease chance here, not yield. Not needed if you are paying for protection."*
+  The second sentence is not a general hint — a protected crop survives outright, so the discount
+  compost buys is one the payment has already bought.
+
+- **Pass**: no dropdown at all on bush, flower, cactus, hardwood — nothing there responds either
+  way, so it was a control that could not move anything.
+- **Pass**: set a fruit tree to ultracompost and the projection's survival improves. That is the
+  whole reason the control stayed, so if the number does not move the choice is not reaching the
+  estimate.
+- **Pass**: the note is absent on herbs, where compost raises the yield too.
+- **Known gap, not a UI decision**: bushes, cactus and hardwood can be diseased in game, but no
+  published rate exists for them, so our model treats them as certain to survive. If a rate turns
+  up, adding it to `DiseaseRisk` brings the dropdown back automatically — the rule is derived,
+  not listed.
+
+**Farming Guild tiers are enforced.** Not a setting — it is a locked door, so it is treated like
+availability.
+
+- **45** entry and eastern wing: cactus, both allotments, flower, bush, compost bin.
+- **65** western wing: herb, tree, anima, and the Hespori cave.
+- **85** northern wing: fruit tree, spirit tree, celastrus, redwood.
+- **Pass**: below 85, the guild's redwood and fruit tree patches do not appear anywhere — not in
+  the tabs, not in a run, not in the counts.
+- **Boosts are deliberately not modelled**: a boost lasts minutes and a run is planned ahead, so
+  treating a boostable tier as open would route you somewhere you can only reach holding a pie.
+- **Fail signature**: a guild patch you can genuinely reach going missing. The tier table is in
+  `PatchRequirements` and the levels came from the wiki — tell me which patch and which tier.
+
+### 1a-xiv-d. The projection tooltip, and per-group disease — new
+
+**Hover the projection table.** It should open with what the figures are:
+
+> Estimated yield and XP, from your Farming level, gear, diaries, compost and protection.
+> Harvest-only runs count the harvest award alone.
+
+then the detected gear, then the disease discount.
+
+- **Fail signature**: *"Paying farmers is not assumed, and would raise this."* That line was
+  written before protection existed and was simply false — the estimate has been reading the
+  Protect boxes all along. If you still see it, the build did not take.
+- **Pass**: it now reads *"Protected patches are already counted as surviving."*
+
+**Disease is discounted per planting group, not per patch type.** This was a real defect and it
+only showed with the protected herb split on.
+
+- **The bug**: survival was averaged across *every* herb patch and the one blended figure applied
+  to both groups. Trollheim and Weiss cannot be diseased; Ardougne very much can. So the
+  protected group was discounted for a risk it does not carry, and the ordinary group was
+  credited with safety it does not have.
+- **Pass**: with the split on, the protected herb group's projection shows **no** disease
+  discount at all, and the ordinary herb group's shows the full untreated discount.
+- **Pass**: all three defences move the number — better compost raises it, ticking Protect on a
+  crop takes it to 100% for that crop, and a disease-free patch is at 100% regardless.
+
+### 1a-xiv-e. The run anchored to the foot of the sidebar — new
+
+- **Pass**: on a patch tab with only a few rows, the run controls sit at the **bottom** of the
+  sidebar rather than directly under the last row. Clicking between a three-patch tab and a
+  twenty-patch one no longer moves them up and down the page.
+- **Pass**: on a tab long enough to scroll, the run follows the rows as before — with a small gap
+  above **Start run** so the controls are not jammed against the last patch row. That gap exists
+  only while scrolling; pinned to the foot there is already space above them.
+- **How it works, since it is not obvious**: `PluginPanel` adds itself to its scroll wrapper at
+  `BorderLayout.NORTH`, which gives it exactly its content height — so the panel had no foot to
+  anchor anything to. It is moved to CENTER, and `PageLayout` puts glue between the two sections
+  to absorb the spare height.
+- **Fail signature**: a scrollbar that never goes away on a short tab. That means the page is
+  claiming the viewport's height as its preferred height rather than its content's.
+
+### 1a-xiv-f. Compost and protection backfilled from Time Tracking — new
+
+The plugin learns compost and protection by watching you apply them, which cannot know what
+happened before it was installed. RuneLite's Time Tracking has been recording both for years, per
+profile, in plain config — so on load they are read and used to fill gaps.
+
+- **Pass, and this is the visible one**: on an account that farmed before installing this plugin,
+  patches you have paid for should show the farmer's chathead badge and the compost badge without
+  your having done anything this session. The log says
+  *"Filled in N compost and protection facts from Time Tracking"*.
+- **Pass**: it only ever fills gaps. Anything observed this session wins, because ours is live and
+  theirs is whatever was last written. Applying compost should never be undone by a stale record.
+- **Fail signature**: a patch showing protection you know you have not paid for. That would mean
+  the key is being read for the wrong patch — both use `regionId.varbit`, so a mismatch would show
+  up on every patch rather than one.
+- **Switching Time Tracking off** simply means no backfill, and nothing else changes.
+
 ### 1a-xv. Protecting a crop — new
 
 **In the seed selector**, under the compost dropdown, a **Protect** checkbox appears for any
@@ -420,6 +584,10 @@ Settings → Guided run → *Filter the bank to this run*.
 - **Off by default on purpose**, and worth understanding before judging it: a wrong highlight is
   ignorable, but a wrong filter *hides* things and you cannot see what is missing. Highlighting
   works either way and is unaffected.
+- **Pass**: press **Stop run** with the bank open. Highlighting stops immediately and stays
+  stopped through closing and reopening the bank. It used to persist — the overlay asked which
+  patch types were ticked and never whether a run was under way, so there was no way to make it
+  stop short of clearing the ticks. Filtering follows the same rule now: no run, no filter.
 - **Fail signature**: nothing filters → Bank Tags is unavailable. `client.log` says so once at
   startup: *"Bank Tags is unavailable, so run filtering is off. Highlighting is unaffected."*
   **With Bank Tags on, that line must not appear.** It did, for the whole first attempt at this
@@ -428,6 +596,11 @@ Settings → Guided run → *Filter the bank to this run*.
   fails loudly — the plugin does not load at all — and optional field injection fails silently,
   which is worse, because the feature looks present and does nothing. Both are now gone: the
   service comes off the Bank Tags plugin instance, and the tag manager out of its injector.
+- **If it still does not filter, the log now names which gate stopped it**, including the one that
+  cannot be seen from here: after asking Bank Tags to open the tag we ask back with
+  `getActiveTag()`, because `openBankTag` returns void and declines quietly in several places.
+  A mismatch logs *"Bank Tags did not take the filter: asked for X, active tag is Y"*. Calling it
+  and it taking are different facts and only the second is the feature working.
 - **It cannot leave anything behind.** The tag is virtual — membership is asked live rather than
   saved — so it never appears in your own bank tag list and nothing survives the plugin stopping.
 - **Close the bank and check the chatbox.** It must read *"Press Enter to Chat..."* again.
@@ -437,6 +610,20 @@ Settings → Guided run → *Filter the bank to this run*.
   bank interface closing, not only on the setting being switched off.
 
 ### 1a-xvii. Harvest-only runs — new
+
+**No seed is needed, and the projection still works.** Both were wrong: a harvest-only run asked
+for a seed it has no use for, and priced itself at zero when you did not give it one.
+
+- **Pass**: tick *Bush (H/O)* with no bush seed picked. No red "No seed picked for: bush" under
+  the boxes, and the projection below shows the berries and experience the trip is actually
+  worth.
+- **Pass, and this is the number to sanity-check**: the figure counts the **harvest** award only.
+  A banana tree pays 1,750 for the health check against 10.5 per banana; if a trip to pick fruit
+  reads in the thousands, the plant and check awards have crept back in.
+- **Pass**: ticking the full *Bush* line as well as *Bush (H/O)* does still want a seed — the full
+  run plants, so the warning is right there.
+- **Fail signature**: the table disappearing entirely when only harvest-only lines are ticked.
+  That is the old behaviour, where an empty seed selection hid it.
 
 The run list now offers more lines than there are patch types: **Herb (protected)** when you have
 any, plus **Bush (harvest only)** and **Fruit tree (harvest only)**.
@@ -450,8 +637,9 @@ any, plus **Bush (harvest only)** and **Fruit tree (harvest only)**.
 - **Pass**: ticking the ordinary *Fruit tree* line as well gives the full cycle again. Ticking
   both is a contradiction, and the full run wins — it does everything the harvest-only run does
   and more, so nothing asked for is skipped.
-- **Pass**: the list is one option per row now. Two columns clipped "Fruit tree (harvest only)"
-  at the sidebar's 225px, which the render test refuses to let through.
+- **Pass**: the list is two options per row, and the variants read as **(H/O)** — spelled out,
+  "Fruit tree (harvest only)" made two columns want 290px of a 225px sidebar. What it means is on
+  the hover. The render test refuses to let a too-wide label through.
 - **Your existing selection survives.** A full run over an unsplit type is stored under the same
   key it always was, so previously ticked types stay ticked.
 
