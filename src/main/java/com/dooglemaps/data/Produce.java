@@ -8,6 +8,8 @@
 package com.dooglemaps.data;
 
 
+import java.util.HashMap;
+import java.util.Map;
 import javax.annotation.Nullable;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
@@ -144,5 +146,32 @@ public enum Produce
 	public int getMinutesToGrow()
 	{
 		return tickrate * (stages - 1);
+	}
+
+	private static final Map<Integer, Produce> BY_ITEM_ID = new HashMap<>();
+
+	static
+	{
+		for (Produce produce : values())
+		{
+			// First declaration wins, because item ids are not unique here — ANYHERB carries
+			// a guam leaf and the big compost bin's tiers repeat the small one's buckets. Core
+			// answers this question with a linear scan over values(), so first-wins is not a
+			// preference but the behaviour that has to be matched: a contract stored as a guam
+			// leaf must read back as GUAM, exactly as Time Tracking wrote it.
+			BY_ITEM_ID.putIfAbsent(produce.itemID, produce);
+		}
+	}
+
+	/**
+	 * What grows into this item, or null for an item nothing produces.
+	 *
+	 * <p>Exists for the farming contract, which Time Tracking stores as the harvested
+	 * item's id and nothing else. See {@code com.dooglemaps.state.ContractState}.
+	 */
+	@Nullable
+	public static Produce getByItemID(int itemID)
+	{
+		return BY_ITEM_ID.get(itemID);
 	}
 }

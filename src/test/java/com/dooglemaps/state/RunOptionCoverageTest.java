@@ -40,15 +40,21 @@ public class RunOptionCoverageTest
 
 		Constructor<PlantingGroups> ctor =
 			PlantingGroups.class.getDeclaredConstructor(DoogleMapsConfig.class,
-				ProtectedPatches.class, AvailabilityProfile.class);
+				ProtectedPatches.class, AvailabilityProfile.class,
+				com.dooglemaps.state.ContractState.class);
 		ctor.setAccessible(true);
 
 		Constructor<ProtectedPatches> pc =
 			ProtectedPatches.class.getDeclaredConstructor(net.runelite.client.config.ConfigManager.class);
 		pc.setAccessible(true);
 
+		Constructor<com.dooglemaps.state.ContractState> cc =
+			com.dooglemaps.state.ContractState.class.getDeclaredConstructor(
+				net.runelite.client.config.ConfigManager.class);
+		cc.setAccessible(true);
+
 		return ctor.newInstance(config, pc.newInstance(configManager),
-			Mockito.mock(AvailabilityProfile.class));
+			Mockito.mock(AvailabilityProfile.class), cc.newInstance(configManager));
 	}
 
 	/** Which types the produce data says come back after picking. */

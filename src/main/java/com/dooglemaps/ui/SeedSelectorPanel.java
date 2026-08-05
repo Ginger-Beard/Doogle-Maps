@@ -56,6 +56,9 @@ class SeedSelectorPanel extends JPanel
 
 	private final PatchImplementation type;
 	private final PlantableResolver resolver;
+
+	/** The assigned contract, for the one tab whose seed is chosen for the player. */
+	private final com.dooglemaps.state.ContractState contracts;
 	private final SeedInventoryStore seeds;
 	private final SeedSelectionStore selection;
 	private final ItemManager itemManager;
@@ -266,8 +269,10 @@ class SeedSelectorPanel extends JPanel
 	SeedSelectorPanel(PanelLayoutStore layout, PlantingGroup group, PlantableResolver resolver,
 		SeedInventoryStore seeds, SeedSelectionStore selection, ItemManager itemManager,
 		CompostSelectionStore compost, ProtectionSelectionStore protection, BankContents bank,
-		CarriedItems carried, com.dooglemaps.data.ItemNames itemNames)
+		CarriedItems carried, com.dooglemaps.data.ItemNames itemNames,
+		com.dooglemaps.state.ContractState contracts)
 	{
+		this.contracts = contracts;
 		this.layout = layout;
 		this.group = group;
 		this.protection = protection;
@@ -367,11 +372,15 @@ class SeedSelectorPanel extends JPanel
 			return;
 		}
 
-		List<Plantable> plantables = resolver.forPatchType(type, false);
+		List<Plantable> plantables = group.isContract()
+			? contractPlantables()
+			: resolver.forPatchType(type, false);
 		if (plantables.isEmpty())
 		{
-			message.setText("No " + type.getDisplayName().toLowerCase()
-				+ " seeds found in your bank, vault, seed box or inventory.");
+			message.setText(group.isContract()
+				? "No seed for this contract could be found."
+				: "No " + type.getDisplayName().toLowerCase()
+					+ " seeds found in your bank, vault, seed box or inventory.");
 			message.setVisible(true);
 			revalidate();
 			repaint();
@@ -461,6 +470,35 @@ class SeedSelectorPanel extends JPanel
 	}
 
 	/**
+	 * The single seed a contract tab shows.
+	 *
+	 * <p>Unowned seeds are included here and nowhere else, which is the whole difference. An
+	 * ordinary tab lists what you have, because it is asking you to choose; this one is telling
+	 * you what Jane asked for, and a blank tab would say "no contract" when the truth is "you do
+	 * not own the seed" — which is a thing to go and fix rather than a thing to be silent about.
+	 * It draws greyed, exactly as an unusable seed does anywhere else, and the loadout says the
+	 * same in words before you set off.
+	 */
+	private List<Plantable> contractPlantables()
+	{
+		Seed wanted = contracts.getContractSeed();
+		if (wanted == null)
+		{
+			return java.util.Collections.emptyList();
+		}
+
+		List<Plantable> only = new java.util.ArrayList<>();
+		for (Plantable plantable : resolver.forPatchType(type, true))
+		{
+			if (plantable.getSeed() == wanted)
+			{
+				only.add(plantable);
+			}
+		}
+		return only;
+	}
+
+	/**
 	 * One seed, drawn the way the bank draws it.
 	 *
 	 * <p>{@code ItemManager.getImage(id, quantity, stackable)} renders the stack number onto
@@ -491,7 +529,11 @@ class SeedSelectorPanel extends JPanel
 
 		applySelectionStyling(icon, selection.isSelected(group, seed));
 
-		if (usable)
+		// A contract seed renders as picked because it *is* picked — the group's type narrows the
+		// list to that patch's seeds and the contract narrows it to one. It simply must not be
+		// clickable: there is no other answer to offer, and a click that silently did nothing
+		// would read as the tab being broken.
+		if (usable && !group.isContract())
 		{
 			icon.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
 			icon.addMouseListener(new MouseAdapter()

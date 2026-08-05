@@ -18,6 +18,17 @@ data is carried here instead. `tools/generate_farming_data.py` regenerates it fr
 client sources jar rather than transcribing it by hand, so a RuneLite update can be picked
 up without a chance of typos.
 
+The farming contract (`ContractState`, `ContractCapture`) follows the same package's
+`FarmingContractManager`. Its config location — group `timetracking`, key `contract`,
+holding the harvested item's id — is read rather than duplicated, the same arrangement and
+for the same reason as the compost and payment backfill below. What *is* mirrored is the
+three lines the game uses to announce a contract: the assignment pattern, the reward line,
+and `TimeTrackingPlugin`'s completion message. Those are facts about the game rather than
+code, and they are matched here because the config key alone cannot express the state
+between a contract completing and its reward being collected — Time Tracking clears the key
+on the completion message, so a grown contract is otherwise indistinguishable from none.
+Guildmaster Jane's NPC id and the Farming Guild's region id come from the same class.
+
 Original work is Copyright (c) 2018 Abex and the RuneLite contributors, licensed under the
 BSD 2-Clause Licence:
 

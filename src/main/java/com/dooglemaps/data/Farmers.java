@@ -76,6 +76,9 @@ public final class Farmers
 		NAMES.put(NpcID.KRAGEN, "Kragen");
 		NAMES.put(NpcID.LYRA, "Lyra");
 		NAMES.put(NpcID.PRIF_GARDENER, "Oswallt");
+		NAMES.put(NpcID.FARMING_GUILD_MASTER, "Guildmaster Jane");
+		NAMES.put(NpcID.FARMING_GUILD_MASTER_1OP, "Guildmaster Jane");
+		NAMES.put(NpcID.FARMING_GUILD_MASTER_2OP, "Guildmaster Jane");
 	}
 
 	private Farmers()

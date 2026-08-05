@@ -2024,3 +2024,94 @@ is asked to run something*, and no other kind of test would notice it changing.
 The general lesson is about the shape of the claim. "Not us" is a statement about the whole
 plugin and needs a whole-plugin argument; what was actually in hand was "our only known path to
 it did not run". Those are different sentences, and the gap between them was a real finding.
+
+---
+
+## The farming contract's config key is cleared earlier than anyone assumed
+
+The plan for contracts rested on one sentence: Time Tracking already stores the assignment in
+ordinary config, so reading it is the whole integration. That is true for the half it covers, and
+the plan wrote down the right thing to check first — *"whether the key is cleared on hand-in"*,
+called out as the single most important question because it decides whether the state machine is
+two states or something worse.
+
+The client sources answer it, and the answer is neither of the two that were anticipated. It is
+cleared, but **not on hand-in**. `TimeTrackingPlugin.onChatMessage` calls `setContract(null)` on:
+
+```
+You've completed a Farming Guild Contract. You should return to Guildmaster Jane.
+```
+
+which the game sends when the crop finishes **growing**. `FarmingContractManager` also clears it on
+the reward dialogue, but by then it is already null.
+
+So an absent key means one of two opposite things — nothing assigned, or a grown contract with the
+reward sitting unclaimed. The second is precisely the state a guide exists to speak up in: the
+patch looks done, the run moves on, and the seed packs stay in the guild until the next contract.
+Both readings were "no contract", and the two-state machine the plan described does not exist.
+
+**What that changed.** The fallback capture the plan hoped to avoid got built, and the reason it
+is not simply duplicated parsing is worth keeping: the two sources are consulted by *what each one
+actually knows*. Time Tracking's key answers "which crop is assigned", because it has been
+maintained for years and is written the moment the dialogue appears. Our capture alone answers "is
+it grown and unclaimed", because the event that would tell you is the same event that wipes theirs.
+
+**And the two failure modes turn out to be complementary**, which is why both are kept rather than
+one being picked:
+
+- a contract ripening while you are logged in fires the message, which wipes their key — our
+  capture is the only record;
+- a contract ripening while you are logged out fires nothing, so our capture never sees it — but
+  nothing cleared their key either, and the patch is standing there fully grown, so it derives.
+
+Neither covers the other, and each is exactly the case the other misses.
+
+**The general lesson is about what "it stores it in config" buys you.** A config key another plugin
+maintains is a fact about that plugin's *internal state*, not about the game — and its lifetime is
+whatever that plugin found convenient, not what a reader would infer from the name. `contract`
+sounds like it holds the contract. It holds the contract *that still needs growing*, which is a
+narrower thing, and nothing about reading the key would have revealed the difference. The only way
+to find it was to read the code that writes it, which the plan had already flagged as worth doing
+and which took one `curl` of the sources jar the build was already resolving.
+
+---
+
+## Seeds in your pack vanished from the seed list, and only a bank trip brought them back
+
+Reported as a random one: ranarr seeds sitting in the inventory were missing from the herb seed
+list, and banking them and taking them out again fixed it. That last detail is the whole
+diagnosis — the fix was a container event, and standing still never produces one.
+
+`SeedSource.INVENTORY` is deliberately not persisted, and the reasoning written on it is sound:
+*"it changes on every item pickup, and it is always sent again on login, so persisting it would
+mean constant config writes for nothing."* Both halves of that are true. What was missed is that
+something else then threw the inventory away after it arrived.
+
+`SeedInventoryStore.load()` cleared the **whole** cache and restored only what config held. Config
+holds the persisted sources by definition, so the inventory was wiped with nothing to put it back:
+
+1. you log in, the client sends the inventory, three ranarr seeds are cached;
+2. the RuneScape profile resolves, `ProfileChanged` fires, and the plugin reloads;
+3. `load()` cleared the cache and restored the bank, vault and box — but not the inventory.
+
+Nothing re-reads an inventory that has not changed, so the seeds stayed invisible until something
+moved them.
+
+**Why it looked random.** Steps 1 and 2 are not ordered with respect to each other. `ProfileChanged`
+fires when the profile resolves, which sometimes lands before the first container event and
+sometimes after, and only the "after" ordering loses anything. `onProfileChanged` also calls
+`load()` unconditionally — no `loaded` guard, unlike the `LOGGED_IN` path — so it fires on every
+login rather than only on a genuine account switch.
+
+**The rule that was missing.** Config is the authority on persisted state and has *nothing to say*
+about the rest, so reading it must not discard live state it cannot replace. `load()` now clears
+only the persisted sources. `relearnFromClient()` — which already existed for profile resets — is
+also called after every load, covering the other half of the same hole: a plugin switched on
+mid-session was never sent the inventory in the first place, and would have shown an empty seed
+list until the player happened to open a bank.
+
+**The general shape is worth remembering, because it is not really about seeds.** A cache with two
+tiers — some entries restorable from disk, some only from a live source — has a load path that must
+be written per tier. `clear()` followed by "restore what was saved" is correct only when *everything*
+was saved, and it fails silently otherwise: nothing throws, nothing logs, and the missing half looks
+exactly like the player not owning any.

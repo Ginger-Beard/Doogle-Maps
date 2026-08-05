@@ -92,7 +92,8 @@ public class RunLoadoutTest
 
 		SeedInventoryStore seeds = construct(SeedInventoryStore.class,
 			Mockito.mock(net.runelite.api.Client.class), configManager, gson);
-		selection = construct(SeedSelectionStore.class, configManager, gson);
+		selection = construct(SeedSelectionStore.class, configManager, gson,
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 		compost = construct(CompostSelectionStore.class, configManager, gson);
 		compost.load();
 

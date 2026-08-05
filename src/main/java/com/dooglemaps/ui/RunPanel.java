@@ -269,8 +269,10 @@ class RunPanel extends JPanel
 				: null;
 
 			// Start a fresh row for a pair, so the two halves are side by side rather than
-			// wrapped across the break.
-			if (paired != null && column == 1)
+			// wrapped across the break. The contract gets one for the same reason a pair does —
+			// it is the one line that is not a patch type, and sharing a row with the tail of the
+			// list is what makes it read as another of them.
+			if ((paired != null || option.getGroup().isContract()) && column == 1)
 			{
 				typeSelection.add(filler());
 				column = 0;
@@ -580,9 +582,19 @@ class RunPanel extends JPanel
 	/**
 	 * Names the ticked types nothing will be planted in.
 	 *
-	 * <p>Asked per type rather than per group: a type with a seed picked for one of its groups and
-	 * not the other is a subtler thing than this line is for, and the group with no seed still
-	 * gets its patches counted as unfilled in the projection below.
+	 * <p>Reported per type: a type with a seed picked for one of its groups and not the other is a
+	 * subtler thing than this line is for, and the group with no seed still gets its patches
+	 * counted as unfilled in the projection below.
+	 *
+	 * <h2>Asked per group, though, which it used not to be</h2>
+	 *
+	 * It read the type-wide selection, and a contract's seed is never in it — the contract's crop
+	 * is derived from the assignment rather than picked, deliberately, so that nothing the player
+	 * never chose gets persisted. A cactus contract with no ordinary cactus seed ticked therefore
+	 * reported <i>"No seed picked for: cactus"</i> while the contract tab was sitting right above
+	 * it showing the cactus seed already selected. Asking each ticked group what <i>it</i> will
+	 * plant is the question this line always meant, and it happens to be the only one a derived
+	 * selection can answer.
 	 */
 	private void updateNoSeeds(Set<PatchImplementation> types)
 	{
@@ -595,7 +607,7 @@ class RunPanel extends JPanel
 			{
 				continue;
 			}
-			if (selection.getSelectedFor(type).isEmpty())
+			if (nothingToPlantIn(type))
 			{
 				unpicked.add(type.getDisplayName().toLowerCase());
 			}
@@ -606,6 +618,30 @@ class RunPanel extends JPanel
 		{
 			noSeeds.setText("No seed picked for: " + String.join(", ", unpicked) + ".");
 		}
+	}
+
+	/**
+	 * Whether no group of this type that the run will actually plant in has a seed.
+	 *
+	 * <p>None rather than any, matching what the line says: naming a type here means nothing will
+	 * go in the ground anywhere in it. A type with one group filled and another empty is a real
+	 * situation and not what this warning is about — the projection below already counts the empty
+	 * group's patches as unfilled.
+	 */
+	private boolean nothingToPlantIn(PatchImplementation type)
+	{
+		for (PlantingGroup group : groups.groupsFor(type))
+		{
+			if (!runTypes.isSelected(RunOption.full(group)) || runTypes.isHarvestOnly(group))
+			{
+				continue;
+			}
+			if (!selection.getSelectedFor(group).isEmpty())
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -816,8 +852,17 @@ class RunPanel extends JPanel
 	{
 		FarmingBonuses carried = bonuses.current();
 		StringBuilder text = new StringBuilder(
-			"<html>Estimated yield and XP, from your Farming level, gear, diaries, compost and "
-				+ "protection.<br>Harvest-only runs count the harvest award alone.<br><br>")
+			"<html>Estimated yield and XP for the seeds this run plants, <b>from planting to "
+				+ "harvest</b> — worked out from your Farming level, gear, diaries, compost and "
+				+ "protection."
+				// The distinction people actually trip over. A herb run hands you a pack of
+				// snapdragons on the way round, and none of them are counted here: they grew from
+				// the seeds you planted last time. This run is the seeds going in now, and what
+				// they give you when you come back for them.
+				+ "<br><br>Not what you pick <i>during</i> the run. Clearing a patch harvests last "
+				+ "run's crop, which is already in the ground and owes nothing to the seeds you "
+				+ "are about to sow.<br><br>Harvest-only runs are the exception - there is no seed "
+				+ "going in, so they count the harvest award alone.<br><br>")
 			.append("At Farming level ").append(level).append(", with:<br>");
 
 		text.append(carried.isMagicSecateurs()

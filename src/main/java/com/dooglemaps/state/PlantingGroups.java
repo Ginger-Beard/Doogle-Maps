@@ -21,7 +21,18 @@ import javax.inject.Singleton;
  *
  * A protected group is offered only when the setting is on <i>and</i> the account actually has at
  * least one such patch. An empty second tab is worse than no second tab: it implies the player is
- * missing something, when the truth is the feature does not apply to them yet.
+ * missing something, when the truth is the feature does not apply to them yet. A contract group is
+ * held to the same rule: it exists only while one is assigned and the guild patch it wants is one
+ * this account uses.
+ *
+ * <h2>The contract group is a move, not a copy</h2>
+ *
+ * While a contract is assigned, the Farming Guild patches of its type <b>leave</b> their ordinary
+ * group and join the contract group. That is what makes every consequence fall out of machinery
+ * that already exists — it gets a tab because tabs are built per group, and a run line because run
+ * options are built per group — and, more usefully, it is what reserves the patch: the ordinary
+ * herb group stops counting it, so the estimate cannot promise a snapdragon in a patch that is
+ * spoken for, with no reservation logic anywhere.
  */
 @Singleton
 public class PlantingGroups
@@ -29,14 +40,16 @@ public class PlantingGroups
 	private final DoogleMapsConfig config;
 	private final ProtectedPatches protectedPatches;
 	private final AvailabilityProfile availability;
+	private final ContractState contracts;
 
 	@Inject
 	private PlantingGroups(DoogleMapsConfig config, ProtectedPatches protectedPatches,
-		AvailabilityProfile availability)
+		AvailabilityProfile availability, ContractState contracts)
 	{
 		this.config = config;
 		this.protectedPatches = protectedPatches;
 		this.availability = availability;
+		this.contracts = contracts;
 	}
 
 	/** Whether protected patches are being kept apart from the rest of their type. */
@@ -48,10 +61,38 @@ public class PlantingGroups
 	}
 
 	/**
+	 * Whether an assigned contract has claimed patches of this type from this account.
+	 *
+	 * <p>Both halves are needed. A contract for a patch the account has switched off would
+	 * otherwise produce a tab with nothing on it and a run line that visits nowhere.
+	 */
+	public boolean hasContract(PatchImplementation type)
+	{
+		if (contracts.getContractType() != type)
+		{
+			return false;
+		}
+		for (FarmPatch patch : availability.getAvailablePatches(type))
+		{
+			if (contracts.claims(patch))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Which group a patch belongs to.
 	 *
-	 * <p>With the split off, everything falls into the plain group — including protected patches,
-	 * which is what makes the off state behave exactly as it did before any of this existed.
+	 * <p>The contract is asked first, because it is the narrower claim and the guild's patch can
+	 * satisfy neither of the other two tests — it is not disease-free, so the protected split would
+	 * never have taken it, and leaving it in the plain group is precisely the failure this exists
+	 * to prevent.
+	 *
+	 * <p>With the split off, everything else falls into the plain group — including protected
+	 * patches, which is what makes the off state behave exactly as it did before any of this
+	 * existed.
 	 */
 	public PlantingGroup groupFor(FarmPatch patch)
 	{
@@ -61,6 +102,10 @@ public class PlantingGroups
 		}
 
 		PatchImplementation type = patch.getImplementation();
+		if (contracts.claims(patch))
+		{
+			return PlantingGroup.contract(type);
+		}
 		return isSplit(type) && isProtected(patch)
 			? PlantingGroup.protectedOnly(type)
 			: PlantingGroup.of(type);
@@ -69,12 +114,18 @@ public class PlantingGroups
 	/**
 	 * The groups a patch type presents, in the order they should be shown.
 	 *
-	 * <p>Protected first. It is the shorter list and the more valuable decision — it is where the
-	 * ranarr goes — so it should not be found by scrolling past a dozen ordinary patches.
+	 * <p>Contract first, then protected, then the rest. Both exceptions are shorter lists and more
+	 * consequential decisions than the bulk — the contract is the highest-value thing in a run and
+	 * the protected tab is where the ranarr goes — so neither should be found by scrolling past a
+	 * dozen ordinary patches.
 	 */
 	public List<PlantingGroup> groupsFor(PatchImplementation type)
 	{
 		List<PlantingGroup> groups = new ArrayList<>();
+		if (hasContract(type))
+		{
+			groups.add(PlantingGroup.contract(type));
+		}
 		if (isSplit(type))
 		{
 			groups.add(PlantingGroup.protectedOnly(type));
@@ -170,15 +221,56 @@ public class PlantingGroups
 			options.add(com.dooglemaps.data.RunOption.harvestOnly(PlantingGroup.of(type)));
 		}
 
+		addContractRun(options);
 		return options;
 	}
 
+	/**
+	 * The contract's line, pinned to the very end of the list.
+	 *
+	 * <p>Pinned rather than sitting with its type, and both halves of that matter.
+	 *
+	 * <p><b>It is not a patch type.</b> Every other line is a standing choice about a kind of
+	 * patch you own; this one is a job that moves — cactus this week, bushes the next — so filing
+	 * it under whichever type it currently wants would have it jumping around the list. At a fixed
+	 * end it is always in the same place, which is what a line you tick every run should be.
+	 *
+	 * <p><b>And in the middle it broke the pairs.</b> The list is two columns, and a full run and
+	 * its harvest-only counterpart have to sit side by side on one row or they read as unrelated
+	 * entries. A contract slotted in beside its own type landed between {@code Cactus} and
+	 * {@code Cactus (H/O)} and split exactly the pair it was standing next to. Last is the one
+	 * position that cannot disturb anything: everything above it keeps the parity it already had,
+	 * and {@code RunPanel} gives this line a fresh row of its own.
+	 *
+	 * <p>The type still has to be carried on the group — it is what scopes the seed list, the
+	 * compost and the yield model — but it is deliberately not what the line is filed under.
+	 */
+	private void addContractRun(java.util.List<com.dooglemaps.data.RunOption> options)
+	{
+		for (PatchImplementation type : PatchImplementation.values())
+		{
+			if (hasContract(type))
+			{
+				options.add(com.dooglemaps.data.RunOption.full(PlantingGroup.contract(type)));
+			}
+		}
+	}
+
+	/**
+	 * A type's full-run lines, contract excluded.
+	 *
+	 * <p>The contract is added once at the end by {@link #addContractRun} instead — see there for
+	 * why it must not appear inline.
+	 */
 	private void addFullRuns(java.util.List<com.dooglemaps.data.RunOption> options,
 		PatchImplementation type)
 	{
 		for (PlantingGroup group : groupsFor(type))
 		{
-			options.add(com.dooglemaps.data.RunOption.full(group));
+			if (!group.isContract())
+			{
+				options.add(com.dooglemaps.data.RunOption.full(group));
+			}
 		}
 	}
 

@@ -643,6 +643,93 @@ any, plus **Bush (harvest only)** and **Fruit tree (harvest only)**.
 - **Your existing selection survives.** A full run over an unsplit type is stored under the same
   key it always was, so previously ticked types stay ticked.
 
+### 1a-xviii. Farming contracts — new, and the largest single untested piece
+
+Everything here is written from the client sources rather than from play. The three lines the
+capture matches on are quoted below; if any of them differs by a character in game, the capture is
+silent — and silent is indistinguishable from "no contract", which is why the first check is a log
+line rather than anything on screen.
+
+**Start here, before anything else.** With Time Tracking on and a contract assigned, the log on
+login carries one line: `Farming contract: <crop>; awaiting hand-in: <crop or nothing>.` If it
+reads `Time Tracking is switched off, ...`, that is the other branch and it is telling the truth.
+
+- **Pass**: with a contract assigned, the sidebar grows a tab showing **Guildmaster Jane's face**,
+  pinned **first** in the strip whatever crop the contract wants. Hovering names the crop. A blank
+  square there means her portrait did not load — `FarmerIconTest` should have caught that, and the
+  fallback is the crop sprite with an amber diamond on it.
+- **Pass, and this is the reservation working**: the ordinary **Herb** tab **no longer lists the
+  Farming Guild's herb patch**. It has moved, not been copied — seeing it on both tabs is the
+  failure this whole design exists to prevent, and it would show up later as the estimate promising
+  a snapdragon in a patch the contract had already claimed.
+- **Pass**: the contract tab shows **exactly one seed**, already highlighted as picked, and
+  **clicking it does nothing**. If you do not own the seed it is still shown, greyed.
+- **Pass**: the compost and protection dropdowns are still there on the contract tab, and a
+  brand-new one **inherits whatever you treat herbs with** rather than resetting to untreated.
+  Changing it must **not** change the ordinary Herb tab's compost.
+- **Pass**: the run list has a **Farming Contract** line, **last**, on a row of its own — not
+  "Cactus (contract)", and not sitting with its type. Check the pairs above it are still side by
+  side: inline, the contract line split `Cactus` from `Cactus (H/O)`.
+- **Pass**: ticking it and opening the bank shows the contract seed in the loadout, reasoned as
+  **"Guildmaster Jane's contract"** — and marked missing, in words, if you do not own one.
+- **Pass, both reported from play**: no *"No seed picked for: cactus"* under the boxes when the
+  contract tab is showing a cactus seed; and if you protect that crop on its ordinary tab, the
+  contract tab's protect box is **already ticked**. Unticking it there must stick across a relog
+  without unticking the ordinary tab's.
+- **Pass, and this is the ordering that matters**: arriving at the Farming Guild, the **first**
+  instruction concerns the contract's patch, whatever else is nearer. Any other patch being
+  serviced first takes the only patch of that type in the guild and costs a full growth cycle.
+- **Pass**: with everything at the guild dealt with and a contract grown, the last step is
+  **"Hand your ranarr to Guildmaster Jane for the contract reward."**, with **Jane** outlined —
+  not the leprechaun, and not the patch.
+- **Pass**: once handed in, the next step is **"Ask Guildmaster Jane for a new farming contract
+  before you leave."** No difficulty is suggested, deliberately — easy, medium and hard draw from
+  different pools and choosing for you is not this plugin's job.
+- **Pass, and this is the loop the design turns on**: take a new contract *while still standing in
+  the guild*. If its patch is free, the guide should within a tick be telling you to plant it —
+  no run restart, no re-entering the stop. If it is not free, the panel says so in grey:
+  *"...cannot be planted on this run - the patch it wants is not free."*
+- **Pass**: turning **Include the farming contract** off in the guided-run settings returns the
+  guild's patches to the ordinary run, removes the tab and the run line, and stops both Jane steps.
+
+**The four lines the capture depends on**, all from `FarmingContractManager` and
+`TimeTrackingPlugin`:
+
+| Moment | Line |
+|---|---|
+| Assigned | `We need you to grow` / `Please could you grow ... for us?` |
+| Grown | `You've completed a Farming Guild Contract. You should return to Guildmaster Jane.` |
+| Handed in | `You'll be wanting a reward then. Here you go.` |
+| Config | group `timetracking`, key `contract`, the harvested item's id as a string |
+
+- **Fail signature — no tab, no run line, nothing in the log.** The config key is not being read.
+  Check `timetracking.contract` in the profile config; if it holds a number and the plugin says
+  nothing, `Produce.getByItemID` did not resolve it.
+- **Fail signature — the tab appears but the guild's herb patch is on *both* tabs.** `groupFor` is
+  answering two things for one patch, and the estimate will be double-counting it.
+- **Fail signature — the contract stays assigned after the crop finishes growing.** Expected, and
+  handled: Time Tracking clears its key on the completion message and our capture records the
+  hand-in. If instead the tab lingers and the guide keeps saying to plant it, the completion
+  message did not match and the derivation from patch state did not fire either.
+- **Fail signature — the hand-in step never appears for a contract that ripened while you were
+  logged out.** That case has no message at all and relies entirely on the patch-state derivation:
+  a guild patch holding the contract crop, `isReady()`. Check the patch is actually cached.
+- **Fail signature — a warning in the log**: `Guildmaster Jane asked for "x", which is not a crop
+  this build knows.` A game update added a contract crop; regenerate the farming data.
+
+### 1a-xix. Seeds in your pack stay in the seed list — new, a fix
+
+Reported from play: ranarr seeds in the inventory were missing from the herb seed list, and banking
+them and taking them back out fixed it. `load()` was clearing the inventory — which is deliberately
+not persisted — and restoring only what config held.
+
+- **Pass**: log in holding seeds you have not touched, open the sidebar, and they are in the seed
+  list without banking anything.
+- **Pass**: switch the plugin off and on again while logged in and holding seeds. They should still
+  be listed — this is the case `relearnFromClient` covers, where no container event ever fires.
+- **Fail signature**: an empty or short seed list that fills in the moment you open a bank. That is
+  the same bug, and it is timing-dependent, so try it a few times.
+
 ### 1b. The order is right
 
 Work one patch through its whole cycle and check each instruction appears in turn:

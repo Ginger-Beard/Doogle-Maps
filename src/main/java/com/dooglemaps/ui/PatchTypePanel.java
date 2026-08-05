@@ -82,7 +82,8 @@ class PatchTypePanel extends JPanel
 		FarmingBonusStore bonuses, CompostSelectionStore compost,
 		com.dooglemaps.state.ProtectionSelectionStore protection,
 		com.dooglemaps.bank.BankContents bank, com.dooglemaps.guide.CarriedItems carried,
-		com.dooglemaps.data.ItemNames itemNames)
+		com.dooglemaps.data.ItemNames itemNames,
+		com.dooglemaps.state.ContractState contracts)
 	{
 		// Nothing goes in a compost bin but buckets and weeds, so a "seeds you own" list under
 		// one was simply wrong. Derived from the seed table rather than named here.
@@ -96,7 +97,7 @@ class PatchTypePanel extends JPanel
 		this.itemNames = itemNames;
 		this.seedSelector = PatchTabs.isPlantable(type)
 			? new SeedSelectorPanel(layout, group, resolver, seeds, selection, itemManager, compost,
-				protection, bank, carried, itemNames)
+				protection, bank, carried, itemNames, contracts)
 			: null;
 		this.members = PatchTabs.membersOf(type);
 		this.stateStore = stateStore;

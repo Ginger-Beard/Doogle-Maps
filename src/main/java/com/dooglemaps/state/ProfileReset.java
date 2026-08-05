@@ -59,6 +59,12 @@ public class ProfileReset
 	 * <p>Note what is <i>not</i> in this list: the harvest statistics, the shown/hidden patch
 	 * toggles, and the run's seed selection. Each absence is intentional and covered by a
 	 * test, so that wiring another store in here later cannot quietly sweep them up too.
+	 *
+	 * <p>{@code ContractState} is deliberately absent for a different reason, and it is the one
+	 * worth stating because it looks like cached data and is not. Everything cleared here comes
+	 * back by playing; a contract recorded as grown-and-unclaimed does not. Nothing re-derives it
+	 * once the patch has been picked, so wiping it would silently cost the reward. It clears itself
+	 * when the next contract is assigned, which is the only moment it is genuinely stale.
 	 */
 	public void reset()
 	{

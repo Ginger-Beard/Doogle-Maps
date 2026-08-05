@@ -288,8 +288,14 @@ public class RunLoadout
 					LoadoutItem.Category.SEED,
 					need(inPack >= wanted, owned > inPack, false),
 					Math.min(wanted, Math.max(owned, 1)),
-					patches + (patches == 1 ? " patch" : " patches") + " of "
-						+ type.getDisplayName().toLowerCase()));
+					// The contract says *why* rather than only how many, because it is the one
+					// seed on this list the player did not choose — and the one whose absence is
+					// worth knowing about at the bank rather than at the patch, since arriving
+					// without it costs the whole reward for another growth cycle.
+					group.isContract()
+						? "Guildmaster Jane's contract"
+						: patches + (patches == 1 ? " patch" : " patches") + " of "
+							+ type.getDisplayName().toLowerCase()));
 			}
 		}
 	}

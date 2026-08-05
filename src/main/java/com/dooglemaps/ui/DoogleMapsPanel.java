@@ -97,6 +97,7 @@ public class DoogleMapsPanel extends PluginPanel
 	private final com.dooglemaps.bank.BankContents bankContents;
 	private final com.dooglemaps.guide.CarriedItems carriedItems;
 	private final com.dooglemaps.data.ItemNames itemNames;
+	private final com.dooglemaps.state.ContractState contracts;
 	private final RunPanel runPanel;
 	private final HarvestStatsPanel statsPanel;
 
@@ -145,7 +146,8 @@ public class DoogleMapsPanel extends PluginPanel
 		PanelLayoutStore layout, PlantingGroups groups,
 		com.dooglemaps.state.ProtectionSelectionStore protection,
 		com.dooglemaps.bank.BankContents bankContents,
-		com.dooglemaps.guide.CarriedItems carriedItems, com.dooglemaps.data.ItemNames itemNames)
+		com.dooglemaps.guide.CarriedItems carriedItems, com.dooglemaps.data.ItemNames itemNames,
+		com.dooglemaps.state.ContractState contracts)
 	{
 		// Wrapped, so a long list of patches scrolls rather than being clipped.
 		super(true);
@@ -166,6 +168,7 @@ public class DoogleMapsPanel extends PluginPanel
 		this.bankContents = bankContents;
 		this.carriedItems = carriedItems;
 		this.itemNames = itemNames;
+		this.contracts = contracts;
 		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems, runPlanner, loadout, availability, selection, seeds, runTypes,
 			bonuses, compost, config);
 		this.statsPanel = new HarvestStatsPanel(harvestStats);
@@ -442,18 +445,32 @@ public class DoogleMapsPanel extends PluginPanel
 
 		MaterialTab first = null;
 
+		// One tab per group rather than per type. Ordinarily that is the same thing; a split type
+		// gets two, with the protected patches first because that is the shorter list and the more
+		// consequential choice.
+		//
+		// The contract is lifted out of its type's position to the very front of the strip. It is
+		// not a patch type — it is a job that moves from cactus to bushes to herbs as it is
+		// reassigned — so leaving it filed under whichever type it currently wants would have the
+		// tab appearing in a different place each week. Pinned first it is always where you left
+		// it, and first rather than last because it is the highest-value thing in a run.
+		List<PlantingGroup> ordered = new ArrayList<>();
+		List<PlantingGroup> contracts = new ArrayList<>();
 		for (PatchImplementation type : PatchTabs.enabled(config))
 		{
-			// One tab per group rather than per type. Ordinarily that is the same thing; a split
-			// type gets two, with the protected patches first because that is the shorter list
-			// and the more consequential choice.
 			for (PlantingGroup group : groups.groupsFor(type))
 			{
-				MaterialTab tab = buildTabFor(group);
-				if (first == null)
-				{
-					first = tab;
-				}
+				(group.isContract() ? contracts : ordered).add(group);
+			}
+		}
+		ordered.addAll(0, contracts);
+
+		for (PlantingGroup group : ordered)
+		{
+			MaterialTab tab = buildTabFor(group);
+			if (first == null)
+			{
+				first = tab;
 			}
 		}
 
@@ -475,7 +492,8 @@ public class DoogleMapsPanel extends PluginPanel
 		PatchImplementation type = group.getType();
 		PatchTypePanel panel = new PatchTypePanel(
 			layout, groups, group, stateStore, availability, growthTimer, itemManager, config,
-			resolver, seeds, selection, bonuses, compost, protection, bankContents, carriedItems, itemNames);
+			resolver, seeds, selection, bonuses, compost, protection, bankContents, carriedItems,
+			itemNames, contracts);
 		tabPanels.put(group.getKey(), panel);
 
 		MaterialTab tab = new MaterialTab(new ImageIcon(), tabGroup, panel);
@@ -489,16 +507,71 @@ public class DoogleMapsPanel extends PluginPanel
 			refreshSelected();
 			return true;
 		});
-		// MaterialTab is a JLabel, so the sprite can fill itself in once it loads.
-		Icons.setScaled(tab, type.getItemID(), itemManager.getImage(type.getItemID()), TAB_ICON_SIZE,
-			group.isProtectedOnly());
+		// Guildmaster Jane's face for the contract, and a crop sprite for everything else.
+		//
+		// She is the right icon precisely because the contract has no stable crop: a tab that
+		// showed a cactus this week and a bush the next would look like the patch-type tabs it
+		// sits beside while behaving nothing like them. The job is hers, and her face does not
+		// move. It also settles the badging problem outright — a face among crop sprites needs no
+		// mark in the corner to be told apart.
+		if (group.isContract())
+		{
+			javax.swing.ImageIcon face = FarmerIcon.of(
+				com.dooglemaps.state.ContractState.GUILDMASTER_JANE, TAB_ICON_SIZE);
+			if (face != null)
+			{
+				tab.setIcon(face);
+			}
+			else
+			{
+				// Her portrait is bundled, so this should not happen — but a missing resource must
+				// not cost the tab its icon entirely, and the diamond badge still says "contract".
+				Icons.setScaled(tab, type.getItemID(), itemManager.getImage(type.getItemID()),
+					TAB_ICON_SIZE, badgeFor(group));
+			}
+		}
+		else
+		{
+			// MaterialTab is a JLabel, so the sprite can fill itself in once it loads.
+			Icons.setScaled(tab, type.getItemID(), itemManager.getImage(type.getItemID()),
+				TAB_ICON_SIZE, badgeFor(group));
+		}
 		// The tooltip is the only thing telling the two herb tabs apart — they necessarily share
 		// an icon, since the game has one herb-patch sprite and inventing a second would be
 		// making up iconography for a distinction the game does not draw.
-		tab.setToolTipText(group.getDisplayName());
+		tab.setToolTipText(tooltipFor(group));
 		tab.setPreferredSize(new Dimension(TAB_ICON_SIZE + 6, TAB_ICON_SIZE + 6));
 		tabGroup.addTab(tab);
 		return tab;
+	}
+
+	/** Which mark, if any, tells this tab apart from its type's other tabs. */
+	private static Icons.Badge badgeFor(PlantingGroup group)
+	{
+		if (group.isContract())
+		{
+			return Icons.Badge.CONTRACT;
+		}
+		return group.isProtectedOnly() ? Icons.Badge.PROTECTED : Icons.Badge.NONE;
+	}
+
+	/**
+	 * What hovering the tab says.
+	 *
+	 * <p>The contract tab names the crop as well as the group, because unlike every other tab it
+	 * is <i>about</i> one specific crop and that is the thing worth knowing at a glance — "Herb
+	 * (contract)" tells you a contract exists but not whether you have the seed for it.
+	 */
+	private String tooltipFor(PlantingGroup group)
+	{
+		if (!group.isContract())
+		{
+			return group.getDisplayName();
+		}
+		com.dooglemaps.data.Produce crop = contracts.getContract();
+		return crop == null
+			? group.getDisplayName()
+			: group.getDisplayName() + " - " + crop.getName();
 	}
 
 	/**

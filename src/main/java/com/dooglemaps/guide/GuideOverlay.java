@@ -111,7 +111,15 @@ public class GuideOverlay extends Overlay
 		{
 			highlightPatch(graphics, step.getPatch(), colour);
 		}
-		if (step.hasNpc() || step.isAtLeprechaun())
+		if (step.hasNpc())
+		{
+			// By id when the step names one. This used to fall through to the leprechaun search
+			// for every step with an NPC on it, which meant paying a farmer outlined the
+			// leprechaun instead — and Guildmaster Jane, who is nowhere near one, would have been
+			// outlined as nobody at all.
+			highlightNpcById(graphics, colour, step.getNpcId());
+		}
+		else if (step.isAtLeprechaun())
 		{
 			highlightLeprechaun(graphics, colour);
 		}
@@ -399,6 +407,28 @@ public class GuideOverlay extends Overlay
 		}
 	}
 
+	/**
+	 * Outlines a specific NPC, for the steps that name one.
+	 *
+	 * <p>By id rather than by name, which is the opposite of what the leprechaun search below
+	 * does — and right for the opposite reason. There are eight leprechauns answering to one name,
+	 * so a name match is what keeps that stable; a farmer and Guildmaster Jane are single, named
+	 * individuals whose ids come straight out of the same generated data the patches do.
+	 */
+	private void highlightNpcById(Graphics2D graphics, Color colour, int npcId)
+	{
+		for (NPC npc : client.getTopLevelWorldView().npcs())
+		{
+			if (npc == null || npc.getId() != npcId)
+			{
+				continue;
+			}
+
+			outlineNpc(graphics, colour, npc);
+			return;
+		}
+	}
+
 	/** Outlines the nearest tool leprechaun, for the noting and withdrawing steps. */
 	private void highlightLeprechaun(Graphics2D graphics, Color colour)
 	{
@@ -415,21 +445,26 @@ public class GuideOverlay extends Overlay
 				continue;
 			}
 
-			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
-			{
-				outlineRenderer.drawOutline(npc, config.guideOutlineThickness(), colour,
-					config.guideOutlineFeathering());
-			}
-			else
-			{
-				Shape hull = npc.getConvexHull();
-				if (hull != null)
-				{
-					OverlayUtil.renderPolygon(graphics, hull, colour,
-						ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
-				}
-			}
+			outlineNpc(graphics, colour, npc);
 			return;
+		}
+	}
+
+	/** Draws one NPC in whichever style the player chose. */
+	private void outlineNpc(Graphics2D graphics, Color colour, NPC npc)
+	{
+		if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+		{
+			outlineRenderer.drawOutline(npc, config.guideOutlineThickness(), colour,
+				config.guideOutlineFeathering());
+			return;
+		}
+
+		Shape hull = npc.getConvexHull();
+		if (hull != null)
+		{
+			OverlayUtil.renderPolygon(graphics, hull, colour,
+				ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
 		}
 	}
 

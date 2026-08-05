@@ -150,6 +150,28 @@ public interface DoogleMapsConfig extends Config
 		return true;
 	}
 
+	/**
+	 * Farming contracts, which are a suggestion rather than a rule.
+	 *
+	 * <p>On by default, because the reward is the highest-value thing in a run and the failure it
+	 * prevents is expensive — planting something else in the one patch the contract needs costs a
+	 * full growth cycle. Off is still a real answer: somebody may simply not want to do them, and
+	 * the plugin should not insist.
+	 */
+	@ConfigItem(
+		keyName = "guideFarmingContracts",
+		name = "Include the farming contract",
+		description = "Plant Guildmaster Jane's contract first at the Farming Guild, and offer to "
+			+ "hand a finished one in and take the next before you leave. Turning this off leaves "
+			+ "the guild's patches to the ordinary run.",
+		position = 1,
+		section = guideSection
+	)
+	default boolean guideFarmingContracts()
+	{
+		return true;
+	}
+
 	@ConfigItem(
 		keyName = "highlightBankItems",
 		name = "Highlight run items in the bank",

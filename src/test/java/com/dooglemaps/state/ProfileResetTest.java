@@ -96,7 +96,8 @@ public class ProfileResetTest
 		availability = construct(AvailabilityProfile.class, configManager, gson, patches);
 		seeds = construct(SeedInventoryStore.class,
 			Mockito.mock(net.runelite.api.Client.class), configManager, gson);
-		selection = construct(SeedSelectionStore.class, configManager, gson);
+		selection = construct(SeedSelectionStore.class, configManager, gson,
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 		bonuses = construct(FarmingBonusStore.class, configManager, patches,
 			Mockito.mock(net.runelite.client.game.ItemManager.class),
 			Mockito.mock(net.runelite.api.Client.class));

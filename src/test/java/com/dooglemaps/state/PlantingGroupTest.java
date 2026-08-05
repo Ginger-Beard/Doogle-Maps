@@ -39,7 +39,8 @@ public class PlantingGroupTest
 			.when(configManager)
 			.setRSProfileConfiguration(anyString(), anyString(), Mockito.<Object>any());
 
-		seeds = construct(SeedSelectionStore.class, configManager, new Gson());
+		seeds = construct(SeedSelectionStore.class, configManager, new Gson(),
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 		seeds.load();
 	}
 
@@ -109,8 +110,10 @@ public class PlantingGroupTest
 		PlantingGroup safe = PlantingGroup.protectedOnly(PatchImplementation.HERB);
 		seeds.toggle(safe, Seed.SNAPDRAGON);
 
+		net.runelite.client.config.ConfigManager reloadedConfig = mockConfig();
 		SeedSelectionStore reloaded = construct(SeedSelectionStore.class,
-			mockConfig(), new Gson());
+			reloadedConfig, new Gson(),
+			construct(com.dooglemaps.state.ContractState.class, reloadedConfig));
 		reloaded.load();
 
 		assertTrue(reloaded.getSelectedFor(safe).contains(Seed.SNAPDRAGON));

@@ -65,6 +65,14 @@ public class RunOption
 	 */
 	public String getLabel()
 	{
+		// The contract does not name its patch type, because the type is not the decision. Every
+		// other line asks "do you want to do your herbs" and this one asks "do you want to do the
+		// contract" — which happens to be cactus this week and bushes the next, and reading
+		// "Cactus (contract)" invites the answer "no, I am not doing cactus today".
+		if (group.isContract())
+		{
+			return "Farming Contract";
+		}
 		return harvestOnly ? group.getDisplayName() + " (H/O)" : group.getDisplayName();
 	}
 

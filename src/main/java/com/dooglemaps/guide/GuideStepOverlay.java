@@ -112,6 +112,8 @@ public class GuideStepOverlay extends OverlayPanel
 			appendSteps(status.getSteps());
 		}
 
+		appendContractNote(status);
+
 		sizeToContent(graphics);
 		return super.render(graphics);
 	}
@@ -162,6 +164,58 @@ public class GuideStepOverlay extends OverlayPanel
 			.left(text)
 			.leftColor(colour)
 			.build());
+	}
+
+	/**
+	 * The one thing this panel says that is not an instruction.
+	 *
+	 * <p>A contract the trip cannot plant has nothing to click, so it is deliberately not a step —
+	 * a step nobody can perform would leave the stop reading as unfinished for the rest of the run.
+	 * Grey, and last, so it reads as a footnote rather than as the next thing to do.
+	 *
+	 * <p>Wrapped by hand because {@code LineComponent} does not wrap, and this is a sentence rather
+	 * than the short phrases every other line here is.
+	 */
+	private void appendContractNote(GuideStatus status)
+	{
+		String note = status.getContractNote();
+		if (note == null)
+		{
+			return;
+		}
+
+		for (String wrapped : wrap(note, NOTE_WRAP))
+		{
+			line(wrapped, java.awt.Color.GRAY);
+		}
+	}
+
+	/** Characters per line for the contract note, chosen to sit inside {@link #MAX_WIDTH}. */
+	private static final int NOTE_WRAP = 44;
+
+	/** Greedy word wrap. Enough for one sentence; nothing here warrants a text engine. */
+	private static java.util.List<String> wrap(String text, int width)
+	{
+		java.util.List<String> lines = new java.util.ArrayList<>();
+		StringBuilder current = new StringBuilder();
+		for (String word : text.split(" "))
+		{
+			if (current.length() > 0 && current.length() + 1 + word.length() > width)
+			{
+				lines.add(current.toString());
+				current.setLength(0);
+			}
+			if (current.length() > 0)
+			{
+				current.append(' ');
+			}
+			current.append(word);
+		}
+		if (current.length() > 0)
+		{
+			lines.add(current.toString());
+		}
+		return lines;
 	}
 
 	/** The instruction for the patch in front of you, and what else is left here. */

@@ -352,6 +352,51 @@ public class PersistenceTest
 	}
 
 	/**
+	 * A reload must not throw away the inventory, because nothing puts it back.
+	 *
+	 * <p>Reported from play: ranarr seeds sitting in the pack were missing from the seed list, and
+	 * banking them and taking them out again fixed it. That is the signature of this exact bug —
+	 * the fix was a container event, and standing still never produces one.
+	 *
+	 * <p>The inventory is deliberately not persisted, on the sound reasoning that the client sends
+	 * it again on login. But {@code load} cleared every source and restored only what config held,
+	 * so a load landing <i>after</i> the login container event wiped the inventory with nothing to
+	 * replace it. Whether it landed before or after is a race — {@code ProfileChanged} fires when
+	 * the RuneScape profile resolves — which is why the bug came and went.
+	 */
+	@Test
+	public void reloadingKeepsAnInventoryConfigCannotRestore() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class, client, configManager, gson);
+		seeds.load();
+
+		// The client sends the inventory on login, before the profile has finished resolving.
+		net.runelite.api.ItemContainer inventory = Mockito.mock(net.runelite.api.ItemContainer.class);
+		when(inventory.getItems()).thenReturn(new net.runelite.api.Item[]{
+			new net.runelite.api.Item(com.dooglemaps.data.Seed.RANARR.getItemID(), 3),
+		});
+		assertTrue(seeds.record(SeedSource.INVENTORY.getContainerId(), inventory));
+
+		// A bank the player did open, so the persisted half has something to prove too.
+		net.runelite.api.ItemContainer bank = Mockito.mock(net.runelite.api.ItemContainer.class);
+		when(bank.getItems()).thenReturn(new net.runelite.api.Item[]{
+			new net.runelite.api.Item(com.dooglemaps.data.Seed.SNAPDRAGON.getItemID(), 7),
+		});
+		assertTrue(seeds.record(SeedSource.BANK.getContainerId(), bank));
+
+		// ProfileChanged lands, and the plugin reloads.
+		seeds.load();
+
+		assertEquals("the seeds in your pack are still in your pack",
+			3, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.INVENTORY));
+		assertEquals("and the seed list still shows them",
+			3, seeds.getOwned(com.dooglemaps.data.Seed.RANARR));
+		assertEquals("without disturbing what config does answer for",
+			7, seeds.getCount(com.dooglemaps.data.Seed.SNAPDRAGON, SeedSource.BANK));
+	}
+
+	/**
 	 * A full seed box round trip has to conserve seeds.
 	 *
 	 * <p>Both halves were reported broken, in opposite directions: filling the box made the

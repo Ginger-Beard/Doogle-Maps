@@ -55,7 +55,18 @@ public class GuideStep
 	{
 		// Paying happens at the farmer standing beside the patch, so lighting the patch as well
 		// would be two targets for one click. The farmer is named on the step itself.
-		return !isAtLeprechaun() && action != GuideAction.PAY_FARMER;
+		//
+		// The contract steps carry a patch only because every step does — it is what places them
+		// at the right stop. The click is on Guildmaster Jane, who stands nowhere near the patch,
+		// so lighting it would point at the wrong side of the guild.
+		return !isAtLeprechaun() && !isAtGuildmaster() && action != GuideAction.PAY_FARMER;
+	}
+
+	/** Whether this step happens in front of Guildmaster Jane rather than at a patch. */
+	public boolean isAtGuildmaster()
+	{
+		return action == GuideAction.HAND_IN_CONTRACT
+			|| action == GuideAction.TAKE_CONTRACT;
 	}
 
 	/**

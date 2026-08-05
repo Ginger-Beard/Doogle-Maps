@@ -188,7 +188,8 @@ public class RunChoicesTest
 
 	private SeedSelectionStore newSeeds()
 	{
-		return construct(SeedSelectionStore.class, configManager, gson);
+		return construct(SeedSelectionStore.class, configManager, gson,
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 	}
 
 	private RunTypeStore newTypes()

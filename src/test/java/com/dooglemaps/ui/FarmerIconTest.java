@@ -88,13 +88,39 @@ public class FarmerIconTest
 	@Test
 	public void aPortraitActuallyHasSomethingInIt()
 	{
-		ImageIcon elstan = FarmerIcon.of(NpcID.ELSTAN, 18);
-		assertNotNull("Elstan tends the Falador allotments and should have a face", elstan);
-		assertEquals(18, elstan.getIconWidth());
-		assertEquals(18, elstan.getIconHeight());
+		assertHasInk("Elstan", NpcID.ELSTAN);
+	}
+
+	/**
+	 * Guildmaster Jane, whose portrait is the farming contract's whole tab icon.
+	 *
+	 * <p>Held to the same check as a gardener's for a stronger reason. A gardener's face is a badge
+	 * on a row that says plenty without it; hers <b>is</b> the tab, so a blank would leave the
+	 * contract as an unlabelled gap in the strip with no way to tell what it was.
+	 *
+	 * <p>All three of her ids, because she is three NpcID constants for one person and which one
+	 * the game reports is not something the build can find out — the sprite is bundled under each
+	 * so the lookup works whichever turns up. A test naming only one would pass while the tab it
+	 * covers stayed empty.
+	 */
+	@Test
+	public void guildmasterJaneHasAFaceUnderEveryIdSheAnswersTo()
+	{
+		assertHasInk("Guildmaster Jane", NpcID.FARMING_GUILD_MASTER);
+		assertHasInk("Guildmaster Jane", NpcID.FARMING_GUILD_MASTER_1OP);
+		assertHasInk("Guildmaster Jane", NpcID.FARMING_GUILD_MASTER_2OP);
+	}
+
+	/** Asserts this NPC's portrait exists at badge size and actually draws something. */
+	private static void assertHasInk(String who, int npcId)
+	{
+		ImageIcon icon = FarmerIcon.of(npcId, 18);
+		assertNotNull(who + " should have a face", icon);
+		assertEquals(18, icon.getIconWidth());
+		assertEquals(18, icon.getIconHeight());
 
 		BufferedImage image = new BufferedImage(18, 18, BufferedImage.TYPE_INT_ARGB);
-		image.getGraphics().drawImage(elstan.getImage(), 0, 0, null);
+		image.getGraphics().drawImage(icon.getImage(), 0, 0, null);
 
 		int opaque = 0;
 		for (int x = 0; x < 18; x++)
@@ -107,7 +133,7 @@ public class FarmerIconTest
 				}
 			}
 		}
-		assertTrue("a face should cover a good part of its badge, got " + opaque + " pixels",
+		assertTrue(who + "'s face should cover a good part of its badge, got " + opaque + " pixels",
 			opaque > 40);
 	}
 

@@ -522,7 +522,8 @@ public class ProtectedTabTest
 				Mockito.mock(net.runelite.api.Client.class), configManager, gson);
 			PlantableResolver resolver = construct(PlantableResolver.class, seeds);
 			com.dooglemaps.state.SeedSelectionStore selection =
-				construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson);
+				construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson,
+					construct(com.dooglemaps.state.ContractState.class, configManager));
 
 			// Every patch-type toggle on, as the interface's own defaults would have it; a plain
 			// mock answers false and would render a sidebar with no tabs at all.
@@ -545,7 +546,8 @@ public class ProtectedTabTest
 			when(config.separateProtectedHerbs()).thenReturn(separateProtectedHerbs);
 
 			ProtectedPatches protectedPatches = construct(ProtectedPatches.class, configManager);
-			groups = construct(PlantingGroups.class, config, protectedPatches, availability);
+			groups = construct(PlantingGroups.class, config, protectedPatches, availability,
+				construct(com.dooglemaps.state.ContractState.class, configManager));
 
 			com.dooglemaps.route.RunPlanner runPlanner = construct(
 				com.dooglemaps.route.RunPlanner.class, availability,
@@ -575,7 +577,8 @@ public class ProtectedTabTest
 				construct(com.dooglemaps.state.ProtectionSelectionStore.class, configManager, gson),
 				construct(com.dooglemaps.bank.BankContents.class),
 				construct(com.dooglemaps.guide.CarriedItems.class),
-				construct(com.dooglemaps.data.ItemNames.class));
+				construct(com.dooglemaps.data.ItemNames.class),
+				construct(com.dooglemaps.state.ContractState.class, configManager));
 
 			panel.refresh();
 			SwingUtilities.invokeAndWait(() ->

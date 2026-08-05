@@ -64,6 +64,26 @@ def api(**params):
     return json.loads(get(API + "?" + urllib.parse.urlencode(params)))
 
 
+# Faces this plugin shows that are not any patch's farmer, so FarmingWorldData does not
+# name them. Guildmaster Jane assigns the farming contract and takes it back, and the
+# contract's tab is hers rather than a patch sprite — there is one contract, it is a job she
+# gave you, and every other tab in the strip is already a crop icon.
+#
+# Grouped, because she is three NpcID constants for one person and the wiki only knows two
+# of them: its infobox declares 8586 and 8587, while the id RuneLite matches her dialogue
+# chathead on is 8628. Verifying against *any* id in a group is what lets the page be found
+# at all, and writing the sprite under *every* id is what makes the lookup work whichever one
+# the game happens to report — which is not a thing this tool can find out, and not a thing
+# worth an aliasing table at runtime for three copies of a four-kilobyte PNG.
+#
+# Listed here rather than fetched by hand so she is still resolved, named and recorded in
+# chatheads.tsv by the same path as the gardeners: a wiki lookup by id, which fails loudly if
+# she ever moves rather than leaving a silently wrong face bundled.
+EXTRA_NPC_GROUPS = [
+    ("FARMING_GUILD_MASTER", "FARMING_GUILD_MASTER_1OP", "FARMING_GUILD_MASTER_2OP"),
+]
+
+
 def farmer_constants():
     """Every NpcID constant FarmingWorldData uses as a patch's farmer."""
     with open(WORLD_DATA, encoding="utf-8") as handle:
@@ -278,9 +298,35 @@ def main():
         print("%-40s %6d  %-28s %s"
               % (constant, npc_id, title, chathead or "(no chathead)"))
 
+    for group in EXTRA_NPC_GROUPS:
+        known = [(c, values[c]) for c in group if c in values]
+        if not known:
+            missing.append((group[0], "no such NpcID constant"))
+            continue
+
+        # Any id in the group will do to find the page — they are one NPC, and only some of
+        # their ids are ones the wiki bothers to list.
+        title = chathead = None
+        for constant, npc_id in known:
+            title, chathead = find_page(npc_id)
+            if title:
+                break
+
+        if not title:
+            missing.append((group[0], "no wiki page declaring any of %s"
+                            % ", ".join(str(i) for _, i in known)))
+            continue
+
+        for constant, npc_id in known:
+            farmers.append({"constant": constant, "id": npc_id, "name": title,
+                            "file": chathead})
+            print("%-40s %6d  %-28s %s"
+                  % (constant, npc_id, title, chathead or "(no chathead)"))
+
     with_art = [f for f in farmers if f["file"]]
     print("\nnamed %d of %d, %d with a chathead"
-          % (len(farmers), len(constants), len(with_art)))
+          % (len(farmers), len(constants) + sum(len(g) for g in EXTRA_NPC_GROUPS),
+             len(with_art)))
     for constant, why in missing:
         print("  MISSING %-38s %s" % (constant, why))
 

@@ -115,7 +115,8 @@ public class RunPlannerTest
 		locations.load();
 		banks.load();
 
-		selection = construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson);
+		selection = construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson,
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 		seedInventory = construct(com.dooglemaps.state.SeedInventoryStore.class,
 			Mockito.mock(net.runelite.api.Client.class), configManager, gson);
 		selection.load();

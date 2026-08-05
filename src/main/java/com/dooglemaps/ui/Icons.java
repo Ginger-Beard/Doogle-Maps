@@ -37,26 +37,45 @@ final class Icons
 	 */
 	static void setScaled(JLabel label, int itemId, AsyncBufferedImage image, int size)
 	{
-		setScaled(label, itemId, image, size, false);
+		setScaled(label, itemId, image, size, Badge.NONE);
 	}
 
 	/**
-	 * The item's sprite, optionally with a shield badged into its corner.
+	 * What, if anything, is marked into the corner of a tab icon.
 	 *
-	 * <p>The badge exists because the two herb tabs necessarily share an icon — the game has one
+	 * <p>Three states rather than a pair of booleans for the same reason {@code PlantingGroup}
+	 * carries a scope: a protected-and-contract icon would be a badge for a group that cannot
+	 * exist.
+	 */
+	enum Badge
+	{
+		NONE,
+		/** A group of disease-free patches. */
+		PROTECTED,
+		/** The Farming Guild patches an assigned contract has claimed. */
+		CONTRACT
+	}
+
+	/**
+	 * The item's sprite, optionally with a mark badged into its corner.
+	 *
+	 * <p>The badge exists because a type's tabs necessarily share an icon — the game has one
 	 * herb-patch sprite, and inventing a second would be making up iconography for a distinction
 	 * the game does not draw. That left the tooltip as the only way to tell them apart, which
 	 * means hovering every time.
 	 *
-	 * <p>A shield rather than any other mark because the panel already uses one for exactly this:
-	 * a protected patch's row carries a shield. Reusing it means the badge needs no explaining.
+	 * <p>A shield for protection because the panel already uses one for exactly this: a protected
+	 * patch's row carries a shield. Reusing it means the badge needs no explaining. A contract gets
+	 * a diamond instead, and deliberately not a shield in another colour — two shields differing
+	 * only in tint would read as two grades of the same idea, which is precisely what they are not.
+	 * The silhouettes have to differ, because at ten pixels the silhouette is all there is.
 	 */
 	static void setScaled(JLabel label, int itemId, AsyncBufferedImage image, int size,
-		boolean shielded)
+		Badge badge)
 	{
 		// The badge is part of the identity of the cached image, so it belongs in the key. Without
 		// it the first tab drawn would win and both herb tabs would show whatever it had.
-		long key = ((long) itemId << 32) | (size << 1) | (shielded ? 1 : 0);
+		long key = ((long) itemId << 32) | ((long) size << 2) | badge.ordinal();
 
 		ImageIcon cached = CACHE.get(key);
 		if (cached != null)
@@ -65,20 +84,20 @@ final class Icons
 			return;
 		}
 
-		label.setIcon(badge(scale(image, size), size, shielded));
+		label.setIcon(badge(scale(image, size), size, badge));
 		// The sprite arrives later, so only cache it once it is the real thing.
 		image.onLoaded(() -> SwingUtilities.invokeLater(() ->
 		{
-			ImageIcon icon = badge(scale(image, size), size, shielded);
+			ImageIcon icon = badge(scale(image, size), size, badge);
 			CACHE.put(key, icon);
 			label.setIcon(icon);
 		}));
 	}
 
-	/** Draws a small shield into the bottom-right of an icon. */
-	private static ImageIcon badge(ImageIcon icon, int size, boolean shielded)
+	/** Draws the group's mark into the bottom-right of an icon. */
+	private static ImageIcon badge(ImageIcon icon, int size, Badge badge)
 	{
-		if (!shielded || icon == null)
+		if (badge == Badge.NONE || icon == null)
 		{
 			return icon;
 		}
@@ -87,7 +106,9 @@ final class Icons
 		// down, small enough to leave the crop sprite recognisable — the tab still has to say
 		// "herb" first. Nine pixels was under the size the shape needs to read as anything.
 		int badgeSize = Math.max(10, size / 2);
-		BufferedImage shield = ShieldIcon.create(badgeSize, SHIELD);
+		BufferedImage mark = badge == Badge.CONTRACT
+			? ContractIcon.create(badgeSize, CONTRACT)
+			: ShieldIcon.create(badgeSize, SHIELD);
 
 		BufferedImage combined = new BufferedImage(
 			icon.getIconWidth(), icon.getIconHeight(), BufferedImage.TYPE_INT_ARGB);
@@ -96,7 +117,7 @@ final class Icons
 		{
 			g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
 			icon.paintIcon(null, g, 0, 0);
-			g.drawImage(shield, combined.getWidth() - badgeSize, combined.getHeight() - badgeSize,
+			g.drawImage(mark, combined.getWidth() - badgeSize, combined.getHeight() - badgeSize,
 				null);
 		}
 		finally
@@ -108,6 +129,9 @@ final class Icons
 
 	/** The same green the protected-patch rows use, so the two read as one idea. */
 	private static final Color SHIELD = new Color(0x4C, 0xAF, 0x50);
+
+	/** Amber, for the contract. Nothing else in the panel uses it, which is the point. */
+	private static final Color CONTRACT = new Color(0xE6, 0xA8, 0x17);
 
 	/**
 	 * Puts an item sprite on a label at its native size, greying correctly when disabled.

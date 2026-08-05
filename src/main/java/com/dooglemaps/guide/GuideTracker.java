@@ -16,6 +16,7 @@ import com.dooglemaps.data.ProtectionPayment;
 import java.util.Map;
 import com.dooglemaps.state.BarbarianFarming;
 import com.dooglemaps.state.CompostSelectionStore;
+import com.dooglemaps.state.ContractState;
 import com.dooglemaps.state.LeprechaunStore;
 import com.dooglemaps.state.PatchSnapshot;
 import com.dooglemaps.state.PatchStateStore;
@@ -72,14 +73,23 @@ public class GuideTracker
 	private final ProtectionSelectionStore protection;
 	private final com.dooglemaps.state.RunTypeStore runTypes;
 
+	/** The assigned farming contract, which orders the guild stop and closes its own loop. */
+	private final ContractState contracts;
+
+	/** For the contract toggle, which is a suggestion rather than a rule. */
+	private final com.dooglemaps.DoogleMapsConfig config;
+
 	@Inject
 	private GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
 		CompostSelectionStore compost, CarriedItems carried, PlayerLocation playerLocation,
 		LeprechaunStore leprechaun, BarbarianFarming barbarianFarming, BankContents bank,
 		PlayerHouse house, PlantingGroups groups, ProtectionSelectionStore protection,
-		com.dooglemaps.state.RunTypeStore runTypes, com.dooglemaps.bank.RunLoadout loadout)
+		com.dooglemaps.state.RunTypeStore runTypes, com.dooglemaps.bank.RunLoadout loadout,
+		ContractState contracts, com.dooglemaps.DoogleMapsConfig config)
 	{
+		this.contracts = contracts;
+		this.config = config;
 		this.loadout = loadout;
 		this.runTypes = runTypes;
 		this.protection = protection;
@@ -148,7 +158,8 @@ public class GuideTracker
 
 		status = new GuideStatus(steps, planner.isActive(), planner.isAtBankLeg(),
 			remaining.size(), new ArrayList<>(planner.getCurrentTransports()),
-			destination, hint, here == null ? null : here.getName(), supplyLines());
+			destination, hint, here == null ? null : here.getName(), supplyLines(),
+			planner.isActive() ? contractNote(here) : null);
 	}
 
 	/**
@@ -259,7 +270,157 @@ public class GuideTracker
 		}
 
 		appendLeprechaunErrands(steps, stop);
+		appendContractErrands(steps, stop);
 		return steps;
+	}
+
+	/**
+	 * Guildmaster Jane, at the end of the Farming Guild stop.
+	 *
+	 * <p>Planting the contract is the middle of the job; these are both ends of it. Handing a
+	 * finished one in is what turns a grown crop into seed packs and reputation, and taking the
+	 * next one <i>before leaving</i> is what makes it plantable on this trip rather than in three
+	 * days.
+	 *
+	 * <h2>Why last, and why that still allows the new one to be planted now</h2>
+	 *
+	 * Last, because a contract taken before the guild's patches are dealt with would have the run
+	 * asking you to plant something into ground still holding the old crop. But "last" is not
+	 * "after the stop is closed": nothing here is stored, so the moment the new contract lands in
+	 * config the patch it wants moves into the contract group, {@link #contractFirst} pulls it to
+	 * the front, and {@code GuidePlan} produces the plant step for it — all on the next tick, while
+	 * you are still standing in the guild. The loop the plan asked for costs no machinery at all,
+	 * because the whole guide is a function of the world rather than a position in a list.
+	 *
+	 * <p>Where that cannot happen — the patch is still occupied, or the run was never planned to
+	 * visit it — {@link #contractNote} says so rather than leaving you to notice.
+	 */
+	private void appendContractErrands(List<GuideStep> steps, RunStop stop)
+	{
+		if (!config.guideFarmingContracts()
+			|| stop.getRegion().getRegionId() != ContractState.FARMING_GUILD_REGION)
+		{
+			return;
+		}
+
+		FarmPatch anchor = stop.getPatches().get(0);
+
+		Produce handIn = contractToHandIn();
+		if (handIn != null)
+		{
+			steps.add(GuideStep.atNpc(GuideAction.HAND_IN_CONTRACT, anchor, handIn.getItemID(),
+				ContractState.GUILDMASTER_JANE,
+				"Hand your " + handIn.getName().toLowerCase()
+					+ " to Guildmaster Jane for the contract reward."));
+			return;
+		}
+
+		// Only once there is nothing outstanding. Asking for a new contract while one is still
+		// growing is not something Jane will do, and offering it would be the guide inventing an
+		// interaction the game does not have.
+		if (!contracts.hasContract())
+		{
+			steps.add(GuideStep.atNpc(GuideAction.TAKE_CONTRACT, anchor, -1,
+				ContractState.GUILDMASTER_JANE,
+				"Ask Guildmaster Jane for a new farming contract before you leave."));
+		}
+	}
+
+	/**
+	 * The crop that is grown and unclaimed, or null.
+	 *
+	 * <p>Two sources, because the two failure modes are complementary and neither covers the other.
+	 *
+	 * <ul>
+	 *   <li><b>What we captured.</b> The game's completion message is the only notice sent, and
+	 *       Time Tracking wipes its own config key on the same message — so for a contract that
+	 *       ripened while you were logged in, our capture is the <i>only</i> record that it did.
+	 *   <li><b>What the patch shows.</b> A crop that finished growing while you were logged out
+	 *       sent no message, so nothing captured it — but nothing cleared Time Tracking's key
+	 *       either, and the patch itself is standing there fully grown.
+	 * </ul>
+	 */
+	@Nullable
+	private Produce contractToHandIn()
+	{
+		Produce captured = contracts.getAwaitingHandIn();
+		if (captured != null)
+		{
+			return captured;
+		}
+
+		Produce assigned = contracts.getContract();
+		return assigned != null && isGrownInGuild(assigned) ? assigned : null;
+	}
+
+	/**
+	 * Whether a guild patch is standing there holding the finished contract crop.
+	 *
+	 * <p>{@code isReady} is the same test RuneLite's own contract tracker applies — fully grown, or
+	 * past its done estimate — rather than "has been harvested". A contract completes on the crop
+	 * finishing; picking it is a separate job the rest of the guide already handles.
+	 *
+	 * <p>Deliberately requires the produce to <i>match</i>. A dead herb reads as {@code ANYHERB}
+	 * and a patch someone planted something else in is not a completed contract, so anything but an
+	 * exact match is no answer at all.
+	 */
+	private boolean isGrownInGuild(Produce contract)
+	{
+		for (FarmPatch patch : groups.patchesIn(
+			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
+		{
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null && projection.getProduce() == contract && projection.isReady())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * What to say about a contract the run cannot deal with here, or null when there is nothing.
+	 *
+	 * <p>Shown rather than a step, because there is nothing to click. A contract whose patch is
+	 * still occupied, or which the run was never planned to visit, is genuinely work for next time
+	 * — and the honest thing is to say so, because from the player's side "the guide went quiet"
+	 * and "there is nothing to do" look identical.
+	 */
+	@Nullable
+	private String contractNote(@Nullable RunStop here)
+	{
+		if (!config.guideFarmingContracts() || here == null
+			|| here.getRegion().getRegionId() != ContractState.FARMING_GUILD_REGION)
+		{
+			return null;
+		}
+
+		Produce contract = contracts.getContract();
+		if (contract == null || contractToHandIn() != null)
+		{
+			return null;
+		}
+
+		for (FarmPatch patch : groups.patchesIn(
+			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
+		{
+			if (here.getPatches().contains(patch) && !here.getServiced().contains(patch.getKey()))
+			{
+				// This trip can still deal with it, so the steps will say so themselves.
+				return null;
+			}
+
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null && projection.getProduce() == contract)
+			{
+				// Already in the ground and growing. Nothing to do, and nothing to warn about.
+				return null;
+			}
+		}
+
+		return "Your " + contract.getName().toLowerCase()
+			+ " contract cannot be planted on this run - the patch it wants is not free. "
+			+ "It will be picked up on the next run that can reach it.";
 	}
 
 	/**
@@ -793,7 +954,43 @@ public class GuideTracker
 		List<FarmPatch> ordered = new ArrayList<>(stop.getPatches());
 		ordered.removeIf(patch -> stop.getServiced().contains(patch.getKey()));
 		ordered.sort((a, b) -> Integer.compare(distance(player, a), distance(player, b)));
+		contractFirst(ordered);
 		return ordered;
+	}
+
+	/**
+	 * Moves the patch an assigned contract has claimed to the front, whatever the distance says.
+	 *
+	 * <p>This is the one place in the run where order is load-bearing rather than convenient. A
+	 * contract wants a specific patch type and the guild has exactly one of most of them, so any
+	 * ordinary planting done first takes the only patch available — and the contract then waits a
+	 * full growth cycle for a mistake that cost nothing to avoid.
+	 *
+	 * <p>Applied after the distance sort rather than instead of it, so everything else at the stop
+	 * keeps the nearest-first order it had, and two contract patches — the guild's two allotments
+	 * are the only case — stay in distance order relative to each other.
+	 */
+	private void contractFirst(List<FarmPatch> ordered)
+	{
+		if (!config.guideFarmingContracts() || !contracts.hasContract())
+		{
+			return;
+		}
+
+		List<FarmPatch> claimed = new ArrayList<>();
+		for (FarmPatch patch : ordered)
+		{
+			if (contracts.claims(patch))
+			{
+				claimed.add(patch);
+			}
+		}
+
+		if (!claimed.isEmpty())
+		{
+			ordered.removeAll(claimed);
+			ordered.addAll(0, claimed);
+		}
 	}
 
 	/**

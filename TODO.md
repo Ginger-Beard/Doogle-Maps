@@ -27,6 +27,11 @@ each so a wrong result points somewhere.
 - **The herb sack chat wording.** `HarvestLog` logs any sack/basket/box message during a
   harvest. Paste it and the experience-based estimate becomes an exact count.
 - **A `jstack` if the freeze recurs** — see the deadlock section below.
+- **Farming contracts**, whole. The contract tab and its single derived seed, the guild patch
+  moving out of the herb group, the contract being planted first, and the hand-in / take-a-new
+  steps at Guildmaster Jane. The three dialogue lines and the completion message are matched from
+  the client sources rather than from play, so a single wording difference makes the whole capture
+  silent — and silent looks exactly like "no contract". See the section below and `TESTING.md`.
 
 ## Actionable without the client
 
@@ -360,187 +365,116 @@ type generically once the data exists, as adding the hardwoods showed.
 layout question rather than a reason not to do it, but it wants an answer before the change lands
 rather than after.
 
-## Farmer contracts in guided runs
+## Farmer contracts in guided runs — built, unverified in the client
 
 Guildmaster Jane's contract asks for one crop, and the reward — seed packs, and the Farming Guild
 reputation that unlocks the tiers — makes it the single highest-value thing in a run. The plugin
-does not know contracts exist, which means two failures at once: it never tells you to plant one,
-and it will happily fill the very patch the contract needs with something else.
+now knows about it, which closes both of the failures this started as: it never told you to plant
+one, and it would happily fill the very patch the contract needed with something else.
 
-**The contract is planted first, and it is what the Farming Guild stop opens with.** Not merely
-included — ordered. A contract wants a specific patch type, and the guild has exactly one of most
-of them, so any ordinary planting done first takes the only patch available and the contract waits
-a full growth cycle for a mistake that cost nothing to avoid. This is the one place in the run
-where order is load-bearing rather than convenient.
+### What the client sources settled, and what they overturned
 
-### Reading it needs no dependency, which is the good news
+Both questions this was blocked on are answered from `FarmingContractManager` and
+`TimeTrackingPlugin` at 1.12.35. One came out as hoped; the other did not, and it is the reason
+this is more machinery than the plan called for.
 
-RuneLite's Time Tracking plugin already tracks this — `FarmingContractManager` watches for
-Guildmaster Jane's dialogue and stores the result. **It stores it in ordinary config**, which
-means it can simply be read:
+- **What completes a contract.** Nothing is written to config but the crop's item id, so it has to
+  be derived — and `handleContractState` shows exactly how core derives it: a guild patch of the
+  contract's implementation, growing the contract produce, past its done estimate. That is
+  `PatchProjection.isReady()`, which we already had. Health-check types are special-cased there
+  and dead herbs read as `ANYHERB`, both of which the derivation here allows for.
+- **Whether the config key clears on hand-in — and this is the one that overturned the plan.**
+  It clears *earlier* than that. `TimeTrackingPlugin.onChatMessage` calls `setContract(null)` on
+  **"You've completed a Farming Guild Contract. You should return to Guildmaster Jane."**, which
+  the game sends when the crop finishes **growing**. So an absent key means either "nothing
+  assigned" or "your reward is sitting unclaimed" — and the second is precisely the state the
+  guide most needs to speak up in. The two-state machine the plan assumed does not exist.
 
-```
-configManager.getRSProfileConfiguration("timetracking", "contract")  ->  item id, as a string
-```
+**So the fallback capture was built after all**, though narrowed to what the config genuinely
+cannot say. `ContractCapture` watches the same three lines Time Tracking does and writes them
+under this plugin's own keys; `ContractState` then consults the two sources by what each actually
+knows — Time Tracking's key first for *which crop is assigned*, ours alone for *whether it is grown
+and unclaimed*. The two failure modes turn out to be complementary, which is why both are kept: a
+contract that ripens while you are logged in wipes their key and only our capture sees it, and one
+that ripens while you are logged out sends no message at all but leaves their key intact for the
+patch-state derivation to work from.
 
-That is the whole integration. No injection, no `PluginManager` lookup, and specifically none of
-the injector trouble the bank filter ran into — `FarmingContractManager` lives inside the Time
-Tracking plugin's own injector and must not be asked for directly. A config read is a config read.
+### What is built
 
-The item id maps to the crop. `Produce` has an `itemID` field but no lookup by it, so that wants
-adding — a small static map, same shape as the other lookups on that class.
+- **The contract is its own planting group, and the patch moves.** `PlantingGroup` carries a
+  `Scope` enum — `ALL`, `PROTECTED`, `CONTRACT` — rather than the second boolean, which would have
+  allowed a protected-and-contract group that means nothing. While a contract is assigned, the
+  guild patches of its type leave their ordinary group and join `HERB#contract` (or
+  `BUSH#contract`, and so on). The tab, the run line and the reservation all fall out of machinery
+  that already existed: **the estimate cannot promise a snapdragon in a patch that is spoken for,
+  because the ordinary group has stopped counting it.** No reservation logic anywhere.
+- **The seed is derived, not stored.** `SeedSelectionStore.getSelectedFor` answers a contract group
+  with the one crop asked for, and `toggle` refuses it. Nothing the player never chose is
+  persisted, and it cannot go stale when the contract changes.
+- **Compost and protection keep their dropdowns**, remembered per assigned patch type, and a
+  brand-new `HERB#contract` inherits whatever herbs are treated with rather than starting at NONE.
+  The type-wide write-through is suppressed for a contract, the same as for a protected split.
+- **The contract patch is serviced first at the guild**, whatever the distance sort says. This is
+  the one place in a run where order is load-bearing.
+- **The guide closes the loop**: `HAND_IN_CONTRACT` and `TAKE_CONTRACT`, both at Guildmaster Jane
+  (NPC 8628, region 4922), appended at the end of the guild stop.
+- **It is pinned, and named for the job rather than the crop.** The tab sits first in the strip and
+  the run line last in its list, because the contract is not a patch type — it moves from cactus to
+  bushes as it is reassigned, and filing it under whichever type it currently wants had the tab and
+  the line jumping around each week. The run line reads **Farming Contract**: "Cactus (contract)"
+  invites the answer "no, I am not doing cactus today", when the decision is whether to do the
+  contract at all. Last also fixes an alignment bug — inline, it landed between `Cactus` and
+  `Cactus (H/O)` and split the pair the two-column layout works to keep side by side.
+- **The tab icon is Guildmaster Jane's face**, fetched by `tools/fetch_chatheads.py` like the
+  gardeners'. She is three NpcID constants for one person and the wiki declares only two of them,
+  so the tool groups them, resolves the page from whichever id answers, and writes the sprite under
+  all three — which is why the lookup works whichever id the game reports. A face among crop
+  sprites needs no corner badge, so `ContractIcon`'s diamond is now only the fallback for a missing
+  resource.
+- **And the new contract can be planted on the same trip.** Nothing is stored, so the moment a new
+  one lands in config its patch moves into the contract group, is pulled to the front, and gets its
+  plant step — on the next tick, while you are still standing there. Where that cannot happen —
+  the patch is still occupied, or the run was never routed past it — the on-screen panel says so
+  rather than going quiet. That note is the only thing in the guide that is information rather than
+  an instruction, deliberately: a step nobody can perform would leave the stop reading as unfinished
+  for the rest of the run.
+- **Time Tracking being switched off is said, not guessed at.** `ContractState.logState()` puts one
+  line in the log on load naming which of the three silent causes applies.
+- **A toggle, on by default**, in the guided-run section.
 
-**Two things to confirm in play before relying on it:**
+### Two things play caught that the tests had not
 
-- **Time Tracking is a core plugin and on by default, but it can be switched off**, and then the
-  key simply stops updating. The failure is silent and looks like "no contract", which is the safe
-  direction — but it should be *said*, not guessed at, the same way the bank filter now names the
-  reason it is off.
-- **Whether the key is cleared on completion**, or left holding the last contract. `handleContractState`
-  suggests it is managed, but a stale key would have the run insisting on a crop already handed in.
+- **"No seed picked for: cactus"**, with the contract tab above it showing the cactus seed already
+  selected. `RunPanel.updateNoSeeds` read the *type-wide* selection, and a contract's seed is never
+  in it — the crop is derived from the assignment rather than picked, deliberately, so that nothing
+  the player never chose gets persisted. It asks each ticked group what it will plant now, which is
+  the question the line always meant.
+- **Protection was off on the contract group** even for someone who protects that crop everywhere.
+  `ProtectionSelectionStore` had no fallback to the type's answer, where `CompostSelectionStore` has
+  had one since the protected-herb split — so a brand-new group started at "no". It now inherits,
+  and an explicit no on the contract tab still sticks (which needed the explicit *offs* persisting,
+  since absence from the set used to mean both "off" and "never asked"). **Not** made automatic:
+  protection costs items, and turning it on for someone is not a decision this plugin makes.
 
-**The fallback, if the config route disappoints**, is to capture it ourselves: the assignment
-dialogue is a fixed pattern (`We need you to grow...` / `Please could you grow...`) and the
-completion line is `You'll be wanting a reward then. Here you go.` That is the same capture
-machinery `ProtectionCapture` already uses, so it is known ground — but it should only be built if
-reading the config proves unreliable, because duplicating another plugin's parsing is how the two
-end up disagreeing.
+### What is left
 
-### Should it be its own patch category?
-
-Proposed, and it is the right shape — but it turns entirely on one invariant, so it is worth
-being explicit about which version works.
-
-**A patch belongs to exactly one planting group.** `PlantingGroups.groupFor(patch)` returns one
-answer, and everything downstream leans on that: which tab lists the patch, which seed the guide
-plants in it, which compost the run assumes, and which count the estimate prices. Two groups
-claiming the same patch is precisely the arrangement that produces a plugin telling you to plant
-something it did not budget for — the failure the protected-herb split was designed to avoid.
-
-So:
-
-- **Wrong version**: a contract category that *also* contains the Farming Guild herb patch while
-  the herb category still lists it. Now two groups price the same patch, two seed selections
-  compete for it, and the run plants one while the projection promises the other.
-- **Right version**: the patch **moves**. While a contract is assigned, that patch leaves its
-  ordinary group and joins the contract group. One patch, one group, invariant intact — and every
-  consequence the proposal wants falls straight out of machinery that already exists:
-  - it gets a tab, because tabs are built per group;
-  - it gets a line in the run list, because run options are built per group — *"picked up by the
-    run reqs"* needs no new concept at all;
-  - the ordinary herb group stops counting it, so the estimate cannot promise a snapdragon in a
-    patch that is spoken for. **This is the reservation problem solving itself**, rather than
-    needing separate handling in `SeedAllocation`.
-
-**The key scheme already accommodates it.** `PlantingGroup` is `(type, protectedOnly)` keyed as
-`HERB` or `HERB#protected`; a contract is `HERB#contract` by the same rule, and the third state
-wants `protectedOnly` replaced with a small enum rather than a second boolean — two booleans
-would allow a protected-and-contract combination that means nothing.
-
-**Settled: the group takes the contract's own patch type.** A herb contract is `HERB#contract`, a
-bush contract `BUSH#contract`. So there is no single stable "Contract" tab — it moves with the
-assignment — and that is the point rather than a cost, because **the type is what scopes the seed
-list**. `Seed.forPatchType` on the group's type gives exactly the seeds that can go in that
-patch, so the selector, the compost dropdown, the yield model and the estimate all key off the
-same thing they already do. A contract group with no type would need a null case in every one of
-those lookups, and would have nothing to build a seed list from.
-
-**The seed list is filtered to one, and that one is selected.** The group's type narrows it to
-that patch's seeds; the contract narrows it to exactly the crop asked for. So the tab shows a
-single seed, already picked.
-
-**Derived, not stored.** `SeedSelectionStore.getSelectedFor(group)` should answer with the
-contract crop for a contract group rather than the tab writing a selection into the store on the
-player's behalf. Two reasons, and both have bitten this codebase before:
-
-- writing it means a selection the player never made is persisted, and is then stale the moment
-  the contract changes or is handed in;
-- it is the same rule `SeedAllocation` already follows — recomputed rather than remembered — and
-  the two must not disagree about what is going in that patch.
-
-The seed still renders as picked, because it *is* picked. It simply should not be clickable:
-there is no other answer to offer.
-
-**Compost and protection keep their dropdowns, remembered per assigned patch type** — and this
-needs no new mechanism, because the group key already carries the type. `CompostSelectionStore`
-keys on `group.getKey()`, so a herb contract remembers `HERB#contract` and a bush contract
-`BUSH#contract`, independently. `ProtectionSelectionStore` keys on `group.getKey() + "|" + seed`,
-so the same holds there.
-
-**And the first contract of a type starts from a sensible answer rather than untreated.** The
-compost store already falls back to the patch type's own choice for any group never set
-explicitly — the mechanism built so splitting protected herbs would not silently reset one tab to
-NONE. A brand-new `HERB#contract` therefore inherits whatever you treat herbs with, until you say
-otherwise. That fallback is worth keeping in mind as the reason not to give contracts their own
-storage key scheme.
-
-**What to think through before building it:**
-
-- **It appears and disappears.** `structureChanged()` already handles the tab strip and the run
-  list rebuilding together, so the mechanism is there — but a group vanishing mid-run wants
-  thinking about, since the run may have been planned around it.
-- **Nothing is lost when it disappears.** Selections are stored per group key, and
-  `RunTypeStore.setSelected` deliberately keeps keys that are not currently on offer, so a
-  contract group's ticks survive it going away and coming back.
-
-### The guide has to close the loop, not just plant it
-
-Planting the contract is the middle of the job. The guide needs both ends:
-
-- **Hand in a finished one.** The crop is grown and picked, and nothing has happened until you
-  walk back to Guildmaster Jane. Forgetting is easy — the patch looks done, the run moves on, and
-  the reward sits unclaimed until the next time you happen to be in the guild.
-- **Take a new one.** Once handed in, the next contract is one dialogue away, and taking it
-  *before* leaving is what makes it plantable on this trip rather than in three days.
-
-Both are steps at an NPC in a known place, which is machinery that exists: `PAY_FARMER` already
-highlights a farmer and names what to hand over. Two more {@code GuideAction} values, and a
-{@code GuideStep} whose target is an NPC rather than a patch.
-
-**What is known, from `FarmingContractManager`:**
-
-- Guildmaster Jane is NPC **8628**, in region **4922** — the guild's central area, so she is on
-  the way whichever tier you are heading for.
-- The reward line is `You'll be wanting a reward then. Here you go.`, and assignment matches
-  `(?:We need you to grow|Please could you grow) (?:some|a|an) ([a-zA-Z ]+)(?: for us\?|\.)`.
-  Both are usable as capture signals if the config key proves lossy.
-
-**What needs settling in play, because the state machine turns on it:**
-
-- **What actually completes a contract.** Growing it, or harvesting it, or checking its health —
-  this is not the same across patch types, and a tree contract completing on check-health while a
-  herb needs harvesting would make one rule wrong for the other. `FarmingContractManager` tracks
-  a `SummaryState` (COMPLETED / IN_PROGRESS / OCCUPIED / EMPTY / UNKNOWN) and a `CropState`, but
-  neither is written to config — only the crop's item id is. So completion has to be derived from
-  our own patch state, and the rule for deriving it wants confirming rather than assuming.
-- **Whether the config key clears on hand-in.** If it does, "no contract stored" is the signal to
-  offer taking a new one, and the whole state machine is two states. If it does not, a handed-in
-  contract is indistinguishable from an outstanding one and the guide would keep insisting on a
-  crop already dealt with. This is the single most important thing to check first.
-- **Difficulty is the player's choice.** Jane offers easy, medium and hard, and they draw from
-  different crop pools. The guide must not pick — it can say "ask Jane for a new contract" and
-  stop there. Choosing for someone is both wrong and outside what this plugin does.
-
-**Ordering, which is the part that makes it worth building:** the hand-in and the new contract
-belong at the *end* of the guild stop, after everything is planted — but the new contract, once
-taken, may want a patch on the same trip. So either the guild stop can be re-entered once, or the
-new contract is deliberately left for next time and the guide says so. The second is simpler and
-honest; the first is what a player would actually want. Worth deciding before building, because
-it is the difference between a linear stop and a stop that can loop.
-
-### What the run has to do with it
-
-- **The Farming Guild becomes a stop with an order**, which no stop currently has. `RunStop` holds
-  a set of patches; this needs "this one first". That is the same gap already noted for step
-  ordering within a stop, and the contract is the case that forces it.
-- **Reserving the patch is free** if the contract is a planting group, per above: moving the patch
-  out of its ordinary group is what stops the estimate promising a snapdragon in it. Only if the
-  category idea is dropped does this need doing by hand in `SeedAllocation`.
-- **The loadout has to carry the seed**, and say so plainly when you do not own one. A contract
-  you cannot fulfil is worth knowing at the bank rather than at the patch.
-- **It is a suggestion, not a rule.** Someone may not want to do the contract, and the plugin
-  should not insist. A toggle, on by default, in the same section as the other guided-run
-  switches.
+- **All of it wants seeing in the client.** See `TESTING.md`. Nothing here has been in front of
+  Guildmaster Jane; the three dialogue lines and the completion message are matched from the
+  client sources rather than from play, and a single wording difference makes the capture silent.
+- **`Produce.getByItemID` is first-wins**, matching core's linear scan, because item ids are not
+  unique in that enum — `ANYHERB` carries a guam leaf. That is right for every contract crop, but
+  it is an assumption about core's behaviour rather than a documented promise.
+- **Both guild allotments move together.** The guild has one patch of every type except allotments,
+  and a contract for one moves both — so an allotment contract will suggest the contract crop in
+  both. The alternative, picking one of the two, would have a patch changing groups as its state
+  changed, which is exactly what `PlantingGroups` must not do while a run is planned around it.
+  Worth revisiting only if it proves annoying in play.
+- **NPC highlighting by id was a bug fix in passing.** `GuideOverlay` sent every step with an NPC
+  on it to the leprechaun search, so `PAY_FARMER` outlined the leprechaun rather than the farmer.
+  It now outlines by id when the step names one. Unverified, like the rest.
+- **The guide section's config positions collide** — several items share a position and always
+  have. The new toggle sits at 1 alongside `highlightBankItems`. Renumbering the section is a
+  tidy-up of its own.
 
 ## Stats tab — what else the data can answer
 

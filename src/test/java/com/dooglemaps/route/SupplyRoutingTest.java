@@ -62,7 +62,8 @@ public class SupplyRoutingTest
 
 		Client client = Mockito.mock(Client.class);
 		seeds = construct(SeedInventoryStore.class, client, configManager, gson);
-		selection = construct(SeedSelectionStore.class, configManager, gson);
+		selection = construct(SeedSelectionStore.class, configManager, gson,
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 
 		com.dooglemaps.state.PlayerLocation playerLocation =
 			construct(com.dooglemaps.state.PlayerLocation.class,

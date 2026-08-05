@@ -22,7 +22,7 @@ public class GuideStatus
 {
 	private static final GuideStatus IDLE =
 		new GuideStatus(Collections.emptyList(), false, false, 0, Collections.emptyList(), null,
-			null, null, Collections.emptyList());
+			null, null, Collections.emptyList(), null);
 
 	/** Outstanding steps at the stop you are standing in. Empty while travelling. */
 	List<GuideStep> steps;
@@ -81,6 +81,18 @@ public class GuideStatus
 	 * inside a renderer can only ever belong to that renderer.
 	 */
 	List<String> supplies;
+
+	/**
+	 * Something about the farming contract that is worth saying but cannot be clicked, or null.
+	 *
+	 * <p>The only thing in the snapshot that is information rather than an instruction, and it is
+	 * here rather than in the step list for exactly that reason: a step nobody can perform would
+	 * leave the stop reading as unfinished for the rest of the run. What it covers is the contract
+	 * this trip cannot plant — the patch is still occupied, or the run was never routed past it —
+	 * which is a real answer and one the player would otherwise have to infer from silence.
+	 */
+	@javax.annotation.Nullable
+	String contractNote;
 
 	/** Nothing happening: no run, or no client. */
 	public static GuideStatus idle()

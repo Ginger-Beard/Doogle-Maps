@@ -43,6 +43,16 @@ public class ProtectionSelectionStore
 {
 	private static final String KEY = "runProtection";
 
+	/**
+	 * Keys the player has explicitly turned <b>off</b>.
+	 *
+	 * <p>Stored separately rather than as a value beside the on ones, because it exists only to
+	 * tell "off" apart from "never asked" — and a second key leaves everything already saved
+	 * readable by a build that has never heard of it. Absence from {@link #protecting} used to
+	 * mean both things at once, which is what made the fallback below impossible to add.
+	 */
+	private static final String OFF_KEY = "runProtectionOff";
+
 	private static final Type NAME_LIST_TYPE = new TypeToken<ArrayList<String>>()
 	{
 	}.getType();
@@ -52,6 +62,9 @@ public class ProtectionSelectionStore
 
 	/** Group keys the player has said they will pay for. */
 	private final Set<String> protecting = new LinkedHashSet<>();
+
+	/** Group keys the player has said they will <i>not</i> pay for. See {@link #OFF_KEY}. */
+	private final Set<String> notProtecting = new LinkedHashSet<>();
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
@@ -90,9 +103,46 @@ public class ProtectionSelectionStore
 		return group.getKey() + "|" + seed.name();
 	}
 
+	/**
+	 * Whether this crop will be paid for in this group.
+	 *
+	 * <h2>A split group inherits its type's answer until it is given one of its own</h2>
+	 *
+	 * The same fallback {@code CompostSelectionStore} has, and it is here for the same reason:
+	 * splitting a type into groups must not silently reset one of them. It was missing, and the
+	 * farming contract is where that first cost something visible — a cactus contract arrives as
+	 * a brand-new {@code CACTUS#contract} group, so a player who protects their cactus everywhere
+	 * found the one patch that pays a seed pack quietly unprotected, with a tickbox that looked
+	 * like they had chosen it.
+	 *
+	 * <p>Not made automatic instead, which was the other option. Protection costs items you may
+	 * not have, and turning it on for someone is the kind of decision this plugin does not make.
+	 * Inheriting what they already chose for that patch type is the closest honest answer: if they
+	 * protect cactus, the contract cactus is protected; if they never have, it stays off.
+	 *
+	 * <p>Explicitly turning it off on the split tab sticks, which is the whole point of tracking
+	 * the offs — otherwise the fallback would keep switching it back on.
+	 */
 	public synchronized boolean isProtecting(PlantingGroup group, Seed seed)
 	{
-		return seed != null && protecting.contains(keyFor(group, seed));
+		if (seed == null)
+		{
+			return false;
+		}
+
+		String key = keyFor(group, seed);
+		if (protecting.contains(key))
+		{
+			return true;
+		}
+		if (notProtecting.contains(key))
+		{
+			return false;
+		}
+		// Never asked. A split group defers to the type's own answer; the type is the root and
+		// answers no, which is what it has always done.
+		return !group.getScope().equals(PlantingGroup.Scope.ALL)
+			&& protecting.contains(keyFor(PlantingGroup.of(group.getType()), seed));
 	}
 
 	/** Whether anything in this group is being paid for. */
@@ -115,7 +165,13 @@ public class ProtectionSelectionStore
 		String key = keyFor(group, seed);
 		synchronized (this)
 		{
-			boolean changed = protect ? protecting.add(key) : protecting.remove(key);
+			// Recorded either way, so that "off" is a decision rather than the absence of one and
+			// the inheritance above stops applying to this group. Compared against what is stored
+			// rather than against the answered value: choosing the tier the fallback already gave
+			// you must still write, or the choice would silently move if the type's changed.
+			boolean changed = protect
+				? protecting.add(key) | notProtecting.remove(key)
+				: protecting.remove(key) | notProtecting.add(key);
 			if (!changed)
 			{
 				return protect;
@@ -136,25 +192,10 @@ public class ProtectionSelectionStore
 		synchronized (this)
 		{
 			protecting.clear();
+			notProtecting.clear();
 
-			String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, KEY);
-			if (json == null || json.isEmpty())
-			{
-				return;
-			}
-
-			try
-			{
-				List<String> keys = gson.fromJson(json, NAME_LIST_TYPE);
-				if (keys != null)
-				{
-					protecting.addAll(keys);
-				}
-			}
-			catch (JsonSyntaxException e)
-			{
-				log.warn("Discarding unreadable protection selection", e);
-			}
+			readInto(KEY, protecting);
+			readInto(OFF_KEY, notProtecting);
 		}
 
 		for (Runnable listener : changeListeners)
@@ -163,9 +204,34 @@ public class ProtectionSelectionStore
 		}
 	}
 
+	/** Reads one key's list of group keys, tolerating anything unreadable rather than throwing. */
+	private void readInto(String key, Set<String> into)
+	{
+		String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, key);
+		if (json == null || json.isEmpty())
+		{
+			return;
+		}
+
+		try
+		{
+			List<String> keys = gson.fromJson(json, NAME_LIST_TYPE);
+			if (keys != null)
+			{
+				into.addAll(keys);
+			}
+		}
+		catch (JsonSyntaxException e)
+		{
+			log.warn("Discarding unreadable protection selection from {}", key, e);
+		}
+	}
+
 	private synchronized void save()
 	{
 		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, KEY,
 			gson.toJson(new ArrayList<>(protecting)));
+		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, OFF_KEY,
+			gson.toJson(new ArrayList<>(notProtecting)));
 	}
 }

@@ -95,7 +95,8 @@ public class PanelRenderTest
 		stockBank(seeds);
 		PlantableResolver resolver = construct(PlantableResolver.class, seeds);
 		com.dooglemaps.state.SeedSelectionStore selection =
-			construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson);
+			construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson,
+				construct(com.dooglemaps.state.ContractState.class, configManager));
 		// Two picked, so the render shows both the highlighted and unhighlighted states.
 		selection.toggle(Seed.RANARR);
 		selection.toggle(Seed.SNAPDRAGON);
@@ -170,11 +171,13 @@ public class PanelRenderTest
 			// which would pass every assertion here while showing nothing.
 			construct(com.dooglemaps.state.PlantingGroups.class, config,
 				construct(com.dooglemaps.state.ProtectedPatches.class, configManager),
-				availability),
+				availability,
+				construct(com.dooglemaps.state.ContractState.class, configManager)),
 			construct(com.dooglemaps.state.ProtectionSelectionStore.class, configManager, gson),
 			construct(com.dooglemaps.bank.BankContents.class),
 			construct(com.dooglemaps.guide.CarriedItems.class),
-			construct(com.dooglemaps.data.ItemNames.class));
+			construct(com.dooglemaps.data.ItemNames.class),
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 	}
 
 	/**

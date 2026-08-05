@@ -101,8 +101,10 @@ public class CompostSelectionStore
 			byGroup.put(group.getKey(), tier);
 			// The type-wide choice tracks the unsplit group, so anything still asking by type —
 			// and turning the split back off — sees the answer the player last gave for "all of
-			// them" rather than one they gave for a subset.
-			if (!group.isProtectedOnly())
+			// them" rather than one they gave for a subset. A contract is a subset for the same
+			// reason a protected split is: ultra on the one patch that pays a seed pack does not
+			// mean ultra on every herb patch you own.
+			if (!group.isProtectedOnly() && !group.isContract())
 			{
 				set(group.getType(), tier);
 				return;

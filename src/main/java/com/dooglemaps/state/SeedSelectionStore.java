@@ -61,6 +61,7 @@ public class SeedSelectionStore
 
 	private final ConfigManager configManager;
 	private final Gson gson;
+	private final ContractState contracts;
 
 	private final Set<Seed> selected = new LinkedHashSet<>();
 
@@ -78,10 +79,11 @@ public class SeedSelectionStore
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private SeedSelectionStore(ConfigManager configManager, Gson gson)
+	private SeedSelectionStore(ConfigManager configManager, Gson gson, ContractState contracts)
 	{
 		this.configManager = configManager;
 		this.gson = gson;
+		this.contracts = contracts;
 	}
 
 	public void addChangeListener(Runnable listener)
@@ -132,12 +134,45 @@ public class SeedSelectionStore
 	 */
 	public synchronized Set<Seed> getSelectedFor(PlantingGroup group)
 	{
+		if (group.isContract())
+		{
+			return contractSelection();
+		}
+
 		Set<Seed> picked = byGroup.get(group.getKey());
 		if (picked == null)
 		{
 			return getSelectedFor(group.getType());
 		}
 		return new LinkedHashSet<>(picked);
+	}
+
+	/**
+	 * The one seed a contract group can take, derived rather than stored.
+	 *
+	 * <p>The group's type narrows the list to that patch's seeds; the contract narrows it to
+	 * exactly the crop asked for. So there is one answer, and the player never made it — which is
+	 * the reason it must not be written into {@link #byGroup} on their behalf:
+	 *
+	 * <ul>
+	 *   <li>a selection nobody made would be persisted, and would be stale the moment the contract
+	 *       changed or was handed in; and
+	 *   <li>it is the same rule {@code SeedAllocation} already follows — recomputed rather than
+	 *       remembered — and the two must not end up disagreeing about what is going in that patch.
+	 * </ul>
+	 *
+	 * <p>Empty when the contract has no plantable seed, which leaves the tab honestly blank rather
+	 * than offering something that cannot be sown.
+	 */
+	private Set<Seed> contractSelection()
+	{
+		Set<Seed> picked = new LinkedHashSet<>();
+		Seed seed = contracts.getContractSeed();
+		if (seed != null)
+		{
+			picked.add(seed);
+		}
+		return picked;
 	}
 
 	/** Whether a seed is picked for a particular group. */
@@ -155,6 +190,15 @@ public class SeedSelectionStore
 	 */
 	public boolean toggle(PlantingGroup group, Seed seed)
 	{
+		if (group.isContract())
+		{
+			// Nothing to toggle: the contract names the crop, and the seed shown is picked
+			// because it *is* picked. Answering with whether it is the contract's seed keeps this
+			// consistent with what getSelectedFor would say, so a caller that toggles and then
+			// re-reads is not told two different things.
+			return contractSelection().contains(seed);
+		}
+
 		boolean nowSelected;
 		synchronized (this)
 		{

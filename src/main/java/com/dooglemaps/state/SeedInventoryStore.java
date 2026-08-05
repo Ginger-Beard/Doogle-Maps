@@ -439,11 +439,42 @@ public class SeedInventoryStore
 
 	// -------------------------------------------------------------- persistence
 
+	/**
+	 * Reads the persisted sources back, without disturbing the ones only the client can answer.
+	 *
+	 * <h2>Why this does not clear everything, which it used to</h2>
+	 *
+	 * The inventory is deliberately not written to disk — it changes on every item pickup, and the
+	 * container is sent again on login, so persisting it would be constant config writes for
+	 * nothing. That reasoning is sound and the implementation quietly broke it: this cleared the
+	 * <i>whole</i> cache and then restored only what config held, so the inventory was thrown away
+	 * and there was nothing to put back.
+	 *
+	 * <p>It is a race, which is why it came and went. The container event and this load are not
+	 * ordered with respect to each other:
+	 *
+	 * <ol>
+	 *   <li>you log in, and the client sends the inventory — three ranarr seeds, cached;
+	 *   <li>the RuneScape profile resolves, {@code ProfileChanged} fires, and the plugin reloads;
+	 *   <li>this ran, wiped the inventory, and restored only the bank, vault and box.
+	 * </ol>
+	 *
+	 * <p>Nothing re-reads an inventory that has not changed, so the seeds stayed invisible until
+	 * something moved them — which is exactly why banking them and taking them back out fixed it,
+	 * and why standing still did not. Whether step 2 landed before or after step 1 decided whether
+	 * anyone ever saw it.
+	 *
+	 * <p>So the rule is now the honest one: <b>config is the authority on persisted sources and has
+	 * nothing to say about the rest</b>. Reading it must not discard live state it cannot replace.
+	 * {@link #relearnFromClient()} then re-reads whatever the client is still holding, which covers
+	 * the other half — a plugin switched on mid-session was never sent the inventory at all.
+	 */
 	public void load()
 	{
 		synchronized (this)
 		{
-			cached.clear();
+			// Only what config is about to answer for. See the note above.
+			cached.keySet().removeIf(SeedSource::isPersisted);
 
 			String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, SEEDS_KEY);
 			if (json != null && !json.isEmpty())

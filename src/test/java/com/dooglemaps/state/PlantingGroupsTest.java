@@ -161,7 +161,8 @@ public class PlantingGroupsTest
 	private PlantingGroups build() throws Exception
 	{
 		return construct(PlantingGroups.class, config,
-			construct(ProtectedPatches.class, configManager), availability);
+			construct(ProtectedPatches.class, configManager), availability,
+			construct(com.dooglemaps.state.ContractState.class, configManager));
 	}
 
 	/**

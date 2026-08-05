@@ -4,6 +4,7 @@ import com.dooglemaps.capture.CompostCapture;
 import com.dooglemaps.capture.PatchInteractionTracker;
 import com.dooglemaps.capture.BankCapture;
 import com.dooglemaps.capture.PatchLocationCapture;
+import com.dooglemaps.capture.ContractCapture;
 import com.dooglemaps.capture.ProtectionCapture;
 import com.dooglemaps.capture.SeedCapture;
 import com.dooglemaps.bank.BankContents;
@@ -172,6 +173,12 @@ public class DoogleMapsPlugin extends Plugin
 	private ProtectionCapture protectionCapture;
 
 	@Inject
+	private ContractCapture contractCapture;
+
+	@Inject
+	private com.dooglemaps.state.ContractState contracts;
+
+	@Inject
 	private SeedCapture seedCapture;
 
 	@Inject
@@ -255,6 +262,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(interactionTracker);
 		eventBus.register(compostCapture);
 		eventBus.register(protectionCapture);
+		eventBus.register(contractCapture);
 		eventBus.register(seedCapture);
 		eventBus.register(locationCapture);
 		eventBus.register(bankCapture);
@@ -271,6 +279,9 @@ public class DoogleMapsPlugin extends Plugin
 		bankFilter.startUp();
 
 		protectedPatches.addChangeListener(onProtectionChanged);
+		// A contract appearing or being handed in adds or removes a whole planting group, so the
+		// tab strip and the run list both have to be rebuilt rather than merely repainted.
+		contracts.addChangeListener(onProtectionChanged);
 		stateStore.addChangeListener(onStateChanged);
 		availability.addChangeListener(onStateChanged);
 		seedStore.addChangeListener(onStateChanged);
@@ -305,6 +316,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(interactionTracker);
 		eventBus.unregister(compostCapture);
 		eventBus.unregister(protectionCapture);
+		eventBus.unregister(contractCapture);
 		eventBus.unregister(seedCapture);
 		eventBus.unregister(locationCapture);
 		eventBus.unregister(bankCapture);
@@ -321,6 +333,7 @@ public class DoogleMapsPlugin extends Plugin
 		bankFilter.shutDown();
 
 		protectedPatches.removeChangeListener(onProtectionChanged);
+		contracts.removeChangeListener(onProtectionChanged);
 		stateStore.removeChangeListener(onStateChanged);
 		availability.removeChangeListener(onStateChanged);
 		seedStore.removeChangeListener(onStateChanged);
@@ -342,6 +355,7 @@ public class DoogleMapsPlugin extends Plugin
 		compostCapture.reset();
 		harvestLog.reset();
 		protectionCapture.reset();
+		contractCapture.reset();
 		carriedItems.reset();
 		playerLocation.reset();
 		guideTracker.reset();
@@ -375,6 +389,10 @@ public class DoogleMapsPlugin extends Plugin
 		}
 	}
 
+	/** Time Tracking's group and contract key, watched for the reason {@code onConfigChanged} gives. */
+	private static final String CONTRACT_CONFIG_GROUP = "timetracking";
+	private static final String CONTRACT_CONFIG_KEY = "contract";
+
 	@Subscribe
 	public void onProfileChanged(ProfileChanged event)
 	{
@@ -385,6 +403,19 @@ public class DoogleMapsPlugin extends Plugin
 	@Subscribe
 	public void onConfigChanged(ConfigChanged event)
 	{
+		// Time Tracking's contract key is another plugin's storage, and it changing means a whole
+		// planting group has appeared or gone away — so the tab strip and the run list are
+		// rebuilt, not merely repainted. Listened for rather than polled because the contract is
+		// read on every group lookup, and a stale strip beside a fresh lookup is the arrangement
+		// that has a tab and its contents disagreeing.
+		if (CONTRACT_CONFIG_GROUP.equals(event.getGroup())
+			&& CONTRACT_CONFIG_KEY.equals(event.getKey()))
+		{
+			panel.structureChanged();
+			refresh();
+			return;
+		}
+
 		if (!DoogleMapsConfig.GROUP.equals(event.getGroup()))
 		{
 			return;
@@ -544,6 +575,14 @@ public class DoogleMapsPlugin extends Plugin
 				seedStore.recordWoodcuttingLevel();
 				bonusStore.recordDiaries();
 
+				// Every seed container the client is still holding, which is at minimum the
+				// inventory. Two cases need it and neither sends an event we could wait for: a
+				// plugin switched on mid-session was never told the inventory in the first place,
+				// and a profile change hands us a different account's pack without anything
+				// having moved in it. An inventory nobody has touched is never re-sent, so
+				// without this the seeds in it stay invisible until something disturbs them.
+				seedStore.relearnFromClient();
+
 				// Protection payment names, read here because getItemComposition is a client
 				// thread call and the sidebar needs them on Swing. A fixed set, read once.
 				java.util.List<Integer> paymentItems = new java.util.ArrayList<>();
@@ -563,6 +602,10 @@ public class DoogleMapsPlugin extends Plugin
 		bankLocations.load();
 		harvestStats.load();
 		interactionTracker.reset();
+		// Said outright, once, because a contract that never appears has three possible causes —
+		// Time Tracking switched off, nothing assigned, or one already handed in — and from the
+		// sidebar all three look identical to the feature not working.
+		contracts.logState();
 		refresh();
 
 		loaded = true;

@@ -51,7 +51,26 @@ public enum GuideAction
 	PAY_FARMER("Pay the farmer"),
 
 	/** Hand the empty buckets back before leaving, so they stop costing slots. */
-	RETURN_BUCKETS("Return empty buckets");
+	RETURN_BUCKETS("Return empty buckets"),
+
+	/**
+	 * Give Guildmaster Jane the crop she asked for, and take the reward.
+	 *
+	 * <p>Nothing has happened until you walk back to her. Forgetting is easy — the patch looks
+	 * done, the run moves on, and the seed packs sit unclaimed until you next happen to be in the
+	 * guild, which for most people is the next contract.
+	 */
+	HAND_IN_CONTRACT("Hand in the contract"),
+
+	/**
+	 * Ask her for the next one.
+	 *
+	 * <p>At the <i>end</i> of the guild stop, but still while you are there: taking it before you
+	 * leave is what makes it plantable on this trip rather than in three days. Which difficulty to
+	 * ask for is deliberately not suggested — easy, medium and hard draw from different crop pools
+	 * and choosing for someone is both wrong and outside what this plugin does.
+	 */
+	TAKE_CONTRACT("Take a new contract");
 
 	private final String label;
 
