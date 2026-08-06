@@ -172,6 +172,54 @@ public interface DoogleMapsConfig extends Config
 		return true;
 	}
 
+	/**
+	 * The bank layout, as a map you draw.
+	 *
+	 * <p>A string rather than a grid of settings because a grid <i>is</i> a string here: eight
+	 * characters a row, and you can see the shape of it in the field. See {@code BankLayout}.
+	 */
+	@ConfigItem(
+		keyName = "bankLayoutMap",
+		name = "Bank layout map",
+		description = "Where the run's items sit in the bank - one character per slot, one row per "
+			+ "line. T teleports, S seeds, P payments, G gear (tools, outfit, storage, compost), "
+			+ ". empty. Eight columns (A-H) per row, up to eight rows. Needs \"Filter the bank to "
+			+ "this run\" switched on; a map that does not parse is ignored with a warning.",
+		position = 3,
+		section = guideSection
+	)
+	default String bankLayoutMap()
+	{
+		return com.dooglemaps.bank.BankLayout.DEFAULT_MAP;
+	}
+
+	/**
+	 * The teleports the run will suggest and the bank will show, as a list you own.
+	 *
+	 * <p>A plain string, which RuneLite renders as a text area — the same shape as Ground Items'
+	 * highlighted and hidden item lists, and for the same reason: what belongs on it is per
+	 * account and cannot be derived. What the plugin knows is which teleports reach a farming
+	 * region; what it cannot know is that you always bring a games necklace, or that your house
+	 * tab is how you start every trip.
+	 *
+	 * <p>Matched on the item's own name against your bank, so it needs no ids and no unlocks
+	 * table. Anything on the list that you do not own simply never appears.
+	 */
+	@ConfigItem(
+		keyName = "teleportItems",
+		name = "Teleport items",
+		description = "Which teleports count as part of a run, comma separated by item name. "
+			+ "They are grouped together in the bank filter and layout. Defaults to every "
+			+ "teleport the plugin already knows about; add your own, or cut it down to the ones "
+			+ "you actually use.",
+		position = 4,
+		section = guideSection
+	)
+	default String teleportItems()
+	{
+		return com.dooglemaps.bank.TeleportItems.defaultNames();
+	}
+
 	@ConfigItem(
 		keyName = "highlightBankItems",
 		name = "Highlight run items in the bank",
@@ -185,18 +233,35 @@ public interface DoogleMapsConfig extends Config
 		return true;
 	}
 
+	/**
+	 * Filtering, which was off by default and is no longer.
+	 *
+	 * <p>The original reasoning was sound and is kept here because it still describes the risk: a
+	 * wrong highlight is ignorable, a wrong filter <i>hides</i> things, and you cannot see what is
+	 * missing. What changed is not the risk but two facts about it.
+	 *
+	 * <p><b>It proved undiscoverable</b>, on the person who wrote the warning. The filter was
+	 * reported as broken, twice, when it had simply never been switched on — and the plugin was
+	 * saying so at INFO, once per bank, in a log nobody standing at a bank is reading. A feature
+	 * off for a reason only the log can see is indistinguishable from one that does not work.
+	 *
+	 * <p><b>And less is hidden than there was.</b> Anything the layout has no room for is now
+	 * opened with {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM}, so it appears below the grid rather
+	 * than being dropped. The filter still narrows the bank to the run — that is its whole job —
+	 * but the run's own items can no longer fall out of it silently.
+	 */
 	@ConfigItem(
 		keyName = "filterBankToRun",
 		name = "Filter the bank to this run",
-		description = "Hide everything in the bank except what the run needs. Off by default and "
-			+ "deliberately so: a wrong highlight is ignorable, but a wrong filter hides things "
-			+ "and you cannot see what is missing. Highlighting works either way.",
+		description = "Hide everything in the bank except what the run needs, arranged by the "
+			+ "layout map below. Turn it off to leave your bank alone - highlighting works either "
+			+ "way, and marks the same items without hiding anything.",
 		position = 2,
 		section = guideSection
 	)
 	default boolean filterBankToRun()
 	{
-		return false;
+		return true;
 	}
 
 	@ConfigItem(

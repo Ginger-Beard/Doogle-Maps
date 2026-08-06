@@ -573,7 +573,7 @@ group whose picked seeds can be protected. Hidden entirely for herbs, which cann
   deliberately, since telling you to pay with fruit you did not bring is an instruction you
   cannot follow. If the loadout also failed to ask for it, that is the bug.
 
-### 1a-xvi. Bank filtering — new, and off by default
+### 1a-xvi. Bank filtering — now ON by default
 
 Settings → Guided run → *Filter the bank to this run*.
 
@@ -581,9 +581,10 @@ Settings → Guided run → *Filter the bank to this run*.
   the bank is open** restores everything immediately, without needing to reopen.
 - **Pass**: it shows everything the run touches, not only what is missing — including items the
   leprechaun holds, so you can see they are there and leave them.
-- **Off by default on purpose**, and worth understanding before judging it: a wrong highlight is
-  ignorable, but a wrong filter *hides* things and you cannot see what is missing. Highlighting
-  works either way and is unaffected.
+- **On by default now**, having spent a long time off. The reason it was off still describes the
+  risk — a wrong highlight is ignorable, a wrong filter *hides* things — but being off proved
+  undiscoverable, and overflow no longer disappears. Highlighting is unaffected either way.
+- **Pass**: turning it off leaves the bank completely alone, including the layout.
 - **Pass**: press **Stop run** with the bank open. Highlighting stops immediately and stays
   stopped through closing and reopening the bank. It used to persist — the overlay asked which
   patch types were ticked and never whether a run was under way, so there was no way to make it
@@ -729,6 +730,159 @@ not persisted — and restoring only what config held.
   be listed — this is the case `relearnFromClient` covers, where no container event ever fires.
 - **Fail signature**: an empty or short seed list that fills in the moment you open a bank. That is
   the same bug, and it is timing-dependent, so try it a few times.
+
+### 1a-xx. Three fixes from the contract session — new
+
+- **Pass**: the contract tab's tooltip reads **"Farming Contract - Potato cactus"**, not
+  "Cactus (contract) - ...". The type was saying twice what the crop already says.
+- **Pass, reported from play**: stand at the Farming Guild bank with a contract run ticked and no
+  seed or payment withdrawn. Start run should say **"Collect your supplies"**, not send you to
+  clear the patch. The rule it used to hit — *standing on work beats going shopping* — is about
+  travel, and the guild's bank, vault and patches are all one region. The `Run planned:` line now
+  says `... which is a stop on this run and has a supply point in it`.
+- **Pass**: the same rule must still hold where it was right. Stand at Ardougne's patches with
+  everything already carried and Start run should **not** route you to a bank.
+- **Pass, reported from play**: with a protection row showing *"Open a bank to see whether you
+  have 24 coconuts"*, open a bank. The row should update **without** switching tabs. Opening a
+  bank that changes nothing should not make the panel flicker.
+
+### 1a-xxi. Closing a bank with filtering on — new, a crash fix
+
+This killed the client. `WidgetClosed` is posted from inside the client's own script execution, and
+closing the Bank Tags filter from there runs a script within a script — which trips
+`AssertionError: scripts are not reentrant`, kills the `Client` thread, and leaves the window up
+with a dead game behind it. It read as a crash once and as a hang once; same bug both times.
+
+- **Pass**: with *Guided run → Filter the bank to this run* **on** and a run under way, open a bank
+  and close it. Repeat a few times, including closing by walking away and by pressing Escape.
+  Nothing in the log, and the game keeps running.
+- **Pass**: the chatbox still says *"Press Enter to Chat..."* afterwards. The whole reason the
+  close exists is that an open bank tag strands the chatbox in bank-search input mode, and the fix
+  defers that close by a tick — so this is the thing most likely to have been broken by it.
+- **Pass**: the bank comes back unfiltered next time it is opened.
+- **Fail signature**: `java.lang.AssertionError: scripts are not reentrant` in the log with
+  `BankFilter.onWidgetClosed` in the stack. That is the original bug, unfixed.
+- **Fail signature**: the game freezes with the window still up and **nothing** in the log after
+  the assertion. Same bug — the client thread is dead, not blocked. A `jstack` will show no
+  `Client` thread at all, which is how to tell it apart from the teleport deadlock.
+
+### 1a-xxii. Tree seeds in the bank — new, a fix
+
+A tree crop is two items, the seed and the sapling, and the bank-facing code only ever named the
+sapling. With a magic/yew/palm/teak run ticked and the seeds (not saplings) in your bank:
+
+- **Pass**: the loadout lists the seed as **withdraw**, not missing.
+- **Pass**: with highlighting on, the seed is marked in the bank.
+- **Pass, and this is the one that was worst**: with *Filter the bank to this run* on, the seeds
+  are **visible**. They used to be hidden — the filter removing the exact item it was there to
+  show.
+- **Pass**: if you own the seed but no sapling, the row's hover says it needs potting first.
+- **Pass**: a sapling you already potted is still shown and marked. Both forms count.
+
+### 1a-xxiii. The seed vault — new
+
+Reported from play as "not working at all, just the normal interface", and it was never built
+rather than broken: both the highlight and the filter were written against the bank interface
+only. The run does route you to the vault — `getSupplyTargets` sends you there rather than to a
+bank when that is where the seeds are — so marking them in one and not the other was half a
+feature.
+
+The vault is marked **one step at a time**, unlike the bank. It is divided by seed type and a
+category hides the rest, so lighting up everything the run needs would mostly light up things that
+are not on screen.
+
+- **Pass**: with a run ticked whose seeds are in the vault, open it. **Exactly one thing** is
+  outlined — the next seed if it is on screen, otherwise the category holding it.
+- **Pass, and this is the sequence**: click the outlined category, and the seed inside it lights
+  up. Withdraw it, and the outline moves to the next seed's category. Group, seed, next group,
+  next seed, with nothing to keep your place in.
+- **Pass**: nothing is tracked, so it cannot get out of step. Click around the categories at
+  random and the outline is always either the next seed or the way to it.
+- **Pass**: the outlines stay inside the vault's list when it is scrolled — nothing floating over
+  the chat box, which is the bug the clipping in the bank version exists for.
+- **Pass**: no run under way means no marks, the same rule the bank follows.
+- **Pass**: the category is drawn as a **box around the tab**, not an item outline. It is a label
+  with no item id, so the item-outline path drew nothing at all — which is how "the tabs aren't
+  highlighting" looked.
+- **Pass**: scroll the vault. Nothing paints outside the list — highlights are clipped to the
+  list **intersected with its parent**, because a scrolling container reports bounds for all its
+  contents rather than for the part on screen, and clipping to the list alone let a scrolled-off
+  row paint over the chat box.
+- **Fail signature — the seed lights up but the category never does.** The label match failed. It
+  matches the vault's own wording against the patch type's name ("Herb", "Fruit tree"), loosely
+  enough for "Allotments" vs "Allotment" — but if the vault words them differently, the Widget
+  Inspector on `CATEGORY_LIST` and `LEFT_LIST` will say what they actually read.
+- **Filtering is bank-only and will stay that way.** Bank Tags is a bank feature and has no notion
+  of the vault; there is no plugin-facing equivalent anywhere in the client, and filtering it
+  ourselves would mean hiding widgets, which this plugin deliberately does not do. The vault also
+  needs it least: it holds only seeds, and the game already groups them by category with its own
+  search, favourites and a built-in **contract seeds** view.
+- **Fail signature — nothing is outlined at all.** The item container is
+  `InterfaceID.SeedVault.OBJ_LIST`, not `LIST`. The vault has several list-shaped children and only
+  that one holds item widgets; the Widget Inspector will confirm which is which in seconds.
+
+### 1a-xxiv. The bank and the vault are highlighted on the supply leg — new, a fix
+
+Reported from play: during a guided run the panel says *"Collect your supplies"* and lists what to
+take, but nothing on screen was marked. `GuideOverlay` treated "no step" as "travelling", and the
+supply leg produces no steps — so it only ever highlighted house teleport furniture.
+
+- **Pass**: start a run that needs a bank trip. At the bank, the **booth or chest is outlined**.
+- **Pass**: in the Farming Guild, the **seed vault is outlined too**, alongside the bank — a single
+  trip can genuinely want both, and `getSupplySources` says so with `[BANK, SEED_VAULT]`.
+- **Pass**: the outlines stop the moment the bank leg ends, i.e. as soon as you open the bank.
+- **Pass**: deposit boxes are **not** marked. They only take things; this leg is about getting
+  things out.
+- **Fail signature**: nothing outlined at a bank that clearly has booths. Matching is on the
+  object's "Bank" action via its impostor composition — a booth's base id carries neither name nor
+  actions, so a missing impostor lookup would show exactly this.
+
+### 1a-xxv. The teleport list — new
+
+Settings → Guided run → *Teleport items*. A comma-separated list of item names, rendered as a text
+area the same way Ground Items' lists are, defaulting to every teleport the plugin already knows.
+
+- **Pass**: the setting arrives pre-filled and sorted, naming things like *Ardougne cloak 2* and
+  *Explorer's ring 2*. It is derived from `TeleportItems`, so it cannot drift out of step with the
+  table.
+- **Pass**: add something the table has never known — a games necklace, a house tab — and with it
+  in your bank it appears in the loadout under Teleports, reasoned **"On your teleport list"**, and
+  is grouped with the teleports in the filter and the layout's `T` region.
+- **Pass**: an item on the list you do **not** own says nothing at all. No advice to go and buy it.
+- **Pass**: emptying the list entirely is fine — you get only the teleports the plugin already
+  knows reach a farming region.
+- **Pass**: an item the region table already offers keeps its own reason ("Reaches Catherby"),
+  not the generic one. The table knows where it goes, which is the better answer.
+- **Fail signature — a listed item you own never appears.** Matching is on the game's own item
+  name, read off your bank when it is opened, so the spelling has to match what the game calls it,
+  brackets and charges included: `Games necklace(8)`, not `Games necklace`. Open a bank once first,
+  since that is when the names are learned.
+
+### 1a-xxvi. Bank responsiveness — new, a performance fix
+
+The loadout was rebuilt four times a tick with a bank open, and each rebuild replanned the run once
+per stop. On a 28-stop run that was around a hundred synchronised replans a tick.
+
+- **Pass**: open a bank mid-run with filtering on and a large run ticked. It should not stutter,
+  and moving items should not lag.
+- **Pass**: the filter and the highlights still update when the run changes — the cache is keyed on
+  the tick, so a change is visible on the next one.
+- **Fail signature**: the bank feels sluggish in proportion to how many stops the run has. That is
+  the shape of the old bug and means the caching is not being hit.
+
+### 1a-xxvii. Two seeds for one patch type — new, a fix
+
+Reported from play as ending up with far too many of the second seed. Every picked seed asked the
+bank for a **full** patch count, so two herbs over eight patches wanted eight of each — two runs'
+worth for a one-run trip. `TODO.md` had it listed as a known open bug.
+
+- **Pass**: pick two herb seeds with, say, four actionable herb patches. The loadout asks for
+  **four seeds in total** across the two, not four of each.
+- **Pass**: the split matches what the guide plants and what the projection prices — all three now
+  read the same `SeedAllocation`.
+- **Pass**: a seed with nothing left to plant in is left off the list rather than listed as zero.
+- **Pass**: tree seeds still appear even when you own none potted. The bank list allocates on
+  either form, deliberately unlike the guide, which can only plant a sapling — you pot on the way.
 
 ### 1b. The order is right
 

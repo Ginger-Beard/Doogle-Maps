@@ -568,10 +568,12 @@ public class DoogleMapsPanel extends PluginPanel
 		{
 			return group.getDisplayName();
 		}
+		// The run line's wording, not the group's. "Cactus (contract)" names the patch type, which
+		// is the one thing about a contract that is not the point — the crop after the dash
+		// already says what it wants, so the type was saying it twice and burying the job.
 		com.dooglemaps.data.Produce crop = contracts.getContract();
-		return crop == null
-			? group.getDisplayName()
-			: group.getDisplayName() + " - " + crop.getName();
+		String job = com.dooglemaps.data.RunOption.full(group).getLabel();
+		return crop == null ? job : job + " - " + crop.getName();
 	}
 
 	/**

@@ -278,6 +278,10 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(bankFilter);
 		bankFilter.startUp();
 
+		// Anything drawn from the bank — the protection rows' "you have 8 of the 24 this run
+		// needs", the loadout's withdraw marks — is stale the moment a bank is opened, and
+		// nothing else was asking the panel to look again.
+		bankContents.addChangeListener(onStateChanged);
 		protectedPatches.addChangeListener(onProtectionChanged);
 		// A contract appearing or being handed in adds or removes a whole planting group, so the
 		// tab strip and the run list both have to be rebuilt rather than merely repainted.
@@ -332,6 +336,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(bankFilter);
 		bankFilter.shutDown();
 
+		bankContents.removeChangeListener(onStateChanged);
 		protectedPatches.removeChangeListener(onProtectionChanged);
 		contracts.removeChangeListener(onProtectionChanged);
 		stateStore.removeChangeListener(onStateChanged);

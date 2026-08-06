@@ -12,26 +12,37 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.events.WidgetClosed;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.client.callback.ClientThread;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.plugins.Plugin;
 import net.runelite.client.plugins.PluginManager;
 import net.runelite.client.plugins.banktags.BankTagsService;
 import net.runelite.client.plugins.banktags.TagManager;
+import net.runelite.client.plugins.banktags.tabs.Layout;
+import net.runelite.client.plugins.banktags.tabs.LayoutManager;
 
 /**
  * Filters the bank down to what the run actually needs.
  *
  * <p>The other half of {@link BankHighlightOverlay}. Highlighting says "these ones"; filtering
  * says "only these", which is faster to act on and much worse to get wrong — which is why this
- * arrived long after the highlighting and is <b>off by default</b>.
+ * arrived long after the highlighting, and why it spent a long time off by default.
  *
- * <h2>Why off by default, still</h2>
+ * <h2>It was off by default, and the reason it no longer is</h2>
  *
- * A wrong highlight is ignorable: you see a marked item, you disagree, you move on. A wrong
- * filter <i>hides</i> things, and you cannot see what is missing, because hiding is what a filter
- * does. Someone whose seed selection does not match what they are about to plant notices with
- * highlighting and arrives short with filtering. So this is opt-in, and it never hides anything
- * without the player having asked it to.
+ * The risk has not changed: a wrong highlight is ignorable — you see a marked item, you disagree,
+ * you move on — where a wrong filter <b>hides</b> things, and you cannot see what is missing,
+ * because hiding is what a filter does. That argument is still the reason to be careful here.
+ *
+ * <p>What changed is two facts about it. <b>Being off proved undiscoverable</b>: the filter was
+ * reported as broken when it had simply never been switched on, and {@link #openIfWanted} was
+ * saying exactly that at INFO, once per bank, in a log nobody standing at a bank reads. And
+ * <b>less is hidden than there was</b> — the tag is opened with
+ * {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM}, so anything the layout has no room for appears
+ * below the grid rather than being dropped.
+ *
+ * <p>It still narrows the bank to the run, which is its whole job, and it is still one switch
+ * away from off.
  *
  * <h2>How it is done</h2>
  *
@@ -82,6 +93,9 @@ public class BankFilter
 	 */
 	private BankTagsService bankTags;
 
+	/** Bank Tags' layout store, taken from its injector for the reason {@link #tagManager} is. */
+	private LayoutManager layoutManager;
+
 	private TagManager tagManager;
 
 	private final Client client;
@@ -106,11 +120,20 @@ public class BankFilter
 	private boolean registered;
 	private boolean open;
 
+	/**
+	 * For getting off the client's script stack before calling into Bank Tags.
+	 *
+	 * <p>See {@link #onWidgetClosed}. Anything that ends in {@code runScript} must not be called
+	 * from an event the client posts mid-script, and closing the bank is exactly such an event.
+	 */
+	private final ClientThread clientThread;
+
 	@Inject
 	private BankFilter(Client client, com.dooglemaps.route.RunPlanner planner,
 		PluginManager pluginManager, RunLoadout loadout, RunTypeStore runTypes,
-		DoogleMapsConfig config)
+		DoogleMapsConfig config, ClientThread clientThread)
 	{
+		this.clientThread = clientThread;
 		this.planner = planner;
 		this.client = client;
 		this.pluginManager = pluginManager;
@@ -164,6 +187,9 @@ public class BankFilter
 				// The one TagManager Bank Tags itself uses. Constructing our own would register
 				// the tag on an object nothing ever asks.
 				tagManager = plugin.getInjector().getInstance(TagManager.class);
+				// Same reasoning as TagManager: the one Bank Tags itself uses, from its injector.
+				// A layout saved through an instance it has never heard of would go nowhere.
+				layoutManager = plugin.getInjector().getInstance(LayoutManager.class);
 				bankTags = (BankTagsService) plugin;
 				return true;
 			}
@@ -179,10 +205,71 @@ public class BankFilter
 	public void shutDown()
 	{
 		close();
+		forgetLayout();
 		if (registered && tagManager != null)
 		{
 			tagManager.unregisterTag(TAG);
 			registered = false;
+		}
+	}
+
+	/**
+	 * Writes the run's layout for our tag.
+	 *
+	 * <p>The one thing this class persists, and it is worth being explicit about why. Everything
+	 * else here is deliberately transient — the tag's membership is a live predicate rather than a
+	 * saved list, precisely so nothing is left behind in the player's own bank tags. A layout
+	 * cannot work that way: {@code openBankTag} reads whatever {@code loadLayout} has stored for
+	 * the tag, and there is no overload that takes one in hand.
+	 *
+	 * <p>So it is written under our own hidden tag name, rewritten whenever the run changes, and
+	 * {@link #forgetLayout() removed} when the plugin stops. Nothing survives it being switched
+	 * off, which is the promise that mattered.
+	 */
+	private void saveLayout()
+	{
+		if (layoutManager == null)
+		{
+			return;
+		}
+
+		String map = config.bankLayoutMap();
+		String rejected = BankLayout.validate(map);
+		if (rejected != null)
+		{
+			// Said out loud, because the fallback is silent by design: an unusable map falls back
+			// to the default layout, which looks exactly like the setting having no effect.
+			logOnce("Bank layout map ignored - " + rejected + ". Using the default layout.");
+		}
+
+		try
+		{
+			layoutManager.saveLayout(new Layout(TAG,
+				BankLayout.build(loadout.forRun(runTypes.getSelected()), map)));
+		}
+		catch (RuntimeException e)
+		{
+			// A layout is a convenience on top of a filter that already works. It must never be
+			// the reason the bank fails to open.
+			log.debug("Could not save the bank layout", e);
+		}
+	}
+
+	/** Takes our layout back out of Bank Tags' config, so nothing outlives the plugin. */
+	private void forgetLayout()
+	{
+		if (layoutManager == null)
+		{
+			return;
+		}
+
+		try
+		{
+			layoutManager.removeLayout(TAG);
+		}
+		catch (RuntimeException e)
+		{
+			log.debug("Could not remove the bank layout", e);
 		}
 	}
 
@@ -216,10 +303,33 @@ public class BankFilter
 	@Subscribe
 	public void onWidgetClosed(WidgetClosed event)
 	{
-		if (event.getGroupId() == InterfaceID.BANKMAIN)
+		if (event.getGroupId() != InterfaceID.BANKMAIN)
 		{
-			close();
+			return;
 		}
+
+		// Deferred, and this one crashed the client outright. WidgetClosed is posted from
+		// *inside* the client's own script execution — the stack runs Hooks.post straight out of
+		// the code closing the interface — and BankTags.closeBankTag ends in
+		// BankSearch.layoutBank, which calls runScript. A script started from within a script
+		// trips the client's own assertion:
+		//
+		//     java.lang.AssertionError: scripts are not reentrant
+		//       at client.runScript
+		//       at BankSearch.layoutBank
+		//       at BankTagsPlugin.closeBankTag
+		//       at BankFilter.close
+		//       at BankFilter.onWidgetClosed
+		//
+		// which is a client error, and the game goes with it. Reproducible: open a bank with the
+		// filter on, close it.
+		//
+		// invokeLater runs this at the start of a later tick instead, off the script stack. The
+		// part that matters still happens: closeBankTag resets the tag state and the chatbox
+		// input mode first, and only then calls layoutBank — which returns immediately once the
+		// bank widget is gone, so by then it is a no-op rather than a second script. Relaying the
+		// bank out as it closes was never the point; restoring the chatbox is.
+		clientThread.invokeLater(this::close);
 	}
 
 	@Subscribe
@@ -333,8 +443,16 @@ public class BankFilter
 		{
 			// No layout, and the tag name hidden: this is a view of the run rather than a tab the
 			// player owns, and letting it be laid out or renamed would make it look like one.
+			// The layout has to be saved before the tag is opened: openBankTag loads whatever is
+			// stored for the tag, and there is no overload that takes one directly.
+			saveLayout();
+
 			bankTags.openBankTag(TAG,
-				BankTagsService.OPTION_HIDE_TAG_NAME | BankTagsService.OPTION_NO_LAYOUT);
+				BankTagsService.OPTION_HIDE_TAG_NAME
+					// Anything the map had no room for still appears, below the grid, rather than
+					// being silently dropped. An overflowing run stops being tidy; it must not
+					// stop being complete.
+					| BankTagsService.OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM);
 			open = true;
 			lastComplaint = null;
 
@@ -370,7 +488,11 @@ public class BankFilter
 			// Everything the run touches, not only what is missing. An item you already have is
 			// not in the bank to be hidden, and one the leprechaun holds is worth seeing so you
 			// know to leave it — filtering it out would read as "you do not own this".
-			items.add(item.getItemId());
+			//
+			// Every form of it, too. A loadout item names the *planted* form, so a tree crop came
+			// through as its sapling — and the filter then hid the magic seeds it was there to
+			// show you, because what is in the bank is the seed. See RunLoadout.bankFormsOf.
+			items.addAll(RunLoadout.bankFormsOf(item.getItemId()));
 		}
 		wanted = items;
 	}

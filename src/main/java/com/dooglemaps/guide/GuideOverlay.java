@@ -96,8 +96,19 @@ public class GuideOverlay extends Overlay
 		GuideStep step = tracker.getCurrentStep();
 		if (step == null)
 		{
-			// Travelling. The teleport furniture in a player's house is the one thing worth
-			// lighting up out here — everything else about a journey is Shortest Path's job.
+			// No step means one of two quite different things, and only one of them is "nothing
+			// to do here".
+			//
+			// The supply leg is a stop with an instruction — "collect your supplies" — and the
+			// panel has been saying so all along while the scene stayed dark. The one thing you
+			// actually have to click was the one thing never marked.
+			if (tracker.getStatus().isAtBankLeg())
+			{
+				highlightSupplyPoints(graphics, colour);
+			}
+
+			// Otherwise, travelling. The teleport furniture in a player's house is the one thing
+			// worth lighting up out here — everything else about a journey is Shortest Path's job.
 			//
 			// This was the hole in the travel highlighting: the nexus and the jewellery box were
 			// marked once their *interface* was open, which is no help at all to someone who has
@@ -349,6 +360,131 @@ public class GuideOverlay extends Overlay
 			}
 		}
 		return found;
+	}
+
+	/**
+	 * Outlines the bank booths, chests and the seed vault while the run is collecting supplies.
+	 *
+	 * <p>Both kinds, together, because the run genuinely wants both: {@code getSupplySources} can
+	 * answer {@code [BANK, SEED_VAULT]} for one trip, and in the Farming Guild they stand a few
+	 * steps apart. Marking one and not the other would send you to whichever we guessed.
+	 *
+	 * <p>Matched on the object's own <b>actions and name</b> rather than on ids, the same way the
+	 * house furniture and the leprechaun are. There are dozens of bank booths and chests across
+	 * the game and they are added to constantly; anything you can click "Bank" on is a bank, which
+	 * is a fact about the object rather than a list somebody has to maintain.
+	 */
+	private void highlightSupplyPoints(Graphics2D graphics, Color colour)
+	{
+		for (TileObject object : scanForSupplyObjects())
+		{
+			Shape clickbox = object.getClickbox();
+			if (clickbox != null)
+			{
+				OverlayUtil.renderPolygon(graphics, clickbox, colour,
+					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
+			}
+
+			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+			{
+				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
+					config.guideOutlineFeathering());
+			}
+		}
+	}
+
+	/** Supply objects found this tick, since the scene walk is the expensive part. */
+	private List<TileObject> supplyObjects = new ArrayList<>();
+	private int supplyScanTick = -1;
+
+	private List<TileObject> scanForSupplyObjects()
+	{
+		int tick = client.getTickCount();
+		if (tick == supplyScanTick)
+		{
+			return supplyObjects;
+		}
+		supplyScanTick = tick;
+
+		List<TileObject> found = new ArrayList<>();
+		Scene scene = client.getTopLevelWorldView().getScene();
+		int plane = client.getTopLevelWorldView().getPlane();
+
+		for (Tile[] column : scene.getTiles()[plane])
+		{
+			for (Tile tile : column)
+			{
+				if (tile == null)
+				{
+					continue;
+				}
+				for (GameObject object : tile.getGameObjects())
+				{
+					if (isSupplyPoint(object))
+					{
+						found.add(object);
+					}
+				}
+				if (isSupplyPoint(tile.getWallObject()))
+				{
+					found.add(tile.getWallObject());
+				}
+				if (isSupplyPoint(tile.getDecorativeObject()))
+				{
+					found.add(tile.getDecorativeObject());
+				}
+			}
+		}
+
+		supplyObjects = found;
+		return found;
+	}
+
+	/**
+	 * Whether this object is somewhere the run can collect from.
+	 *
+	 * <p>An object whose id has impostors is asked for the impostor first — a bank booth's
+	 * composition varies with what it is currently showing, and the base id carries neither the
+	 * name nor the actions.
+	 */
+	private boolean isSupplyPoint(TileObject object)
+	{
+		if (object == null)
+		{
+			return false;
+		}
+
+		ObjectComposition composition = client.getObjectDefinition(object.getId());
+		if (composition == null)
+		{
+			return false;
+		}
+		if (composition.getImpostorIds() != null && composition.getImpostor() != null)
+		{
+			composition = composition.getImpostor();
+		}
+
+		String name = composition.getName();
+		if (name != null && name.toLowerCase().contains("seed vault"))
+		{
+			return true;
+		}
+
+		String[] actions = composition.getActions();
+		if (actions == null)
+		{
+			return false;
+		}
+		for (String action : actions)
+		{
+			// "Bank" covers booths and chests. Deposit boxes are deliberately not included: they
+			// only take things, and this leg is about getting things out.
+			if ("Bank".equalsIgnoreCase(action) || "Collect".equalsIgnoreCase(action))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

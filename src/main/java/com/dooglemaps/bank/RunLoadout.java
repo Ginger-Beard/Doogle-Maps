@@ -9,7 +9,9 @@ import com.dooglemaps.data.ProtectionPayment;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.route.RunPlanner;
+import com.dooglemaps.route.ProtectionBudget;
 import com.dooglemaps.route.RunStop;
+import com.dooglemaps.route.SeedAllocation;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.LeprechaunStore;
 import com.dooglemaps.state.SeedInventoryStore;
@@ -18,6 +20,7 @@ import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.state.SeedSource;
 import com.dooglemaps.timer.FarmingOutfit;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -79,13 +82,20 @@ public class RunLoadout
 	private final LeprechaunStore leprechaun;
 	private final ProtectionSelectionStore protection;
 	private final com.dooglemaps.data.ItemNames itemNames;
+	private final com.dooglemaps.DoogleMapsConfig config;
+
+	/** For the tick number the per-tick cache is keyed on; never asked for anything else. */
+	private final net.runelite.api.Client client;
 
 	@Inject
 	private RunLoadout(RunPlanner planner, SeedSelectionStore selection, SeedInventoryStore seeds,
 		CompostSelectionStore compost, CarriedItems carried, BankContents bank, ToolNeeds tools,
 		LeprechaunStore leprechaun, ProtectionSelectionStore protection,
-		com.dooglemaps.data.ItemNames itemNames)
+		com.dooglemaps.data.ItemNames itemNames, com.dooglemaps.DoogleMapsConfig config,
+		net.runelite.api.Client client)
 	{
+		this.client = client;
+		this.config = config;
 		this.protection = protection;
 		this.itemNames = itemNames;
 		this.planner = planner;
@@ -105,6 +115,46 @@ public class RunLoadout
 	 * has not been started — which is exactly when you are standing at the bank.
 	 */
 	public List<LoadoutItem> forRun(Set<PatchImplementation> types)
+	{
+		synchronized (this)
+		{
+			// One build a tick, shared by everyone who asks.
+			//
+			// Four callers wanted this list every tick while a bank was open — the highlight
+			// overlay twice, the filter's refresh, and the guide's supply lines — and each build
+			// walks the planner. Worse, addTeleports asked previewStops once for the region set
+			// and regionName asked again *per region*, so a 28-stop run was 29 synchronised
+			// replans a build and about a hundred a tick, all for an answer that cannot change
+			// between them.
+			//
+			// Keyed on the tick and the types, because those are the only two things that decide
+			// it from the caller's side. Everything else it reads — the bank, the seed counts, the
+			// leprechaun — changes on events that advance the tick anyway.
+			if (tickCache != null && cachedTick == client.getTickCount()
+				&& cachedTypes.equals(types))
+			{
+				return tickCache;
+			}
+		}
+
+		List<LoadoutItem> items = build(types);
+
+		synchronized (this)
+		{
+			cachedTick = client.getTickCount();
+			cachedTypes = EnumSet.noneOf(PatchImplementation.class);
+			cachedTypes.addAll(types);
+			tickCache = Collections.unmodifiableList(items);
+			return tickCache;
+		}
+	}
+
+	/** The last answer, and what it was worked out for. See {@link #forRun}. */
+	private List<LoadoutItem> tickCache;
+	private int cachedTick = -1;
+	private Set<PatchImplementation> cachedTypes = EnumSet.noneOf(PatchImplementation.class);
+
+	private List<LoadoutItem> build(Set<PatchImplementation> types)
 	{
 		List<LoadoutItem> items = new ArrayList<>();
 		if (types.isEmpty())
@@ -265,24 +315,49 @@ public class RunLoadout
 		// selected seed, so picking two seeds for one type asked for two runs of seed for a
 		// one-run trip. Scoping to the group does not fix that on its own — see TODO.md, "Picking
 		// more than one seed for a patch type" — but it stops the split multiplying it.
-		Map<PlantingGroup, Integer> actionable = planner.countActionableByGroup(types);
+		Map<PlantingGroup, List<FarmPatch>> actionable = planner.actionableByGroup(types);
 
-		for (Map.Entry<PlantingGroup, Integer> entry : actionable.entrySet())
+		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionable.entrySet())
 		{
 			PlantingGroup group = entry.getKey();
-			int patches = entry.getValue();
+			List<FarmPatch> plantable = entry.getValue();
 			PatchImplementation type = group.getType();
-			if (patches == 0)
+			if (plantable.isEmpty())
 			{
 				continue;
 			}
 
+			// How the run will actually divide these patches between the picked seeds — not one
+			// full run's worth of every seed, which is what this asked for and is why picking a
+			// second herb had it telling you to bank eight ranarrs *and* eight snapdragons for an
+			// eight-patch trip.
+			//
+			// The same allocation the guide plants from and the estimate prices, so the three
+			// cannot disagree about what is going in the ground. See AllocationAgreementTest.
+			Map<Seed, Integer> share = allocate(group, plantable).counts();
+
 			for (Seed seed : selection.getSelectedFor(group))
 			{
+				int patches = share.getOrDefault(seed, 0);
+				if (patches == 0)
+				{
+					// Picked, but this run has no patch for it — every one is spoken for by a
+					// crop that ranked higher, or you have none of this seed. Saying "bring 0"
+					// would be noise; saying nothing is the honest answer.
+					continue;
+				}
 				int wanted = patches * seed.getSeedsPerPatch();
-				int owned = seeds.getOwnedPlantable(seed);
+				// Both forms, not just the plantable one. A tree crop is a seed until you pot it,
+				// and what is sitting in the bank is almost always the seed — so asking
+				// getOwnedPlantable here reported five magic seeds as MISSING, told you to go and
+				// buy some, and was wrong in the most alarming direction available. It was also
+				// inconsistent on its own terms: inPack below has always counted both.
+				int owned = seeds.getOwned(seed);
 				int inPack = seeds.getCount(seed, SeedSource.INVENTORY)
 					+ seeds.getCount(seed, SeedSource.SEED_BOX);
+				// Owned, but not in a form that can go in the ground yet. Worth saying at the
+				// bank, because a plant pot is the one thing you cannot fix at the patch.
+				boolean needsPotting = seed.isSapling() && seeds.getOwnedPlantable(seed) < wanted;
 
 				items.add(new LoadoutItem(seed.getPlantedItemID(), seed.getName(),
 					LoadoutItem.Category.SEED,
@@ -292,12 +367,48 @@ public class RunLoadout
 					// seed on this list the player did not choose — and the one whose absence is
 					// worth knowing about at the bank rather than at the patch, since arriving
 					// without it costs the whole reward for another growth cycle.
-					group.isContract()
+					(group.isContract()
 						? "Guildmaster Jane's contract"
 						: patches + (patches == 1 ? " patch" : " patches") + " of "
-							+ type.getDisplayName().toLowerCase()));
+							+ type.getDisplayName().toLowerCase())
+						+ (needsPotting ? " - needs potting into a sapling first" : "")));
 			}
 		}
+	}
+
+	/**
+	 * How this group's patches divide between the seeds picked for it.
+	 *
+	 * <p>Built exactly as {@code GuideTracker} builds it, from the same stores, because the whole
+	 * point is that the bank list and the guide agree. Anything else and you bank for one plan and
+	 * plant another.
+	 */
+	private SeedAllocation allocate(PlantingGroup group, List<FarmPatch> plantable)
+	{
+		Set<Seed> picked = selection.getSelectedFor(group);
+
+		Map<Seed, Integer> owned = new java.util.HashMap<>();
+		Map<Integer, Integer> payments = new java.util.HashMap<>();
+		for (Seed seed : picked)
+		{
+			// Either form, where the guide's copy of this asks for the plantable one — and the
+			// difference is deliberate rather than drift. The guide is deciding what can go in
+			// the ground *now*, so an acorn you have not potted is no use to it. This is deciding
+			// what to take out of the bank, and an acorn is exactly the thing to take: you pot it
+			// on the way. Measuring plantable here made a tree run tell you to bring nothing
+			// whenever your seeds were still seeds.
+			owned.put(seed, seeds.getOwned(seed));
+
+			ProtectionPayment payment = ProtectionPayment.forSeed(seed);
+			if (payment != null && protection.isProtecting(group, seed))
+			{
+				payments.put(payment.getItemID(),
+					bank.getCount(payment.getItemID()) + carried.getCount(payment.getItemID()));
+			}
+		}
+
+		return SeedAllocation.forPatches(plantable, picked, owned, seeds.getFarmingLevel(),
+			new ProtectionBudget(payments, seed -> protection.isProtecting(group, seed)));
 	}
 
 	/**
@@ -627,8 +738,12 @@ public class RunLoadout
 	 */
 	private void addTeleports(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
+		// Asked once and kept. This used to be walked here and then walked again inside
+		// regionName for every region in it, which turned one replan into one per stop.
+		List<RunStop> stops = planner.previewStops(types);
+
 		Set<Integer> regions = new LinkedHashSet<>();
-		for (RunStop stop : planner.previewStops(types))
+		for (RunStop stop : stops)
 		{
 			regions.add(stop.getRegion().getRegionId());
 		}
@@ -636,7 +751,7 @@ public class RunLoadout
 		Set<Integer> offered = new LinkedHashSet<>();
 		for (int region : regions)
 		{
-			String where = regionName(region, types);
+			String where = regionName(region, stops);
 			for (TeleportItems.Teleport teleport : TeleportItems.forRegion(region))
 			{
 				addTeleportIfOwned(items, offered, teleport, "Reaches " + where);
@@ -647,6 +762,140 @@ public class RunLoadout
 		{
 			addTeleportIfOwned(items, offered, teleport, "Needed to use fairy rings");
 		}
+
+		addListedTeleports(items, offered);
+	}
+
+	/**
+	 * Whatever the player put on the teleport list, found by name in their bank.
+	 *
+	 * <p>The table above knows which teleports <i>reach a farming region</i>, which is a fact
+	 * about the map. It cannot know that you always bring a games necklace, or that your house
+	 * tab is how every trip starts — that is a fact about you, so it is a setting.
+	 *
+	 * <h2>Matched by name, against the bank, which is what makes it need no ids</h2>
+	 *
+	 * A list of item names cannot be turned into ids without an index of every item in the game,
+	 * and there is no such thing to hand. But the only ids that matter here are the ones in your
+	 * bank — nothing else can be filtered, laid out or highlighted — and the bank <i>is</i> that
+	 * index, for exactly the items in question. So the names are read off it and matched.
+	 *
+	 * <p>The same reasoning as Ground Items' highlighted and hidden lists, which match on name for
+	 * the same reason: what belongs on such a list is per account and cannot be derived.
+	 *
+	 * <p>Anything listed but not owned simply never appears — no advice to go and buy things.
+	 */
+	private void addListedTeleports(List<LoadoutItem> items, Set<Integer> offered)
+	{
+		for (int itemId : listedTeleportIds())
+		{
+			if (offered.contains(itemId))
+			{
+				// Already offered by the region table, which knows where it goes — a better
+				// reason than "you listed it" for the same item.
+				continue;
+			}
+
+			offered.add(itemId);
+			items.add(new LoadoutItem(itemId, itemNames.get(itemId, "Teleport"),
+				LoadoutItem.Category.TELEPORT,
+				carried.has(itemId) ? LoadoutItem.Need.HAVE : LoadoutItem.Need.WITHDRAW, 0,
+				"On your teleport list"));
+		}
+	}
+
+	/** The setting and bank the cached answer below was worked out from. */
+	private String resolvedFrom;
+	private Set<Integer> resolvedBank;
+	private Set<Integer> resolvedIds = Collections.emptySet();
+
+	/**
+	 * Which bank items the teleport list names, wildcards included.
+	 *
+	 * <p><b>Cached, and it has to be.</b> This is asked once a tick by the bank highlight and again
+	 * whenever the panel repaints, and a wildcard match compiles a regular expression every time it
+	 * is called — {@code WildcardMatcher} builds the pattern from scratch per call. Against a
+	 * thousand bank items that is a thousand compilations a tick, for an answer that changes only
+	 * when the setting is edited or the bank is opened. So the inputs are compared and the answer
+	 * reused; comparing a set of ids is far cheaper than the work it avoids.
+	 *
+	 * <p>Exact names are matched first, from a set, and only entries actually containing a
+	 * {@code *} go anywhere near the matcher — the same split Ground Items makes, and for the same
+	 * reason. Most of a list is exact, so most of it costs a hash lookup.
+	 */
+	private synchronized Set<Integer> listedTeleportIds()
+	{
+		// Null-safe because a config proxy can legitimately answer null for a string, and an
+		// empty list is a real answer meaning "only the ones you already know about".
+		String setting = config.teleportItems();
+		setting = setting == null ? "" : setting.trim();
+
+		Set<Integer> bankIds = bank.getItemIds();
+		if (setting.equals(resolvedFrom) && bankIds.equals(resolvedBank))
+		{
+			return resolvedIds;
+		}
+		resolvedFrom = setting;
+		resolvedBank = bankIds;
+		resolvedIds = resolve(setting, bankIds);
+		return resolvedIds;
+	}
+
+	private Set<Integer> resolve(String setting, Set<Integer> bankIds)
+	{
+		if (setting.isEmpty())
+		{
+			return Collections.emptySet();
+		}
+
+		Set<String> exact = new LinkedHashSet<>();
+		List<String> wildcards = new ArrayList<>();
+		for (String entry : setting.split(","))
+		{
+			String trimmed = entry.trim();
+			if (trimmed.isEmpty())
+			{
+				continue;
+			}
+			if (trimmed.indexOf('*') >= 0)
+			{
+				wildcards.add(trimmed);
+			}
+			else
+			{
+				exact.add(trimmed.toLowerCase());
+			}
+		}
+
+		Set<Integer> found = new LinkedHashSet<>();
+		for (int itemId : bankIds)
+		{
+			String name = itemNames.get(itemId, null);
+			if (name == null)
+			{
+				// Not read yet. Names are learned when a bank is opened, so this resolves itself
+				// the moment there is a bank to resolve it against.
+				continue;
+			}
+
+			if (exact.contains(name.toLowerCase()) || matchesAny(wildcards, name))
+			{
+				found.add(itemId);
+			}
+		}
+		return found;
+	}
+
+	private static boolean matchesAny(List<String> wildcards, String name)
+	{
+		for (String pattern : wildcards)
+		{
+			if (net.runelite.client.util.WildcardMatcher.matches(pattern, name))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private void addTeleportIfOwned(List<LoadoutItem> items, Set<Integer> offered,
@@ -670,9 +919,9 @@ public class RunLoadout
 			have ? LoadoutItem.Need.HAVE : LoadoutItem.Need.WITHDRAW, 0, reason));
 	}
 
-	private String regionName(int regionId, Set<PatchImplementation> types)
+	private String regionName(int regionId, List<RunStop> stops)
 	{
-		for (RunStop stop : planner.previewStops(types))
+		for (RunStop stop : stops)
 		{
 			if (stop.getRegion().getRegionId() == regionId)
 			{
@@ -726,10 +975,42 @@ public class RunLoadout
 			if (item.getNeed() == LoadoutItem.Need.WITHDRAW
 				|| item.getNeed() == LoadoutItem.Need.AT_LEPRECHAUN)
 			{
-				marked.put(item.getItemId(), item.getNeed());
+				for (int itemId : bankFormsOf(item.getItemId()))
+				{
+					marked.put(itemId, item.getNeed());
+				}
 			}
 		}
 		return marked;
+	}
+
+	/**
+	 * Every form of an item that could be the one in your bank.
+	 *
+	 * <p>One id for everything except a tree crop, which exists as two: the seed you buy and the
+	 * sapling it becomes in a plant pot. A {@code LoadoutItem} names the <b>planted</b> form,
+	 * because that is what you carry to the patch and what the panel should draw — but it is the
+	 * wrong thing to match a bank against, where the seed is what is actually sitting there.
+	 *
+	 * <p>Getting this wrong was invisible in the loadout and loud in the bank: the filter hid the
+	 * magic seeds it was supposed to be showing you, and the highlight never marked them, on
+	 * exactly the runs where the seed is expensive enough to care about.
+	 *
+	 * <p>Both forms are returned rather than whichever you happen to hold, because both are
+	 * legitimately "the thing this run needs" — you may have potted some already.
+	 */
+	static Set<Integer> bankFormsOf(int itemId)
+	{
+		Set<Integer> forms = new LinkedHashSet<>();
+		forms.add(itemId);
+
+		Seed seed = Seed.forItemId(itemId);
+		if (seed != null && seed.isSapling())
+		{
+			forms.add(seed.getItemID());
+			forms.add(seed.getPlantedItemID());
+		}
+		return forms;
 	}
 
 	/** Why an item is marked, for the hover. Null when it is not part of this run. */

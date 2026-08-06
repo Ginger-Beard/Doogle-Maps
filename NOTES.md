@@ -2115,3 +2115,129 @@ tiers — some entries restorable from disk, some only from a live source — ha
 be written per tier. `clear()` followed by "restore what was saved" is correct only when *everything*
 was saved, and it fails silently otherwise: nothing throws, nothing logs, and the missing half looks
 exactly like the player not owning any.
+
+---
+
+## The bank filter killed the client thread, and that is both the "crash" and the "hang"
+
+Reported twice in one session and as two different faults: the game *crashed* on one occasion and
+was *hung* on another. They are the same bug, and the log names it outright:
+
+```
+ERROR injected-client - Client error
+java.lang.AssertionError: scripts are not reentrant
+    at client.runScript
+    at BankSearch.layoutBank
+    at BankTagsPlugin.closeBankTag
+    at BankFilter.close
+    at BankFilter.onWidgetClosed
+    at EventBus.post
+    at Hooks.post
+    at pq.wx                       <- client code, mid-script
+```
+
+`WidgetClosed` is posted from **inside the client's own script execution** — the frames below
+`Hooks.post` are the client closing the interface. `closeBankTag` ends in `BankSearch.layoutBank`,
+which calls `runScript`. Starting a script from within a script trips an assertion in the client.
+
+**Why it presented as two faults.** The assertion is thrown on the `Client` thread and kills it.
+The JVM does not exit — AWT is still up, `DestroyJavaVM` is still waiting — so the window stays on
+screen with a dead game behind it. Whether that reads as "crashed" or "hung" depends only on
+whether the window happened to go away.
+
+**How the jstack settled it.** Two things in the dump, and the absences were the evidence:
+
+- **no `Client` thread at all**, where a deadlock would show one blocked on a monitor; and
+- **no `com.dooglemaps` frames anywhere**, where a lock-ordering fault would show ours holding
+  something.
+
+Nothing was waiting on anything. The thread was simply gone, which only a throw can do.
+
+**So this is not the outstanding teleport deadlock**, and it must not be filed as it. That one is
+still unobserved, and this dump is not evidence about it either way.
+
+**The fix** is to get off the script stack: `clientThread.invokeLater(this::close)`. The part that
+matters still happens — `closeBankTag` resets the tag state and the chatbox input mode *before* it
+calls `layoutBank`, and `layoutBank` returns immediately once the bank widget is gone, so by the
+next tick it is a no-op rather than a second script. Relaying the bank out as it closes was never
+the point; restoring the chatbox was.
+
+**The general rule this is an instance of**, and it is broader than banks: *an event the client
+posts from inside a script is not a safe place to call anything that runs a script.* `WidgetClosed`
+is such an event; `GameTick` is not, which is why the same `close()` call on the tick path was
+always fine. Any future integration that calls another plugin's service from a widget event wants
+checking against this.
+
+**And a note on how it was found.** The class had been given careful thought about *ordering* —
+there is a long comment on why the tag is opened from a tick rather than from `WidgetLoaded`,
+because Bank Tags builds the bank from that same event. The closing half never got the same
+scrutiny, and it is the half where the client is actually mid-script.
+
+---
+
+## The bank filter hid the seeds it was there to show
+
+Found while looking at bank filtering after the reentrancy crash, and it is the reason a tree run
+looked broken from both ends at once.
+
+A tree crop is **two items**: the seed you buy and the sapling it becomes in a plant pot.
+`Seed.getPlantedItemID()` returns the sapling, with a comment saying it is "what a seed list should
+draw and count, because it is what the player carries to the patch" — which is correct, and is
+exactly the wrong thing to match a **bank** against, because what is sitting in the bank is the
+seed.
+
+Two consequences, both silent:
+
+- **`RunLoadout.addSeeds` measured ownership with `getOwnedPlantable`**, which counts only the
+  planted form. Five magic seeds in the bank read as `owned = 0`, so the row came out `MISSING` —
+  the loadout telling you to go and buy seeds you already had. It was also internally inconsistent:
+  the `inPack` figure on the very next line has always counted both forms.
+- **`highlights()` and the filter set held only the sapling id**, so the bank never marked the
+  seeds and — with filtering on — actively hid them.
+
+Both fixed: ownership asks `getOwned` (either form), and `RunLoadout.bankFormsOf` expands a loadout
+item to every id that could be the one in your bank. Where potting is genuinely still needed the
+row now says so, rather than the count quietly standing in for it.
+
+**Why no test caught it**, which is the more useful half. `RunLoadoutTest` had a `bankHolds` helper
+that feeds `BankContents` — "is this item in the bank" — and nothing that feeds
+`SeedInventoryStore`, which is where seed *counts* come from. So every seed in that suite read as
+owned nowhere, and every assertion written against it agreed with a loadout that could not see
+seeds at all. The helper looked complete and was half a bank.
+
+The general shape: when two stores answer two halves of one question, a test fixture that stocks
+only one of them does not fail — it quietly agrees with whichever half it stocked.
+
+---
+
+## The loadout was being rebuilt about four times a tick, and each build replanned the run 29 times
+
+Noticed by eye rather than by a profiler — "why do we reload on every tick?" — and the answer was
+worse than the question assumed.
+
+While a bank was open during a run, `RunLoadout.forRun` was called by four separate consumers every
+tick: the bank highlight overlay (twice — once for the highlight set, once for the vault's step
+sequence), `BankFilter.refresh`, and the guide's supply lines. None of them knew about the others,
+and each got a full rebuild.
+
+Each rebuild then walked the planner more than once. `addTeleports` asked `previewStops` for the
+run's regions — a **synchronised** call that replans from scratch — and then called `regionName`
+per region, which asked `previewStops` again. With a 28-stop run that is 29 replans a build, so
+roughly **116 full replans a tick**, for an answer that cannot change between them.
+
+Two fixes, both small:
+
+- **One build a tick**, memoised in `RunLoadout` on the tick number and the patch types. Every
+  caller shares it, so the four consumers cost one build rather than four — and adding a fifth
+  costs nothing.
+- **One `previewStops` a build.** The stop list is fetched once and handed to `regionName` instead
+  of being re-derived per region.
+
+**The general lesson is about where a cache belongs.** Two of the four callers already had their
+own per-tick caches, which is why this looked handled from any single file — each one was correct
+in isolation and the total was still four rebuilds. A cache on the *consumer* only helps that
+consumer; the cheap place to put it was on the thing being computed, where it helps everyone at
+once and cannot be forgotten by the next caller.
+
+The consumer-side caches were kept anyway, and deliberately: overlays render per *frame* rather
+than per tick, so those still spare fifty lock acquisitions a second on a now-synchronised method.

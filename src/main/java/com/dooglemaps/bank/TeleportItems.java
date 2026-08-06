@@ -255,4 +255,25 @@ public final class TeleportItems
 		return forRegion(-1);
 	}
 
+	/**
+	 * Every teleport this table knows, by name, as a comma-separated list.
+	 *
+	 * <p>The default for the teleport list setting. Derived rather than typed out, so the setting
+	 * starts as an honest snapshot of what the plugin already suggests — and so a teleport added
+	 * to the table below turns up in the default without anyone having to remember to add it
+	 * twice.
+	 *
+	 * <p>Sorted, because this is read and edited by a person and the table's own order is by
+	 * region, which is meaningless once the regions are stripped off.
+	 */
+	public static String defaultNames()
+	{
+		java.util.Set<String> names = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+		for (Teleport teleport : ALL)
+		{
+			names.add(teleport.getName());
+		}
+		return String.join(", ", names);
+	}
+
 }

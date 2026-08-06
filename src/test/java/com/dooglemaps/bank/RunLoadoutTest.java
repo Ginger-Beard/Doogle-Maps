@@ -63,6 +63,11 @@ public class RunLoadoutTest
 	private CarriedItems carried;
 	private BankContents bank;
 	private RunLoadout loadout;
+	private SeedInventoryStore seeds;
+	private com.dooglemaps.DoogleMapsConfig config;
+
+	/** Item names the stubbed cache will answer with, so a test can name what it banked. */
+	private final java.util.Map<Integer, String> names = new java.util.HashMap<>();
 	private com.dooglemaps.state.ProtectionSelectionStore protection;
 
 	/**
@@ -90,7 +95,7 @@ public class RunLoadoutTest
 		availability = construct(AvailabilityProfile.class, configManager, gson, patches);
 		availability.load();
 
-		SeedInventoryStore seeds = construct(SeedInventoryStore.class,
+		seeds = construct(SeedInventoryStore.class,
 			Mockito.mock(net.runelite.api.Client.class), configManager, gson);
 		selection = construct(SeedSelectionStore.class, configManager, gson,
 			construct(com.dooglemaps.state.ContractState.class, configManager));
@@ -128,9 +133,19 @@ public class RunLoadoutTest
 				Mockito.mock(com.dooglemaps.DoogleMapsConfig.class)));
 		protection = construct(com.dooglemaps.state.ProtectionSelectionStore.class,
 			configManager, gson);
+		// A real teleport list would need item names, which only the client can supply, so the
+		// name cache is stubbed from a map the tests can write to. Empty by default: most of
+		// these are about the rest of the loadout, where the region table answers alone.
+		config = Mockito.mock(com.dooglemaps.DoogleMapsConfig.class);
+		when(config.teleportItems()).thenReturn("");
+
+		com.dooglemaps.data.ItemNames itemNames =
+			Mockito.mock(com.dooglemaps.data.ItemNames.class);
+		when(itemNames.get(Mockito.anyInt(), Mockito.any()))
+			.thenAnswer(i -> names.get(i.<Integer>getArgument(0)));
+
 		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
-			toolNeeds, leprechaun, protection,
-			construct(com.dooglemaps.data.ItemNames.class));
+			toolNeeds, leprechaun, protection, itemNames, config, tickingClient());
 	}
 
 	/**
@@ -371,6 +386,248 @@ public class RunLoadoutTest
 		assertEquals(LoadoutItem.Need.WITHDRAW, axe.getNeed());
 	}
 
+	/**
+	 * A tree seed in the bank is found, marked and not filtered away.
+	 *
+	 * <p>Reported from play, as the bank filter hiding the very seeds it was supposed to show. A
+	 * tree crop exists as two items — the seed you buy and the sapling it becomes in a plant pot —
+	 * and a {@code LoadoutItem} names the <b>planted</b> form, which is right for the panel and
+	 * wrong for a bank, where the seed is what is actually sitting there.
+	 *
+	 * <p>It was wrong twice over: {@code getOwnedPlantable} counted only saplings, so the row read
+	 * MISSING with the seeds in the bank, and the highlight set held only the sapling id, so
+	 * nothing was marked and the filter hid them.
+	 */
+	@Test
+	public void aTreeSeedInTheBankIsOwnedAndMarked()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatch();
+		selection.toggle(Seed.MAGIC);
+		// The seed, not the sapling — which is how anyone actually holds one.
+		seedsInBank(Seed.MAGIC, 5);
+		woodcuttingLevel(99);
+
+		LoadoutItem entry = null;
+		for (LoadoutItem item : loadout.forRun(trees))
+		{
+			if (item.getCategory() == LoadoutItem.Category.SEED
+				&& Seed.MAGIC.getName().equals(item.getName()))
+			{
+				entry = item;
+			}
+		}
+		assertNotNull("five magic seeds in the bank is owning magic seeds", entry);
+		assertEquals("not MISSING - they are right there",
+			LoadoutItem.Need.WITHDRAW, entry.getNeed());
+
+		Set<Integer> marked = withdrawals(trees);
+		assertTrue("the seed is what you have to find in the bank",
+			marked.contains(Seed.MAGIC.getItemID()));
+		assertTrue("and the sapling counts too, in case some are already potted",
+			marked.contains(Seed.MAGIC.getPlantedItemID()));
+	}
+
+	/** A crop with no sapling form contributes exactly one id, not a speculative second. */
+	@Test
+	public void anOrdinarySeedStillMatchesOnlyItself()
+	{
+		assertEquals(java.util.Collections.singleton(Seed.RANARR.getItemID()),
+			RunLoadout.bankFormsOf(Seed.RANARR.getItemID()));
+	}
+
+	/**
+	 * An item on the teleport list is picked up out of the bank, by name.
+	 *
+	 * <p>What reaches a farming region is a fact about the map and lives in {@code TeleportItems}.
+	 * What <i>you</i> always bring is not derivable at all, which is why it is a setting — and
+	 * matching it by name against the bank is what lets a list of words become item ids without an
+	 * index of every item in the game.
+	 */
+	@Test
+	public void anItemOnTheTeleportListIsOfferedFromTheBank() throws Exception
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		int gamesNecklace = 3853;
+		bankHolds(gamesNecklace, 1);
+		names.put(gamesNecklace, "Games necklace(8)");
+		when(config.teleportItems()).thenReturn("Games necklace(8), Skills necklace(6)");
+
+		LoadoutItem entry = find(LoadoutItem.Category.TELEPORT, "Games necklace(8)");
+		assertNotNull("it is on the list and it is in the bank", entry);
+		assertEquals(LoadoutItem.Need.WITHDRAW, entry.getNeed());
+		assertEquals("On your teleport list", entry.getReason());
+	}
+
+	/**
+	 * A wildcard covers every charge of an item, which is the whole reason it is wanted.
+	 *
+	 * <p>Jewellery is the case: a games necklace is eight different items and the game names each
+	 * one for its charges, so an exact list means eight entries that all mean "my games necklace".
+	 */
+	@Test
+	public void aWildcardMatchesEveryChargeOfAnItem()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		bankHolds(3853, 1);
+		names.put(3853, "Games necklace(8)");
+		bankHolds(3861, 1);
+		names.put(3861, "Games necklace(1)");
+		when(config.teleportItems()).thenReturn("Games necklace*");
+
+		assertNotNull(find(LoadoutItem.Category.TELEPORT, "Games necklace(8)"));
+		assertNotNull("one entry, every charge", find(LoadoutItem.Category.TELEPORT,
+			"Games necklace(1)"));
+	}
+
+	/** A wildcard is still a pattern, not a substring: it must not swallow the whole bank. */
+	@Test
+	public void aWildcardDoesNotMatchUnrelatedItems()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		bankHolds(3853, 1);
+		names.put(3853, "Games necklace(8)");
+		bankHolds(1712, 1);
+		names.put(1712, "Amulet of glory(4)");
+		when(config.teleportItems()).thenReturn("Games necklace*");
+
+		assertNotNull(find(LoadoutItem.Category.TELEPORT, "Games necklace(8)"));
+		assertNull("a glory is not a games necklace",
+			find(LoadoutItem.Category.TELEPORT, "Amulet of glory(4)"));
+	}
+
+	/** Exact entries keep working alongside wildcards, and stay case-insensitive. */
+	@Test
+	public void exactAndWildcardEntriesCoexist()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		bankHolds(3853, 1);
+		names.put(3853, "Games necklace(8)");
+		bankHolds(11105, 1);
+		names.put(11105, "Skills necklace(6)");
+		when(config.teleportItems()).thenReturn("Games necklace*, skills NECKLACE(6)");
+
+		assertNotNull(find(LoadoutItem.Category.TELEPORT, "Games necklace(8)"));
+		assertNotNull("case should not matter for an exact entry",
+			find(LoadoutItem.Category.TELEPORT, "Skills necklace(6)"));
+	}
+
+	/**
+	 * A teleport the table already knows keeps the table's answer, not the list's.
+	 *
+	 * <p>The table knows <i>where a teleport goes</i>, which is a better reason than "you listed
+	 * it" — so it is offered first and the list does not overwrite it. Caught by getting this
+	 * backwards in a test: a house tablet is already in the table, under the table's own name.
+	 */
+	@Test
+	public void theRegionTableWinsForItemsItAlreadyKnows()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		int houseTablet = net.runelite.api.gameval.ItemID.POH_TABLET_TELEPORTTOHOUSE;
+		bankHolds(houseTablet, 1);
+		names.put(houseTablet, "Teleport to house");
+		when(config.teleportItems()).thenReturn("Teleport to house");
+
+		assertNull("not under the name you typed",
+			find(LoadoutItem.Category.TELEPORT, "Teleport to house"));
+
+		LoadoutItem entry = find(LoadoutItem.Category.TELEPORT, "Teleport to house tablet");
+		assertNotNull("but under the table's own name", entry);
+		assertEquals("and with the table's reason, which says what it is for",
+			"Needed to use fairy rings", entry.getReason());
+	}
+
+	/** Something listed but not owned says nothing, rather than advising a purchase. */
+	@Test
+	public void anItemOnTheListYouDoNotOwnIsNotMentioned()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		when(config.teleportItems()).thenReturn("Skills necklace(6)");
+
+		assertNull(find(LoadoutItem.Category.TELEPORT, "Skills necklace(6)"));
+	}
+
+	/** An empty list is a real answer: only the teleports the plugin already knows about. */
+	@Test
+	public void anEmptyTeleportListIsNotAnError()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		when(config.teleportItems()).thenReturn("   ");
+
+		// The point is simply that building the loadout does not throw.
+		assertNotNull(loadout.forRun(HERBS));
+	}
+
+	/** The default list is derived from the table, so it cannot drift out of step with it. */
+	@Test
+	public void theDefaultTeleportListNamesEveryKnownTeleport()
+	{
+		String defaults = TeleportItems.defaultNames();
+		for (TeleportItems.Teleport teleport : TeleportItems.forRegion(-1))
+		{
+			assertEquals("the universal teleports are on the default list too",
+				true, defaults.contains(teleport.getName()));
+		}
+		assertEquals("and it is comma separated", true, defaults.contains(", "));
+	}
+
+	/**
+	 * Two seeds for one patch type split the patches; they do not each get a full run.
+	 *
+	 * <p>Reported from play as ending up with far too many of the second seed. Every picked seed
+	 * asked for {@code patches * seedsPerPatch}, so two herbs over eight patches wanted eight of
+	 * each — two runs' worth of seed for a one-run trip. It is now the share
+	 * {@code SeedAllocation} actually gives them, which is the same division the guide plants
+	 * from and the estimate prices.
+	 */
+	@Test
+	public void twoSeedsForOneTypeSplitThePatchesRatherThanDoublingThem()
+	{
+		java.util.List<FarmPatch> herbs = new java.util.ArrayList<>();
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.HERB))
+		{
+			ProduceState empty = patch.getImplementation().forVarbitValue(3);
+			assertNotNull(empty);
+			patches.recordVarbit(patch, 3, empty);
+			availability.setAvailable(patch, true);
+			herbs.add(patch);
+			if (herbs.size() == 4)
+			{
+				break;
+			}
+		}
+
+		selection.toggle(Seed.RANARR);
+		selection.toggle(Seed.SNAPDRAGON);
+		// Two of one and plenty of the other, so the split is forced rather than incidental.
+		seedsInBank(Seed.RANARR, 2);
+		seedsInBank(Seed.SNAPDRAGON, 50);
+
+		int asked = 0;
+		for (LoadoutItem item : loadout.forRun(HERBS))
+		{
+			if (item.getCategory() == LoadoutItem.Category.SEED)
+			{
+				asked += item.getQuantity();
+			}
+		}
+
+		assertEquals("four patches means four seeds between them, not four of each",
+			herbs.size(), asked);
+	}
+
 	/** An axe you cannot swing is not the answer, however good it is. */
 	@Test
 	public void anAxeAboveYourLevelIsSkipped()
@@ -531,6 +788,20 @@ public class RunLoadoutTest
 	// ------------------------------------------------------------------- helpers
 
 	/** Ardougne's herb patch, ready to pick and switched on for this account. */
+	/** An empty tree patch, so a tree run has somewhere to plant and wants a seed for it. */
+	private void readyTreePatch()
+	{
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.TREE))
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(0);
+			assertNotNull(decoded);
+			patches.recordVarbit(patch, 0, decoded);
+			availability.setAvailable(patch, true);
+			return;
+		}
+		throw new AssertionError("no tree patch in the generated world data");
+	}
+
 	private void readyHerbPatch()
 	{
 		FarmPatch patch = FarmingWorldData.getPatch("10548.4774");
@@ -632,6 +903,21 @@ public class RunLoadoutTest
 	 * for the real event and wrong for a test that stocks two things in two calls — the first
 	 * silently vanished.
 	 */
+	/**
+	 * Stocks a seed in the bank, in both the places that have to agree about it.
+	 *
+	 * <p>{@code bankHolds} alone is not enough and the difference is easy to miss: it feeds
+	 * {@link BankContents}, which answers "is this item in the bank", while seed <i>counts</i>
+	 * come from {@link com.dooglemaps.state.SeedInventoryStore}, which is fed by its own container
+	 * events. A test that stocked only the first had every seed read as owned nowhere.
+	 */
+	private void seedsInBank(Seed seed, int quantity)
+	{
+		bankHolds(seed.getItemID(), quantity);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(seed.getItemID(), quantity));
+	}
+
 	private void bankHolds(int itemId, int quantity)
 	{
 		bankStock.put(itemId, quantity);
@@ -694,6 +980,22 @@ public class RunLoadoutTest
 		ItemContainer container = Mockito.mock(ItemContainer.class);
 		when(container.getItems()).thenReturn(items);
 		return container;
+	}
+
+	/**
+	 * A client whose tick advances on every read.
+	 *
+	 * <p>{@code forRun} memoises per tick, which is right in the client and wrong in a test: a
+	 * test changes the bank and asks again within what would be one tick, and would be handed the
+	 * answer from before its own setup. An always-advancing tick disables the cache without the
+	 * production code needing to know it is under test.
+	 */
+	private static net.runelite.api.Client tickingClient()
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		int[] tick = {0};
+		when(client.getTickCount()).thenAnswer(i -> tick[0]++);
+		return client;
 	}
 
 	@SuppressWarnings("unchecked")

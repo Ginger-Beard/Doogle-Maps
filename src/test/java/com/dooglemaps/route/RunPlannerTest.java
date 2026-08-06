@@ -313,6 +313,48 @@ public class RunPlannerTest
 	}
 
 	/**
+	 * A bank in the same region beats standing on work, because reaching it costs nothing.
+	 *
+	 * <p>Reported from play: starting a contract run inside the Farming Guild, at the guild's own
+	 * bank, with no seed and no protection payment withdrawn — and being told to go and clear the
+	 * patch. The rule above is about <i>travel</i>: it exists so a run does not teleport you off
+	 * crops you are stood next to. The guild's bank, its seed vault and eleven of its patches share
+	 * one region, so there is no journey to weigh against the work, and arriving at the patch
+	 * without the seed means nothing can be done there anyway.
+	 */
+	@Test
+	public void aBankInTheSameRegionIsCollectedFromBeforeTheWorkThere()
+	{
+		FarmPatch guildHerb = guildPatch(PatchImplementation.HERB);
+		record(guildHerb.getKey(), 3);   // raked and empty, so it wants a seed
+		availability.setAvailable(guildHerb, true);
+		standingIn(guildHerb.getRegion().getRegionId());
+
+		// Picked, and sitting in the bank you are standing next to — which is what makes the trip
+		// necessary and, here, trivial.
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+		stockBank(com.dooglemaps.data.Seed.RANARR, 5);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		assertTrue(planner.isActive());
+		assertTrue("the bank is twenty steps away, so collect first", planner.isAtBankLeg());
+	}
+
+	/** The Farming Guild's patch of a type, which is where its bank and vault also are. */
+	private static FarmPatch guildPatch(PatchImplementation type)
+	{
+		for (FarmPatch candidate : com.dooglemaps.data.FarmingWorldData.getPatches(type))
+		{
+			if (candidate.getRegion().getRegionId() == 4922)
+			{
+				return candidate;
+			}
+		}
+		throw new AssertionError("no " + type + " patch in the Farming Guild");
+	}
+
+	/**
 	 * No path is drawn to the ground you are standing on.
 	 *
 	 * <p>Handing the router the stop you are already at made it plot a route to your own feet

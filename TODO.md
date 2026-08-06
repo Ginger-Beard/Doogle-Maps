@@ -26,7 +26,29 @@ each so a wrong result points somewhere.
   possible causes it is.
 - **The herb sack chat wording.** `HarvestLog` logs any sack/basket/box message during a
   harvest. Paste it and the experience-based estimate becomes an exact count.
-- **A `jstack` if the freeze recurs** — see the deadlock section below.
+- **Teleports are a list you own** — `Guided run > Teleport items`, comma separated by item name,
+  defaulting to the generated table. Matched by name against the bank, which is what lets a list of
+  words become item ids without an index of every item in the game.
+- **The seed vault is highlighted too**, not just the bank. Both surfaces were bank-only, while
+  the planner has always been willing to route to the vault. Filtering there is not possible via
+  Bank Tags and is not planned — it would mean hiding widgets ourselves.
+- **Bank filtering is now on by default**, having proved undiscoverable while off. See the
+  `BankFilter` javadoc for what changed and what did not.
+- **The bank layout is a map you draw** — `Guided run > Bank layout map`, one character per slot.
+  Regions rather than a flow, so a group's position does not move with the run's size.
+- **Tree seeds are found in the bank.** The loadout measured ownership with `getOwnedPlantable`
+  (saplings only) and the highlight/filter sets held only the sapling id, so seeds in the bank read
+  as MISSING, were never marked, and were actively hidden by the filter. Both now use either form.
+- **The bank filter no longer kills the client on close.** `BankFilter.onWidgetClosed` called
+  Bank Tags' `closeBankTag` synchronously, and `WidgetClosed` is posted from inside the client's
+  own script execution — so it started a script within a script, tripped
+  `AssertionError: scripts are not reentrant`, and killed the `Client` thread. Now deferred with
+  `clientThread.invokeLater`. Reproducible before the fix: open a bank with filtering on, close it.
+- **A `jstack` if the freeze recurs** — see the deadlock section below. **One freeze was captured
+  on 2026-08-05 and it was _not_ this deadlock**: the dump had no `Client` thread and no plugin
+  frames at all, because the thread had been killed by the reentrancy assertion above rather than
+  blocked on a lock. The teleport deadlock remains unobserved, and that dump is not evidence about
+  it. See `NOTES.md`.
 - **Farming contracts**, whole. The contract tab and its single derived seed, the guild patch
   moving out of the herb group, the contract being planted first, and the hand-in / take-a-new
   steps at Guildmaster Jane. The three dialogue lines and the completion message are matched from
@@ -213,14 +235,16 @@ meant.
 > Allocation is also capped by protection payments, so a mixed selection spills sensibly.
 >
 > **Still open below**: which *order* the seeds rank in — the ranking is still expected XP, which
-> is one motive out of three. And `RunLoadout.addSeeds` still asks for a full patch count per
-> selected seed rather than for its allocated share.
+> is one motive out of three. The loadout's full-patch-count-per-seed bug is **fixed**: it reads
+> the allocation too, so the bank list, the guide and the estimate all divide the patches the same
+> way. It allocates on either seed form rather than the plantable one, so an unpotted tree seed is
+> still something to take.
 
 | | Rule today | 4 patches, 2 seeds picked |
 |---|---|---|
 | `RunEstimate` / `SeedAllocation` | rank by expected **XP**, fill until seeds or payments run out, spill to the next | 4 patches of the higher-XP crop |
 | Guided mode | ~~its own rule~~ **reads the allocation above** | agrees with the panel |
-| `RunLoadout.addSeeds` (bank list) | every selected seed, at a **full patch count each** | "bring 4 of each" — still wrong |
+| `RunLoadout.addSeeds` (bank list) | ~~a full patch count each~~ **reads the allocation above** | agrees with the panel and the guide |
 
 ### The loadout one is a plain bug
 

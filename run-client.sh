@@ -17,7 +17,7 @@
 #
 # --debug lets an IDE hot-swap changed classes into the running client, so a relaunch is
 # only needed for changes hot-swap cannot take. See "Iterating without relaunching" in
-# README.md for what that covers and what it does not.
+# DEVELOPMENT.md for what that covers and what it does not.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"

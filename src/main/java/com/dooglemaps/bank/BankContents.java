@@ -1,7 +1,9 @@
 package com.dooglemaps.bank;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
@@ -28,9 +30,33 @@ public class BankContents
 	private final Map<Integer, Integer> counts = new HashMap<>();
 	private boolean seen;
 
+	/**
+	 * Told when the bank changes, so what is drawn from it can be redrawn.
+	 *
+	 * <p>There were none, and the gap showed on the protection rows. Before a bank has been
+	 * opened they say "Open a bank to see whether you have 8 coconuts" — correct, and it stayed
+	 * there after opening one, because nothing asked the panel to look again. Switching to another
+	 * tab and back fixed it, which is the tell: the answer was right and only the paint was stale.
+	 *
+	 * <p>{@code SeedInventoryStore} fires on its own capture from the same event, so a bank open
+	 * usually did repaint — but only when a <i>seed</i> count changed. Opening a bank to check
+	 * whether you have the coconuts moves no seeds, which is exactly the case that stayed stale.
+	 */
+	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
+
 	@Inject
 	private BankContents()
 	{
+	}
+
+	public void addChangeListener(Runnable listener)
+	{
+		changeListeners.add(listener);
+	}
+
+	public void removeChangeListener(Runnable listener)
+	{
+		changeListeners.remove(listener);
 	}
 
 	@Subscribe
@@ -43,24 +69,57 @@ public class BankContents
 		record(event.getItemContainer());
 	}
 
-	synchronized void record(@Nullable ItemContainer container)
+	void record(@Nullable ItemContainer container)
 	{
-		counts.clear();
-		seen = true;
-
-		if (container == null)
+		boolean changed;
+		synchronized (this)
 		{
-			return;
-		}
-
-		for (Item item : container.getItems())
-		{
-			if (item == null || item.getId() <= 0 || item.getQuantity() <= 0)
+			Map<Integer, Integer> incoming = new HashMap<>();
+			if (container != null)
 			{
-				continue;
+				for (Item item : container.getItems())
+				{
+					if (item == null || item.getId() <= 0 || item.getQuantity() <= 0)
+					{
+						continue;
+					}
+					incoming.merge(item.getId(), item.getQuantity(), Integer::sum);
+				}
 			}
-			counts.merge(item.getId(), item.getQuantity(), Integer::sum);
+
+			// The first read counts as a change even when the bank is empty, because "we have not
+			// looked" and "you own none" are the two answers this class exists to tell apart —
+			// and everything drawn from it says something different for each.
+			changed = !seen || !incoming.equals(counts);
+
+			counts.clear();
+			counts.putAll(incoming);
+			seen = true;
 		}
+
+		// Only on a real change. A bank fires this event for every deposit and withdrawal, and a
+		// notification rebuilds the visible tab — the same reason SeedInventoryStore compares
+		// before telling anyone.
+		if (changed)
+		{
+			for (Runnable listener : changeListeners)
+			{
+				listener.run();
+			}
+		}
+	}
+
+	/**
+	 * Every item id the bank was last seen holding.
+	 *
+	 * <p>Exists so the teleport list can be matched by name: there is no index of every item in
+	 * the game to resolve names against, but the only ids that can be filtered or laid out are
+	 * the ones in here — so for that question, this is the index. See
+	 * {@code RunLoadout.addListedTeleports}.
+	 */
+	public synchronized java.util.Set<Integer> getItemIds()
+	{
+		return new java.util.LinkedHashSet<>(counts.keySet());
 	}
 
 	public synchronized int getCount(int itemId)
@@ -84,9 +143,16 @@ public class BankContents
 		return seen;
 	}
 
-	public synchronized void reset()
+	public void reset()
 	{
-		counts.clear();
-		seen = false;
+		synchronized (this)
+		{
+			counts.clear();
+			seen = false;
+		}
+		for (Runnable listener : changeListeners)
+		{
+			listener.run();
+		}
 	}
 }

@@ -163,6 +163,7 @@ public class RunPlanner
 		// stores and the order has to stay RunPlanner -> Availability -> PatchStateStore.
 		boolean wantsSupplies = active && needsSupplyTrip();
 		boolean here = standingAtAStop();
+		boolean canBankHere = wantsSupplies && supplyPointIsHere();
 
 		synchronized (this)
 		{
@@ -170,17 +171,25 @@ public class RunPlanner
 			// Standing on work beats going shopping. The supplies are still owed and the run
 			// picks them up once this stop is done, but nothing justifies teleporting away from
 			// ripe crops you are already stood next to.
-			atBankLeg = wantsSupplies && !here;
+			//
+			// Unless the shopping is right there. That rule is about *travel* — it exists so the
+			// run does not teleport you off a patch you are standing on — and a bank in the same
+			// region costs none. Reported from play: starting a contract run inside the Farming
+			// Guild, at the guild's own bank, with no seed and no payment withdrawn, and being
+			// told to go and clear the patch. The seed was twenty steps away and the run would
+			// have reached the patch unable to do anything there.
+			atBankLeg = wantsSupplies && (!here || canBankHere);
 		}
 
 		// At INFO, and deliberately verbose, because "why did it send me to a bank" has cost
 		// several rounds of guessing and every input to that decision is on this one line.
 		// Tools are on it for the same reason: they are now one of the things that can send you
 		// to a bank, so leaving them off would put the line back to being half an answer.
-		log.info("Run planned: {} stops {}; you are in region {} which is {}; "
+		log.info("Run planned: {} stops {}; you are in region {} which is {}{}; "
 				+ "seeds picked for this run: {}; still to collect: {}; tools: {} -> {}",
 			stops.size(), stopRegions(), playerLocation.getRegionId(),
 			here ? "a stop on this run" : "not a stop on this run",
+			canBankHere ? " and has a supply point in it" : "",
 			describeSelectedForThisRun(), getSupplySources(), describeTools(),
 			atBankLeg ? "starting at a bank" : "starting where you are");
 
@@ -286,6 +295,22 @@ public class RunPlanner
 		Set<PatchImplementation> types)
 	{
 		Map<PlantingGroup, Integer> counts = new LinkedHashMap<>();
+		actionableByGroup(types).forEach((group, patches) -> counts.put(group, patches.size()));
+		return counts;
+	}
+
+	/**
+	 * The same patches, listed rather than counted.
+	 *
+	 * <p>A count is enough to price a group; it is not enough to work out <b>which seed goes
+	 * where</b> when more than one is picked, and that needs the patches themselves — see
+	 * {@code SeedAllocation}. Sharing one method means the loadout cannot be pricing a different
+	 * set of patches from the one the guide plants in.
+	 */
+	public synchronized Map<PlantingGroup, List<FarmPatch>> actionableByGroup(
+		Set<PatchImplementation> types)
+	{
+		Map<PlantingGroup, List<FarmPatch>> byGroup = new LinkedHashMap<>();
 		for (PatchImplementation type : types)
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(type))
@@ -300,10 +325,11 @@ public class RunPlanner
 				// then ask it for a patch type — and turn a grouping question into an NPE two
 				// classes away from the cause.
 				PlantingGroup group = groups.groupFor(patch);
-				counts.merge(group != null ? group : PlantingGroup.of(type), 1, Integer::sum);
+				byGroup.computeIfAbsent(group != null ? group : PlantingGroup.of(type),
+					k -> new ArrayList<>()).add(patch);
 			}
 		}
-		return counts;
+		return byGroup;
 	}
 
 	/**
@@ -613,6 +639,37 @@ public class RunPlanner
 			RunStop here = stops.get(region);
 			return here != null && !here.isComplete();
 		}
+	}
+
+	/**
+	 * Whether somewhere the run can collect supplies is in the region the player is standing in.
+	 *
+	 * <p>Asked so that "standing on work" does not override a bank you could reach without moving.
+	 * The Farming Guild is the case that forces it — its bank, its seed vault and eleven of its
+	 * patches share one region — but Catherby, Falador and Ardougne are all the same shape.
+	 *
+	 * <p>Built from {@link #getSupplyTargets()} rather than from the bank list, so it agrees with
+	 * wherever the run would actually have routed: a run whose seeds are in the vault checks for
+	 * the vault, not for any bank that happens to be nearby.
+	 *
+	 * <p>Called with no lock held, like the other two inputs to the bank-leg decision.
+	 */
+	private boolean supplyPointIsHere()
+	{
+		int region = playerLocation.getRegionId();
+		if (region == -1)
+		{
+			return false;
+		}
+
+		for (WorldPoint target : getSupplyTargets())
+		{
+			if (target != null && target.getRegionID() == region)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
