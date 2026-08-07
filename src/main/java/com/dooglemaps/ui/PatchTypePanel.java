@@ -165,17 +165,27 @@ class PatchTypePanel extends JPanel
 	 */
 	private void updateStatusToggle()
 	{
-		int on = availablePatches().size();
-		int total = groupPatches().size();
+		updateStatusToggle(availablePatches().size(), groupPatches().size());
+	}
+
+	/**
+	 * The same, given counts the caller has already worked out.
+	 *
+	 * <p>{@link #refresh} builds both lists to draw the rows, and asking for them again here made
+	 * one refresh walk the patch list four times over — each walk calling {@code groups.groupFor}
+	 * per patch, which is not the cheap lookup it looks like.
+	 */
+	private void updateStatusToggle(int on, int total)
+	{
 		toggleStatus.setText(Controls.collapseLabel(
 			"Patch status (" + on + "/" + total + ")", statusVisible));
 		// Says how to switch a patch off, because nothing else does. The rows are the control
 		// now and a row does not look like a button - the only cue is the cursor, which you
 		// have to already be hovering to see.
-		toggleStatus.setToolTipText("<html>" + on + " of " + total + " patches switched on.<br>"
-			+ "<b>Click a row</b> to switch that patch off - it turns red and drops to the "
-			+ "bottom.<br>Click it again to switch it back on.<br><br>"
-			+ "A switched-off patch is left out of runs, counts and everything else.</html>");
+		toggleStatus.setToolTipText(Tooltips.html(on + " of " + total + " patches switched on."
+			+ "<br><br><b>Click a row</b> to switch that patch off - it turns red and drops to the "
+			+ "bottom. Click it again to switch it back on."
+			+ "<br><br>A switched-off patch is left out of runs, counts and everything else."));
 	}
 
 	/**
@@ -353,9 +363,15 @@ class PatchTypePanel extends JPanel
 		}
 
 		// The switched-off ones last, in a stable order, so turning one off moves it out of the
-		// way rather than leaving it among the patches you are actually farming.
-		for (FarmPatch patch : offPatches())
+		// way rather than leaving it among the patches you are actually farming. Derived from the
+		// group's full list rather than asked for separately, so the walk is done once.
+		List<FarmPatch> everything = groupPatches();
+		for (FarmPatch patch : everything)
 		{
+			if (availability.isAvailable(patch))
+			{
+				continue;
+			}
 			PatchSnapshot snapshot = stateStore.get(patch);
 			addRow(patch, growthTimer.project(patch, snapshot), snapshot, true);
 		}
@@ -363,7 +379,7 @@ class PatchTypePanel extends JPanel
 		emptyMessage.setText(emptyMessageFor(patches.size(), projections.size()));
 		showEmptyMessage();
 
-		updateStatusToggle();
+		updateStatusToggle(patches.size(), everything.size());
 		if (seedSelector != null)
 		{
 			// How many patches of this group would be planted, so the protection payment can be
@@ -390,26 +406,6 @@ class PatchTypePanel extends JPanel
 		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
 		rowContainer.add(row);
 		rowContainer.add(javax.swing.Box.createVerticalStrut(3));
-	}
-
-	/**
-	 * This tab's patches that are switched off, in the order the data lists them.
-	 *
-	 * <p>Not sorted by state like the rest: they are not part of the run, so how soon they are due
-	 * is not information anyone is acting on, and a stable order means one does not jump around
-	 * as it grows.
-	 */
-	private List<FarmPatch> offPatches()
-	{
-		List<FarmPatch> off = new ArrayList<>();
-		for (FarmPatch patch : groupPatches())
-		{
-			if (!availability.isAvailable(patch))
-			{
-				off.add(patch);
-			}
-		}
-		return off;
 	}
 
 	/**

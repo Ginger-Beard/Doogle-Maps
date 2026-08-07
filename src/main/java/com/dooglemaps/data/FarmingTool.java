@@ -69,7 +69,7 @@ public enum FarmingTool
 	 *
 	 * <p>An ordinary can holds 8 doses and Gricoller's holds 1,000, so a single number could
 	 * plausibly be either. Nothing depends on it yet; watering is not modelled at all (see
-	 * {@code TODO.md}), and this is here so the reading exists when it is.
+	 * {@code docs/TODO.md}), and this is here so the reading exists when it is.
 	 */
 	WATERING_CAN("Watering can", ItemID.WATERING_CAN_8,
 		InterfaceID.FarmingTools.WATERINGCAN, InterfaceID.FarmingToolsSide.WATERINGCAN,

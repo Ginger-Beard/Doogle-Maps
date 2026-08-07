@@ -10,18 +10,15 @@ import com.dooglemaps.route.ProtectionBudget;
 import com.dooglemaps.state.ProtectionSelectionStore;
 import com.dooglemaps.bank.BankContents;
 import com.dooglemaps.guide.CarriedItems;
-import com.dooglemaps.bank.RunLoadout;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.route.RunEstimate;
 import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.route.RunStop;
-import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.FarmingBonusStore;
 import com.dooglemaps.state.RunTypeStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.SeedSelectionStore;
-import com.dooglemaps.state.SeedSource;
 import com.dooglemaps.timer.FarmingBonuses;
 import java.awt.BorderLayout;
 import java.awt.Color;
@@ -29,7 +26,6 @@ import java.awt.Component;
 import java.awt.Dimension;
 import java.awt.GridLayout;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -62,24 +58,17 @@ import net.runelite.client.ui.FontManager;
  */
 class RunPanel extends JPanel
 {
-	private static final Color READY = new Color(0x4C, 0xAF, 0x50);
-	private static final Color WARN = new Color(0xC8, 0xA2, 0x2D);
 	private static final Color BAD = new Color(0xC4, 0x3B, 0x3B);
 
-	/** Patch types worth offering as a run; the rest are one-offs you visit deliberately. */
-	private static final Set<PatchImplementation> RUNNABLE = EnumSet.of(
-		PatchImplementation.HERB,
-		PatchImplementation.ALLOTMENT,
-		PatchImplementation.FLOWER,
-		PatchImplementation.HOPS,
-		PatchImplementation.BUSH,
-		PatchImplementation.TREE,
-		PatchImplementation.FRUIT_TREE,
-		PatchImplementation.HARDWOOD_TREE);
+	/** Between the two run buttons, so the destructive one is not touching the routine one. */
+	private static final int BUTTON_GAP = 4;
+
+	// There was a RUNNABLE set here, listing the patch types worth offering as a run. It was dead
+	// — offeredOptions() asks PlantingGroups.runOptions() — and it had drifted: PlantingGroups
+	// gained CACTUS and this copy never did. Two lists of the same thing, one of them unread and
+	// wrong, is worse than one, so it is gone rather than corrected.
 
 	private final RunPlanner planner;
-	private final RunLoadout loadout;
-	private final AvailabilityProfile availability;
 	private final SeedSelectionStore selection;
 	private final SeedInventoryStore seeds;
 
@@ -106,9 +95,8 @@ class RunPanel extends JPanel
 	 * further down among the projections.
 	 */
 	private final WrappedText noSeeds = new WrappedText();
-	private final JPanel stopList = new JPanel();
 
-	/** Everywhere the planned run will go, before it starts. See {@link #buildDestinations}. */
+	/** Everywhere the planned run will go. See {@link #buildDestinations}. */
 	private final JPanel destinations = new JPanel();
 	private final JPanel destinationList = new JPanel();
 	private final JButton toggleDestinations = new JButton();
@@ -132,15 +120,54 @@ class RunPanel extends JPanel
 
 	/** Expected experience by compost tier and gear, built fresh on each refresh. */
 	private final RewardTable rewardTable = new RewardTable();
+
+	/**
+	 * The one sentence about the table that people trip over, on screen rather than on a hover.
+	 *
+	 * <p>A herb run hands you a pack of snapdragons on the way round and <b>none of them are in
+	 * this table</b> — they grew from the seeds you planted last time. The table prices the seeds
+	 * going in now, and what they give you when you come back for them.
+	 *
+	 * <p>That was three paragraphs at the top of the gear tooltip, which is to say it was invisible:
+	 * nobody hovers a table long enough to read to paragraph two, and the person who needs this
+	 * does not yet know there is anything to ask about. It is a caption because it is true of every
+	 * run and never changes — the tooltip keeps what varies.
+	 */
+	private final JLabel caption = new JLabel();
+
+	/**
+	 * The run controls, which are two different shapes.
+	 *
+	 * <p>Before a run there is one decision — start — so the button takes the whole width. During
+	 * one there are two, and they are not equals: stopping is rare and destructive, skipping is
+	 * routine. So skip gets the room and stop gets the colour, rather than splitting evenly and
+	 * letting the dangerous one look like the ordinary one.
+	 */
 	private final JButton startStop = new JButton();
+	private final JButton skipStep = new JButton();
+	private final JPanel controls = new JPanel(new java.awt.GridBagLayout());
+
+	/**
+	 * What the guide is asking for, repeated in the sidebar.
+	 *
+	 * <p>The on-screen panel is where you read this while playing — that is the whole reason it
+	 * exists. This is for the moment you are looking at the sidebar anyway, deciding whether to
+	 * skip: a skip button with no statement of what it would skip is a button you cannot press
+	 * with any confidence.
+	 */
+	private final JLabel currentStep = new JLabel();
+
+	/** Told what the guide is asking for, and how to wave it past. */
+	private final com.dooglemaps.guide.GuideTracker guideTracker;
 
 	RunPanel(PanelLayoutStore layout, PlantingGroups groups,
 		ProtectionSelectionStore protection, BankContents bank,
-		CarriedItems carried, RunPlanner planner, RunLoadout loadout,
-		AvailabilityProfile availability, SeedSelectionStore selection, SeedInventoryStore seeds,
+		CarriedItems carried, RunPlanner planner,
+		SeedSelectionStore selection, SeedInventoryStore seeds,
 		RunTypeStore runTypes, FarmingBonusStore bonuses, CompostSelectionStore compost,
-		com.dooglemaps.DoogleMapsConfig config)
+		com.dooglemaps.DoogleMapsConfig config, com.dooglemaps.guide.GuideTracker guideTracker)
 	{
+		this.guideTracker = guideTracker;
 		this.config = config;
 		this.layout = layout;
 		this.groups = groups;
@@ -148,8 +175,6 @@ class RunPanel extends JPanel
 		this.bank = bank;
 		this.carried = carried;
 		this.planner = planner;
-		this.loadout = loadout;
-		this.availability = availability;
 		this.selection = selection;
 		this.seeds = seeds;
 		this.runTypes = runTypes;
@@ -177,15 +202,47 @@ class RunPanel extends JPanel
 		noSeeds.setBorder(BorderFactory.createEmptyBorder(4, 6, 0, 6));
 		noSeeds.setVisible(false);
 
-		stopList.setLayout(new BoxLayout(stopList, BoxLayout.Y_AXIS));
-		stopList.setBackground(getBackground());
-
 		rewardTable.setBackground(getBackground());
 		rewardTable.setBorder(BorderFactory.createEmptyBorder(0, 6, 4, 6));
 		rewardTable.setVisible(false);
 
+		// A plain label rather than WrappedText: this sits inside a bordered panel, where
+		// WrappedText's fixed wrap width overshoots and clips the last line. Two short lines that
+		// do not need wrapping is the version that cannot go wrong - the same call RunPanel
+		// already makes for the destination list's footnotes.
+		caption.setFont(FontManager.getRunescapeSmallFont());
+		caption.setForeground(ColorScheme.MEDIUM_GRAY_COLOR);
+		caption.setBorder(BorderFactory.createEmptyBorder(0, 6, 2, 6));
+		caption.setText("<html>Counts the seeds going in,<br>not what you pick on the way round."
+			+ "</html>");
+		caption.setToolTipText(Tooltips.html("Clearing a patch harvests <i>last</i> run's crop. "
+			+ "That is already in the ground and owes nothing to the seeds you are about to sow, "
+			+ "so it is not in these figures."));
+		caption.setVisible(false);
+
 		Controls.styleButton(startStop);
 		startStop.addActionListener(e -> toggleRun());
+
+		Controls.styleButton(skipStep);
+		skipStep.setText("Skip step");
+		skipStep.setToolTipText(Tooltips.text("Pass over what the guide is currently asking for. "
+			+ "The rest of that patch's work still appears - waving past a payment does not skip "
+			+ "the planting."));
+		skipStep.addActionListener(e ->
+		{
+			guideTracker.skipCurrentStep();
+			refresh();
+		});
+
+		// Weighted rather than split evenly, and the weights are the point: skipping is routine and
+		// stopping is not, so the ordinary action gets the room and the destructive one gets the
+		// colour. Rebuilt on every refresh because the row is one button before a run and two
+		// during it; see updateControls.
+		controls.setBackground(getBackground());
+
+		currentStep.setFont(FontManager.getRunescapeSmallFont());
+		currentStep.setBorder(BorderFactory.createEmptyBorder(4, 6, 0, 6));
+		currentStep.setVisible(false);
 
 		JPanel choices = new JPanel(new BorderLayout(0, 0));
 		choices.setBackground(getBackground());
@@ -195,15 +252,117 @@ class RunPanel extends JPanel
 		JPanel body = new JPanel(new BorderLayout(0, 4));
 		body.setBackground(getBackground());
 		body.add(choices, BorderLayout.NORTH);
+		JPanel table = new JPanel(new BorderLayout(0, 0));
+		table.setBackground(getBackground());
+		table.add(rewardTable, BorderLayout.CENTER);
+		table.add(caption, BorderLayout.SOUTH);
+
 		JPanel plan = new JPanel(new BorderLayout(0, 2));
 		plan.setBackground(getBackground());
-		plan.add(rewardTable, BorderLayout.CENTER);
+		plan.add(table, BorderLayout.CENTER);
 		plan.add(buildDestinations(), BorderLayout.SOUTH);
 		body.add(plan, BorderLayout.CENTER);
-		body.add(stopList, BorderLayout.SOUTH);
 
-		add(startStop, BorderLayout.NORTH);
+		JPanel header = new JPanel(new BorderLayout(0, 0));
+		header.setBackground(getBackground());
+		header.add(controls, BorderLayout.NORTH);
+		header.add(currentStep, BorderLayout.CENTER);
+
+		updateControls(false);
+		add(header, BorderLayout.NORTH);
 		add(body, BorderLayout.CENTER);
+	}
+
+	/**
+	 * Puts the buttons and the current step into the state the run is in.
+	 *
+	 * <p>Stopping is coloured rather than merely labelled. It is the one control here that throws
+	 * work away, and before a run it is not offered at all — so it has no chance to become a shape
+	 * the eye skips over, and it should not look like the button beside it.
+	 */
+	private void updateRunControls(boolean running)
+	{
+		startStop.setText(running ? "Stop run" : "Start run");
+		startStop.setForeground(running ? BAD : ColorScheme.TEXT_COLOR);
+
+		updateControls(running);
+		refreshCurrentStep();
+	}
+
+	/**
+	 * Redraws just the current-step line and the button that acts on it. Must run on the EDT.
+	 *
+	 * <h2>Why this is separate from {@link #refresh}</h2>
+	 *
+	 * The guide re-derives its step every game tick, but the sidebar is redrawn from a 20-second
+	 * idle timer — so this line sat up to twenty seconds behind the on-screen panel, which reads
+	 * the same tracker per frame. Two places showing the same instruction and disagreeing for most
+	 * of the time between stops.
+	 *
+	 * <p>Calling the full {@link #refresh} on the tick would fix the staleness by rebuilding the
+	 * reward table, the destination list and the stop list a hundred times a minute. This touches
+	 * a label and a button instead, so the plugin can afford to call it on every tick.
+	 */
+	void refreshCurrentStep()
+	{
+		com.dooglemaps.guide.GuideStep step =
+			planner.isActive() ? guideTracker.getCurrentStep() : null;
+		skipStep.setEnabled(step != null);
+
+		// Only while there is one. A "Current step:" label with nothing after it, sitting there for
+		// the whole of a walk between stops, is a line that trains you to stop reading it.
+		currentStep.setVisible(step != null);
+		if (step != null)
+		{
+			currentStep.setForeground(config.guideHighlightColour());
+			// The same wording the on-screen panel uses, wrapped to the sidebar's width — not the
+			// tooltip width, which is deliberately wider than the panel and clipped the last
+			// character off every line that wrapped.
+			currentStep.setText(Tooltips.inPanel("Current step: " + step.getText()));
+		}
+	}
+
+	/**
+	 * Lays the control row out for the state the run is in.
+	 *
+	 * <p>Rebuilt rather than toggled because the two states are different shapes, not the same
+	 * shape with something hidden: one full-width button before a run, two weighted ones during
+	 * it. Hiding a component inside a grid leaves its column behind, which is how a 60/40 split
+	 * becomes a 60% button with a gap next to it.
+	 */
+	private void updateControls(boolean running)
+	{
+		controls.removeAll();
+
+		java.awt.GridBagConstraints c = new java.awt.GridBagConstraints();
+		c.fill = java.awt.GridBagConstraints.HORIZONTAL;
+		c.gridy = 0;
+
+		if (running)
+		{
+			// A gap between them, because these two buttons are the same size, the same shape and
+			// sit on the same dark background: abutting, they read as one control with a line down
+			// it, and the one on the right ends the run. Colour alone was doing all the work of
+			// telling them apart.
+			c.gridx = 0;
+			c.weightx = 0.6;
+			c.insets = new java.awt.Insets(0, 0, 0, BUTTON_GAP);
+			controls.add(skipStep, c);
+
+			c.gridx = 1;
+			c.weightx = 0.4;
+			c.insets = new java.awt.Insets(0, 0, 0, 0);
+			controls.add(startStop, c);
+		}
+		else
+		{
+			c.gridx = 0;
+			c.weightx = 1;
+			controls.add(startStop, c);
+		}
+
+		controls.revalidate();
+		controls.repaint();
 	}
 
 	/**
@@ -340,8 +499,8 @@ class RunPanel extends JPanel
 			// The label is abbreviated to fit two columns, so the tooltip carries the meaning
 			// rather than merely elaborating on it.
 			box.setToolTipText(option.isHarvestOnly()
-				? "Harvest only: visit these to pick what is ready and nothing else - the patch "
-					+ "is not cleared, composted or replanted"
+				? Tooltips.text("Harvest only: visit these to pick what is ready and nothing else "
+					+ "- the patch is not cleared, composted or replanted")
 				: null);
 			box.addActionListener(e ->
 			{
@@ -502,11 +661,11 @@ class RunPanel extends JPanel
 		// tree patches in four places is a very different afternoon from eleven patches in three.
 		toggleDestinations.setText(Controls.collapseLabel("Destinations ("
 			+ destinationCount + " stops, "
-			+ destinationPatches + (destinationPatches == 1 ? " patch)" : " patches)"),
+			+ Plurals.of(destinationPatches, "patch)", "patches)"),
 			destinationsVisible));
-		toggleDestinations.setToolTipText("<html>Everywhere this run will take you."
-			+ "<br>Places only - which teleports to take is your call, and depends on what you "
-			+ "have unlocked.</html>");
+		toggleDestinations.setToolTipText(Tooltips.html("Everywhere this run will take you."
+			+ "<br><br>Places only - which teleports to take is your call, and depends on what you "
+			+ "have unlocked."));
 	}
 
 	/**
@@ -546,7 +705,7 @@ class RunPanel extends JPanel
 	{
 		boolean running = planner.isActive();
 
-		startStop.setText(running ? "Stop run" : "Start run");
+		updateRunControls(running);
 		optionBoxes.forEach((option, box) ->
 		{
 			box.setEnabled(!running);
@@ -558,20 +717,29 @@ class RunPanel extends JPanel
 			}
 		});
 
-		stopList.removeAll();
+		// Rebuilt whether or not a run is under way, which it used not to be.
+		//
+		// Hiding the projection during a run was wrong on its own terms: what the trip is worth is
+		// the thing you most want to check <i>while doing it</i> — deciding whether the last three
+		// stops are worth the trip is a mid-run question, and answering it meant stopping the run.
+		// It also changes as you go, since patches leave the plan as they are planted, so a live
+		// figure is more use than the one you saw before setting off.
+		//
+		// The destination list likewise — and once it stays up, it is the only such list there is.
+		// A second one used to unfold beneath it during a run, in the same "Name  (n)" shape, with
+		// no heading to say how the two differed. The dropdown already updates as stops drop out
+		// of the plan, so the pair were saying the same thing twice, one of them unlabelled.
+		rebuildRewardTable(getSelectedTypes());
+		rebuildDestinations(getSelectedTypes());
+
 		if (running)
 		{
-			rewardTable.setVisible(false);
+			// The one thing that really is meaningless mid-run: a warning about a seed you would
+			// have needed before setting off.
 			noSeeds.setVisible(false);
-			// The stop list below is the live version of the same thing, current target first,
-			// so a second static copy of it would only be a staler duplicate.
-			destinations.setVisible(false);
-			buildStopList();
 		}
 		else
 		{
-			rebuildRewardTable(getSelectedTypes());
-			rebuildDestinations(getSelectedTypes());
 			updateNoSeeds(getSelectedTypes());
 		}
 
@@ -685,29 +853,20 @@ class RunPanel extends JPanel
 		return false;
 	}
 
-	private void buildStopList()
-	{
-		if (planner.isAtBankLeg())
-		{
-			stopList.add(row(describeSupplyStop(), READY));
-		}
-
-		// The instruction for the patch in front of you is deliberately *not* here any more. It
-		// lives on the game screen now, in GuideStepOverlay, because following a run means
-		// watching the patch rather than the sidebar — and a step you have to look away to read
-		// is one you stop reading. This list keeps the half you read while standing still.
-		for (RunStop stop : planner.getRemaining())
-		{
-			stopList.add(row(stop.getName() + "  (" + stop.getPatches().size() + ")",
-				ColorScheme.TEXT_COLOR));
-		}
-
-		Collection<String> transports = planner.getCurrentTransports();
-		if (!transports.isEmpty())
-		{
-			stopList.add(row("via " + String.join(", ", transports), ColorScheme.LIGHT_GRAY_COLOR));
-		}
-	}
+	/*
+	 * There was a second list here, built during a run: the remaining stops, the supply stop, and
+	 * the transports for the current leg. It is gone, and nothing replaced it.
+	 *
+	 * The stop rows were the destination dropdown's rows — the same "Name  (n)" formatting, drawn
+	 * directly beneath it with no heading of their own, so the dropdown appeared to have a second
+	 * body hanging off it. The dropdown was hidden mid-run when this was written, which is what
+	 * made two lists sensible; now that it stays, one of them was simply redundant.
+	 *
+	 * The other two rows were already on the game screen, which is where you read a run from:
+	 * GuideStepOverlay names the bank leg, and takes the same getCurrentTransports for its travel
+	 * line. Keeping them here would have left a "Bank first" and a "via ..." floating under a list
+	 * they were no longer part of.
+	 */
 
 	private JLabel row(String text, Color colour)
 	{
@@ -718,29 +877,6 @@ class RunPanel extends JPanel
 		label.setAlignmentX(Component.LEFT_ALIGNMENT);
 		label.setMaximumSize(new Dimension(Integer.MAX_VALUE, label.getPreferredSize().height));
 		return label;
-	}
-
-	/**
-	 * Names the opening stop by where the seeds actually are.
-	 *
-	 * <p>There is one seed vault and it is in the Farming Guild, so "go to a bank" is
-	 * actively wrong for seeds stored there.
-	 */
-	private String describeSupplyStop()
-	{
-		Set<SeedSource> sources = planner.getSupplySources();
-		boolean bank = sources.contains(SeedSource.BANK);
-		boolean vault = sources.contains(SeedSource.SEED_VAULT);
-
-		if (bank && vault)
-		{
-			return "Bank and seed vault first";
-		}
-		if (vault)
-		{
-			return "Seed vault first - Farming Guild";
-		}
-		return "Bank first - grab seeds and payments";
 	}
 
 	/**
@@ -764,11 +900,15 @@ class RunPanel extends JPanel
 		if (actionable.isEmpty() || level <= 0 || (chosen.isEmpty() && !anyHarvestOnly()))
 		{
 			rewardTable.setVisible(false);
+			caption.setVisible(false);
 			return;
 		}
 
 		RunEstimate estimate = estimateFor(types, owned, level);
 		rewardTable.setData(estimate, describeGear(level, estimate));
+		// Follows the table rather than being set independently: setData hides itself on an empty
+		// estimate, and a caption under nothing is a stray sentence.
+		caption.setVisible(rewardTable.isVisible());
 	}
 
 	/**
@@ -847,23 +987,23 @@ class RunPanel extends JPanel
 	 * <p>All of this is detected rather than configured, which is the right default but leaves
 	 * the player no way to check what the plugin thinks it can see. Saying so is the whole of
 	 * the fix - and it also makes a wrong number diagnosable rather than merely wrong.
+	 *
+	 * <h2>What this deliberately no longer says</h2>
+	 *
+	 * It used to open with three paragraphs explaining that the table prices the seeds going in
+	 * rather than the crop you pick on the way round. That is the single most useful sentence
+	 * about this table and it was in the worst possible place: paragraph two of a thousand
+	 * characters, on a hover, above the part that actually changes.
+	 *
+	 * <p>So the explanation moved to {@link #caption}, where it is on screen without being asked
+	 * for, and the tooltip kept the half that varies - the level, the gear, the discount. A
+	 * tooltip is for "why is this number what it is"; a caption is for "what is this number".
 	 */
 	private String describeGear(int level, RunEstimate estimate)
 	{
 		FarmingBonuses carried = bonuses.current();
-		StringBuilder text = new StringBuilder(
-			"<html>Estimated yield and XP for the seeds this run plants, <b>from planting to "
-				+ "harvest</b> — worked out from your Farming level, gear, diaries, compost and "
-				+ "protection."
-				// The distinction people actually trip over. A herb run hands you a pack of
-				// snapdragons on the way round, and none of them are counted here: they grew from
-				// the seeds you planted last time. This run is the seeds going in now, and what
-				// they give you when you come back for them.
-				+ "<br><br>Not what you pick <i>during</i> the run. Clearing a patch harvests last "
-				+ "run's crop, which is already in the ground and owes nothing to the seeds you "
-				+ "are about to sow.<br><br>Harvest-only runs are the exception - there is no seed "
-				+ "going in, so they count the harvest award alone.<br><br>")
-			.append("At Farming level ").append(level).append(", with:<br>");
+		StringBuilder text = new StringBuilder("At Farming level ").append(level)
+			.append(", with:<br>");
 
 		text.append(carried.isMagicSecateurs()
 			? "&bull; magic secateurs (+10% yield)<br>"
@@ -886,38 +1026,19 @@ class RunPanel extends JPanel
 			// unlocks make disease-free.
 			text.append(String.format("<br>Discounted for disease: about %d%% of patches "
 					+ "should reach harvest.<br>Protected patches are already counted as "
-					+ "surviving.<br>",
+					+ "surviving.",
 				Math.round(estimate.getSurvivalChance() * 100)));
 		}
 
-		return text.append("</html>").toString();
-	}
+		// Harvest-only runs are the exception to the caption, and it is worth one line rather
+		// than a paragraph: there is no seed going in, so they count the harvest award alone.
+		if (anyHarvestOnly())
+		{
+			text.append("<br><br>Harvest-only lines count the harvest award alone - nothing is "
+				+ "being planted in those.");
+		}
 
-	@SuppressWarnings("unused")
-	private static String unusedGearSummary(FarmingBonuses carried, int level)
-	{
-		StringBuilder text = new StringBuilder("yield (xp) at level ").append(level);
-		if (carried.isMagicSecateurs())
-		{
-			text.append(", secateurs");
-		}
-		if (carried.isFarmingCape())
-		{
-			text.append(", cape");
-		}
-		if (carried.isAttas())
-		{
-			text.append(", attas");
-		}
-		if (carried.getOutfitBonus() > 0)
-		{
-			text.append(String.format(", outfit +%.1f%%", carried.getOutfitBonus() * 100));
-		}
-		if (!carried.isMagicSecateurs())
-		{
-			text.append(", no secateurs");
-		}
-		return text.toString();
+		return Tooltips.html(text.toString());
 	}
 
 	private Map<Seed, Integer> ownedSeeds()
@@ -929,12 +1050,4 @@ class RunPanel extends JPanel
 		}
 		return owned;
 	}
-
-	private static String formatNumber(double value)
-	{
-		return value >= 10_000
-			? String.format("%,dk", Math.round(value / 1000))
-			: String.format("%,d", Math.round(value));
-	}
-
 }

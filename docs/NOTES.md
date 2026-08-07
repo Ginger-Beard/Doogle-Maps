@@ -4,7 +4,7 @@ Everything this project has worked out, kept because the reasoning has repeatedl
 itself — the seed-box container lag, the four yield mechanics and the wrong-object-model
 sequence each cost real time to establish and would cost it again.
 
-Open work lives in `TODO.md`; in-client checks live in `TESTING.md`. This file is reference.
+Open work lives in `docs/TODO.md`; in-client checks live in `docs/TESTING.md`. This file is reference.
 
 ---
 
@@ -198,7 +198,12 @@ is the substantial one, and the only part of it still open is how a *diseased* p
   stretching `BorderLayout`, and invisible until the stats panel put one in a `BoxLayout` and
   it rendered nothing at all. `build/harvest-stats.png` is written by the test.
 
-- Geomancy bulk-refresh scrape (§4b) — **prep done, needs one in-client capture**.
+- Geomancy bulk-refresh scrape (§4b) — **research finished, feature dropped.** The capture this
+  entry was waiting on happened on 2026-08-05 and is decoded further down, under *"Geomancy
+  decoded"*. The feature was then dropped rather than built: the growth stage turned out not to be
+  readable in bulk, so a cast can never fill in a timer. `DEVELOPMENT.md` under *Roads not taken*
+  has the decision and what to re-read if it is ever revisited. Everything below is still accurate
+  and is why it would be an afternoon rather than a research problem.
 
   The interface is `InterfaceID.FARMING_VIEW` (group **179**), and RuneLite already names all
   **329** of its components — three per patch: `_BACK`, `_PIC`, `_FRONT`. So none of the
@@ -1670,12 +1675,10 @@ staff, and house teleport tabs for a jewellery box or portal nexus.
 3. `RunLoadout` — folds the six existing sources plus the two new tables into one list, each
    entry marked `WITHDRAW` / `HAVE` / `AT_LEPRECHAUN` / `MISSING`.
 4. `BankHighlightOverlay` — the same filled-outline treatment guided mode uses on inventory
-   items, in **two colours that mean opposite things**. Cyan says take this; amber says the
-   leprechaun already has it, so leave it and ask when you reach the patch. Marking the
-   leprechaun's items in the withdraw colour would have you banking compost you have a thousand
-   of on site; leaving them unmarked reads as the plugin having forgotten about compost. Hover
-   explains which is which, because a second colour with no explanation is a puzzle.
-   Anything already carried stays unmarked — a busy bank tells you less than a sparse one.
+   items. It marks **withdrawals and nothing else**; hover says why the item is on the list.
+   Anything already carried stays unmarked — a busy bank tells you less than a sparse one — and
+   so does anything the leprechaun holds, though that took a second pass to get to; see
+   *A highlight that means "don't"* below.
 5. **The best axe you can actually swing**, for runs with anything that needs chopping. A grown
    tree has to be cut and its stump dug before the patch can be replanted, and the leprechaun
    stores every farming tool *except* this one. Level-gated as well as tier-ordered: a dragon
@@ -2241,3 +2244,232 @@ once and cannot be forgotten by the next caller.
 
 The consumer-side caches were kept anyway, and deliberately: overlays render per *frame* rather
 than per tick, so those still spare fifty lock acquisitions a second on a now-synchronised method.
+
+---
+
+## Three ways the bank was saying things it did not mean
+
+All three found in one sitting at a bank, all three the same shape underneath: a signal that was
+technically correct and read as something else.
+
+### A highlight that means "don't"
+
+Bank items the leprechaun already stores — compost, buckets, tools — were marked in a second
+colour, amber against the withdraw colour's cyan, meaning *leave this and ask at the patch*. The
+reasoning was written down and sounded fine: leaving compost unmarked would read as the plugin
+having forgotten about compost.
+
+It does not survive contact with a bank. **A highlight over an item reads as take it**, whatever
+colour it is and whatever the hover says, because that is what every highlight in every plugin has
+ever meant. The amber wash over your ultracompost was a highlight arguing with itself, and it lost.
+The leprechaun's store is an errand *at the patch*, which is where the guide already talks about it.
+
+So `highlights()` returns withdrawals only. The loadout still knows the item is `AT_LEPRECHAUN` and
+the panel still says so — the bank just stays quiet. `guideLeprechaunColour` went with it: a
+setting whose only consumer is gone is worse than no setting.
+
+**The general rule:** a marker's meaning comes from the medium, not from the legend. If you need a
+second colour to mean the opposite of the first, the second one probably should not be drawn.
+
+### Highlighting a bank that was already filtered
+
+Highlighting and filtering answer the same question two ways — "these ones" out of the whole bank,
+and "only these". With both on, every slot on screen is already an item the run wants, so the
+highlight marked *the entire visible bank*: a wall of colour distinguishing nothing, over a bank
+that had already done the distinguishing.
+
+The overlay now stands down while the filter is applied, and the seed vault is highlighted
+regardless — nothing filters the vault, so its step sequence is the only thing pointing at the next
+seed. That split is why the check lives in `render` per container rather than as a single early
+return.
+
+Asked of `BankFilter.isFiltering()` rather than of `config.filterBankToRun()`, and the distinction
+matters: without Bank Tags the tag never opens, and the setting being on would then suppress the
+one marker there is. `isFiltering()` reports what Bank Tags actually did, which is already checked
+against `getActiveTag()` for exactly this kind of reason.
+
+### Ghost items in the filtered bank
+
+"I have no poison ivy in my bank but it's showing up dulled out in the filter list."
+
+A Bank Tags **layout slot is a reservation, not a filter result**. Bank Tags draws a faded stand-in
+for any laid-out item the bank does not hold, so you can arrange a tab around things you intend to
+own — sensible for a tab you built by hand, and wrong for a view generated from a run. Laying out
+the whole loadout put a ghost of every seed the run wanted and you did not have into the grid, and
+a dulled item is not reliably distinguishable at a glance from a real one.
+
+Which makes it the one failure a filter must never have: it looked like it was telling you that you
+own something. `BankLayout.build` now takes the bank's contents and places nothing else.
+
+Note that it resolves through `RunLoadout.bankFormsOf` rather than matching the loadout's own id —
+a loadout item names the *planted* form, so a tree crop would otherwise reserve a slot for a sapling
+you do not have while the seed you do have fell out of the grid. Same trap as *The bank filter hid
+the seeds it was there to show*, one layer along.
+
+The **filter** still includes everything the run touches, including what the leprechaun has. Hiding
+an item you own would say "you do not own this", which is the same lie in the other direction — and
+unlike a layout slot, the filter only ever shows things that are really there.
+
+---
+
+## A code review, and the three shapes the bugs came in
+
+A full pass over the source at the point the plugin was roughly feature-complete. What is worth
+recording is not the list of fixes — that is the diff — but that the bugs were not independent.
+They fell into three families, and each family had one root.
+
+### "A lock that protects the wrong thing"
+
+Four defects, all the same mistake: `synchronized` guarding a *reference handoff* rather than the
+*data*, which gives the reader a false sense of safety while giving them no guarantee at all.
+
+`PatchStateStore.get` was the serious one. It locked the map lookup and handed back the live
+`PatchSnapshot` — a `@Data` class with a setter per field, which `applyVarbit` rewrites in place.
+Every reader was then reading seven mutable fields with no lock, from the Swing thread and the
+client thread at once. `GrowthTimer.project` reads four of them as four separate loads, so a
+projection could pair the previous crop with the new stage, and a repaint landing mid-write could
+draw a patch that had briefly lost its compost. Nothing threw. It produced a wrong number in the
+almanac, rarely, and never the same way twice. It copies under the lock now.
+
+The others: `RunPlanner.active` and `atBankLeg` were written under the monitor and read through
+Lombok getters, which are not synchronised — no happens-before edge between a Swing-thread write
+and a client-thread read, which is every overlay asking "is a run on" every tick. Both are
+`volatile` now, which is what `ShortestPathIntegration` had been doing correctly one file over the
+whole time. And `survivalIn`/`survivalAcross` were `synchronized` over a *lambda constructor* — the
+keyword covered the allocation and left the store walk that runs later completely unguarded, which
+is the exact opposite of how it reads.
+
+**The general shape:** if a synchronised method's return value is a mutable object or a closure,
+the lock almost certainly ends where the method does. Ask what happens *after* the return.
+
+### "The cache is on the consumer, not the computation"
+
+This file already had the lesson written down, from the loadout work: *a cache on the consumer only
+helps that consumer; the cheap place is on the thing being computed.* It had not been applied to
+the two leaves that needed it most.
+
+`GrowthTimer.project` reached config **seven to fourteen times per patch** — once for auto-weed,
+then twice per `readOffsetSetting`, inside every `getOffsetSeconds`, inside each of the three or
+four `getTickTime` calls a projection makes. The panel projects every available patch and does it
+*twice* a refresh, because the summary line and the ready infobox each walk the whole list. The
+guide is worse: `computeStepsHere` runs every tick and its `patchesWanting` loops the stop's
+patches inside a loop over the same patches, so the Farming Guild's eleven patches are 121
+projections a tick on the client thread.
+
+None of it could change between those calls. The farm-tick offset is a per-account constant learned
+once by watching a crop advance. It is cached now, with `invalidate()` called from the profile load
+and from the two methods that write it.
+
+The four per-tick caches dotted around the overlays were all working around this.
+
+### "Presentation logic written where it is used"
+
+Every tooltip built its own HTML, so **none of them wrapped** — Swing lays an HTML tooltip out at
+its natural width and only a `width` on the body changes that. Nine builders, nine omissions, and
+the omission is invisible in the source: each one looked complete. `Tooltips` is now the one place
+that decides.
+
+Same shape elsewhere. Seven inline pluralisations meant one of them said *"+ 1 more hops"*. Thirteen
+config settings each given a `position` that was correct against the ones its author was looking at
+meant **nine of them collided**, and RuneLite breaks ties on display name — so the guided-run
+section rendered in an order nobody chose, with the four highlight settings scattered across four
+positions. `ConfigLayoutTest` now fails on a duplicate.
+
+### The one fix that was reverted, which is the most useful entry here
+
+`PlantingGroups.groupFor` is called per patch inside loops over patches, and `isSplit` walks the
+type's whole patch list — so it looked like the same problem as `GrowthTimer` and got the same
+treatment: a cache, invalidated from `ProtectedPatches`, availability and `ConfigChanged`, all of
+which do fire.
+
+`ProtectedTabTest.aLateUnlockAddsTheRunLineToo` failed anyway. It rebuilds the tab strip directly,
+which is a supported thing to do, and no signal reaches the cache on that path. The symptom would
+have been the protected herb tab and its run line silently failing to appear after an unlock.
+
+It was reverted, and the trade was bad on its own terms anyway: only herbs can split, so the walk
+is over ten to fourteen cheap flag lookups. `hasAnyProtected` now stops at the first protected patch
+instead of counting them all, which is the same win with no staleness to reason about.
+
+**The rule this suggests:** cache a computation when its inputs have exactly one writer each and
+that writer can invalidate. `GrowthTimer`'s offset qualifies. A value derived from three stores, a
+setting and another plugin's config key does not — and the cost of getting it wrong scales with how
+badly the failure reads, not with how often it happens. A patch quietly in the wrong group is worth
+more than any number of avoided lookups.
+
+---
+
+## The teleport list and the region table were answering different questions badly
+
+Two sources of teleports, which reasonably looked like duplication and was asked about directly:
+*"why do we have both the list and this hard coded list"*.
+
+They are not duplicates. `TeleportItems` is a table of **facts** — an Ardougne cloak reaches
+Ardougne — and only it can support the travel hint and the jewellery-box row highlighting. The
+setting is a **habit**: which of those you actually carry, which nothing can derive.
+
+The problem was the interaction. The bank offering came from the table alone, so the list could
+only ever *add*; cutting it down changed nothing, because every tablet you happened to own still
+turned up on the strength of the table knowing where it went. Meanwhile the setting's own
+description promised *"cut it down to the ones you actually use"*. The description was right about
+the intent and the code did something else.
+
+So the rule is now stated once and enforced in both places: **the list decides what, the table
+decides why.** An empty list still means "no opinion" and falls back to the table, which is what
+keeps the feature working for anyone who never opens the setting.
+
+The default was also derived from the table — every entry — which made drift impossible and the
+list useless, since a default of twenty-eight city tablets is not a habit anybody has. It is a
+curated thirteen now, which reintroduces exactly one risk: a name matching nothing fails
+*silently*, because entries resolve against bank item names. `everyDefaultTeleportIsOneTheTableKnows`
+covers that direction and deliberately not the other — the table knowing teleports the default
+leaves off is now the normal case rather than a fault.
+
+**Two entries were added to the table rather than left as bare names**, and the distinction is the
+one the table already draws with the Dramen staff. The **book of the dead** is a genuine teleport
+and a common way to reach the Hosidius patches — which is the whole of the claim. It is not the
+only one, since Xeric's talisman was already in the table for that region, and the table has no
+view on which is better: ranking routes would be advice, and the class comment is explicit that
+this table states facts and leaves the choosing to the player. The **rune pouch** names nowhere on
+purpose and is flagged
+`teleportsYou = false`: it is not a teleport, it is what makes your teleports castable, and which
+ones that turns out to be depends on the runes in it. Claiming a destination for it would be
+inventing one, and "use your rune pouch" is not an instruction anyone can follow.
+
+---
+
+## Compost on flowers, and the list I got wrong twice
+
+Reported as: flower patches can take compost, so why is there no dropdown. True, and the reason it
+was missing is worth keeping.
+
+`CropYieldModel.compostMatters` decided where the control appears, and it asked two questions: does
+compost raise this crop's **yield** (the lives mechanic — herbs, allotments, hops, giant seaweed),
+or is there a **published disease rate** for it. The second was the wrong test. Jagex publishes
+rates for herbs, fruit trees, maple, magic and coral and nothing else, so gating on it meant a
+flower grower could not ask for their patch to be treated at all — the run banked no buckets and
+the guide applied none. The mechanic is real; only our ability to *display* it was missing.
+
+So the rule became "can this patch catch a disease", and the projection still deliberately does not
+move for the unpublished ones. Inventing a rate to make the number wiggle would be worse than the
+gap it fills.
+
+### The part worth remembering
+
+I wrote the diseaseable list out by hand from a wiki summary, and it was wrong — twice. It missed
+**calquat** and **redwood**, and it was only caught because the question was asked again.
+
+The plugin already knew. `ProtectionPayment` has entries for both — 8 poison ivy berries for the
+calquat gardener, 6 dragonfruit for the redwood one — and **nobody pays to prevent something that
+cannot happen**. A protection payment is proof of a disease risk, from a table that is already
+maintained against the wiki.
+
+`RunOptionCoverageTest.everyPatchTypeWithAProtectionPaymentCanBeDiseased` now asserts that
+direction, and it was checked to actually fail with calquat removed rather than being assumed to
+work. The reverse is not asserted and must not be: herbs and flowers can be diseased and no farmer
+will watch them at any price.
+
+**The general shape:** when a hand-written list has to agree with a fact, look for a table that
+already encodes that fact for another purpose. Deriving from it beats restating it, and where the
+derivation cannot be total — spirit trees are tended for three different items, which
+`ProtectionPayment` has no way to express — a one-directional assertion still catches the class of
+error that actually happens.

@@ -112,6 +112,7 @@ public class GuideStepOverlay extends OverlayPanel
 			appendSteps(status.getSteps());
 		}
 
+		appendSkipped(status);
 		appendContractNote(status);
 
 		sizeToContent(graphics);
@@ -119,7 +120,12 @@ public class GuideStepOverlay extends OverlayPanel
 	}
 
 	/**
-	 * "Farm run", plus where you are when that is known.
+	 * Where you are, then what this panel is.
+	 *
+	 * <p>The place first. This title is the only line that persists across every step at a stop,
+	 * so it is the one answering "where am I in this run" — and it used to read
+	 * {@code Farm run (Catherby)}, which puts that answer in a parenthesis at the end. A
+	 * parenthesis is a label; the dash makes it a phrase, and it leads with the half worth reading.
 	 *
 	 * <p>Only while at a stop. Between them the location is the destination, which the first line
 	 * already gives — saying it twice would just be noise.
@@ -128,7 +134,7 @@ public class GuideStepOverlay extends OverlayPanel
 	{
 		return status.getLocation() == null
 			? "Farm run"
-			: "Farm run (" + status.getLocation() + ")";
+			: status.getLocation() + " - farm run";
 	}
 
 	/**
@@ -190,6 +196,24 @@ public class GuideStepOverlay extends OverlayPanel
 		}
 	}
 
+	/**
+	 * What this stop is passing over, in grey, above the contract note.
+	 *
+	 * <p>Same treatment as the contract note and for the same reason: it is information, not a
+	 * step, so it must not look like the next thing to click. Above it because a skipped patch is
+	 * about the stop you are standing in, and the contract note is about the trip.
+	 */
+	private void appendSkipped(GuideStatus status)
+	{
+		for (String line : status.getSkipped())
+		{
+			for (String wrapped : wrap(line, NOTE_WRAP))
+			{
+				line(wrapped, java.awt.Color.GRAY);
+			}
+		}
+	}
+
 	/** Characters per line for the contract note, chosen to sit inside {@link #MAX_WIDTH}. */
 	private static final int NOTE_WRAP = 44;
 
@@ -218,20 +242,53 @@ public class GuideStepOverlay extends OverlayPanel
 		return lines;
 	}
 
-	/** The instruction for the patch in front of you, and what else is left here. */
+	/**
+	 * The instruction for the patch in front of you, and what else is left here.
+	 *
+	 * <p>"then" on the first follow-up only. It joins two clauses, which is what it is for; put in
+	 * front of every line it stops being a word and becomes a bullet, and four consecutive lines
+	 * reading "then rake / then compost / then plant" are harder to scan than the bare list they
+	 * are pretending not to be.
+	 */
 	private void appendSteps(List<GuideStep> steps)
 	{
 		line(steps.get(0).getText(), java.awt.Color.WHITE);
 
-		for (int i = 1; i < steps.size() && i <= MAX_FOLLOWING; i++)
+		for (int i = 1; i <= shown(steps.size() - 1); i++)
 		{
-			line("then " + uncapitalise(steps.get(i).getText()), java.awt.Color.LIGHT_GRAY);
+			String text = uncapitalise(steps.get(i).getText());
+			line(i == 1 ? "then " + text : "     " + text, java.awt.Color.LIGHT_GRAY);
 		}
 
-		int hidden = steps.size() - 1 - MAX_FOLLOWING;
+		appendOverflow(steps.size() - 1, "more here");
+	}
+
+	/**
+	 * How many follow-ups to draw, given that collapsing the tail is not always a saving.
+	 *
+	 * <p>A "+1 more" line occupies exactly the line the step itself would have occupied, so
+	 * collapsing a single overflow trades a real instruction for a note that one exists — the same
+	 * height, strictly less said. It only buys space from two hidden onward, so one over the limit
+	 * is simply drawn.
+	 */
+	private static int shown(int following)
+	{
+		return following <= MAX_FOLLOWING + 1 ? following : MAX_FOLLOWING;
+	}
+
+	/**
+	 * The "+ N more" line, when there is more than one to hide.
+	 *
+	 * <p>Shared by the step list and the transport list because both had the same off-by-one
+	 * wording bug in it: the transports read "+ 1 more hops" whenever exactly one was over.
+	 * Answering "how many are hidden" in one place is what stops the two drifting again.
+	 */
+	private void appendOverflow(int total, String noun)
+	{
+		int hidden = total - shown(total);
 		if (hidden > 0)
 		{
-			line("+ " + hidden + " more here", java.awt.Color.GRAY);
+			line("+ " + hidden + " " + noun, java.awt.Color.GRAY);
 		}
 	}
 
@@ -256,9 +313,12 @@ public class GuideStepOverlay extends OverlayPanel
 	 */
 	private void appendTravel(GuideStatus status)
 	{
-		if (status.isAtBankLeg())
+		if (status.isAtBankLeg() && !status.getSupplies().isEmpty())
 		{
-			line("Collect your supplies.", java.awt.Color.WHITE);
+			// "Withdraw:" rather than "Collect your supplies." — the list of supplies is the very
+			// next thing on the panel, so the sentence was naming its own object one line early.
+			// A heading over a list reads as what it is, and is three words shorter.
+			line("Withdraw:", java.awt.Color.WHITE);
 			// What to take, which used to be a block of text in the sidebar. It belongs with the
 			// instruction to go and get it rather than on a panel you are not looking at while
 			// standing at a bank.
@@ -266,6 +326,17 @@ public class GuideStepOverlay extends OverlayPanel
 			{
 				line(supply, java.awt.Color.LIGHT_GRAY);
 			}
+		}
+		else if (status.isAtBankLeg())
+		{
+			// A supply leg with nothing under the heading. It happens for a real reason — the run
+			// opens at a bank when it cannot tell what it needs, which is what having no seed
+			// picked for anything looks like from here — but "Withdraw:" with nothing after it
+			// reads as the panel having failed to load.
+			//
+			// So it says what is true instead. The trip is still worth making: the bank is where
+			// you would go to sort this out.
+			line("Open the bank - nothing is picked for this run yet.", java.awt.Color.WHITE);
 		}
 		else if (status.getDestination() != null)
 		{
@@ -286,15 +357,12 @@ public class GuideStepOverlay extends OverlayPanel
 		// installed, or before it has found a path — both of which are ordinary, so there is no
 		// message for either.
 		List<String> transports = status.getTransports();
-		for (int i = 0; i < transports.size() && i < MAX_FOLLOWING; i++)
+		for (int i = 0; i < shown(transports.size()); i++)
 		{
 			line("via " + transports.get(i), config.guideHighlightColour());
 		}
 
-		if (transports.size() > MAX_FOLLOWING)
-		{
-			line("+ " + (transports.size() - MAX_FOLLOWING) + " more hops", java.awt.Color.GRAY);
-		}
+		appendOverflow(transports.size(), "more hops");
 	}
 
 	/**

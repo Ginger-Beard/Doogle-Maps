@@ -581,6 +581,23 @@ Settings → Guided run → *Filter the bank to this run*.
   the bank is open** restores everything immediately, without needing to reopen.
 - **Pass**: it shows everything the run touches, not only what is missing — including items the
   leprechaun holds, so you can see they are there and leave them.
+- **Pass, and check this one carefully**: every item in the filtered bank is an item you actually
+  own. **No dulled or faded entries.** A Bank Tags layout slot is a reservation and Bank Tags
+  fills an unfillable one with a faded stand-in, so laying out the whole loadout put a ghost of
+  every seed the run wanted and you did not have into the grid — a dulled poison ivy seed for
+  someone with none, which reads as the filter claiming they have one. The layout now places only
+  what the bank holds. What is missing is missing, and the panel is where you see that.
+- **Pass**: with filtering on, the bank items are **not** also highlighted. Both features answer
+  the same question, so running both marks the entire visible bank — a wall of colour over a bank
+  that had already narrowed itself. Turn filtering off with the bank open and the highlighting
+  comes straight back.
+- **Pass**: the **seed vault** is still highlighted with filtering on. Nothing filters the vault,
+  so its one-at-a-time step sequence is the only thing pointing at the next seed. Fail signature:
+  the vault goes dark when you switch filtering on — the stand-down is meant to be per container.
+- **Pass**: nothing in the bank is marked in a second colour. Compost and buckets the leprechaun
+  is holding used to be marked amber for "leave this"; they are now not marked at all, because a
+  highlight over an item reads as *take it* whatever colour it is. He still shows up in the panel
+  and in the guide at the patch, which is where the errand actually is.
 - **On by default now**, having spent a long time off. The reason it was off still describes the
   risk — a wrong highlight is ignorable, a wrong filter *hides* things — but being off proved
   undiscoverable, and overflow no longer disappears. Highlighting is unaffected either way.
@@ -874,7 +891,7 @@ per stop. On a 28-stop run that was around a hundred synchronised replans a tick
 
 Reported from play as ending up with far too many of the second seed. Every picked seed asked the
 bank for a **full** patch count, so two herbs over eight patches wanted eight of each — two runs'
-worth for a one-run trip. `TODO.md` had it listed as a known open bug.
+worth for a one-run trip. `docs/TODO.md` had it listed as a known open bug.
 
 - **Pass**: pick two herb seeds with, say, four actionable herb patches. The loadout asks for
   **four seeds in total** across the two, not four of each.
@@ -1100,10 +1117,237 @@ walks the same stores the panel does.
 
 - ~~**A diseased patch, with Geomancy cast within ~20 minutes.**~~ **Done, 2026-08-05.** Caught
   on a cast with a dead patch and a healthy one of the same crop in the same snapshot, which is
-  what made it decodable rather than guessable. The whole rendering is in `NOTES.md`.
+  what made it decodable rather than guessable. The whole rendering is in `docs/NOTES.md`.
   The probe is switched off again — it is a development aid, not a feature, and it writes a
   ~1MB dump per cast. Turning it off now takes effect immediately rather than at the end of the
   cast in flight.
 - **The rename decision**: Farmers Almanac / Farmer's Almanac / Farmers' Almanac. It lands in
   the descriptor, the repo name and the Hub listing. Never rename the config group
   `dooglemaps` — that orphans the harvest history, the one thing that does not come back.
+
+### 1a-xviii. After the code review — what to look at in the client
+
+Mostly things automated tests cannot see. The correctness fixes are covered by the suite; these are
+the ones that need eyes.
+
+- **Settings → Guided run reads in a sensible order.** Pass: *Guide me through a run*, *Include the
+  farming contract*, then the four bank settings together, then the four highlight settings
+  together (style, colour, thickness, feathering), then the three "things the client cannot detect"
+  at the bottom. It used to render with the highlight settings split across four positions and the
+  bank layout map separated from the filter it depends on — thirteen settings shared seven
+  positions and RuneLite breaks ties alphabetically. `ConfigLayoutTest` fails the build on a repeat.
+- **Hover anything.** Pass: every tooltip wraps to a readable column. **Fail signature**: one long
+  line running off the side of the client. The worst were the reward table's gear breakdown, the
+  Stats headline and a patch's progress bar. Nothing sets its own width now — see `Tooltips`.
+- **The reward table has a caption under it**: *"Counts the seeds going in, not what you pick on the
+  way round."* That sentence used to be paragraph two of a thousand-character hover, which is to say
+  invisible. It appears and disappears with the table.
+- **A patch tooltip's bonus list is bullets, not a sentence.** Pass: *"At level 80, with:"* then one
+  line per bonus. The line that matters is *"no diary here yet"* — it explains why two identical
+  patches differ, and as the fourth clause of a run-on sentence nobody read it.
+- **The on-screen step panel.**
+  - Pass: with exactly one step over the limit it shows **the step**, not *"+ 1 more here"*. The
+    collapse line costs the same height as the step it hides, so it only earns its place from two
+    onward. Same for *"via …"* transports, which also used to read *"+ 1 more hops"*.
+  - Pass: follow-ups read *"then rake the patch"* and then bare lines, not *"then"* four times.
+  - Pass: the title reads *"Catherby - farm run"*, place first.
+  - Pass: at the bank the heading is *"Withdraw:"* above the list, not *"Collect your supplies."*
+    followed immediately by the supplies.
+- **Almanac rows still show the right compost badge and state while a patch changes.** Pass: nothing
+  flickers or shows a stale badge as a crop advances. `PatchStateStore` now hands out copies rather
+  than the live object every reader was sharing with the capture thread — if anything looks
+  *different* here, that difference was the race.
+- **Stop a run with the bank open.** Pass: highlighting stops immediately, every time. The run flags
+  are `volatile` now; before, a Swing-thread write had no guaranteed visibility to the client thread
+  that reads them, so this was intermittent by construction.
+- **Hide a location, then check another tab.** Pass: its patches are gone from every tab and from
+  the "Patch status (n/m)" counts. The 36-case region-to-setting switch is now derived from the
+  region name, so a region added by Jagex cannot get a toggle that silently does nothing.
+
+### 1a-xix. Seed vault, withdraw counts, and the leprechaun's buckets
+
+Four reports from play, all needing in-client eyes.
+
+- **The vault only points at seeds that are in the vault.** Pass: standing at the seed vault with,
+  say, ranarr in your *bank* and nothing relevant in the vault, **nothing is highlighted**. Was:
+  the step sequence picked any seed marked "withdraw" — which mostly means the bank — failed to
+  find it among the vault's contents, and fell through to outlining the Herb category. That points
+  at a drawer to fetch something not in it, and then stays there forever, because the step can
+  never be satisfied from the vault.
+- **The category is outlined when the seed is in another one.** Pass: with a run seed genuinely in
+  the vault but its category not on screen, that category's label is boxed.
+  - **This is the one that most needs checking**, because the fix was made without being able to
+    see the widget tree. Only `CATEGORY_LIST` and `LEFT_LIST` were searched, and the labels are not
+    in them; the search now covers `CATEGORY_HEADERS`, `TEXT_LIST` and `CATEGORY_LINES` too, and
+    walks four levels deep rather than one, because a list row usually holds its text in a child.
+  - **Fail signature**: still nothing. `client.log` at debug now says *"No widget in the seed vault
+    is labelled X"*, once per seed, which distinguishes "we looked and the label is not there" from
+    "we never looked". If that line appears, the label lives somewhere else again and the fix is
+    another id in `CATEGORY_LISTS` — not more depth.
+- **Seeds and payments carry a number.** Pass: a marked seed or protection payment shows how many
+  to take, in the game's stack-count yellow, under the slot's own quantity. Only those two, and
+  only above one — everything else on the list is "bring the thing you own", and a "1" over each
+  would be four more numbers and no decisions. The number that earns this is the payment: four
+  magic trees is a hundred coconuts, and getting it wrong is discovered at the fourth tree.
+- **Empty buckets highlight *your* inventory, not his store.** Pass: at the leprechaun with empties
+  in your pack, the buckets **in your inventory** are outlined. Was: his store's bucket slot, which
+  lights up the thousand he is already holding — reading as "take these" at the exact moment the
+  instruction is "give him yours".
+  - Worth knowing this assertion has now been wrong twice in opposite directions, and the reason:
+    the first fix reasoned from *which interface opens*. His store does open, and it does list his
+    contents, but the click is on your own inventory underneath it. The interface being open and
+    the grid being clicked are different questions.
+  - `LeprechaunErrandOrderTest` pins all three leprechaun steps now — note, buckets, withdraw —
+    rather than only the two that were in dispute.
+
+### 1a-xx. Harvest-only loadouts, and the supply leg as two independent jobs
+
+- **A harvest-only run asks for nothing to plant.** Pass: tick *Fruit tree (H/O)* and the loadout
+  offers **no saplings, no compost, no protection payments** — only the things you still want on a
+  picking trip, which is the axe for a dead tree, the teleports, and the seed box and herb sack for
+  what you bring home. Was: palm saplings, because the planner correctly narrows a harvest-only
+  stop to ripe patches and the loadout then read "four fruit tree patches" as four patches to plant
+  in. Nothing in the loadout had ever been told the difference.
+- **The bank and the seed vault are separate jobs, in either order.** Pass: the step panel lists
+  *"From the bank: …"* and *"From the seed vault: …"* as two lines. Was: everything under
+  *"From the bank:"* regardless — which names the wrong container, and reads as one task, so
+  opening the bank looked like the whole of it.
+- **Opening a bank no longer ends the leg.** Pass, and this is the one worth testing carefully:
+  with your seeds in the **vault**, standing in the Farming Guild, open the bank chest and withdraw
+  the payments. The run must **stay** on the supply leg until the seeds come out of the vault too.
+  Was: the first bank container event ended the leg outright, so the vault three steps away never
+  got its turn and the run walked to the patches with nothing to plant.
+  - It completes on withdrawal from **either** container, and the tick drives the check, because
+    nothing about the vault fires a bank event.
+  - **Fail signature to watch for**: the run *never* leaving the bank. That is the failure mode of
+    this fix and it was caught in review — "no seed picked for anything" makes the trip needed but
+    is not a state banking resolves, so the leg's condition is deliberately narrower than the one
+    that decides whether to open at a bank at all. `RunPlannerTest` pins both directions.
+- **Something you own nowhere is announced, not waited for.** Pass: with a picked seed you have
+  none of, the panel says *"Skipping ranarr seed - you have none."* and the run proceeds. Was
+  *"Not found anywhere: …"*, which left you to work out what the run would do about it — and the
+  answer, carrying on without it, is the part worth stating.
+
+### 1a-xxi. Protected patches, finished contracts, and the teleport list
+
+- **Switching every protected patch off does not delete the tab.** Pass: on the protected herb
+  tab, switch off every row. It reads **0/N**, the rows stay visible washed red, and clicking one
+  puts it back. Was: **0/0** with nothing to click, and the patches reappeared under ordinary
+  herbs — because the split's existence was counted from *available* patches, so switching them
+  all off made the group stop existing, which moved them to the plain group, which is why they
+  "popped back up in the regular herbs". A switched-off patch is a choice within a group and must
+  never be able to delete the group.
+- **A finished contract asks for no seed.** Pass: with a grown cactus contract, start a run with
+  only the contract ticked. The loadout asks for **no cactus seed** — the trip is harvest, hand in,
+  take the next one, and only then is there anything to plant. Was: withdraw a cactus seed, for a
+  cactus standing there finished.
+  - The check is *what is actually growing in the guild patch*, not the hand-in flag. A contract
+    that ripened while you were logged out sends no chat message so nothing captured it, but the
+    patch is full either way.
+  - **Pass, the loop**: hand in, take the next contract, and its seed appears on the same trip
+    without restarting the run — taking the contract moves its patch into the contract group
+    immediately, so the loadout picks it up on the next tick.
+- **The teleport list is a filter, not a supplement.** Pass: with a short list, the bank offers
+  **only** those teleports even for teleports the plugin knows reach your stops. Was: the table
+  offered per-region teleports regardless, so cutting the list down changed nothing — while the
+  setting's own description said "cut it down to the ones you actually use".
+  - The travel hint follows the same list. A hint naming something the loadout never told you to
+    bring is an instruction you cannot follow.
+  - An empty list still means "no opinion" and falls back to everything the table knows.
+- **New defaults.** Bank layout is three rows of seeds and three of gear, using all eight rows;
+  the teleport list is thirteen items rather than all twenty-eight. **Existing installs keep what
+  they have** — a default only applies where nothing is stored, so anyone who has edited either
+  setting is unaffected.
+
+### 1a-xxii. Layout separators, the contract chain, and compost on flowers
+
+- **The bank layout map accepts what you were shown.** Pass: paste
+  `TTT.SSSS\nTTT.SSSS\n...` (with literal backslash-n) into the layout setting and it lays out
+  identically to the real-newline form. Also `/` between rows, and a stray trailing `\` on a row.
+  - The cause is worth knowing: RuneLite stores settings in a `.properties` file, where
+    `Properties.store` writes a real newline as the two characters `\n`. That round-trips
+    correctly — so the setting *worked* — but the escaped form is what you see, and typing it back
+    failed silently: eight rows became one 71-character row, validation rejected it, and it fell
+    back to the default with only a log line. Confirmed by reading the stored value directly.
+- **A finished contract is harvested before it is handed in.** Pass: with a grown cactus contract,
+  the guide says **pick the cactus first**; the hand-in appears only once the patch is empty. Was:
+  "hand your cactus spine to Guildmaster Jane" while the cactus was still in the ground — an
+  instruction that walks you past the thing she wants.
+- **The contract patch stays first even after it finishes.** Pass: with herb, herb (protected) and
+  the contract all ticked, arriving at the guild puts the **contract patch first**, not the herbs.
+  Was: herbs first, because the completion message clears the contract key and the ordering rule
+  asked `hasContract()` — so the patch lost its priority at exactly the moment it mattered.
+- **Jane comes before the rest of the guild.** Pass: once the contract patch is clear, the hand-in
+  and "ask for a new contract" jump to the **front** of the step list, ahead of the guild's other
+  patches. That is what makes the chain fit in one trip: hand in, take the next, plant it. The old
+  rule put both last, so every herb done first was a step further from starting a chain whose last
+  link expires when you leave.
+  - **Now fixed**: the run does divert back for the new contract's seed. See 1a-xxiii.
+- **Flower patches offer compost.** Pass: the flower tab has a *Treat with* dropdown, the run banks
+  the buckets, and the guide applies them. Flowers can be diseased and compost cuts the chance by
+  50/80/90% like anywhere else — the control was hidden because the plugin gated it on whether a
+  *published rate* exists, which is a different question. Same fix reaches bushes, cacti, hardwood,
+  celastrus, spirit trees, mushrooms and belladonna, all of which had the same gap.
+  - **Pass**: the note under it reads *"Lowers disease chance, which is the only protection these
+    get - no farmer will watch them. The projection cannot show it: the rate is unpublished."* The
+    projection deliberately does not move: Jagex publishes rates only for herbs, fruit trees, maple,
+    magic and coral, and inventing one would be a made-up number.
+
+### 1a-xxiii. The tree contract chain, end to end
+
+Six defects, all found from one reported session: a yew contract taken in the Farming Guild with a
+grown, unchecked magic tree standing in the patch it wanted. Worth running as one sequence, because
+that is how they were found and each one hid the next.
+
+**Setup**: hand in a contract, take one for a tree crop, with a grown but **unchecked** tree of a
+different crop in the guild's tree patch. Tick Farming contract. Keep the sapling in the seed vault
+and the axe and payments in the bank.
+
+- **The bank and the vault are both outlined, and the line goes to one of them.** Pass: whichever
+  the path is drawn to is highlighted; if the trip needs both, both are lit.
+  - Was: the seed vault outlined and every bank booth dark, while Shortest Path drew the line to
+    the guild's bank chest. `GuideOverlay.marks` enforced "the vault or the banks, never both" —
+    true when written, and untrue since `supplyTargetsFor` was changed to hand over both. The unit
+    test asserted the broken rule, so the suite agreed.
+  - **Fail signature**: two lit places when the run only wants one → `getSupplySources` is
+    reporting a source nothing needs; check the `Run planned:` line for what it thinks is short.
+- **The contract's sapling is on the withdraw list under the right container.** Pass: *"From the
+  seed vault: yew."* Was: *"From the bank: yew"*, with the vault outlined — the loadout and the
+  planner resolving the same question two different ways.
+- **The run will not leave the bank without the axe or the payments.** Pass: the supply leg stays
+  open until the axe and the cactus spine are in the pack. Teleports and yield gear must **not**
+  hold it — leaving those behind is a choice, and being pinned at a bank for one would be the
+  plugin refusing to let you play.
+  - Was: the leg ended on seeds and bank-only tools alone. `ToolNeeds` has never known about axes,
+    so a tree contract could close the leg and send you to check a grown tree bare-handed.
+- **The tree gives three instructions, not one repeated forever.** Pass, in order:
+  *"Check the health of the magic."* → *"Chop down the magic."* → *"Dig up the magic stump."* →
+  compost → plant the yew.
+  - Was: *"Harvest the magic."* at the checked tree, *"Harvest the magic."* again at the stump, and
+    for ever after. The game gives those two states different varbit values (61 and 62 for magic)
+    and `PatchRules` decodes them identically — same crop, same `HARVESTABLE`, same stage. Nothing
+    the player clicked changed the state being tested, so the patch never came out and the stop
+    never finished.
+  - The table is **generated** from RuneLite core and could not be edited, so the difference is
+    derived from its shape instead: a stump is a stage-0 harvestable value whose two predecessors
+    are the checked tree and the growing one. `TreeStumpTest` walks every value of every patch,
+    including the six-wide willow block at 192–197 that broke the first version of the rule.
+  - **Fail signature**: told to dig a bush or a fruit tree you have picked once → the stump rule has
+    escaped its guard onto a family with counting harvest states.
+  - **Also check**: a *harvest-only* tree run stops after the chop and leaves the stump standing. It
+    should not offer to dig, and the stop should still finish.
+- **Nothing you are already carrying is on the withdraw list.** Pass: teleports, cloaks and rings in
+  your pack read as held, on a fresh login **and** after enabling the plugin mid-session without
+  touching anything.
+  - Was: `CarriedItems` was fed only by container events, and the client re-sends a container when
+    it *changes* — so a pack nobody had touched was never described, and everything in it read as
+    missing. It cleared as soon as any item moved, which is what made it look like a display glitch.
+  - **This is the one to test by toggling the plugin off and on while standing still**, since that
+    is the case that was broken and the one a normal session never reproduces.
+- **The house tablet is offered at all.** Pass: with the default teleport setting, a banked
+  *Teleport to house* appears on the list.
+  - Was: never, for anyone who had not edited the setting. The default shipped the name
+    *"Teleport to house tablet"*; the game calls the item *"Teleport to house"*, and a name matching
+    nothing fails silently by design. Settings entries are matched against our own labels as well as
+    the game's now, which also fixes *"Skills necklace"* against `Skills necklace(6)` and
+    *"Rune pouch"* against `Divine rune pouch`. Locked (trouver) pouches are in the table too.

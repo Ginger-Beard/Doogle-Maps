@@ -95,7 +95,7 @@ class HarvestStatsPanel extends JPanel
 	private String describeTotals(int harvests)
 	{
 		StringBuilder text = new StringBuilder();
-		text.append(harvests).append(harvests == 1 ? " patch, " : " patches, ")
+		text.append(Plurals.of(harvests, "patch, ", "patches, "))
 			.append(stats.getTotalItems()).append(" items, ")
 			.append(DataTable.shortNumber(stats.getTotalXp())).append(" xp.");
 
@@ -127,11 +127,13 @@ class HarvestStatsPanel extends JPanel
 
 	private String accuracyTooltip()
 	{
-		return "<html>Compares what you actually harvested against what the plugin predicted for"
-			+ " those same patches.<br>Each patch was predicted using the level, compost and gear"
-			+ " in play at the time, so the totals compare like with like.<br><br>Patches you"
-			+ " walked away from are counted in the item totals but kept out of the averages -"
-			+ " a half-picked patch is not a low yield.</html>";
+		// All three sentences earn their place - the last one is the only explanation of why
+		// "got" does not equal n x "avg" - so this is wrapped rather than cut.
+		return Tooltips.html("Compares what you actually harvested against what the plugin"
+			+ " predicted for those same patches.<br><br>Each patch was predicted using the level,"
+			+ " compost and gear in play at the time, so the totals compare like with like."
+			+ "<br><br>Patches you walked away from are counted in the item totals but kept out of"
+			+ " the averages - a half-picked patch is not a low yield.");
 	}
 
 	private void rebuildTable()
@@ -183,9 +185,9 @@ class HarvestStatsPanel extends JPanel
 	 */
 	private String cropTooltip(CropHarvestStats crop, List<CropHarvestStats> tiers)
 	{
-		StringBuilder text = new StringBuilder("<html><b>").append(crop.getCrop())
+		StringBuilder text = new StringBuilder("<b>").append(crop.getCrop())
 			.append("</b><br>").append(crop.getHarvests())
-			.append(crop.getHarvests() == 1 ? " patch picked clean" : " patches picked clean");
+			.append(Plurals.pick(crop.getHarvests(), " patch picked clean", " patches picked clean"));
 
 		if (crop.getHarvests() > 0)
 		{
@@ -215,11 +217,11 @@ class HarvestStatsPanel extends JPanel
 				text.append("<br>&bull; ").append(tierName(tier.getCompost())).append(": ")
 					.append(format(tier.getAverageYield())).append(" avg over ")
 					.append(tier.getHarvests())
-					.append(tier.getHarvests() == 1 ? " patch" : " patches");
+					.append(Plurals.pick(tier.getHarvests(), " patch", " patches"));
 			}
 		}
 
-		return text.append("</html>").toString();
+		return Tooltips.html(text.toString());
 	}
 
 	/** The tier's display name, falling back to whatever was stored if it no longer exists. */

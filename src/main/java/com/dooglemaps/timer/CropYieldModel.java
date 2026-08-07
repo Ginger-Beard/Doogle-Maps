@@ -196,6 +196,16 @@ public final class CropYieldModel
 	 */
 	public static boolean compostMatters(PatchImplementation type)
 	{
+		// Whether it does something in the game, not whether the projection can show it. Asking
+		// isRiskKnown alone hid the dropdown on flowers — a patch that can be diseased and that
+		// compost genuinely protects — because Jagex has never published a flower rate. The player
+		// could then not ask for their flowers to be treated at all, so the run banked no buckets
+		// and the guide applied none. See DiseaseRisk.canCatchDisease.
+		if (DiseaseRisk.canCatchDisease(type))
+		{
+			return true;
+		}
+
 		for (Seed seed : Seed.forPatchType(type))
 		{
 			if (respondsToCompost(seed) || DiseaseRisk.isRiskKnown(seed.getProduce()))

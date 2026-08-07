@@ -79,6 +79,9 @@ public class GuideTracker
 	/** For the contract toggle, which is a suggestion rather than a rule. */
 	private final com.dooglemaps.DoogleMapsConfig config;
 
+	/** The game's own chatbox, for the one thing worth saying there. See contractNote. */
+	private final net.runelite.client.chat.ChatMessageManager chat;
+
 	@Inject
 	private GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -86,8 +89,10 @@ public class GuideTracker
 		LeprechaunStore leprechaun, BarbarianFarming barbarianFarming, BankContents bank,
 		PlayerHouse house, PlantingGroups groups, ProtectionSelectionStore protection,
 		com.dooglemaps.state.RunTypeStore runTypes, com.dooglemaps.bank.RunLoadout loadout,
-		ContractState contracts, com.dooglemaps.DoogleMapsConfig config)
+		ContractState contracts, com.dooglemaps.DoogleMapsConfig config,
+		net.runelite.client.chat.ChatMessageManager chat)
 	{
+		this.chat = chat;
 		this.contracts = contracts;
 		this.config = config;
 		this.loadout = loadout;
@@ -159,7 +164,11 @@ public class GuideTracker
 		status = new GuideStatus(steps, planner.isActive(), planner.isAtBankLeg(),
 			remaining.size(), new ArrayList<>(planner.getCurrentTransports()),
 			destination, hint, here == null ? null : here.getName(), supplyLines(),
-			planner.isActive() ? contractNote(here) : null);
+			planner.isActive() ? contractNote(here) : null,
+			planner.isActive() ? skipped : java.util.Collections.emptyList(),
+			planner.isActive() && planner.isAtBankLeg()
+				? planner.getSupplySources()
+				: java.util.Collections.emptySet());
 	}
 
 	/**
@@ -175,7 +184,7 @@ public class GuideTracker
 		{
 			return java.util.Collections.emptyList();
 		}
-		return com.dooglemaps.bank.LoadoutSummary.forItems(loadout.forRun(runTypes.getSelected()));
+		return com.dooglemaps.bank.LoadoutSummary.forItems(loadout.forRun(planner.coveredTypes()));
 	}
 
 	/**
@@ -220,10 +229,89 @@ public class GuideTracker
 		workingRegion = -1;
 		lastRegion = -1;
 		loggedErrandsAt = null;
+		announcedBlock = null;
+		skippedSteps.clear();
+	}
+
+	/**
+	 * Steps the player has waved past, as {@code patchKey#ACTION}.
+	 *
+	 * <h2>Why a step can be skipped at all, when nothing here is stored</h2>
+	 *
+	 * Everything else in guided mode is derived from the world, deliberately, so that a player
+	 * doing things out of order cannot get out of step with it. A skip is the one thing that
+	 * <b>cannot</b> be derived: "I do not want to do this" is not a fact about the patch, and the
+	 * world looks identical either way.
+	 *
+	 * <p>Kept as narrow as possible to limit the damage. It records the <i>action at a patch</i>
+	 * rather than a position in a list, so it cannot drift the way a step index would — and it
+	 * expires by itself, because the moment the patch changes state that action stops being
+	 * generated and the entry simply never matches again. Cleared with the run.
+	 *
+	 * <p>Concurrent because the button is pressed on the Swing thread and the filter runs on the
+	 * client thread.
+	 */
+	private final java.util.Set<String> skippedSteps =
+		java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
+
+	/**
+	 * Passes over whatever is currently being asked for.
+	 *
+	 * <p>The escape hatch for the cases the guide cannot know about: a patch you have decided to
+	 * leave, a tool you are not going to fetch, a payment you would rather not make. Without it the
+	 * only way past a step you disagree with is to do it.
+	 *
+	 * <p>Skips the <i>step</i> rather than the patch, so the rest of that patch's work still
+	 * appears — waving past "pay the farmer" should still leave you told to plant.
+	 */
+	public void skipCurrentStep()
+	{
+		GuideStep step = getCurrentStep();
+		if (step == null)
+		{
+			return;
+		}
+
+		skippedSteps.add(keyOf(step));
+		log.debug("Skipped {} at {}", step.getAction(), step.getPatch().getDisplayName());
+	}
+
+	/** Whether anything is currently being asked for, so the button can disable itself. */
+	public boolean hasCurrentStep()
+	{
+		return getCurrentStep() != null;
+	}
+
+	/**
+	 * What a patch still wants, with anything waved past removed.
+	 *
+	 * <p>The single place skips are applied, because three separate questions depend on the answer
+	 * and they have to agree: which patch is being worked, whether the stop can finish, and what
+	 * the panel lists. Filtering in only one of them was the obvious first mistake — a skipped step
+	 * would vanish from the panel and still hold the stop open forever.
+	 */
+	private List<GuideStep> outstandingFor(FarmPatch patch, RunStop stop)
+	{
+		List<GuideStep> steps = new ArrayList<>(stepsFor(patch, patchesWanting(stop, patch)));
+		steps.removeIf(step -> skippedSteps.contains(keyOf(step)));
+		return steps;
+	}
+
+	private static String keyOf(GuideStep step)
+	{
+		return step.getPatch().getKey() + "#" + step.getAction().name();
 	}
 
 	private List<GuideStep> computeStepsHere()
 	{
+		// Cleared first, and every tick, because both are statements about the stop you are
+		// standing in. Every early return below is a case where there is no such stop — travelling,
+		// at the bank, not running — and leaving the last stop's answers in place would have the
+		// panel announcing a skipped patch two regions away, and the planner still holding a patch
+		// exempt from blocking a completion check it is no longer part of.
+		skipped = new ArrayList<>();
+		planner.setNothingToDo(java.util.Collections.emptySet());
+
 		List<GuideStep> steps = new ArrayList<>();
 		if (!planner.isActive() || planner.isAtBankLeg())
 		{
@@ -255,13 +343,19 @@ public class GuideTracker
 		}
 
 		List<FarmPatch> ordered = sortedByDistance(stop, player);
-		FarmPatch first = chooseWorkingPatch(ordered, stop);
+
+		// Everything the stop still wants, and separately the subset the run is willing to offer
+		// right now. They differ only in the Farming Guild, and only while a contract is waiting on
+		// something — see contractComesFirst.
+		List<FarmPatch> offered = contractComesFirst(stop, ordered);
+
+		FarmPatch first = chooseWorkingPatch(offered, stop);
 
 		if (first != null)
 		{
 			steps.addAll(stepsFor(first, patchesWanting(stop, first)));
 		}
-		for (FarmPatch patch : ordered)
+		for (FarmPatch patch : offered)
 		{
 			if (!patch.getKey().equals(first == null ? null : first.getKey()))
 			{
@@ -269,10 +363,138 @@ public class GuideTracker
 			}
 		}
 
+		// Anything waved past, dropped before anyone sees the list. Done here rather than inside
+		// stepsFor so the skip cannot leak into patchesWanting or the allocation — those are
+		// statements about the world, and a skip is a statement about the player.
+		steps.removeIf(step -> skippedSteps.contains(keyOf(step)));
+
+		// What this stop has nothing to offer for, told to the planner so it stops waiting on it
+		// and collected for the panel so the player is told rather than left wondering. Both are
+		// rebuilt from scratch here, every tick — see RunPlanner.setNothingToDo.
+		reportNothingToDo(stop, ordered);
+
 		appendLeprechaunErrands(steps, stop);
 		appendContractErrands(steps, stop);
 		return steps;
 	}
+
+	/**
+	 * Holds back the guild's other patches while the contract still wants something.
+	 *
+	 * <h2>Why the contract is not merely first but exclusive</h2>
+	 *
+	 * Being sorted to the front — which {@link #contractFirst} already does — is enough when the
+	 * player follows the panel in order. It is not enough for what actually goes wrong, because
+	 * every other guild patch is <i>also</i> being offered at the same time, the world outline can
+	 * land on one of them, and acting on the wrong one is not a detour you can back out of.
+	 *
+	 * <p>A contract can only be grown in the Farming Guild, and the guild has exactly one patch of
+	 * most types. So planting an ordinary crop in the patch a contract needs costs the whole
+	 * contract until that crop finishes — days, for a tree. The two cases the player named:
+	 *
+	 * <ul>
+	 *   <li>the contract's patch is <b>ripe</b> — harvest it, but do not replant it with the
+	 *       ordinary seed, because the next contract may want that ground;
+	 *   <li>the contract's patch is <b>empty</b> — do not fill it, for the same reason.
+	 * </ul>
+	 *
+	 * <p>Both are prevented by the grouping, which keeps that patch out of its ordinary group for
+	 * the whole contract cycle. This adds the ordering half: while there is contract business
+	 * outstanding, the guild offers <b>only</b> the contract's own patch, so nothing else can be
+	 * started first and nothing else competes for the highlight.
+	 *
+	 * <h2>Deliberately not a lock</h2>
+	 *
+	 * Held back, not cancelled. The moment the contract has nothing outstanding — planted and
+	 * growing — the rest of the guild appears exactly as before. And a player who does not want the
+	 * contract has two ways out that do not involve being stuck: switch it off in the settings, or
+	 * press Skip step.
+	 *
+	 * <p>Completion is deliberately not filtered by this. {@link #reportNothingToDo} still sees
+	 * every patch, so a stop cannot be reported finished merely because its work is being withheld.
+	 */
+	private List<FarmPatch> contractComesFirst(RunStop stop, List<FarmPatch> ordered)
+	{
+		if (!config.guideFarmingContracts()
+			|| stop.getRegion().getRegionId() != ContractState.FARMING_GUILD_REGION)
+		{
+			return ordered;
+		}
+
+		List<FarmPatch> claimed = new ArrayList<>();
+		for (FarmPatch patch : ordered)
+		{
+			if (contracts.claimsUntilHandedIn(patch))
+			{
+				claimed.add(patch);
+			}
+		}
+
+		// Nothing assigned and nothing waiting: the errand is to ask Jane for one, which
+		// appendContractErrands puts at the front of the list. Everything else is held back so the
+		// contract she gives out has its patch still free to plant in.
+		if (claimed.isEmpty())
+		{
+			return contracts.hasContract() ? ordered : java.util.Collections.emptyList();
+		}
+
+		// A contract patch with work left, or a reward still to collect, is the only thing on
+		// offer. Once it is planted and growing both go quiet and the guild opens up again.
+		boolean outstanding = contractToHandIn() != null;
+		for (FarmPatch patch : claimed)
+		{
+			outstanding |= !outstandingFor(patch, stop).isEmpty();
+		}
+		return outstanding ? claimed : ordered;
+	}
+
+	/**
+	 * Works out which patches here cannot be acted on, and why.
+	 *
+	 * <h2>The run skips them, and says so</h2>
+	 *
+	 * A patch with no seed allocated is genuinely stuck: it wants planting, the run has nothing to
+	 * put in it, and no amount of standing there changes that. Before this the stop simply never
+	 * finished and the run sat with no route and no instruction, which reads as the plugin having
+	 * frozen. Skipping it silently would be barely better — you would reach the end of a run and
+	 * find a patch untouched with no idea why.
+	 *
+	 * <p>So both halves happen: the planner is told to stop waiting, and {@link GuideStatus#skipped}
+	 * carries a line for the on-screen panel. Only the reasons worth reading are worded — a patch
+	 * that is merely growing produces no steps either, and saying "skipping the Catherby herb patch"
+	 * about a crop that is doing exactly what it should would be noise.
+	 */
+	private void reportNothingToDo(RunStop stop, List<FarmPatch> ordered)
+	{
+		java.util.Set<String> idle = new java.util.LinkedHashSet<>();
+		List<String> reasons = new ArrayList<>();
+
+		for (FarmPatch patch : ordered)
+		{
+			if (!outstandingFor(patch, stop).isEmpty())
+			{
+				continue;
+			}
+			idle.add(patch.getKey());
+
+			// Worth a word only when the patch is waiting on something the player does not have.
+			// An empty patch with no seed is the case that strands runs; anything else with no
+			// steps is simply finished or growing, and needs no explanation.
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			PlantingGroup group = groups.groupFor(patch);
+			if (projection != null && projection.isEmpty() && !runTypes.isHarvestOnly(group)
+				&& allocationFor(group).seedFor(patch) == null)
+			{
+				reasons.add("Skipping " + patch.getDisplayName().toLowerCase() + " - no seed.");
+			}
+		}
+
+		planner.setNothingToDo(idle);
+		skipped = reasons;
+	}
+
+	/** Patches this stop is passing over, in words. Rebuilt each tick with the step list. */
+	private List<String> skipped = new ArrayList<>();
 
 	/**
 	 * Guildmaster Jane, at the end of the Farming Guild stop.
@@ -308,10 +530,33 @@ public class GuideTracker
 		Produce handIn = contractToHandIn();
 		if (handIn != null)
 		{
-			steps.add(GuideStep.atNpc(GuideAction.HAND_IN_CONTRACT, anchor, handIn.getItemID(),
+			// Front of the queue, not the back. These used to be appended after every patch at the
+			// stop, on the reasoning that a contract taken early would ask you to plant into ground
+			// still holding the old crop. That reasoning is about the *contract* patch, and
+			// contractToHandIn already refuses while the crop is standing in it — so by the time
+			// there is anything to hand in, the only thing between you and Jane is a row of herbs
+			// that will still be there afterwards.
+			//
+			// It matters because the contract is a chain: hand in, take the next, plant it on this
+			// same trip. Every guild patch done before the hand-in is a step further from starting
+			// that chain, and the last link expires when you leave.
+			steps.add(0, GuideStep.atNpc(GuideAction.HAND_IN_CONTRACT, anchor, handIn.getItemID(),
 				ContractState.GUILDMASTER_JANE,
 				"Hand your " + handIn.getName().toLowerCase()
 					+ " to Guildmaster Jane for the contract reward."));
+			return;
+		}
+
+		// A contract that is finished but not yet settled. hasContract() below cannot see one —
+		// completion clears the assignment, which is the whole reason getAwaitingHandIn exists —
+		// so without this the guide walked you to Jane to ask for a *new* contract while the last
+		// one was still standing in the patch behind you, unharvested and unclaimed.
+		//
+		// Reported from play: check the health of the contract cactus, and the very next step is
+		// Jane. It reads as the hand-in firing early and is not — it is the take-a-new-one step
+		// jumping the queue, and Jane will not give one out until the last is settled anyway.
+		if (contracts.getAwaitingHandIn() != null)
+		{
 			return;
 		}
 
@@ -320,7 +565,10 @@ public class GuideTracker
 		// interaction the game does not have.
 		if (!contracts.hasContract())
 		{
-			steps.add(GuideStep.atNpc(GuideAction.TAKE_CONTRACT, anchor, -1,
+			// Also first. Taking the next contract is what puts its patch into the contract group,
+			// which is what makes the seed appear in the loadout and the patch sort to the front —
+			// all of which has to happen while you are still standing in the guild.
+			steps.add(0, GuideStep.atNpc(GuideAction.TAKE_CONTRACT, anchor, -1,
 				ContractState.GUILDMASTER_JANE,
 				"Ask Guildmaster Jane for a new farming contract before you leave."));
 		}
@@ -343,14 +591,81 @@ public class GuideTracker
 	@Nullable
 	private Produce contractToHandIn()
 	{
-		Produce captured = contracts.getAwaitingHandIn();
-		if (captured != null)
+		Produce awaiting = contracts.getAwaitingHandIn();
+
+		if (awaiting == null)
 		{
-			return captured;
+			// Finished while we were not watching, so no message was ever sent and nothing
+			// recorded it — but the patch is standing there full, which is evidence no event can
+			// be missed for.
+			//
+			// Recorded rather than merely returned. The crop is about to be harvested, and the
+			// moment it is the patch stops showing a finished contract — so a detection that lives
+			// only as long as the crop is standing would evaporate at exactly the point it becomes
+			// useful, and the hand-in step would never appear. Writing it down is what carries the
+			// fact across the harvest.
+			Produce assigned = contracts.getContract();
+			if (assigned == null || !isGrownInGuild(assigned))
+			{
+				return null;
+			}
+			contracts.recordCompleted();
+			awaiting = assigned;
 		}
 
-		Produce assigned = contracts.getContract();
-		return assigned != null && isGrownInGuild(assigned) ? assigned : null;
+		// Grown is not the same as picked, and this is the difference the step list has to
+		// respect. A contract completes when the crop <i>finishes growing</i> — that is the moment
+		// the game announces, and the moment Time Tracking clears its own key — but Jane wants the
+		// produce, and it is still in the ground.
+		//
+		// Reported from play: a finished cactus, unharvested, and the guide asking for it to be
+		// handed in. Following that means walking to Jane with nothing to give her, past the patch
+		// holding the thing she wants.
+		//
+		// Returning null here does not lose the step; it defers it. The patch still owes you
+		// something, so GuidePlan is already producing that step, and the hand-in reappears on the
+		// tick after the last of it is done.
+		return owesYouSomething(awaiting) ? null : awaiting;
+	}
+
+	/**
+	 * Whether the contract patch has anything left to do at it — a check, or produce to pick.
+	 *
+	 * <h2>Not "is the plant still standing", which is what this used to ask</h2>
+	 *
+	 * The deferral above was written against {@link #isGrownInGuild}, and for a crop that is used
+	 * up — a herb, an allotment — the two are the same question: pick it and the patch empties.
+	 *
+	 * <p>A crop that <b>regrows</b> never empties. A cactus, bush or fruit tree stays
+	 * {@code HARVESTABLE} for the rest of its life, including when picked clean, so "still in the
+	 * ground" is permanently true and the hand-in was deferred <i>forever</i> — a cactus contract
+	 * could never be handed in at all. That is the same stock-of-zero trap
+	 * {@link PatchProjection#hasProduceToPick} was written for, arrived at from the other side.
+	 *
+	 * <p>Asking what is <i>outstanding</i> gets both right, and gets the order right with it: while
+	 * there is fruit on the plant the harvest step comes first and the hand-in waits behind it, and
+	 * once there is not, Jane is the only thing left. Checking a potato cactus leaves it grown with
+	 * a stock of zero — verified against the varbit table, where a freshly checked one reads
+	 * HARVESTABLE at stage 0 and its cacti come back one every five minutes — so there is genuinely
+	 * nothing to pick at that moment, and holding the hand-in back for produce that does not exist
+	 * yet would strand the run.
+	 */
+	private boolean owesYouSomething(Produce contract)
+	{
+		for (FarmPatch patch : groups.patchesIn(
+			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
+		{
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection == null || projection.getProduce() != contract)
+			{
+				continue;
+			}
+			if (projection.needsHealthCheck() || projection.hasProduceToPick())
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -359,6 +674,10 @@ public class GuideTracker
 	 * <p>{@code isReady} is the same test RuneLite's own contract tracker applies — fully grown, or
 	 * past its done estimate — rather than "has been harvested". A contract completes on the crop
 	 * finishing; picking it is a separate job the rest of the guide already handles.
+	 *
+	 * <p>Only ever asked to <b>detect</b> a completion nothing recorded. Whether the hand-in can
+	 * happen yet is a different question with a different answer for regrowing crops; see
+	 * {@link #owesYouSomething}.
 	 *
 	 * <p>Deliberately requires the produce to <i>match</i>. A dead herb reads as {@code ANYHERB}
 	 * and a patch someone planted something else in is not a completed contract, so anything but an
@@ -401,6 +720,13 @@ public class GuideTracker
 			return null;
 		}
 
+		String missing = missingContractSeed(contract);
+		if (missing != null)
+		{
+			return missing;
+		}
+
+		Produce blocking = null;
 		for (FarmPatch patch : groups.patchesIn(
 			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
 		{
@@ -416,11 +742,131 @@ public class GuideTracker
 				// Already in the ground and growing. Nothing to do, and nothing to warn about.
 				return null;
 			}
+
+			// Something else, mid-growth. Not work — the run walks past it — but the reason the
+			// contract is going nowhere, and the one thing here the player might want to act on.
+			if (projection != null && !projection.isEmpty() && !projection.isReady())
+			{
+				blocking = projection.getProduce();
+			}
 		}
 
-		return "Your " + contract.getName().toLowerCase()
-			+ " contract cannot be planted on this run - the patch it wants is not free. "
-			+ "It will be picked up on the next run that can reach it.";
+		if (blocking == null)
+		{
+			return "Your " + contract.getName().toLowerCase()
+				+ " contract is not part of this run - tick Farming contract to include it.";
+		}
+
+		// Said in the chatbox as well as here, once. The panel note is only read by someone already
+		// looking at the sidebar, and this is a decision — dig it up, or come back — that is worth
+		// interrupting for. It is the only thing in the plugin that talks to the chatbox, and it
+		// stays that way: a run that narrates itself there is a run nobody reads.
+		announceBlockedContract(contract, blocking);
+
+		return "Your " + contract.getName().toLowerCase() + " contract wants the patch the "
+			+ blocking.getName().toLowerCase() + " is growing in. Dig it up to get on with the "
+			+ "contract, or leave it and come back when it is ready.";
+	}
+
+	/**
+	 * The contract we have already said is blocked, as {@code contract>blocker}.
+	 *
+	 * <p>Recomputed every tick like everything else here, so without this the message would go to
+	 * the chatbox fifty times a minute for as long as the player stood in the guild. Keyed on both
+	 * crops rather than a flag, so it speaks up again if either changes — a new contract, or someone
+	 * clearing the patch and planting something different in it. Cleared with the run.
+	 */
+	@Nullable
+	private String announcedBlock;
+
+	private void announceBlockedContract(Produce contract, Produce blocking)
+	{
+		String key = contract.name() + ">" + blocking.name();
+		if (key.equals(announcedBlock))
+		{
+			return;
+		}
+		announcedBlock = key;
+
+		chat.queue(net.runelite.client.chat.QueuedMessage.builder()
+			.type(net.runelite.api.ChatMessageType.GAMEMESSAGE)
+			.runeLiteFormattedMessage(new net.runelite.client.chat.ChatMessageBuilder()
+				.append(net.runelite.client.chat.ChatColorType.HIGHLIGHT)
+				.append("Your " + contract.getName().toLowerCase() + " contract")
+				.append(net.runelite.client.chat.ChatColorType.NORMAL)
+				.append(" wants a patch with a " + blocking.getName().toLowerCase()
+					+ " still growing in it. You can remove it to get on with the contract, or "
+					+ "wait until it is ready.")
+				.build())
+			.build());
+	}
+
+	/**
+	 * Says so when the contract wants a seed you have none of, or null when it does not.
+	 *
+	 * <h2>Why this is a note and not a step</h2>
+	 *
+	 * There is nothing to click. Buying is a trip somewhere else entirely and swapping is a
+	 * dialogue choice the plugin will not make for you — so a step would sit at the top of the list
+	 * unperformable, which is the arrangement {@link GuideStatus#getContractNote()} exists to
+	 * avoid.
+	 *
+	 * <p>Silent once the crop is in the ground: at that point the seed has already been spent and
+	 * saying you do not own one is both true and useless.
+	 *
+	 * <h2>Which route it names is a setting, deliberately</h2>
+	 *
+	 * Neither is free. Buying keeps the contract and its reward tier, and for most contract crops
+	 * is simply unavailable to an ironman. Asking Jane works on any account but she swaps
+	 * <i>downwards</i>, so it costs the tier — and an easy contract cannot be swapped at all, which
+	 * is why that caveat is in the wording rather than assumed away.
+	 *
+	 * <p>Detecting the account type was considered and dropped: it would pick the cheaper-sounding
+	 * route for a main who would rather keep a hard contract, and there is no way to know which
+	 * they want. Asked once, in the settings, beats guessing every run.
+	 */
+	@Nullable
+	private String missingContractSeed(Produce contract)
+	{
+		Seed seed = contracts.getContractSeed();
+		if (seed == null || contractIsInTheGround(contract))
+		{
+			return null;
+		}
+
+		// Both forms count. Owning the seed but not the sapling is a different problem with a
+		// different fix — a plant pot — and the loadout already says so.
+		if (seeds.getOwned(seed) >= seed.getSeedsPerPatch())
+		{
+			return null;
+		}
+
+		String lead = "No " + seed.getName().toLowerCase() + " seed for the contract.";
+		switch (config.contractSeedAdvice())
+		{
+			case BUY:
+				return lead + " Buy one before you plant it, or ask Jane for an easier contract.";
+			case ASK_FOR_EASIER:
+				return lead + " Ask Jane for an easier contract - she swaps downwards, and an easy "
+					+ "one cannot be swapped at all.";
+			default:
+				return lead;
+		}
+	}
+
+	/** Whether the contract's crop is already growing in the patch it was assigned to. */
+	private boolean contractIsInTheGround(Produce contract)
+	{
+		for (FarmPatch patch : groups.patchesIn(
+			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
+		{
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null && projection.getProduce() == contract)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -443,6 +889,22 @@ public class GuideTracker
 	 */
 	private void appendLeprechaunErrands(List<GuideStep> steps, RunStop stop)
 	{
+		// A patch here still to be checked is a patch with more work behind it, and the guide knows
+		// it: checking is never the last thing you do at a tree, bush or cactus — a harvest and a
+		// clear follow, and neither exists as a step until the check happens.
+		//
+		// So "note your crops with the leprechaun before moving on" turned up directly beneath
+		// "check the health of the magic tree", telling you to pack up in the middle of a patch you
+		// had not started. Reported from play.
+		//
+		// Only when nothing is already taking you to him. A compost withdrawal makes the visit
+		// certain whatever else is outstanding, and bundling the errands into that trip is the
+		// whole point of this method.
+		if (firstLeprechaunStep(steps) < 0 && anythingStillToCheck(stop))
+		{
+			return;
+		}
+
 		List<GuideStep> errands = new ArrayList<>();
 		appendNoteBeforeLeaving(errands, stop);
 		appendReturnBuckets(errands, stop);
@@ -580,8 +1042,7 @@ public class GuideTracker
 		{
 			for (FarmPatch patch : ordered)
 			{
-				if (patch.getKey().equals(working) && !stepsFor(patch, patchesWanting(stop, patch))
-					.isEmpty())
+				if (patch.getKey().equals(working) && !outstandingFor(patch, stop).isEmpty())
 				{
 					return patch;
 				}
@@ -590,7 +1051,7 @@ public class GuideTracker
 
 		for (FarmPatch patch : ordered)
 		{
-			if (!stepsFor(patch, patchesWanting(stop, patch)).isEmpty())
+			if (!outstandingFor(patch, stop).isEmpty())
 			{
 				working = patch.getKey();
 				return patch;
@@ -736,6 +1197,24 @@ public class GuideTracker
 	 * <i>current</i> step only once there is nothing left to do here. Suggesting it mid-harvest
 	 * would interrupt the thing it is meant to tidy up after.
 	 */
+	/** Whether a patch at this stop is grown but unchecked, and so has work still to reveal. */
+	private boolean anythingStillToCheck(RunStop stop)
+	{
+		for (FarmPatch patch : stop.getPatches())
+		{
+			if (stop.getServiced().contains(patch.getKey()))
+			{
+				continue;
+			}
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null && projection.needsHealthCheck())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private void appendNoteBeforeLeaving(List<GuideStep> steps, RunStop stop)
 	{
 		Produce carrying = null;
@@ -844,6 +1323,13 @@ public class GuideTracker
 		{
 			for (TeleportItems.Teleport teleport : TeleportItems.forRegion(point.getRegionID()))
 			{
+				// Only ones the player says they use. The bank stopped offering the rest when the
+				// teleport list became a filter, and a hint naming something the loadout never
+				// told you to bring is an instruction you cannot follow.
+				if (!loadout.isOnTeleportList(teleport.getItemId()))
+				{
+					continue;
+				}
 				if (carried.has(teleport.getItemId()))
 				{
 					return new TravelHint(teleport.getItemId(), teleport.getName(), destination,
@@ -878,7 +1364,8 @@ public class GuideTracker
 				// Only things that actually teleport you. A Dramen staff is carried so that a
 				// fairy ring works; "use your Dramen staff" is not an instruction anyone can
 				// follow.
-				if (teleport.teleportsYou() && carried.has(teleport.getItemId()))
+				if (teleport.teleportsYou() && loadout.isOnTeleportList(teleport.getItemId())
+					&& carried.has(teleport.getItemId()))
 				{
 					return new TravelHint(teleport.getItemId(), teleport.getName(), destination,
 						TravelHint.Where.CARRIED);
@@ -972,7 +1459,12 @@ public class GuideTracker
 	 */
 	private void contractFirst(List<FarmPatch> ordered)
 	{
-		if (!config.guideFarmingContracts() || !contracts.hasContract())
+		// A finished contract still owns its patch. Guarding on hasContract() alone dropped the
+		// priority the instant the crop completed — which is exactly when the patch matters most,
+		// because picking it is what unlocks the hand-in and the hand-in unlocks the next
+		// contract. See ContractState.claimsUntilHandedIn.
+		if (!config.guideFarmingContracts()
+			|| (!contracts.hasContract() && contracts.getAwaitingHandIn() == null))
 		{
 			return;
 		}
@@ -980,7 +1472,7 @@ public class GuideTracker
 		List<FarmPatch> claimed = new ArrayList<>();
 		for (FarmPatch patch : ordered)
 		{
-			if (contracts.claims(patch))
+			if (contracts.claimsUntilHandedIn(patch))
 			{
 				claimed.add(patch);
 			}

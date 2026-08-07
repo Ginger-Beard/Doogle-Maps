@@ -57,8 +57,9 @@ public class GuideOverlay extends Overlay
 	/** Alpha for a filled click box, matching Quest Helper's. */
 	private static final int FILL_ALPHA = 20;
 
-	/** Alpha for the tint over a highlighted inventory item. */
-	private static final int ITEM_FILL_ALPHA = 65;
+	// There was an ITEM_FILL_ALPHA here, unused: this overlay draws world objects, not items.
+	// It was the third copy of one constant, and the other two were the ones that mattered — see
+	// ItemHighlight, which now owns it for both overlays that do mark items.
 
 	private final Client client;
 	private final GuideTracker tracker;
@@ -365,9 +366,16 @@ public class GuideOverlay extends Overlay
 	/**
 	 * Outlines the bank booths, chests and the seed vault while the run is collecting supplies.
 	 *
-	 * <p>Both kinds, together, because the run genuinely wants both: {@code getSupplySources} can
-	 * answer {@code [BANK, SEED_VAULT]} for one trip, and in the Farming Guild they stand a few
-	 * steps apart. Marking one and not the other would send you to whichever we guessed.
+	 * <h2>Only what the run is going to</h2>
+	 *
+	 * This marked every bank booth, chest and the vault unconditionally, which lit half the Farming
+	 * Guild for a trip that wanted one container. It is now scoped to the planner's own answer —
+	 * see {@link #marks}, which is where the interesting half of the rule lives and where a later
+	 * attempt to narrow "both" down to one went wrong.
+	 *
+	 * <p>With nothing collected from either — the run knowing it needs a bank without yet knowing
+	 * what for — banks are marked and the vault is not. The vault holds seeds and nothing else, so
+	 * "we are not sure" is never a reason to point at it.
 	 *
 	 * <p>Matched on the object's own <b>actions and name</b> rather than on ids, the same way the
 	 * house furniture and the leprechaun are. There are dozens of bank booths and chests across
@@ -376,8 +384,16 @@ public class GuideOverlay extends Overlay
 	 */
 	private void highlightSupplyPoints(Graphics2D graphics, Color colour)
 	{
+		java.util.Set<com.dooglemaps.state.SeedSource> sources =
+			tracker.getStatus().getSupplySources();
+
 		for (TileObject object : scanForSupplyObjects())
 		{
+			if (!marks(sources, isSeedVault(object)))
+			{
+				continue;
+			}
+
 			Shape clickbox = object.getClickbox();
 			if (clickbox != null)
 			{
@@ -485,6 +501,64 @@ public class GuideOverlay extends Overlay
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Whether a supply point of this kind is one the run is collecting from.
+	 *
+	 * <p>Separate from the drawing so the rule can be read and tested on its own. An empty set —
+	 * the run knowing it wants a bank without knowing what for — means banks, because the vault
+	 * holds seeds and nothing else.
+	 *
+	 * <h2>Both, when the trip needs both</h2>
+	 *
+	 * This was {@code isVault == sources.contains(SEED_VAULT)}: an exclusive rule, so the moment
+	 * the vault was wanted every bank booth went dark. The justification was that the planner
+	 * "routes to the vault or to the banks, never to both", and it was true when it was written.
+	 *
+	 * <p>It stopped being true. {@code RunPlanner.supplyTargetsFor} was deliberately changed to
+	 * hand over <b>both</b>, because the two are separate errands and the leg does not finish until
+	 * each is empty — and nothing here was changed with it. Shortest Path then did what it does
+	 * with any target set and picked the cheapest to reach; in the Farming Guild that is the bank
+	 * chest. So the line was drawn to a bank that was not outlined, while the vault was outlined
+	 * and not routed to. Reported from play, and the exact disagreement the exclusive rule was
+	 * introduced to prevent.
+	 *
+	 * <p>So the rule is now the honest one: mark what the run is actually collecting from. Two lit
+	 * places is the correct answer to a trip that genuinely wants two containers, and it is what
+	 * {@code LoadoutSummary} has said in words the whole time — one line for the bank, one for the
+	 * vault, in either order.
+	 */
+	static boolean marks(java.util.Set<com.dooglemaps.state.SeedSource> sources, boolean isVault)
+	{
+		if (isVault)
+		{
+			return sources.contains(com.dooglemaps.state.SeedSource.SEED_VAULT);
+		}
+		return sources.isEmpty() || sources.contains(com.dooglemaps.state.SeedSource.BANK);
+	}
+
+	/**
+	 * Whether this particular supply point is the seed vault rather than a bank.
+	 *
+	 * <p>Asked of objects {@link #isSupplyPoint} has already accepted, so it only has to tell the
+	 * two apart rather than recognise either from scratch. Composition lookups are cheap but not
+	 * free, and this runs per marked object per frame.
+	 */
+	private boolean isSeedVault(TileObject object)
+	{
+		ObjectComposition composition = client.getObjectDefinition(object.getId());
+		if (composition == null)
+		{
+			return false;
+		}
+		if (composition.getImpostorIds() != null && composition.getImpostor() != null)
+		{
+			composition = composition.getImpostor();
+		}
+
+		String name = composition.getName();
+		return name != null && name.toLowerCase().contains("seed vault");
 	}
 
 	/**

@@ -219,11 +219,76 @@ Sidebar shots are rendered at `width="260"` in the README. The sidebar is 225px 
 full-column capture is very tall — cropping each shot to the section it illustrates matters more
 than the capture resolution does.
 
+## Roads not taken
+
+Things that were built far enough to judge and then dropped. Here rather than in `docs/TODO.md`,
+because that file is open work and these are closed — but the research is done and paid for, so
+anyone reconsidering should start from what is written rather than from scratch.
+
+### Geomancy bulk refresh — dropped, fully decoded
+
+**The idea.** Geomancy (Lunar spellbook, 65 Magic) shows the state of every farming patch in the
+game at once. Reading that interface on cast would fill in every patch the player has not walked
+past, in one action — which was the original appeal, and the plugin's own README once led with it.
+
+**It was taken to the end of the research and then not built.** Everything needed is known:
+
+- The interface is `InterfaceID.FARMING_VIEW`, and RuneLite names all 329 of its components —
+  three per patch, a `_BACK`, a `_PIC` and a `_FRONT`.
+- The full rendering is decoded in `docs/NOTES.md`, under *"Geomancy decoded — the diseased
+  rendering, caught 2026-08-05"*: which widget carries the location, the crop, the produce item id,
+  and the tint colour that encodes state. Green is diseased and red is dead, which is
+  counter-intuitive enough that the entry states it plainly and says how it was confirmed rather
+  than inferred.
+- `GeomancyProbe` is the tool that produced all of it. Off by default, config *"Dump the Geomancy
+  interface"*; it writes the widget tree **and** everything the plugin already knows at that moment
+  to `~/.runelite/doogle-maps/geomancy-<time>.tsv`, so casting somewhere familiar puts both halves
+  of the mapping side by side. It is kept switched off rather than deleted, because it is also what
+  would confirm a rendering change after a game update.
+- `GeomancyProbeTest.theInterfaceHoldsExactlyThePatchesWeDo` pins the patch set, so a RuneLite data
+  update that adds a patch fails a test rather than going unnoticed.
+
+**Why it was dropped.** The growth **stage is not readable in bulk** — it exists only in the hover
+tooltip, and the always-present widgets carry no stage at all. Collecting it would mean hovering
+forty-odd patches, which is not a feature. So a cast can never produce a *timer* for a patch the
+plugin has not seen, and the timer was the thing worth having.
+
+What is left is filling in **dead, diseased, empty and what is growing** across the map in one
+cast. Judged not to earn its keep: the ordinary walk-past capture already gets there, it needs a
+Lunar spellbook and 65 Magic to be worth anything, and the part it uniquely adds is disease — which
+is only valuable if players actually go round curing it, and there is no evidence either way. That
+last point is an **assumption, not a finding**; if it turns out people do chase disease cures, this
+is the thing to reconsider first.
+
+**If it is picked up again** the decode is done and it is an afternoon's work rather than a
+research problem. Start with the `docs/NOTES.md` section above, switch the probe on, and cast once
+to confirm the rendering still matches.
+
 ## The docs
 
-- **`TODO.md`** — open work only, including what is written but unverified in the client.
-- **`TESTING.md`** — the in-client check plan, with a fail signature for each item so a wrong
+At the root, because convention or tooling puts them there:
+
+- **`README.md`** — what the plugin is, for someone deciding whether to install it.
+- **`DEVELOPMENT.md`** — this file: building, running against a live client, and capturing the
+  README's screenshots.
+- **`ATTRIBUTION.md`** — what is mirrored from RuneLite core, the wiki and other plugins. Cited
+  by name from every generated file's header, so it stays put.
+
+In `docs/`:
+
+- **`docs/TODO.md`** — open work only, including what is written but unverified in the client.
+- **`docs/TESTING.md`** — the in-client check plan, with a fail signature for each item so a wrong
   result points somewhere.
-- **`NOTES.md`** — everything learned and every closed post-mortem.
-- **`doogle-maps-plugin-spec.md`** — the original spec.
-- **`ATTRIBUTION.md`** — what is mirrored from RuneLite core, the wiki and other plugins.
+- **`docs/NOTES.md`** — everything learned and every closed post-mortem.
+- **`docs/design-principles.md`** — the constraints the plugin is built inside: the decisions
+  settled with the owner, and the Plugin Hub compliance line. Short, and the one to read first.
+- **`docs/run-flow.md`** — the player's click-and-move loop as two flowcharts, traced through
+  `RunPlanner` → `GuideTracker` → `GuidePlan` → `PatchInteractionTracker`.
+- **`docs/code-review-2026-08.md`** — a whole-repo review, kept as a dated snapshot. Its headline
+  finding is fixed and its live items were moved into `docs/TODO.md`, so it is history rather
+  than a work list; delete it whenever it stops being interesting.
+
+**`doogle-maps-plugin-spec.md` is gone.** It was written before any code existed and described a
+plugin that now exists and can be read instead, so most of it had become a second, worse source of
+truth. The part that was still a *constraint* rather than a description moved to
+`docs/design-principles.md`; `git log` has the rest.

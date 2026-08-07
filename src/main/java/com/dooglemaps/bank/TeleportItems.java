@@ -211,6 +211,32 @@ public final class TeleportItems
 			add(new Teleport(staff, "Dramen staff (fairy rings)", -1, false));
 		}
 
+		// A common way to reach the Hosidius patches, which is the whole claim being made: it is
+		// not the only one — Xeric's talisman is right above — and the table has no opinion on
+		// which is better. Ranking them would be advice, and the class comment is explicit that
+		// this table states facts and leaves the choosing to the player.
+		add(ItemID.BOOK_OF_THE_DEAD, "Book of the dead", 6967);
+
+		// The rune pouch is the same shape of fact as the Dramen staff and is flagged the same way:
+		// it is not a teleport, it is what makes your teleports castable. Which ones that turns out
+		// to be depends entirely on the runes in it and the spellbook you are on, so claiming a
+		// destination for it would be inventing one — hence -1 and teleportsYou false, so the guide
+		// never says "use your rune pouch" as an instruction.
+		//
+		// It earns a place despite naming nowhere because it is the one item that makes a
+		// spellbook-based route possible at all, and forgetting it is the failure it prevents.
+		//
+		// All four forms, not two. The trouver-parchment variants are what a locked pouch becomes,
+		// and they are separate item ids — so an account that has locked its pouch owned one the
+		// table had never heard of, and was told to go and fetch the thing in its own pack.
+		for (int pouch : new int[]{
+			ItemID.BH_RUNE_POUCH, ItemID.BH_RUNE_POUCH_TROUVER,
+			ItemID.DIVINE_RUNE_POUCH, ItemID.DIVINE_RUNE_POUCH_TROUVER,
+		})
+		{
+			add(new Teleport(pouch, "Rune pouch", -1, false));
+		}
+
 		// --- Your house, which is a destination in its own right on the way to somewhere else.
 		//
 		// It reaches no farming patch directly, which is why it took a report from play to notice
@@ -256,17 +282,92 @@ public final class TeleportItems
 	}
 
 	/**
-	 * Every teleport this table knows, by name, as a comma-separated list.
+	 * The teleport list a new install starts with.
 	 *
-	 * <p>The default for the teleport list setting. Derived rather than typed out, so the setting
-	 * starts as an honest snapshot of what the plugin already suggests — and so a teleport added
-	 * to the table below turns up in the default without anyone having to remember to add it
-	 * twice.
+	 * <h2>A short list, not every teleport known</h2>
 	 *
-	 * <p>Sorted, because this is read and edited by a person and the table's own order is by
-	 * region, which is meaningless once the regions are stripped off.
+	 * This used to be derived from {@link #ALL} — every entry in the region table, on the
+	 * reasoning that the default should be an honest snapshot of what the plugin already suggests
+	 * and that a new table entry should appear without anyone remembering to add it twice.
+	 *
+	 * <p>Both true, and the result was still wrong for the setting's actual job. The table exists
+	 * to answer <i>"does this item reach that region"</i>, which is a fact; the setting answers
+	 * <i>"which teleports are part of my run"</i>, which is a habit. Defaulting to all
+	 * twenty-eight meant a bank tab of city tablets nobody uses, because owning a Varrock tablet
+	 * is not the same as travelling by one.
+	 *
+	 * <p>So this is a starting point rather than a claim: the things people carry on a farm run
+	 * whatever their route. Listed items are matched by name against the bank, so an entry needs no
+	 * table row and no unlock check — one you do not own simply never appears.
+	 *
+	 * <p>Two of these are worth knowing about. The <b>book of the dead</b> is a common way to reach
+	 * the Hosidius patches, and is in the region table for that reason — not as the best route
+	 * there, which is not something this table has a view on. The <b>rune pouch</b> names nowhere
+	 * on purpose: like the Dramen staff it is not a teleport, it is what makes your teleports
+	 * castable, so it is flagged as not being the click.
+	 *
+	 * <p>Anyone who wants the old behaviour can have it with a single wildcard. Editing this down,
+	 * or up, is the whole point of it being a text setting.
 	 */
 	public static String defaultNames()
+	{
+		return String.join(", ",
+			"Rune pouch",
+			"Ardougne cloak 2",
+			"Ardougne cloak 3",
+			"Ardougne cloak 4",
+			"Ectophial",
+			"Explorer's ring 2",
+			"Explorer's ring 3",
+			"Explorer's ring 4",
+			"Farming cape",
+			"Farming cape (t)",
+			"Harmony Island teleport tablet",
+			"Teleport to house tablet",
+			"Book of the dead");
+	}
+
+	/**
+	 * What this table calls an item, or null if it has never heard of it.
+	 *
+	 * <h2>Why the setting is matched against these as well as against the game's names</h2>
+	 *
+	 * The teleport setting is a list of names, and {@code RunLoadout.resolve} turned them into item
+	 * ids by comparing them with the names of things in your bank. Reasonable, and it made the
+	 * shipped default silently do nothing: this table calls item 8013 <i>"Teleport to house
+	 * tablet"</i>, the game calls it <i>"Teleport to house"</i>, and a name that matches nothing
+	 * fails quietly by design. The house tablet was therefore never offered to anybody who had not
+	 * edited the setting by hand — and the test that was meant to catch it compared the defaults
+	 * against this table rather than against the game, so it agreed with itself.
+	 *
+	 * <p>The same gap hid two more: <i>"Skills necklace"</i> never matches
+	 * {@code Skills necklace(6)}, and <i>"Rune pouch"</i> never matches {@code Divine rune pouch}.
+	 *
+	 * <p>Matching both names fixes all three at once and makes the setting forgiving rather than
+	 * exact — a player typing either the label they read here or the name they read in their bank
+	 * gets what they meant. The table's labels are also the stabler of the two: they are ours, and
+	 * a Jagex rename cannot quietly empty somebody's list.
+	 */
+	@javax.annotation.Nullable
+	public static String nameFor(int itemId)
+	{
+		for (Teleport teleport : ALL)
+		{
+			if (teleport.getItemId() == itemId)
+			{
+				return teleport.getName();
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Every teleport the region table knows, by name.
+	 *
+	 * <p>No longer the default — see {@link #defaultNames()} — but kept because it is what the
+	 * table can honestly say about itself, and {@code TeleportItemsTest} asserts against it.
+	 */
+	public static String allKnownNames()
 	{
 		java.util.Set<String> names = new java.util.TreeSet<>(String.CASE_INSENSITIVE_ORDER);
 		for (Teleport teleport : ALL)

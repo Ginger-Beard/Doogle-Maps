@@ -3,6 +3,7 @@ package com.dooglemaps.route;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
 import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.PatchStateStore;
@@ -58,8 +59,18 @@ public class RunPlannerTest
 	private com.dooglemaps.state.SeedInventoryStore seedInventory;
 	private BankLocationStore banks;
 	private RunPlanner planner;
+	private com.dooglemaps.state.PlantingGroups groups;
+	private com.dooglemaps.bank.ToolNeeds tools;
 	private net.runelite.api.Client client;
 	private com.dooglemaps.state.PlayerLocation playerLocation;
+	private com.dooglemaps.state.RunTypeStore runOptions;
+
+	/**
+	 * The real store rather than a mock, because {@code SeedSelectionStore} reads it to derive a
+	 * contract's seed and the two have to agree. Writing an assignment into it is what makes
+	 * {@code getSelectedFor(contract group)} answer.
+	 */
+	private com.dooglemaps.state.ContractState contracts;
 
 	/** Every PluginMessage the planner caused, in order. */
 	private List<PluginMessage> posted;
@@ -115,8 +126,9 @@ public class RunPlannerTest
 		locations.load();
 		banks.load();
 
+		contracts = construct(com.dooglemaps.state.ContractState.class, configManager);
 		selection = construct(com.dooglemaps.state.SeedSelectionStore.class, configManager, gson,
-			construct(com.dooglemaps.state.ContractState.class, configManager));
+			contracts);
 		seedInventory = construct(com.dooglemaps.state.SeedInventoryStore.class,
 			Mockito.mock(net.runelite.api.Client.class), configManager, gson);
 		selection.load();
@@ -126,11 +138,535 @@ public class RunPlannerTest
 		playerLocation = construct(com.dooglemaps.state.PlayerLocation.class, client);
 		planner = construct(RunPlanner.class, availability, locations, banks, selection,
 			seedInventory, stateStore, timer, router,
-			playerLocation, Mockito.mock(com.dooglemaps.bank.ToolNeeds.class),
+			playerLocation, tools = Mockito.mock(com.dooglemaps.bank.ToolNeeds.class),
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
-			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
+			groups = Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+			runOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			(javax.inject.Provider<com.dooglemaps.bank.RunLoadout>) () -> loadout);
+	}
+
+	/**
+	 * The withdraw list the planner asks whether the shopping is finished.
+	 *
+	 * <p>A mock answering "nothing outstanding" by default, so these tests keep exercising the
+	 * seed-and-tool reasoning they were written for. The list is the planner's <i>additional</i>
+	 * source of things to collect — the axe, the payments, the compost — and a test that cares
+	 * about those stubs it. See {@code RunPlanner.suppliesOutstanding}.
+	 */
+	private com.dooglemaps.bank.RunLoadout loadout =
+		Mockito.mock(com.dooglemaps.bank.RunLoadout.class);
+
+	/**
+	 * A contract taken mid-run brings its patch into the stop you are standing in.
+	 *
+	 * <h2>The gap this closes</h2>
+	 *
+	 * The contract chain happens inside the guild stop — hand the finished one in, take the next,
+	 * plant it before leaving — and which crop Jane names cannot be known until she names it. So
+	 * the stop was planned without the patch it wants, its list was fixed at that moment, and
+	 * {@code contractNote} read the absence as "this run cannot deal with your contract".
+	 *
+	 * <p>Reported as a yew contract written off for the week with a grown tree standing in the
+	 * patch — a check and a clear away from being plantable.
+	 */
+	@Test
+	public void aContractTakenMidRunJoinsTheStop()
+	{
+		// A grown but unchecked tree: the state the reported one was actually in.
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		assertNotNull("the guild has no tree patch in the data", tree);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		assertNotNull("the guild has no herb patch in the data", herb);
+		// Weeds, i.e. an empty patch: something the run will certainly plan to visit.
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		// A run over herbs only. Nothing knows a tree contract is coming, because it has not
+		// been handed out yet.
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		RunStop guild = planner.getRemaining().stream()
+			.filter(stop -> stop.getRegion().getRegionId() == herb.getRegion().getRegionId())
+			.findFirst()
+			.orElseThrow(() -> new AssertionError("no guild stop was planned"));
+		assertFalse("the run was planned without it", guild.getPatches().contains(tree));
+
+		// Jane hands out a yew contract while you are standing there.
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		when(groups.groupFor(tree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+		planner.reviewContract();
+
+		assertTrue("the patch the contract wants is now part of the stop",
+			guild.getPatches().contains(tree));
+	}
+
+	/**
+	 * A contract taken mid-run sends you back for what it needs.
+	 *
+	 * <h2>Why the supply leg cannot have covered it</h2>
+	 *
+	 * The bank trip happens at the start. A contract handed out an hour later can want things
+	 * nothing on that trip had a reason to bring — its own seed, and for a tree contract on a run
+	 * that was never visiting a tree, an axe.
+	 *
+	 * <p>Reported from play: told to check the health of a magic tree with neither axe nor sapling
+	 * in the pack, because the run was planned over herbs.
+	 */
+	@Test
+	public void aContractTakenMidRunSendsYouBackForItsTools()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		// Nothing outstanding when the run was planned: no tool is bank-only for a herb run.
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.leaveBank();
+		assertFalse("the supply leg is done with", planner.isAtBankLeg());
+
+		// The contract arrives, and its axe is in the bank.
+		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(true);
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		when(groups.groupFor(tree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+		planner.reviewContract();
+
+		assertTrue("collect the axe and the sapling before doing the contract",
+			planner.isAtBankLeg());
+	}
+
+	/**
+	 * A contract's own seed is something the run has to go and collect.
+	 *
+	 * <h2>The planner could not see it at all</h2>
+	 *
+	 * Seeds were resolved by asking {@code SeedSelectionStore} for each patch <i>type</i> in the
+	 * run. That overload filters the flat set of picks the player made, and a contract's seed is
+	 * never in it — it is derived from the assignment, deliberately, because nobody picked it. So
+	 * every routing decision here was made as though the yew did not exist: the vault was not
+	 * owed, the supply leg was not aimed at it, and {@code leaveBank} was happy to declare the
+	 * shopping finished with no sapling in the pack.
+	 *
+	 * <p>Meanwhile {@code RunLoadout} resolved by planting <i>group</i>, saw it, and put it on the
+	 * withdraw list. Reported from play as a list reading "from the bank: yew" while the seed vault
+	 * was the thing lit up — two components answering one question two ways.
+	 */
+	@Test
+	public void aContractSeedIsCollectedLikeAnyOther()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		// The sapling is in the vault, and it is the only thing this run is short of. Nothing is
+		// ticked for trees — that is the point: the player never chose a tree seed, Jane did.
+		stockVault(com.dooglemaps.data.Seed.YEW, 1);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		com.dooglemaps.data.PlantingGroup contractGroup =
+			com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE);
+		when(groups.groupFor(tree)).thenReturn(contractGroup);
+		// The player has ticked Farming contract, which is what puts the contract's patch in the
+		// run at all - see inTheRun. Without it the guide says so rather than silently planting.
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(contractGroup)))
+			.thenReturn(true);
+		contracts.recordAssigned(Produce.YEW);
+		planner.reviewContract();
+
+		assertTrue("the vault holds the contract's sapling, so the run owes it a visit",
+			planner.getSupplySources().contains(SeedSource.SEED_VAULT));
+		assertTrue("and the route has to go there",
+			lastTargets().contains(banks.getSeedVault()));
+	}
+
+	/**
+	 * Taking a tree contract does not go shopping for every tree seed ever ticked.
+	 *
+	 * <h2>The same wrong question, answered too broadly instead of too narrowly</h2>
+	 *
+	 * A contract adds its patch type to the live run, which is right — the guild's patch has to be
+	 * serviced whether or not the player asked for trees. Asking the selection store by <i>type</i>
+	 * then pulled in every tree seed the account had ever picked, for a run whose only tree patch
+	 * belongs to the contract. A magic sapling chosen months ago became a thing this trip had to
+	 * fetch, and the route was aimed at wherever it happened to live.
+	 *
+	 * <p>Resolving by group has no such problem: the guild's tree patch is in the contract group
+	 * and nothing else is.
+	 */
+	@Test
+	public void aTreeContractDoesNotDragInEveryTreeSeedYouEverPicked()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		// Magic was picked for trees at some point and is sitting in the vault. The contract is
+		// for a yew, which is in the bank.
+		selection.toggle(com.dooglemaps.data.Seed.MAGIC);
+		stockVault(com.dooglemaps.data.Seed.MAGIC, 5);
+		stockBank(com.dooglemaps.data.Seed.YEW, 5);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		com.dooglemaps.data.PlantingGroup contractGroup =
+			com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE);
+		when(groups.groupFor(tree)).thenReturn(contractGroup);
+		// The player has ticked Farming contract, which is what puts the contract's patch in the
+		// run at all - see inTheRun. Without it the guide says so rather than silently planting.
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(contractGroup)))
+			.thenReturn(true);
+		contracts.recordAssigned(Produce.YEW);
+		planner.reviewContract();
+
+		assertFalse("the contract's patch wants a yew, so the magic in the vault is not this "
+				+ "run's problem",
+			planner.getSupplySources().contains(SeedSource.SEED_VAULT));
+	}
+
+	/**
+	 * Emptying one container redraws the route for the other.
+	 *
+	 * <p>The leg visits two now, and finishes them one at a time. The route is posted rather than
+	 * polled, so without noticing the change the line keeps pointing at a vault whose seeds are
+	 * already in the pack.
+	 */
+	@Test
+	public void emptyingOneContainerRedrawsForTheOther()
+	{
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		when(runOptions.isSelected(Mockito.any())).thenReturn(true);
+
+		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertTrue(planner.isAtBankLeg());
+
+		int postsBefore = posted.size();
+
+		// Nothing about the run changed, so nothing should be redrawn.
+		planner.leaveBank();
+		assertEquals("an unchanged leg posts nothing", postsBefore, posted.size());
+	}
+
+	/** And it does not send you back a second time for a contract already accounted for. */
+	@Test
+	public void asettledContractDoesNotKeepReopeningTheBankLeg()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(true);
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		when(groups.groupFor(tree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+
+		planner.reviewContract();
+
+		// The axe is now in the pack, so the leg ends the way it normally would.
+		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(false);
+		planner.leaveBank();
+
+		// The tick loop calls this again, and again, for as long as the contract is assigned.
+		planner.reviewContract();
+		planner.reviewContract();
+
+		assertFalse("one diversion, not one a tick", planner.isAtBankLeg());
+	}
+
+	/**
+	 * The route is re-posted when a contract widens the run, even mid-collection.
+	 *
+	 * <h2>The three-way disagreement this caused</h2>
+	 *
+	 * A route is posted once per leg and {@code getSupplyTargets} is derived from the run's types.
+	 * Starting a run at a bank means the supply leg is already under way, so the old test — divert
+	 * only if we are not already collecting — skipped the re-post, and the drawn line stayed aimed
+	 * where it was before the contract existed. The seed vault highlight is read fresh every tick,
+	 * so it had already moved: the same value, at two different ages.
+	 *
+	 * <p>Reported from play: vault outlined, path drawn to the bank, withdraw list naming neither.
+	 */
+	@Test
+	public void wideningTheRunRepostsTheRouteEvenWhileAlreadyCollecting()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertTrue("the run opens by collecting", planner.isAtBankLeg());
+
+		int postsBefore = posted.size();
+
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		when(groups.groupFor(tree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+		planner.reviewContract();
+
+		assertTrue("the line has to be redrawn for what the run now needs",
+			posted.size() > postsBefore);
+	}
+
+	/**
+	 * And the run reports the types it is actually covering, not the boxes that were ticked.
+	 *
+	 * <p>Everything scoped to "what does this run need" — the withdraw list, the bank highlight,
+	 * the bank filter — used to ask {@code RunTypeStore}, which records a choice the player made.
+	 * A contract taken mid-run is not such a choice, so the store never hears about it and those
+	 * three were left describing a narrower run than the one being routed.
+	 */
+	@Test
+	public void theRunReportsTheTypesItCoversIncludingTheContracts()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertFalse("trees were never ticked",
+			planner.coveredTypes().contains(PatchImplementation.TREE));
+
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		when(groups.groupFor(tree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+		planner.reviewContract();
+
+		assertTrue("but the run is covering one now",
+			planner.coveredTypes().contains(PatchImplementation.TREE));
+		assertTrue("without losing what was ticked",
+			planner.coveredTypes().contains(PatchImplementation.HERB));
+	}
+
+	/** With no run in flight there is only one answer, and it is the ticked boxes. */
+	@Test
+	public void withNoRunTheCoveredTypesAreTheTickedOnes()
+	{
+		when(runOptions.getSelected()).thenReturn(EnumSet.of(PatchImplementation.HERB));
+
+		assertFalse("nothing is running", planner.isActive());
+		assertEquals(EnumSet.of(PatchImplementation.HERB), planner.coveredTypes());
+	}
+
+	/**
+	 * Ticking a farming contract asks for the contract's patch, not every patch of its type.
+	 *
+	 * <h2>What one tick used to mean</h2>
+	 *
+	 * The contract option is stored as {@code TREE#contract}; {@code RunTypeStore.typeOf} strips
+	 * from the {@code #} so the run covers {@code TREE}; and stop planning was scoped by type, so it
+	 * swept in every tree patch on the account. Reported from play as an eighteen-stop run that
+	 * should have been twelve, asking for two yew saplings, twenty-five coconuts to protect a magic
+	 * tree in another kingdom and ten cactus spines for the yew — none of it ticked for.
+	 *
+	 * <p>Run options are per planting group and the run is carried as a set of types; this is the
+	 * seam between them, and it belongs on the question "did the player ask for this patch" rather
+	 * than on "does this patch want work". See {@code inTheRun}.
+	 */
+	@Test
+	public void aContractTickDoesNotDragInEveryPatchOfItsType()
+	{
+		FarmPatch guildTree = guildPatch(PatchImplementation.TREE);
+		FarmPatch otherTree = null;
+		for (FarmPatch candidate : FarmingWorldData.getPatches(PatchImplementation.TREE))
+		{
+			if (candidate.getRegion().getRegionId() != guildTree.getRegion().getRegionId())
+			{
+				otherTree = candidate;
+				break;
+			}
+		}
+		assertNotNull("the data has only one tree patch", otherTree);
+
+		// Both empty and both wanting a sapling, so only the selection can tell them apart.
+		record(guildTree.getKey(), 0);
+		record(otherTree.getKey(), 0);
+		availability.setAvailable(guildTree, true);
+		availability.setAvailable(otherTree, true);
+
+		// The guild's is the contract's; the other is an ordinary tree patch.
+		when(groups.groupFor(guildTree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+		when(groups.groupFor(otherTree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE));
+
+		// Only the contract is ticked, which is what "Farming contract" on the panel means.
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE)))).thenReturn(true);
+
+		List<FarmPatch> planned = new ArrayList<>();
+		for (RunStop stop : planner.previewStops(EnumSet.of(PatchImplementation.TREE)))
+		{
+			planned.addAll(stop.getPatches());
+		}
+
+		assertTrue("the contract's patch is what was asked for", planned.contains(guildTree));
+		assertFalse("a tree patch nobody ticked is not part of the run",
+			planned.contains(otherTree));
+	}
+
+	/** Taking one is enough on its own to reopen a guild the run had already finished with. */
+	@Test
+	public void aContractReopensAStopThatHadNothingLeft()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		assertNotNull("the guild has no tree patch in the data", tree);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		// No stop here at all: the run was over herbs elsewhere.
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		assertTrue("nothing planned in the guild", planner.getRemaining().stream()
+			.noneMatch(stop -> stop.getRegion().getRegionId() == tree.getRegion().getRegionId()));
+
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		when(groups.groupFor(tree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+		planner.reviewContract();
+
+		assertTrue("a contract can only be done in the guild, so the run has to go there",
+			planner.getRemaining().stream()
+				.anyMatch(stop -> stop.getRegion().getRegionId() == tree.getRegion().getRegionId()));
+	}
+
+	/** The varbit for this patch holding a crop that has finished growing but not been checked. */
+	private static int grownUnchecked(FarmPatch patch)
+	{
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+			if (decoded != null && decoded.getProduce() != null && decoded.getProduce().isCrop()
+				&& decoded.getCropState() == com.dooglemaps.data.CropState.GROWING
+				&& decoded.getStage() == decoded.getProduce().getStages() - 1)
+			{
+				return value;
+			}
+		}
+		throw new IllegalStateException("no grown-but-unchecked varbit for " + patch.getKey());
+	}
+
+	/** Catherby's fruit tree. Varbit 20 is a laden apple tree, 14 the same tree picked clean. */
+	private static final String CATHERBY_FRUIT = "11317.4771";
+	private static final int APPLES_SIX = 20;
+	private static final int APPLES_NONE = 14;
+
+	/**
+	 * A patch the guide cannot act on stops holding the run up.
+	 *
+	 * <p>An empty patch always wants planting as far as the planner is concerned, so a patch with
+	 * no seed allocated to it left the stop unable to finish and the run with no route and no next
+	 * instruction — which reads as the plugin having frozen. The guide is the only thing that knows
+	 * whether there is anything to click, so it reports that, and the run skips the patch rather
+	 * than waiting on it. The player is told separately; see {@code GuideStatus.skipped}.
+	 */
+	@Test
+	public void aPatchTheGuideCannotActOnDoesNotHoldTheRunUp()
+	{
+		// Varbit 3 is a raked, empty herb patch: actionable, and it will stay that way until
+		// something is planted in it.
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		assertEquals("an empty patch is worth visiting", 1, planner.getRemaining().size());
+
+		planner.reviewProgress();
+		assertEquals("and nothing has changed, so it still is",
+			1, planner.getRemaining().size());
+
+		// What the guide reports when it has no step to offer for the patch.
+		planner.setNothingToDo(java.util.Collections.singleton(FALADOR_HERB));
+		planner.reviewProgress();
+
+		assertTrue("nothing can be done here, so the run moves on rather than waiting",
+			planner.getRemaining().isEmpty());
+	}
+
+	/**
+	 * A harvest-only stop finishes when the fruit is gone, not when something is planted.
+	 *
+	 * <h2>The bug this pins down</h2>
+	 *
+	 * A stop used to finish only when the capture layer watched every patch in it turn into a
+	 * growing crop. A harvest-only trip plants nothing by definition, so <b>no harvest-only stop
+	 * could ever finish</b> — the run sat with no route and no next instruction, which reads as the
+	 * plugin having frozen rather than as a patch it is waiting on.
+	 *
+	 * <p>Both varbits here are {@code HARVESTABLE}. That is the trap underneath it: "no fruit on the
+	 * tree" is one of a fruit tree's harvestable states, not a separate state, so every test of the
+	 * form {@code cropState == HARVESTABLE} answered "yes, still worth picking" forever.
+	 */
+	@Test
+	public void aHarvestOnlyStopFinishesOnceThePatchIsPickedClean()
+	{
+		when(runOptions.isHarvestOnly(any())).thenReturn(true);
+
+		record(CATHERBY_FRUIT, APPLES_SIX);
+		availability.setAvailable(patch(CATHERBY_FRUIT), true);
+		planner.start(EnumSet.of(PatchImplementation.FRUIT_TREE));
+
+		assertEquals("a laden tree is worth the trip", 1, planner.getRemaining().size());
+
+		// Pick it clean. Still HARVESTABLE, and nothing is ever planted here.
+		record(CATHERBY_FRUIT, APPLES_NONE);
+		planner.onPatchChanged(patch(CATHERBY_FRUIT));
+
+		assertTrue("nothing left to pick, so the stop is done", planner.getRemaining().isEmpty());
+	}
+
+	/**
+	 * And a stripped tree is not a reason to travel in the first place.
+	 *
+	 * <p>The same confusion seen from the planning end rather than the finishing end: a run that
+	 * included every "harvestable" fruit tree would route you across the map to trees you had
+	 * already emptied.
+	 */
+	@Test
+	public void aPickedCleanTreeIsNotWorthTravellingTo()
+	{
+		when(runOptions.isHarvestOnly(any())).thenReturn(true);
+
+		record(CATHERBY_FRUIT, APPLES_NONE);
+		availability.setAvailable(patch(CATHERBY_FRUIT), true);
+		planner.start(EnumSet.of(PatchImplementation.FRUIT_TREE));
+
+		assertTrue("there is nothing on it to pick", planner.getRemaining().isEmpty());
 	}
 
 	/** Puts the local player somewhere in the given map region. */
@@ -197,6 +733,24 @@ public class RunPlannerTest
 			new net.runelite.api.Item(seed.getItemID(), quantity),
 		});
 		seedInventory.record(source.getContainerId(), container);
+	}
+
+	/**
+	 * Deals with a patch the way the game does, which is the only way a run advances.
+	 *
+	 * <p>These tests used to call {@code markServiced} on its own, and that is not a simulation of
+	 * anything: the tracker only calls it when it has <i>watched</i> a varbit change into a growing
+	 * crop, and a stop is now finished when nothing at it is still actionable rather than when a
+	 * counter fills. Marking a patch serviced while it sits there empty asserted on a state the
+	 * game cannot produce, and it is exactly the gap that let the run stall in play.
+	 *
+	 * <p>Varbit 4 is a guam at its first growth stage — a real crop in the ground, so the patch
+	 * stops being actionable, which is what ends a stop.
+	 */
+	private void service(String key)
+	{
+		record(key, 4);
+		planner.onPatchChanged(patch(key));
 	}
 
 	private void record(String key, int varbitValue)
@@ -416,7 +970,7 @@ public class RunPlannerTest
 		standingIn(patch(ARDOUGNE_HERB).getRegion().getRegionId());
 
 		planner.start(EnumSet.of(PatchImplementation.HERB));
-		planner.markServiced(patch(ARDOUGNE_HERB));
+		service(ARDOUGNE_HERB);
 
 		assertEquals("Catherby is the only thing left, so route to it",
 			1, lastTargets().size());
@@ -433,7 +987,7 @@ public class RunPlannerTest
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 		assertFalse(planner.isAtBankLeg());
 
-		planner.markServiced(patch(ARDOUGNE_HERB));
+		service(ARDOUGNE_HERB);
 
 		assertTrue("the supplies were owed, not cancelled", planner.isAtBankLeg());
 	}
@@ -586,6 +1140,63 @@ public class RunPlannerTest
 		assertEquals("one outstanding stop, one target", 1, lastTargets().size());
 	}
 
+	/**
+	 * Opening a bank is not the same as having collected anything.
+	 *
+	 * <p>{@code leaveBank} used to end the leg outright, and it is called from the first bank
+	 * container event — so merely opening a bank finished the shopping. With the seeds in the
+	 * <b>vault</b>, opening the guild's chest for the payments ended the leg and the vault three
+	 * steps away never got its turn: the run then walked to the patches with nothing to plant.
+	 */
+	@Test
+	public void openingABankDoesNotEndTheLegWhileTheVaultStillHasTheSeeds()
+	{
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+		stockVault(com.dooglemaps.data.Seed.RANARR, 20);
+
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		assertTrue("the seeds are in the vault, so the run opens at a supply point",
+			planner.isAtBankLeg());
+
+		planner.leaveBank();
+		assertTrue("nothing has been withdrawn, so the leg is still owed",
+			planner.isAtBankLeg());
+
+		// Withdrawing is what actually changes the answer: the seeds are on the player now.
+		stockInventory(com.dooglemaps.data.Seed.RANARR, 20);
+		stockVault(com.dooglemaps.data.Seed.RANARR, 0);
+		planner.leaveBank();
+
+		assertFalse("collected, so the run moves on", planner.isAtBankLeg());
+	}
+
+	/**
+	 * A seed you own nowhere must not strand the run at the bank.
+	 *
+	 * <p>The counterpart to the test above, and the reason the leg's condition is
+	 * {@code suppliesOutstanding} rather than {@code needsSupplyTrip}: something unobtainable is
+	 * not a thing withdrawing can fix, so blocking on it would be a run that never starts. The run
+	 * goes ahead and skips those patches — which {@code LoadoutSummary} says out loud, so it is
+	 * not discovered on arrival.
+	 */
+	@Test
+	public void aSeedYouOwnNowhereDoesNotBlockTheLeg()
+	{
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		planner.leaveBank();
+
+		assertFalse("nothing reachable is outstanding, so the run gets going",
+			planner.isAtBankLeg());
+	}
+
 	@Test
 	public void servicingAPatchDropsItFromTheTargets()
 	{
@@ -598,7 +1209,7 @@ public class RunPlannerTest
 		planner.leaveBank();
 		assertEquals(2, lastTargets().size());
 
-		planner.markServiced(patch(FALADOR_HERB));
+		service(FALADOR_HERB);
 
 		assertEquals("the serviced stop should stop being a target", 1, lastTargets().size());
 		assertEquals(1, planner.getRemaining().size());
@@ -612,7 +1223,7 @@ public class RunPlannerTest
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 		planner.leaveBank();
 
-		planner.markServiced(patch(FALADOR_HERB));
+		service(FALADOR_HERB);
 
 		assertFalse(planner.isActive());
 		assertTrue("nothing left to route to", planner.getRemaining().isEmpty());

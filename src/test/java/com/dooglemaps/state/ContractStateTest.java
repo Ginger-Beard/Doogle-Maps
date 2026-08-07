@@ -342,6 +342,18 @@ public class ContractStateTest
 		stored.put(TIME_TRACKING + ".contract", String.valueOf(produce.getItemID()));
 	}
 
+	/**
+	 * What the game does when a contract finishes growing.
+	 *
+	 * <p>Time Tracking clears its own key on the completion message, which is the whole reason
+	 * {@code ContractState} captures the event separately — see its class note. Our
+	 * {@code recordCompleted} cannot do this for it: another plugin's key is not ours to write.
+	 */
+	private void clearTimeTrackingContract()
+	{
+		stored.remove(TIME_TRACKING + ".contract");
+	}
+
 	private static FarmPatch guildPatch(PatchImplementation type)
 	{
 		for (FarmPatch patch : FarmingWorldData.getPatches(type))
@@ -378,5 +390,50 @@ public class ContractStateTest
 			}
 		}
 		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
+	}
+	/**
+	 * A grown contract keeps its patch out of the ordinary group until the reward is collected.
+	 *
+	 * <h2>The most expensive mistake the plugin could make</h2>
+	 *
+	 * Reported from play: a limpwurt contract standing grown in the guild's flower patch, and the
+	 * run offering to compost it and plant an ordinary limpwurt on top. Doing that locks the
+	 * contract out until the replacement finishes growing.
+	 *
+	 * <p>The cause is that a contract's completion message clears <b>both</b> config keys — Time
+	 * Tracking's and ours — so {@code claims} goes false at the exact moment the crop is standing
+	 * there waiting to be handed in. The patch fell straight back into its ordinary group, and the
+	 * ordinary group plants things.
+	 *
+	 * <p>So the grouping question is "is this ground spoken for", which runs from assignment to
+	 * reward. Whether to ask for a <i>seed</i> over that span is a different question with a
+	 * different answer, and lives in {@code RunLoadout}.
+	 */
+	@Test
+	public void aGrownContractStillOwnsItsPatch() throws Exception
+	{
+		FarmPatch guildFlower = guildPatch(PatchImplementation.FLOWER);
+
+		assignInTimeTracking(Produce.LIMPWURT);
+		assertTrue("assigned, so it is claimed", contracts.claims(guildFlower));
+		assertTrue(contracts.claimsUntilHandedIn(guildFlower));
+
+		// The crop finishes. Our capture records it; Time Tracking clears its own key off the same
+		// chat message, which is what leaves nothing "assigned".
+		contracts.recordCompleted();
+		clearTimeTrackingContract();
+
+		assertFalse("nothing is assigned any more, which is true and not the useful question",
+			contracts.claims(guildFlower));
+		assertTrue("but the ground is still spoken for until the reward is collected",
+			contracts.claimsUntilHandedIn(guildFlower));
+		assertEquals("and the type it holds is still known",
+			PatchImplementation.FLOWER, contracts.getActiveContractType());
+
+		contracts.recordHandedIn();
+
+		assertFalse("collected, so the patch goes back to being an ordinary flower patch",
+			contracts.claimsUntilHandedIn(guildFlower));
+		assertNull(contracts.getActiveContractType());
 	}
 }

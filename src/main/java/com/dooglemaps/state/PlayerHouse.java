@@ -27,7 +27,7 @@ import net.runelite.client.eventbus.Subscribe;
  *
  * <p>Scanned once a tick on the client thread and handed out as an immutable list, so the
  * overlays can read it from the render thread. It holds no reference to any other store, which
- * keeps it a leaf in the lock graph — see {@code NOTES.md}.
+ * keeps it a leaf in the lock graph — see {@code docs/NOTES.md}.
  */
 @Singleton
 public class PlayerHouse

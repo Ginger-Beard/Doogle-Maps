@@ -169,7 +169,7 @@ class SeedSelectorPanel extends JPanel
 		if (!bank.hasBeenSeen())
 		{
 			box.setForeground(TEXT);
-			box.setToolTipText("Open a bank to see whether you have " + wanted);
+			box.setToolTipText(Tooltips.text("Open a bank to see whether you have " + wanted));
 		}
 		else if (held < wanted)
 		{
@@ -177,16 +177,16 @@ class SeedSelectorPanel extends JPanel
 			// "covers 3 of 6" says what the run will actually do about it — the rest fall to the
 			// next crop you picked, which is the whole point of picking two.
 			box.setForeground(SHORT);
-			box.setToolTipText("<html>You have <b>" + held + "</b> of the " + wanted
-				+ " this run needs.<br>Covers " + covers + " of " + patches
-				+ (patches == 1 ? " patch" : " patches") + " at " + payment.getQuantity()
-				+ " each.<br>The rest go to the next crop you picked.</html>");
+			box.setToolTipText(Tooltips.html("You have <b>" + held + "</b> of the " + wanted
+				+ " this run needs.<br>Covers " + covers + " of "
+				+ Plurals.of(patches, "patch", "patches") + " at " + payment.getQuantity()
+				+ " each.<br>The rest go to the next crop you picked."));
 		}
 		else
 		{
 			box.setForeground(TEXT);
-			box.setToolTipText(held + " available, " + wanted + " needed for "
-				+ patches + (patches == 1 ? " patch" : " patches"));
+			box.setToolTipText(Tooltips.text(held + " available, " + wanted + " needed for "
+				+ Plurals.of(patches, "patch", "patches")));
 		}
 		return box;
 	}
@@ -252,11 +252,29 @@ class SeedSelectorPanel extends JPanel
 			&& compost.get(group) != CompostTier.NONE;
 
 		compostNote.setVisible(say);
-		if (say)
+		if (!say)
+		{
+			return;
+		}
+
+		// Two different notes, because the advice differs and the wrong half is actively
+		// misleading. A fruit tree can be protected by a farmer, so compost really is redundant
+		// once you are paying. A flower cannot be protected by anyone — see DiseaseRisk's
+		// UNPROTECTABLE — so telling its grower that protection covers it points at a payment the
+		// game does not offer.
+		if (com.dooglemaps.timer.DiseaseRisk.isProtectable(type))
 		{
 			compostNote.setText("Only lowers disease chance here, not yield. "
 				+ "Not needed if you are paying for protection.");
+			return;
 		}
+
+		// And here the honest caveat is the opposite one: no farmer will watch these, so compost is
+		// the only defence there is. The projection still will not move, because Jagex has never
+		// published a rate for them — which is worth saying rather than leaving someone to wonder
+		// why the number is identical either way.
+		compostNote.setText("Lowers disease chance, which is the only protection these get - "
+			+ "no farmer will watch them. The projection cannot show it: the rate is unpublished.");
 	}
 
 	private void updateHeading()
@@ -563,7 +581,7 @@ class SeedSelectorPanel extends JPanel
 
 	private String buildTooltip(Plantable plantable)
 	{
-		StringBuilder text = new StringBuilder("<html><b>")
+		StringBuilder text = new StringBuilder("<b>")
 			.append(plantable.getSeed().getName())
 			.append("</b><br>Farming level ")
 			.append(plantable.getSeed().getLevelRequirement());
@@ -609,6 +627,6 @@ class SeedSelectorPanel extends JPanel
 			}
 		}
 
-		return text.append("</html>").toString();
+		return Tooltips.html(text.toString());
 	}
 }

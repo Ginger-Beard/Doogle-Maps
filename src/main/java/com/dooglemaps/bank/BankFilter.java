@@ -1,7 +1,6 @@
 package com.dooglemaps.bank;
 
 import com.dooglemaps.DoogleMapsConfig;
-import com.dooglemaps.state.RunTypeStore;
 import java.util.HashSet;
 import java.util.Set;
 import javax.inject.Inject;
@@ -104,8 +103,10 @@ public class BankFilter
 	private final com.dooglemaps.route.RunPlanner planner;
 	private final PluginManager pluginManager;
 	private final RunLoadout loadout;
-	private final RunTypeStore runTypes;
 	private final DoogleMapsConfig config;
+
+	/** What the bank holds, so the layout reserves slots only for things that exist. */
+	private final BankContents bank;
 
 	/**
 	 * The item ids the run wants, rebuilt once a tick while the bank is open.
@@ -121,6 +122,20 @@ public class BankFilter
 	private boolean open;
 
 	/**
+	 * Whether the bank is, right now, narrowed to the run.
+	 *
+	 * <p>Not the same question as {@code config.filterBankToRun()}, which is only what was asked
+	 * for: without Bank Tags the tag never opens, and {@link #open} is set from what Bank Tags
+	 * actually did rather than from what we asked it to do. {@link BankHighlightOverlay} stands
+	 * down on the strength of this, so answering "yes" when the bank is in fact unfiltered would
+	 * leave it with neither.
+	 */
+	public boolean isFiltering()
+	{
+		return open;
+	}
+
+	/**
 	 * For getting off the client's script stack before calling into Bank Tags.
 	 *
 	 * <p>See {@link #onWidgetClosed}. Anything that ends in {@code runScript} must not be called
@@ -130,15 +145,15 @@ public class BankFilter
 
 	@Inject
 	private BankFilter(Client client, com.dooglemaps.route.RunPlanner planner,
-		PluginManager pluginManager, RunLoadout loadout, RunTypeStore runTypes,
-		DoogleMapsConfig config, ClientThread clientThread)
+		PluginManager pluginManager, RunLoadout loadout,
+		DoogleMapsConfig config, ClientThread clientThread, BankContents bank)
 	{
+		this.bank = bank;
 		this.clientThread = clientThread;
 		this.planner = planner;
 		this.client = client;
 		this.pluginManager = pluginManager;
 		this.loadout = loadout;
-		this.runTypes = runTypes;
 		this.config = config;
 	}
 
@@ -225,6 +240,17 @@ public class BankFilter
 	 * <p>So it is written under our own hidden tag name, rewritten whenever the run changes, and
 	 * {@link #forgetLayout() removed} when the plugin stops. Nothing survives it being switched
 	 * off, which is the promise that mattered.
+	 *
+	 * <h2>Only what is actually in the bank</h2>
+	 *
+	 * A layout slot is a <b>reservation</b>, not a filter result: Bank Tags draws a faded stand-in
+	 * for any laid-out item the bank does not hold, so you can arrange a tab around things you
+	 * intend to own. Laying out the whole loadout therefore filled the run's tab with ghosts of
+	 * every seed the run could want — a dulled poison ivy seed for someone who has none reads as
+	 * the filter claiming they have one, which is the single thing a filter must never do.
+	 *
+	 * <p>So the bank's own contents are handed to {@link BankLayout} and it places nothing else.
+	 * What is missing is missing, and the panel is where you find that out.
 	 */
 	private void saveLayout()
 	{
@@ -244,8 +270,20 @@ public class BankFilter
 
 		try
 		{
+			// Null until a bank has actually been read, which means "place everything" rather than
+			// "place nothing". The distinction is the whole of a reported bug: the layout is
+			// written the moment the bank widget appears, and on the first open of a session the
+			// container event has usually not arrived yet — so narrowing to a bank we had not seen
+			// laid out an empty grid, and the items fell through unsorted. Closing and reopening
+			// fixed it, which is exactly the shape of "we asked too early".
+			//
+			// Placing everything is the safe direction. A slot reserved for something absent draws
+			// a faded stand-in, which is untidy; a layout with nothing in it is simply broken.
+			Set<Integer> banked = bank.hasBeenSeen() ? bank.getItemIds() : null;
+			laidOutFor = banked;
+
 			layoutManager.saveLayout(new Layout(TAG,
-				BankLayout.build(loadout.forRun(runTypes.getSelected()), map)));
+				BankLayout.build(loadout.forRun(planner.coveredTypes()), map, banked)));
 		}
 		catch (RuntimeException e)
 		{
@@ -364,7 +402,59 @@ public class BankFilter
 			return;
 		}
 		refresh();
+		relayoutIfBankChanged();
 	}
+
+	/**
+	 * Rewrites the layout when what the bank holds has moved under it.
+	 *
+	 * <h2>The layout was written once and then left</h2>
+	 *
+	 * {@link #saveLayout()} ran only from {@link #open()}, so the grid was decided at the instant
+	 * the bank appeared and never revisited. Two reported symptoms came out of that, and they are
+	 * the same bug seen twice:
+	 *
+	 * <ul>
+	 *   <li><b>Wrong on the first open</b>, because the bank container event has usually not
+	 *       arrived by then — handled in {@code saveLayout} by placing everything until a bank has
+	 *       actually been read.</li>
+	 *   <li><b>Deposits not appearing in place</b>, because a freshly banked seed was not in the
+	 *       item set the layout was built from, so it had no slot and fell to the overflow below
+	 *       the grid.</li>
+	 * </ul>
+	 *
+	 * <p>Closing and reopening the bank fixed both, which is the tell: the only thing that changed
+	 * was {@code open()} running again.
+	 *
+	 * <p>Compared by contents rather than by a change counter, so this is silent for the deposits
+	 * that move nothing the run cares about — and it has to reopen the tag, because Bank Tags reads
+	 * the stored layout when a tag is opened rather than watching it.
+	 */
+	private void relayoutIfBankChanged()
+	{
+		if (layoutManager == null || !bank.hasBeenSeen())
+		{
+			return;
+		}
+
+		Set<Integer> now = bank.getItemIds();
+		if (now.equals(laidOutFor))
+		{
+			return;
+		}
+
+		log.debug("Bank contents changed while filtered; rebuilding the layout");
+		open();
+	}
+
+	/**
+	 * The bank contents the current layout was built from, or null for "we had not looked".
+	 *
+	 * <p>Null is a real value here and not merely absence: it is what {@code saveLayout} passes to
+	 * mean "place everything", so a first layout written before the bank was read is correctly
+	 * unequal to the first real set of contents and gets rebuilt.
+	 */
+	private Set<Integer> laidOutFor;
 
 	/** Puts the bank back the way it was. */
 	public void close()
@@ -374,6 +464,9 @@ public class BankFilter
 			return;
 		}
 		open = false;
+		// Forgotten with the filter, so the next open rebuilds rather than trusting a layout
+		// written for a bank we may not have looked at since.
+		laidOutFor = null;
 
 		try
 		{
@@ -483,7 +576,7 @@ public class BankFilter
 	private void refresh()
 	{
 		Set<Integer> items = new HashSet<>();
-		for (LoadoutItem item : loadout.forRun(runTypes.getSelected()))
+		for (LoadoutItem item : loadout.forRun(planner.coveredTypes()))
 		{
 			// Everything the run touches, not only what is missing. An item you already have is
 			// not in the bank to be hidden, and one the leprechaun holds is worth seeing so you

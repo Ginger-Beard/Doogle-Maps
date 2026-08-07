@@ -118,7 +118,9 @@ public class PanelRenderTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			(javax.inject.Provider<com.dooglemaps.bank.RunLoadout>)
+				() -> Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
 
 		// A plain mock answers false for every boolean, which would switch off all 22 patch
 		// types and render an empty sidebar. In the client those come from the interface's
@@ -162,7 +164,6 @@ public class PanelRenderTest
 			resolver, seeds, selection, runPlanner, bonuses, runTypes,
 			construct(com.dooglemaps.state.CompostSelectionStore.class, configManager, gson),
 			stockedHarvestStats(configManager, gson),
-			Mockito.mock(com.dooglemaps.bank.RunLoadout.class),
 			// A real store over the mocked config, so the render exercises the same
 			// defaults-on-first-read path the client does rather than a stub that always agrees.
 			construct(PanelLayoutStore.class, configManager),
@@ -175,9 +176,10 @@ public class PanelRenderTest
 				construct(com.dooglemaps.state.ContractState.class, configManager)),
 			construct(com.dooglemaps.state.ProtectionSelectionStore.class, configManager, gson),
 			construct(com.dooglemaps.bank.BankContents.class),
-			construct(com.dooglemaps.guide.CarriedItems.class),
+			construct(com.dooglemaps.guide.CarriedItems.class, Mockito.mock(net.runelite.api.Client.class)),
 			construct(com.dooglemaps.data.ItemNames.class),
-			construct(com.dooglemaps.state.ContractState.class, configManager));
+			construct(com.dooglemaps.state.ContractState.class, configManager),
+			Mockito.mock(com.dooglemaps.guide.GuideTracker.class));
 	}
 
 	/**

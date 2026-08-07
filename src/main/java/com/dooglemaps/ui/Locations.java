@@ -5,6 +5,8 @@ import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.Set;
@@ -28,6 +30,7 @@ import net.runelite.client.config.ConfigItem;
  * <p>The consequence worth knowing: a hidden location's patches are still routed if they are
  * switched on. Switching a patch off is the row click, and that is the one that changes runs.
  */
+@lombok.extern.slf4j.Slf4j
 final class Locations
 {
 	private Locations()
@@ -43,53 +46,87 @@ final class Locations
 	/**
 	 * Whether a region is on show, by name.
 	 *
-	 * <p>A region the switch statement has never heard of is shown. The region list is generated
-	 * from RuneLite's data and this is written by hand, so the two can drift when a new farming
-	 * area lands — and the safe direction for that drift is showing a patch nobody asked to hide.
-	 * {@code LocationsTest} fails the build when they do drift, so it does not stay that way.
+	 * <h2>Resolved rather than switched</h2>
+	 *
+	 * This was a 36-case switch mapping each region name to its config getter, and it had the
+	 * failure mode a hand-written mirror always has: a new farming area gets a toggle that does
+	 * nothing, silently, because the {@code default} branch says "shown". {@code LocationsTest}
+	 * existed to fail the build when the two drifted.
+	 *
+	 * <p>They cannot drift now, because the mapping is <b>computed</b>. A region's config key is
+	 * mechanical — {@code "showLocation"} followed by its name with the punctuation dropped and
+	 * each word capitalised — and that holds for all thirty-six, including the awkward ones:
+	 * {@code Anglers' Retreat} to {@code showLocationAnglersRetreat}, and
+	 * {@code Civitas illa Fortis} to {@code showLocationCivitasIllaFortis}, where the lower-case
+	 * "illa" is capitalised like any other word.
+	 *
+	 * <p>The unknown-region behaviour is deliberately unchanged. The region list is generated from
+	 * RuneLite's data and the settings are ours, so a region with no toggle is still <i>shown</i> —
+	 * the safe direction for drift is showing a patch nobody asked to hide, rather than hiding one
+	 * they farm.
 	 */
 	static boolean isEnabled(DoogleMapsConfig config, String region)
 	{
-		switch (region)
+		Method getter = GETTERS.get(region);
+		if (getter == null)
 		{
-			case "Al Kharid": return config.showLocationAlKharid();
-			case "Aldarin": return config.showLocationAldarin();
-			case "Anglers' Retreat": return config.showLocationAnglersRetreat();
-			case "Ardougne": return config.showLocationArdougne();
-			case "Auburnvale": return config.showLocationAuburnvale();
-			case "Avium Savannah": return config.showLocationAviumSavannah();
-			case "Brimhaven": return config.showLocationBrimhaven();
-			case "Catherby": return config.showLocationCatherby();
-			case "Champions' Guild": return config.showLocationChampionsGuild();
-			case "Civitas illa Fortis": return config.showLocationCivitasIllaFortis();
-			case "Draynor Manor": return config.showLocationDraynorManor();
-			case "Entrana": return config.showLocationEntrana();
-			case "Etceteria": return config.showLocationEtceteria();
-			case "Falador": return config.showLocationFalador();
-			case "Farming Guild": return config.showLocationFarmingGuild();
-			case "Fossil Island": return config.showLocationFossilIsland();
-			case "Gnome Stronghold": return config.showLocationGnomeStronghold();
-			case "Great Conch": return config.showLocationGreatConch();
-			case "Harmony": return config.showLocationHarmony();
-			case "Kastori": return config.showLocationKastori();
-			case "Kourend": return config.showLocationKourend();
-			case "Lletya": return config.showLocationLletya();
-			case "Lumbridge": return config.showLocationLumbridge();
-			case "Morytania": return config.showLocationMorytania();
-			case "Port Sarim": return config.showLocationPortSarim();
-			case "Prifddinas": return config.showLocationPrifddinas();
-			case "Rimmington": return config.showLocationRimmington();
-			case "Seaweed": return config.showLocationSeaweed();
-			case "Seers' Village": return config.showLocationSeersVillage();
-			case "Tai Bwo Wannai": return config.showLocationTaiBwoWannai();
-			case "Taverley": return config.showLocationTaverley();
-			case "Tree Gnome Village": return config.showLocationTreeGnomeVillage();
-			case "Troll Stronghold": return config.showLocationTrollStronghold();
-			case "Varrock": return config.showLocationVarrock();
-			case "Weiss": return config.showLocationWeiss();
-			case "Yanille": return config.showLocationYanille();
-			default: return true;
+			return true;
 		}
+
+		try
+		{
+			return (Boolean) getter.invoke(config);
+		}
+		catch (ReflectiveOperationException | ClassCastException e)
+		{
+			// Same answer as an unknown region, for the same reason: a location filter must never
+			// be the thing that hides a patch someone farms.
+			return true;
+		}
+	}
+
+	/** Region name to its {@code showLocation…} getter, built once. */
+	private static final Map<String, Method> GETTERS = getters();
+
+	private static Map<String, Method> getters()
+	{
+		Map<String, Method> byName = new HashMap<>();
+		for (String region : allRegions())
+		{
+			try
+			{
+				byName.put(region, DoogleMapsConfig.class.getMethod(keyFor(region)));
+			}
+			catch (NoSuchMethodException e)
+			{
+				// A region with no setting yet. Left out, so isEnabled falls through to "shown".
+				// LocationsTest is what turns this from a silent gap into a build failure.
+				log.debug("No location setting for region \"{}\"", region);
+			}
+		}
+		return Collections.unmodifiableMap(byName);
+	}
+
+	/**
+	 * The config method name for a region.
+	 *
+	 * <p>Public to the test, which asserts every region resolves — that assertion is what replaced
+	 * the drift check, and it is a stronger one: it fails on a region the settings have never heard
+	 * of rather than merely on the two lists disagreeing.
+	 */
+	static String keyFor(String region)
+	{
+		StringBuilder name = new StringBuilder("showLocation");
+		for (String word : region.split("\\s+"))
+		{
+			String letters = word.replaceAll("[^A-Za-z]", "");
+			if (!letters.isEmpty())
+			{
+				name.append(Character.toUpperCase(letters.charAt(0)))
+					.append(letters.substring(1));
+			}
+		}
+		return name.toString();
 	}
 
 	/** Every region in the data, in the order the settings list them. */

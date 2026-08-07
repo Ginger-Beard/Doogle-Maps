@@ -5,6 +5,7 @@ import java.util.Map;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
+import net.runelite.api.Client;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.events.ItemContainerChanged;
@@ -21,6 +22,10 @@ import net.runelite.client.eventbus.Subscribe;
  *
  * <p>Read from the event rather than from the client, so the panel and the overlay can ask
  * from any thread. {@code Client.getItemContainer} asserts it is on the client thread.
+ *
+ * <p>That is true of the <i>reads</i>, and it is why {@link #relearnFromClient()} exists as a
+ * separate, explicitly client-threaded way in. Being told only by events is correct once the
+ * plugin is running and wrong at the moment it starts — see that method.
  */
 @Singleton
 public class CarriedItems
@@ -40,9 +45,41 @@ public class CarriedItems
 	private final Map<Integer, Integer> equipment = new HashMap<>();
 	private int usedSlots;
 
+	private final Client client;
+
 	@Inject
-	private CarriedItems()
+	private CarriedItems(Client client)
 	{
+		this.client = client;
+	}
+
+	/**
+	 * Reads the pack and the worn items straight out of the client.
+	 *
+	 * <h2>Because an inventory nobody has touched is never sent</h2>
+	 *
+	 * Everything here arrived by {@link ItemContainerChanged} and nothing else, which covers every
+	 * moment except the one that matters most: the first. A plugin switched on mid-session was
+	 * never told what you are holding, and a profile change hands over a different account's pack
+	 * without anything having moved in it. The client re-sends a container when it <i>changes</i>,
+	 * so in both cases the maps stay empty until the player happens to disturb something.
+	 *
+	 * <p>Everything that asks {@link #has} then answers no, and the consequences are loud rather
+	 * than subtle: every teleport, every piece of diary gear, the herb sack and the seed box read
+	 * as things you do not own and are put on the withdraw list — with the tablets sitting in your
+	 * pack. Moving any item at all fixes it, which is what made this look like a display glitch
+	 * rather than a missing read.
+	 *
+	 * <p>{@code SeedInventoryStore.relearnFromClient} has covered exactly this for seeds since it
+	 * was written, and the reasoning transfers unchanged; only the containers differ.
+	 *
+	 * <p><b>Must be called on the client thread.</b> That is the whole reason it is a separate
+	 * method rather than something the reads do for themselves — see the class note.
+	 */
+	public void relearnFromClient()
+	{
+		record(client.getItemContainer(InventoryID.INV));
+		recordEquipment(client.getItemContainer(InventoryID.WORN));
 	}
 
 	@Subscribe

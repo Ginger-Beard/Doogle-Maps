@@ -7,7 +7,6 @@ import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.state.PlantingGroups;
 import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.PatchStateStore;
-import com.dooglemaps.bank.RunLoadout;
 import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.FarmingBonusStore;
@@ -142,12 +141,13 @@ public class DoogleMapsPanel extends PluginPanel
 		GrowthTimer growthTimer, ItemManager itemManager, DoogleMapsConfig config,
 		PlantableResolver resolver, SeedInventoryStore seeds, SeedSelectionStore selection,
 		RunPlanner runPlanner, FarmingBonusStore bonuses, RunTypeStore runTypes,
-		CompostSelectionStore compost, HarvestStatsStore harvestStats, RunLoadout loadout,
+		CompostSelectionStore compost, HarvestStatsStore harvestStats,
 		PanelLayoutStore layout, PlantingGroups groups,
 		com.dooglemaps.state.ProtectionSelectionStore protection,
 		com.dooglemaps.bank.BankContents bankContents,
 		com.dooglemaps.guide.CarriedItems carriedItems, com.dooglemaps.data.ItemNames itemNames,
-		com.dooglemaps.state.ContractState contracts)
+		com.dooglemaps.state.ContractState contracts,
+		com.dooglemaps.guide.GuideTracker guideTracker)
 	{
 		// Wrapped, so a long list of patches scrolls rather than being clipped.
 		super(true);
@@ -169,8 +169,8 @@ public class DoogleMapsPanel extends PluginPanel
 		this.carriedItems = carriedItems;
 		this.itemNames = itemNames;
 		this.contracts = contracts;
-		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems, runPlanner, loadout, availability, selection, seeds, runTypes,
-			bonuses, compost, config);
+		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems,
+			runPlanner, selection, seeds, runTypes, bonuses, compost, config, guideTracker);
 		this.statsPanel = new HarvestStatsPanel(harvestStats);
 
 		setLayout(new BorderLayout(0, 4));
@@ -612,6 +612,19 @@ public class DoogleMapsPanel extends PluginPanel
 		});
 	}
 
+	/**
+	 * Repaints only what the guide changes every tick. Safe to call from any thread.
+	 *
+	 * <p>{@link #refresh} is far too expensive to run on the tick — it rebuilds the visible tab,
+	 * the reward table and the stop list — so it is on a 20-second timer, and the current-step
+	 * line inherited that lag despite being derived fresh every tick. This is the cheap path for
+	 * the parts that genuinely are that live.
+	 */
+	public void refreshLive()
+	{
+		SwingUtilities.invokeLater(runPanel::refreshCurrentStep);
+	}
+
 	/** Rebuilds the visible tab if anything has changed since it was last drawn. */
 	private void refreshSelected()
 	{
@@ -655,7 +668,7 @@ public class DoogleMapsPanel extends PluginPanel
 		}
 
 		StringBuilder text = new StringBuilder("<html><center>");
-		text.append(ready).append(ready == 1 ? " patch ready" : " patches ready");
+		text.append(Plurals.of(ready, "patch ready", "patches ready"));
 		if (problems > 0)
 		{
 			text.append(", ").append(problems).append(" need attention");

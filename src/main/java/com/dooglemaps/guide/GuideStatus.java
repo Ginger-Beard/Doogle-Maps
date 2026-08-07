@@ -15,14 +15,15 @@ import lombok.Value;
  * <p>The reason any of this is cached at all is the same one that made the step list cached:
  * working it out walks {@link com.dooglemaps.route.RunPlanner}, which is synchronised, and doing
  * that fifty times a second from the render thread is exactly the cross-thread lock traffic the
- * freeze investigation keeps circling. See {@code NOTES.md}.
+ * freeze investigation keeps circling. See {@code docs/NOTES.md}.
  */
 @Value
 public class GuideStatus
 {
 	private static final GuideStatus IDLE =
 		new GuideStatus(Collections.emptyList(), false, false, 0, Collections.emptyList(), null,
-			null, null, Collections.emptyList(), null);
+			null, null, Collections.emptyList(), null, Collections.emptyList(),
+			Collections.emptySet());
 
 	/** Outstanding steps at the stop you are standing in. Empty while travelling. */
 	List<GuideStep> steps;
@@ -93,6 +94,31 @@ public class GuideStatus
 	 */
 	@javax.annotation.Nullable
 	String contractNote;
+
+	/**
+	 * Patches at this stop the run is passing over, and why.
+	 *
+	 * <p>Information rather than an instruction, like {@link #contractNote} — there is nothing to
+	 * click, which is the whole point of the line. A patch with no seed allocated cannot be planted
+	 * however long you stand there, so the run moves on; saying so is what stops that reading as
+	 * the plugin having skipped something at random.
+	 */
+	List<String> skipped;
+
+	/**
+	 * Where the supply leg is collecting from, or empty when it is not collecting.
+	 *
+	 * <h2>Why the overlay is told rather than deciding</h2>
+	 *
+	 * It used to outline every bank booth, chest and the seed vault together, whether or not the run
+	 * wanted either — so a trip needing only the vault lit every booth beside it.
+	 *
+	 * <p>The planner already knows: {@code getSupplyTargets} is built from exactly this set, and
+	 * routes to the vault, to the banks, or to both. Sharing the answer rather than guessing at it
+	 * is what stops the highlight disagreeing with the route drawn on the map — which it did, for
+	 * as long as {@code GuideOverlay.marks} tried to narrow a two-container errand down to one.
+	 */
+	java.util.Set<com.dooglemaps.state.SeedSource> supplySources;
 
 	/** Nothing happening: no run, or no client. */
 	public static GuideStatus idle()

@@ -1,11 +1,11 @@
 # TODO
 
-Open work only. Everything learned and every closed post-mortem is in `NOTES.md`; the
-in-client checks are in `TESTING.md`.
+Open work only. Everything learned and every closed post-mortem is in `docs/NOTES.md`; the
+in-client checks are in `docs/TESTING.md`.
 
 ## Blocked on testing in the client
 
-These are written and unverified. `TESTING.md` has the full plan, with a fail signature for
+These are written and unverified. `docs/TESTING.md` has the full plan, with a fail signature for
 each so a wrong result points somewhere.
 
 - **Guided mode** — the whole per-patch loop. Most recently fixed but unseen: patch tiles now
@@ -48,12 +48,12 @@ each so a wrong result points somewhere.
   on 2026-08-05 and it was _not_ this deadlock**: the dump had no `Client` thread and no plugin
   frames at all, because the thread had been killed by the reentrancy assertion above rather than
   blocked on a lock. The teleport deadlock remains unobserved, and that dump is not evidence about
-  it. See `NOTES.md`.
+  it. See `docs/NOTES.md`.
 - **Farming contracts**, whole. The contract tab and its single derived seed, the guild patch
   moving out of the herb group, the contract being planted first, and the hand-in / take-a-new
   steps at Guildmaster Jane. The three dialogue lines and the completion message are matched from
   the client sources rather than from play, so a single wording difference makes the whole capture
-  silent — and silent looks exactly like "no contract". See the section below and `TESTING.md`.
+  silent — and silent looks exactly like "no contract". See the section below and `docs/TESTING.md`.
 
 ## Actionable without the client
 
@@ -63,7 +63,7 @@ each so a wrong result points somewhere.
   rather than before one.
 - **Dead code sweep**, deliberately deferred until the features above are verified — several
   of the unused-looking methods are scaffolding for things half-built. See the list in
-  `NOTES.md`. The two unused *imports* can go any time.
+  `docs/NOTES.md`. The two unused *imports* can go any time.
 - **The deprecated-API note on every build.** Four files still use the old
   `net.runelite.api.ItemID`, `Varbits` and `widgets.ComponentID` rather than the `gameval`
   replacements: `CompostCapture`, `ProtectionCapture`, `CompostTier` and `FarmingBonusStore`.
@@ -79,9 +79,34 @@ each so a wrong result points somewhere.
 - **Guided mode: the stop is not sequenced.** Patches at a stop are ordered nearest-first,
   which is arbitrary where a position was never learned and only the region centre is known.
 - **No arrow or navigation line.** Quest Helper has both, toggleable.
-- **No menu swap for the seed box.** The spec asks for Empty as left-click. It is also the
-  first thing that would modify input rather than describe it, so it wants deciding on rather
-  than assuming.
+- **No menu swap for the seed box.** The original spec asked for Empty as left-click. It is also
+  the first thing that would modify input rather than describe it, so it wants deciding on rather
+  than assuming — see `docs/design-principles.md` on the compliance line.
+- **`GuideTracker.patchesWanting` is quadratic, once a tick.** It loops the stop's patches
+  (`GuideTracker.java:1155`) and projects each one, and is itself called once per patch from
+  three places in `computeStepsHere`. Thirteen patches at the Farming Guild is 169 projections a
+  tick for an answer — "how many patches here want this compost tier" — that is the same for
+  every patch sharing a tier. Projections are individually cheap since `GrowthTimer` gained its
+  cache, so this is shape rather than emergency: compute the counts **once per tier per tick**
+  and hand them down. Re-verified against the current tree; the earlier review found it and it
+  has not moved.
+- **`PatchTypePanel.rows` is never pruned.** `rows.computeIfAbsent` at `PatchTypePanel.java:400`
+  and no `remove` or `clear` anywhere in the file, so toggling a location filter leaves orphaned
+  `PatchRow` instances behind. Bounded by the number of patches on the tab rather than unbounded,
+  so it is retention rather than a true leak — but the map is keyed by patch and the visible set
+  is not, and those two drifting apart is the sort of thing that reads as a ghost row later.
+- **Four classes past readable size**, and the gap is widening: `RunPlanner` 1,613 ·
+  `GuideTracker` 1,517 · `RunLoadout` 1,258 · `DoogleMapsConfig` 1,213. `RunLoadout` is the one
+  that splits cleanly — eight `addX` builders that barely interact, each taking the run's types
+  and appending to a list. `DoogleMapsConfig` is mostly mechanical toggles and cannot shrink
+  without RuneLite gaining a dynamic config API, so it does not count.
+  **Why it is worth doing rather than tidying:** `addTeleports` is where a per-tick performance
+  bug hid for a while, and that class of thing is invisible in a thousand-line file.
+- **`PatchRules.java` (705 lines) has never had a review pass.** Partially addressed in passing:
+  its tree section was read closely enough to find that magic 61/62 decode identically and that
+  willow carries a second six-wide harvestable block at 192–197 — see `TreeStumpTest`. The other
+  twenty-odd patch types are still unexamined, and it is generated, so anything found there is a
+  generator fix rather than an edit.
 
 ## Decisions waiting on you
 
@@ -205,7 +230,7 @@ you are going anyway.
   leprechaun with a thousand buckets. The exception is **Trollheim**, where the leprechaun is
   ~15 tiles from the patch. The non-rotting fix is to learn leprechaun positions the way patch
   positions are already learned, then compute the rule. Low priority: one patch, one walk.
-- **Crowdsourced yield data**, post-Hub and opt-in. See `NOTES.md`.
+- **Crowdsourced yield data**, post-Hub and opt-in. See `docs/NOTES.md`.
 
 ## Open data questions, blocked on observations
 
@@ -482,7 +507,7 @@ patch-state derivation to work from.
 
 ### What is left
 
-- **All of it wants seeing in the client.** See `TESTING.md`. Nothing here has been in front of
+- **All of it wants seeing in the client.** See `docs/TESTING.md`. Nothing here has been in front of
   Guildmaster Jane; the three dialogue lines and the completion message are matched from the
   client sources rather than from play, and a single wording difference makes the capture silent.
 - **`Produce.getByItemID` is first-wins**, matching core's linear scan, because item ids are not
@@ -763,7 +788,7 @@ Three caveats that belong in the display rather than in a footnote:
   headline is value or *profit*, since profit needs seed and compost costs that an ironman never
   paid.
 - **Old rows are not trustworthy.** Everything logged before the attribution fixes was collected
-  by the broken version, and `TESTING.md` still tells you to clear the history. Any headline stat
+  by the broken version, and `docs/TESTING.md` still tells you to clear the history. Any headline stat
   built on it inherits that. Worth considering whether the store should record a "trustworthy
   from" timestamp rather than relying on someone having cleared it.
 
@@ -772,16 +797,12 @@ Three caveats that belong in the display rather than in a footnote:
 Not being worked on, and not blocked either — parked because the value stopped justifying the
 work. Kept because the reasoning is worth having if that changes.
 
-- **Geomancy bulk refresh (§4b).** Fully decoded, nothing left to research: `NOTES.md` has the
-  whole rendering, and the probe that produced it is switched off.
-  Parked because what it can actually deliver turned out to be narrower than it looked. The
-  **growth stage is not readable in bulk** — it exists only in the hover tooltip — so a cast can
-  never produce a timer for a patch the plugin has not seen, which was the original appeal. What
-  is left is filling in dead / diseased / empty / what is growing across the map in one cast:
-  useful, but the ordinary walk-past capture already gets there, and it needs a Lunar spellbook
-  and 65 Magic to be worth anything at all.
-  If it is picked up, the decode is done and it is an afternoon's work rather than a research
-  problem.
+- **Geomancy bulk refresh (§4b)** — **dropped, not parked.** Out of this file entirely; the
+  research and the reason it was dropped are in `DEVELOPMENT.md` under *Roads not taken*, which is
+  where closed work lives. Short version: fully decoded, and the growth stage turned out not to be
+  readable in bulk, so it can never fill in a timer — which was the point. What remains is disease
+  tracking, and whether that is worth anything depends on whether players actually cure disease,
+  which nobody knows.
 
 ## DEADLOCK on teleport during a farm run, 2026-08-04 ~11:17 — open, highest priority
 
@@ -907,3 +928,77 @@ mapping joke.
    renaming it means re-pointing both.
 
 Doing 1 and 2 gets the rename; 3 and 4 are tidying and can wait.
+
+## ~~Fetching the new contract's seed mid-stop~~ — **done, wants your eyes in-client**
+
+Taking a contract from Jane mid-run moved its patch into the contract group immediately, so the
+seed appeared in the loadout and the patch sorted to the front — but nothing routed you back to the
+bank or the seed vault for it. You were told to plant something you were not carrying.
+
+The cause turned out to be one line rather than the missing machinery this entry assumed.
+`RunPlanner.selectedForThisRun` resolved seeds by asking `SeedSelectionStore` per patch **type**,
+and that overload filters the flat set of picks the player made. A contract's seed is derived from
+the assignment and deliberately never written into that set, so the planner could not see it —
+while `RunLoadout.addSeeds`, which resolves per planting **group**, could. Every routing decision
+was therefore made as though the seed did not exist: the vault was never owed, the supply leg was
+never aimed at it, and `leaveBank` was happy to call the shopping finished.
+
+Now group-scoped, mirroring the loadout, with the same `plantsNothing` guard so a harvest-only
+group and a contract already standing ripe do not ask for seed. Covered by
+`RunPlannerTest.aContractSeedIsCollectedLikeAnyOther`.
+
+Two things fell out of the same fix:
+
+- **A tree contract no longer drags in every tree seed you ever ticked.** Asking by type meant a
+  magic sapling picked months ago became something this trip had to fetch, because the contract
+  adds `TREE` to the live run. Groups do not have that problem —
+  `aTreeContractDoesNotDragInEveryTreeSeedYouEverPicked`.
+- **The supply leg now ends on the withdraw list rather than on its own partial copy of it.**
+  `suppliesOutstanding` derived its answer from a bank-only tool and a short seed, and so could not
+  see the axe (which `ToolNeeds` has never known about), the protection payments, or the contract
+  seed. It asks `RunLoadout.anythingLeftToWithdraw` now, scoped to the categories a stop is
+  genuinely useless without — teleports and yield gear are the player's business.
+
+## ~~The two remaining run stalls~~ — **done, wants your eyes in-client**
+
+Option 3 was taken, and then some. `GuideTracker.reportNothingToDo` collects every patch at the
+stop the guide has no step for and does two things with it: hands it to
+`RunPlanner.setNothingToDo`, so `isComplete` stops waiting on it, and puts it on
+`GuideStatus.skipped`, which `GuideStepOverlay:208` draws above the step list. So the run is not
+merely unblocked — the player is told which patch was passed over and why, rather than being left
+to infer it from a stop that ends early.
+
+Both are rebuilt from scratch every tick, which is what keeps them from becoming the stored
+progress state the derived form was introduced to remove.
+
+The original write-up follows, because the reasoning about *why* the coupling was the wrong fix is
+still worth having.
+
+### The problem, as written
+
+A stop now finishes when nothing at it is actionable, derived from patch state and polled each
+tick — so a harvest-only stop ends when the fruit is gone, and a patch that turns out to want
+nothing no longer waits for an event that never fires.
+
+Two cases still strand a run, and both have the same shape: **the planner considers the patch
+actionable and it is, but the player cannot act on it.**
+
+- **No seed allocated.** An empty patch always wants planting as far as `RunPlanner.isActionable`
+  is concerned. If the allocation ran out, or a type was ticked with no seed picked, there is
+  nothing to click and the stop cannot end.
+- **Nothing to clear it with.** A dead crop with no axe, likewise.
+
+Fixing either means `isActionable` knowing whether *this run* can actually do something there,
+which is the loadout's question rather than the planner's — and the dependency currently runs
+loadout → planner, not back. Options, roughly in order of appeal:
+
+1. Pass the run's allocation into the planner at `start()` and hold it for the run's duration. It
+   is already computed there, and it is a fact about the run rather than a live lookup.
+2. Give the stop a per-patch "the player was told this cannot be done" flag, set by the guide.
+   Reintroduces the state the derived form just removed, so it would want care.
+3. Leave it, and surface it instead: say *"skipping the Falador herb patch — no seed"* in the step
+   panel, the way `LoadoutSummary` already announces items you own nowhere. Least machinery, and
+   arguably the most honest — the run is not stuck, it has nothing to do there.
+
+Option 3 is probably right first: the player being told is worth more than the run silently
+skipping, and it does not need the coupling the other two want.

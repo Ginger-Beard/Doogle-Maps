@@ -250,7 +250,8 @@ class PatchRow extends JPanel
 			progressBar.setStages(1);
 			progressBar.setComplete(false);
 			progressBar.setFillColor(ColorScheme.MEDIUM_GRAY_COLOR);
-			progressBar.setToolTipText("Not seen yet - visit this patch, or cast Geomancy, to fill it in.");
+			progressBar.setToolTipText(Tooltips.text(
+				"Not seen yet - visit this patch, or cast Geomancy, to fill it in."));
 			setToolTipText("Not seen yet.");
 			shieldBadge.setIcon(null);
 			compostBadge.setIcon(null);
@@ -423,10 +424,16 @@ class PatchRow extends JPanel
 		statusLabel.setForeground(confidence.getColor());
 	}
 
-	/** The hover text on the progress bar, where the honest caveats live. */
+	/**
+	 * The hover text on the progress bar, where the honest caveats live.
+	 *
+	 * <p>Built as a fragment and wrapped by {@link Tooltips}, which is what stops it running off
+	 * the screen — this is the longest tooltip in the panel and it grows with the number of
+	 * bonuses in play, so no fixed set of line breaks would hold.
+	 */
 	private String buildTooltip(PatchProjection projection, @Nullable PatchSnapshot snapshot)
 	{
-		StringBuilder text = new StringBuilder("<html>");
+		StringBuilder text = new StringBuilder();
 		text.append("<b>").append(patch.getDisplayName()).append("</b><br>");
 
 		if (projection.isEmpty())
@@ -468,7 +475,7 @@ class PatchRow extends JPanel
 			text.append("<br><i>Last seen ").append(TimeFormat.since(projection.getLastSeen())).append("</i>");
 		}
 
-		return text.append("</html>").toString();
+		return Tooltips.html(text.toString());
 	}
 
 	/**
@@ -521,7 +528,7 @@ class PatchRow extends JPanel
 			.append("</b>, ").append(lives).append(" guaranteed.")
 			// There is genuinely no ceiling - a run of saved lives can go on indefinitely -
 			// so a "max" would be a fiction. Say what drives it instead.
-			.append("<br><i>").append(bonusSummary()).append("</i>");
+			.append("<br><br>").append(bonusSummary());
 	}
 
 	/**
@@ -564,22 +571,32 @@ class PatchRow extends JPanel
 		return bonuses.forPatch(patch);
 	}
 
-	/** Names what the estimate assumed, so a surprising number can be traced. */
+	/**
+	 * Names what the estimate assumed, so a surprising number can be traced.
+	 *
+	 * <p>A list rather than the comma-joined sentence it used to be. Everything here is an
+	 * independent yes-or-no about one bonus, which is a list wearing a sentence's clothes — and it
+	 * buried the line that matters most. "No diary here yet" is the only entry that explains why
+	 * two patches growing the same crop at the same level differ, and as the fourth clause of a
+	 * run-on sentence nobody was reading it.
+	 */
 	private String bonusSummary()
 	{
 		FarmingBonuses current = currentBonuses();
-		StringBuilder parts = new StringBuilder("At level ").append(seeds.getFarmingLevel());
+		StringBuilder parts = new StringBuilder("At level ")
+			.append(seeds.getFarmingLevel()).append(", with:");
+
 		if (current.isMagicSecateurs())
 		{
-			parts.append(", magic secateurs");
+			parts.append("<br>&bull; magic secateurs");
 		}
 		if (current.isFarmingCape())
 		{
-			parts.append(", Farming cape");
+			parts.append("<br>&bull; Farming cape");
 		}
 		if (current.isAttas())
 		{
-			parts.append(", attas");
+			parts.append("<br>&bull; attas");
 		}
 
 		// Named whether it applied or not. This is the only bonus tied to where the patch is,
@@ -587,8 +604,8 @@ class PatchRow extends JPanel
 		if (DiaryBonus.isEligible(patch))
 		{
 			parts.append(current.getDiaryBonus() > 0
-				? ", diary +" + current.getDiaryBonus()
-				: ", no diary here yet");
+				? "<br>&bull; diary +" + current.getDiaryBonus()
+				: "<br>&bull; <i>no diary here yet</i>");
 		}
 		return parts.toString();
 	}

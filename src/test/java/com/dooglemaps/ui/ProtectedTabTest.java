@@ -562,7 +562,9 @@ public class ProtectedTabTest
 				Mockito.mock(com.dooglemaps.bank.ToolNeeds.class),
 				protectedPatches, groups,
 				Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-				Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+				Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+				(javax.inject.Provider<com.dooglemaps.bank.RunLoadout>)
+					() -> Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
 
 			panel = construct(DoogleMapsPanel.class, store, availability, timer, itemManager,
 				config, resolver, seeds, selection, runPlanner,
@@ -571,14 +573,14 @@ public class ProtectedTabTest
 				construct(com.dooglemaps.state.RunTypeStore.class, configManager, gson),
 				construct(com.dooglemaps.state.CompostSelectionStore.class, configManager, gson),
 				construct(com.dooglemaps.validate.HarvestStatsStore.class, configManager, gson),
-				Mockito.mock(com.dooglemaps.bank.RunLoadout.class),
-				construct(PanelLayoutStore.class, configManager),
+					construct(PanelLayoutStore.class, configManager),
 				groups,
 				construct(com.dooglemaps.state.ProtectionSelectionStore.class, configManager, gson),
 				construct(com.dooglemaps.bank.BankContents.class),
-				construct(com.dooglemaps.guide.CarriedItems.class),
+				construct(com.dooglemaps.guide.CarriedItems.class, Mockito.mock(net.runelite.api.Client.class)),
 				construct(com.dooglemaps.data.ItemNames.class),
-				construct(com.dooglemaps.state.ContractState.class, configManager));
+				construct(com.dooglemaps.state.ContractState.class, configManager),
+			Mockito.mock(com.dooglemaps.guide.GuideTracker.class));
 
 			panel.refresh();
 			SwingUtilities.invokeAndWait(() ->

@@ -162,6 +162,27 @@ public class ContractState
 	}
 
 	/**
+	 * The patch type the contract has a hold on right now, assigned or merely unclaimed.
+	 *
+	 * <p>{@link #getContractType()} goes null the moment the crop finishes growing, because that is
+	 * when the completion message clears both keys. For anything asking <i>"is this patch spoken
+	 * for"</i> that is the wrong answer at the worst moment: the crop is standing in the ground
+	 * waiting to be handed in, and the patch is more spoken for than it has ever been.
+	 */
+	@Nullable
+	public PatchImplementation getActiveContractType()
+	{
+		PatchImplementation assigned = getContractType();
+		if (assigned != null)
+		{
+			return assigned;
+		}
+
+		Produce awaiting = getAwaitingHandIn();
+		return awaiting == null ? null : awaiting.getPatchImplementation();
+	}
+
+	/**
 	 * The seed that grows the assigned contract, or null.
 	 *
 	 * <p>Null for a contract whose crop has no plantable seed — nothing in the current pool is
@@ -191,6 +212,40 @@ public class ContractState
 			return false;
 		}
 		return patch.getImplementation() == getContractType();
+	}
+
+	/**
+	 * Whether the contract still has business with this patch, including one already grown.
+	 *
+	 * <h2>Why {@link #claims} is the wrong question for ordering</h2>
+	 *
+	 * {@code claims} is about the <b>assigned</b> contract, and that is right for grouping: a
+	 * finished contract wants no seed, so it must stop reserving the patch for one — otherwise the
+	 * run would bank a cactus seed for a cactus that is standing there done.
+	 *
+	 * <p>Ordering needs the broader question, and using the narrow one showed. The completion
+	 * message clears both Time Tracking's key and ours, so the moment a contract finishes
+	 * {@code claims} goes false — and the guild's contract patch quietly lost the priority that
+	 * puts it first at that stop. Reported from play as being routed through the guild's herbs
+	 * before the finished cactus, which is backwards: the cactus is what the trip is for, picking
+	 * it is what unlocks the hand-in, and the hand-in is what unlocks the next contract.
+	 *
+	 * <p>So this stays true from assignment until the reward is collected, which is the span over
+	 * which the patch is worth visiting first.
+	 */
+	public boolean claimsUntilHandedIn(@Nullable FarmPatch patch)
+	{
+		if (claims(patch))
+		{
+			return true;
+		}
+		if (patch == null || patch.getRegion().getRegionId() != FARMING_GUILD_REGION)
+		{
+			return false;
+		}
+
+		Produce awaiting = getAwaitingHandIn();
+		return awaiting != null && patch.getImplementation() == awaiting.getPatchImplementation();
 	}
 
 	/**

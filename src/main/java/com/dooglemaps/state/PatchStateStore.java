@@ -88,22 +88,87 @@ public class PatchStateStore
 
 	// ------------------------------------------------------------------ reads
 
+	/**
+	 * A patch's last known state, or null if we have never seen it.
+	 *
+	 * <h2>A copy, and the lock alone is not why</h2>
+	 *
+	 * This used to hand back the stored object. {@code synchronized} then protected the map
+	 * lookup and nothing that mattered: {@link PatchSnapshot} is mutable, {@link #applyVarbit}
+	 * rewrites seven of its fields in place, and once the reference has escaped every reader is
+	 * reading those fields with no lock at all.
+	 *
+	 * <p>The readers are on other threads and there are a lot of them — the sidebar rows and the
+	 * summary on Swing, the run planner and the guide on the client thread, all of them going
+	 * through {@code GrowthTimer.project}, which reads produce, crop state, stage and last-seen as
+	 * four separate loads. Nothing made those four agree. A projection could pair the previous
+	 * crop with the new stage, and a repaint landing mid-write could draw a patch that had briefly
+	 * lost its compost, because {@code applyVarbit} clears compost and protection before it
+	 * returns.
+	 *
+	 * <p>Nothing threw, which is what made it the wrong kind of bug: it produced a wrong number in
+	 * the almanac, rarely, and never the same way twice. Copying under the lock is what makes the
+	 * four fields a snapshot rather than a running commentary.
+	 */
 	@Nullable
 	public synchronized PatchSnapshot get(FarmPatch patch)
 	{
-		return snapshots.get(patch.getKey());
+		return copyOf(snapshots.get(patch.getKey()));
 	}
 
 	@Nullable
 	public synchronized PatchSnapshot get(String patchKey)
 	{
-		return snapshots.get(patchKey);
+		return copyOf(snapshots.get(patchKey));
 	}
 
-	/** Every patch we have ever seen, as a copy so callers cannot mutate the cache. */
+	/**
+	 * Whether this patch has ever been seen, without building a snapshot to find out.
+	 *
+	 * <p>Exists because {@link #get(FarmPatch)} now copies, and {@code AvailabilityProfile} asked
+	 * it only to compare against null — once per patch, inside a loop that runs on every panel
+	 * refresh. Copying a snapshot to throw it away is the one place the copy would have cost
+	 * something worth measuring.
+	 */
+	public synchronized boolean hasSeen(FarmPatch patch)
+	{
+		return snapshots.containsKey(patch.getKey());
+	}
+
+	/** Every patch we have ever seen. Copies, for the reason {@link #get(FarmPatch)} gives. */
 	public synchronized Collection<PatchSnapshot> getAll()
 	{
-		return new ArrayList<>(snapshots.values());
+		List<PatchSnapshot> copies = new ArrayList<>(snapshots.size());
+		for (PatchSnapshot snapshot : snapshots.values())
+		{
+			copies.add(copyOf(snapshot));
+		}
+		return copies;
+	}
+
+	/**
+	 * One snapshot, detached from the cache.
+	 *
+	 * <p>Field by field rather than through a copy constructor, so adding a field to
+	 * {@link PatchSnapshot} without adding it here is a compile-time argument-count error rather
+	 * than a silently dropped value.
+	 */
+	@Nullable
+	private static PatchSnapshot copyOf(@Nullable PatchSnapshot snapshot)
+	{
+		if (snapshot == null)
+		{
+			return null;
+		}
+		return new PatchSnapshot(
+			snapshot.getPatchKey(),
+			snapshot.getVarbitValue(),
+			snapshot.getProduce(),
+			snapshot.getCropState(),
+			snapshot.getStage(),
+			snapshot.getCompost(),
+			snapshot.isPatchProtected(),
+			snapshot.getLastSeen());
 	}
 
 	// ----------------------------------------------------------------- writes

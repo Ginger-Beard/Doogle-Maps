@@ -23,12 +23,12 @@ import java.util.Set;
  *     A B C D E F G H
  *  1  T T T . S S S S      T  teleports
  *  2  T T T . S S S S      S  seeds
- *  3  T T T . . . . .      P  protection payments
+ *  3  T T T . S S S S      P  protection payments
  *  4  T T T . P P P P      G  gear: tools, outfit, storage, compost
  *  5  T T T . . . . .      .  left empty
  *  6  T T T . G G G G
  *  7  T T T . G G G G
- *  8  . . . . . . . .
+ *  8  T T T . G G G G
  * </pre>
  *
  * <p>Regions rather than a flow, and that is the point of making it a map: the gaps are wherever
@@ -41,8 +41,12 @@ import java.util.Set;
  * {@code BankTagsPlugin.BANK_ITEMS_PER_ROW} is 8 and a {@link
  * net.runelite.client.plugins.banktags.tabs.Layout} is a flat array indexed
  * {@code row * 8 + column}, so the columns are A to H and there is no ninth. Rows past the eighth
- * are reachable only by scrolling, which is why the default stops at seven and leaves the last row
- * clear for anything that overflows.
+ * are reachable only by scrolling, so the default uses all eight and no more.
+ *
+ * <p>It once stopped at seven, to keep the last row clear for overflow. That was unnecessary:
+ * anything the map has no room for is placed by Bank Tags <i>after</i> the whole layout, under
+ * {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM}, rather than in the first free slot — so reserving
+ * a row bought nothing and cost eight slots of the only screen that matters.
  *
  * <p>A map that does not parse is <b>ignored with a warning</b> rather than half-applied. A
  * half-read layout would put items in places nobody asked for, and the failure would look like a
@@ -61,8 +65,31 @@ public final class BankLayout
 	 *
 	 * <p>A newline, because the setting is a text area and being able to see the shape of the grid
 	 * is the entire point of it being a map.
+	 *
+	 * <h2>And three other things, because the newline is not what the player sees</h2>
+	 *
+	 * RuneLite stores settings in a {@code .properties} file, and {@code Properties.store} escapes
+	 * a real newline as the two characters {@code \n}. That is correct and it round-trips —
+	 * {@code Properties.load} turns it back — but the escaped form is what appears anywhere the raw
+	 * value is shown, so a player looking at this setting sees a backslash at the end of every row
+	 * and reasonably concludes that is the separator. Reported exactly that way.
+	 *
+	 * <p>Typing what you were shown then produced a map that silently failed to parse: eight rows
+	 * became one 71-character row, {@link #validate} rejected it, and the whole setting fell back
+	 * to the default with only a log line to say so. A free-text setting that punishes the player
+	 * for copying its own displayed form is a bad setting, so all of it is accepted:
+	 *
+	 * <ul>
+	 *   <li>a real newline, which is what the text area produces;
+	 *   <li>a literal {@code \n}, which is what the stored form looks like;
+	 *   <li>a {@code /}, which the class comment above has always claimed and which is genuinely
+	 *       convenient for writing a map on one line.
+	 * </ul>
+	 *
+	 * <p>A trailing backslash on a row is stripped separately, in {@link #rowsOf}, so a map that is
+	 * half one convention and half the other still reads.
 	 */
-	private static final String ROW_SEPARATOR = "\\r?\\n";
+	private static final String ROW_SEPARATOR = "\\\\n|\\r?\\n|/";
 
 	/** An empty slot, in the map and in the array Bank Tags wants. */
 	private static final char EMPTY = '.';
@@ -97,12 +124,12 @@ public final class BankLayout
 	public static final String DEFAULT_MAP =
 		"TTT.SSSS\n"
 			+ "TTT.SSSS\n"
-			+ "TTT.....\n"
+			+ "TTT.SSSS\n"
 			+ "TTT.PPPP\n"
 			+ "TTT.....\n"
 			+ "TTT.GGGG\n"
 			+ "TTT.GGGG\n"
-			+ "........";
+			+ "TTT.GGGG";
 
 	private BankLayout()
 	{
@@ -155,7 +182,14 @@ public final class BankLayout
 		List<String> rows = new ArrayList<>();
 		for (String row : map.trim().split(ROW_SEPARATOR))
 		{
+			// A trailing backslash is dropped before trimming. It is what is left over when a row
+			// was separated by a real newline but written from the escaped form the settings file
+			// shows — "TTT.SSSS\" and then a line break. Harmless to strip when it is not there.
 			String cells = row.trim();
+			while (cells.endsWith("\\"))
+			{
+				cells = cells.substring(0, cells.length() - 1).trim();
+			}
 			if (!cells.isEmpty())
 			{
 				rows.add(cells);
@@ -189,6 +223,26 @@ public final class BankLayout
 	 */
 	public static int[] build(List<LoadoutItem> items, String map)
 	{
+		return build(items, map, null);
+	}
+
+	/**
+	 * The layout array for a run, placing only items the bank actually holds.
+	 *
+	 * <p>The restriction is the point rather than an optimisation. A layout slot is a reservation,
+	 * and Bank Tags fills a reservation it cannot satisfy with a faded stand-in — so laying out
+	 * the whole loadout showed a dulled item for every seed the run wanted and you did not own,
+	 * indistinguishable at a glance from one you did. See {@code BankFilter.saveLayout}.
+	 *
+	 * <p>Every {@link RunLoadout#bankFormsOf bank form} is considered, not just the id the loadout
+	 * names: a loadout item is the planted form, and for a tree crop what is sitting in the bank is
+	 * the seed. Both are placed when you hold both, because at that point you genuinely have two
+	 * items and hiding either would be the same lie in the other direction.
+	 *
+	 * @param banked every item id the bank holds, or null to place everything regardless
+	 */
+	public static int[] build(List<LoadoutItem> items, String map, Set<Integer> banked)
+	{
 		int[] layout = new int[ROWS * COLUMNS];
 		Arrays.fill(layout, NO_ITEM);
 
@@ -201,7 +255,7 @@ public final class BankLayout
 				continue;
 			}
 
-			List<Integer> ids = itemsIn(items, group.getValue());
+			List<Integer> ids = itemsIn(items, group.getValue(), banked);
 			for (int i = 0; i < ids.size() && i < slots.size(); i++)
 			{
 				layout[slots.get(i)] = ids.get(i);
@@ -239,16 +293,33 @@ public final class BankLayout
 	 *
 	 * <p>Deduplicated because the same id in two slots is not a layout Bank Tags can honour — the
 	 * second placement wins and the first becomes a hole.
+	 *
+	 * @param banked the bank's contents, or null to place every item regardless of whether it is
+	 *               there; see {@link #build(List, String, Set)}
 	 */
 	private static List<Integer> itemsIn(List<LoadoutItem> items,
-		Set<LoadoutItem.Category> categories)
+		Set<LoadoutItem.Category> categories, Set<Integer> banked)
 	{
 		Set<Integer> ids = new LinkedHashSet<>();
 		for (LoadoutItem item : items)
 		{
-			if (categories.contains(item.getCategory()))
+			if (!categories.contains(item.getCategory()))
+			{
+				continue;
+			}
+
+			if (banked == null)
 			{
 				ids.add(item.getItemId());
+				continue;
+			}
+
+			for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+			{
+				if (banked.contains(form))
+				{
+					ids.add(form);
+				}
 			}
 		}
 		return new ArrayList<>(ids);

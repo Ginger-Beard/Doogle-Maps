@@ -1,9 +1,14 @@
 package com.dooglemaps.bank;
 
+import com.dooglemaps.data.Seed;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import org.junit.Test;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -61,6 +66,63 @@ public class BankLayoutTest
 		assertEquals(SEED_A, layout[at('E', 1)]);
 		assertEquals("gear is still at E6 with only one seed above it",
 			GEAR, layout[at('E', 6)]);
+	}
+
+	/**
+	 * A slot is only reserved for something the bank actually holds.
+	 *
+	 * <p>Bank Tags draws a faded stand-in for a laid-out item that is not there, so laying out the
+	 * whole loadout showed a dulled seed for every one the run wanted and you did not own — which
+	 * reads as the filter saying you have it. The run still wants it; the layout just does not
+	 * pretend it is in front of you.
+	 */
+	@Test
+	public void onlyItemsInTheBankGetASlot()
+	{
+		Set<Integer> banked = new LinkedHashSet<>(Arrays.asList(SEED_B, TELE_A));
+
+		int[] layout = BankLayout.build(loadout(), BankLayout.DEFAULT_MAP, banked);
+
+		assertEquals("the seed we own takes the first seed slot", SEED_B, layout[at('E', 1)]);
+		assertEquals("and the one we do not own reserves nothing", -1, layout[at('F', 1)]);
+		assertEquals(TELE_A, layout[at('A', 1)]);
+		assertEquals("nor does the teleport we do not own", -1, layout[at('B', 1)]);
+		assertEquals("a whole group can be empty", -1, layout[at('E', 4)]);
+	}
+
+	/** Without a bank to consult, everything is placed — the two-argument form and the tests above. */
+	@Test
+	public void aNullBankPlacesEverything()
+	{
+		int[] layout = BankLayout.build(loadout(), BankLayout.DEFAULT_MAP, null);
+		assertEquals(SEED_A, layout[at('E', 1)]);
+		assertEquals(SEED_B, layout[at('F', 1)]);
+	}
+
+	/**
+	 * A tree crop is matched on the form the bank is holding, not the one the loadout names.
+	 *
+	 * <p>A loadout item is the planted sapling; what sits in the bank is the seed. Laying out the
+	 * sapling id would reserve a slot for something you do not have and leave the seed you do have
+	 * to fall out of the grid entirely.
+	 */
+	@Test
+	public void aTreeCropIsLaidOutAsWhicheverFormIsBanked()
+	{
+		List<LoadoutItem> run = new ArrayList<>();
+		run.add(item(Seed.MAGIC.getPlantedItemID(), LoadoutItem.Category.SEED));
+
+		int[] seedOnly = BankLayout.build(run, BankLayout.DEFAULT_MAP,
+			new LinkedHashSet<>(Arrays.asList(Seed.MAGIC.getItemID())));
+		assertEquals("the magic seed, which is what is in the bank",
+			Seed.MAGIC.getItemID(), seedOnly[at('E', 1)]);
+
+		int[] both = BankLayout.build(run, BankLayout.DEFAULT_MAP,
+			new LinkedHashSet<>(Arrays.asList(Seed.MAGIC.getItemID(),
+				Seed.MAGIC.getPlantedItemID())));
+		assertEquals("both, when you have potted some already - the form the loadout names first",
+			Seed.MAGIC.getPlantedItemID(), both[at('E', 1)]);
+		assertEquals(Seed.MAGIC.getItemID(), both[at('F', 1)]);
 	}
 
 	/** Editing the map moves things, which is the point of it being a setting. */
@@ -136,6 +198,55 @@ public class BankLayoutTest
 		int[] fallback = BankLayout.build(loadout(), "nonsense");
 		assertEquals("the default's placement, not an empty grid",
 			SEED_A, fallback[at('E', 1)]);
+	}
+
+	/**
+	 * A map reads whichever way the player wrote the row breaks.
+	 *
+	 * <h2>Why more than one separator is not indulgence</h2>
+	 *
+	 * RuneLite keeps settings in a {@code .properties} file, where {@code Properties.store} writes
+	 * a real newline as the two characters {@code \n}. That round-trips correctly, but the escaped
+	 * form is what shows up anywhere the raw value is displayed — so the player sees a backslash
+	 * ending every row and reasonably takes it for the separator. Reported exactly that way.
+	 *
+	 * <p>Typing back what you were shown then failed <i>silently</i>: eight rows became one
+	 * 71-character row, validation rejected it, and the setting fell back to the default with only
+	 * a log line to say why. A setting that punishes the player for copying its own displayed form
+	 * is the bug, so every plausible form is accepted.
+	 */
+	@Test
+	public void rowsCanBeSeparatedByNewlinesEscapedNewlinesOrSlashes()
+	{
+		int[] real = BankLayout.build(loadout(), BankLayout.DEFAULT_MAP);
+
+		// The escaped form, exactly as the settings file stores it.
+		int[] escaped = BankLayout.build(loadout(),
+			"TTT.SSSS\\nTTT.SSSS\\nTTT.SSSS\\nTTT.PPPP\\nTTT.....\\nTTT.GGGG\\nTTT.GGGG\\nTTT.GGGG");
+		assertArrayEquals("a literal \\n is what the player is shown, so it has to parse",
+			real, escaped);
+
+		// A slash, which the class comment has always claimed and which is genuinely convenient
+		// for writing a map on one line.
+		int[] slashes = BankLayout.build(loadout(),
+			"TTT.SSSS/TTT.SSSS/TTT.SSSS/TTT.PPPP/TTT...../TTT.GGGG/TTT.GGGG/TTT.GGGG");
+		assertArrayEquals(real, slashes);
+
+		// And the half-and-half case: a trailing backslash left on a row that was then broken with
+		// a real newline, which is what copying the displayed form into the text area produces.
+		int[] mixed = BankLayout.build(loadout(),
+			"TTT.SSSS\\\nTTT.SSSS\\\nTTT.SSSS\\\nTTT.PPPP\\\nTTT.....\\\nTTT.GGGG\\\nTTT.GGGG\\\nTTT.GGGG");
+		assertArrayEquals("a stray backslash must not cost the row", real, mixed);
+	}
+
+	/** And all four forms are accepted by the validator, not merely tolerated by the builder. */
+	@Test
+	public void everyRowSeparatorPassesValidation()
+	{
+		assertNull(BankLayout.validate("TTT.SSSS\\nTTT.SSSS"));
+		assertNull(BankLayout.validate("TTT.SSSS/TTT.SSSS"));
+		assertNull(BankLayout.validate("TTT.SSSS\\\nTTT.SSSS"));
+		assertNull(BankLayout.validate("TTT.SSSS\nTTT.SSSS"));
 	}
 
 	/** The default map is itself valid, which is easy to break by editing it. */

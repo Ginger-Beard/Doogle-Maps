@@ -51,7 +51,10 @@ public class BankCapture
 		banks.record(client.getLocalPlayer().getWorldLocation());
 		recordNames(event.getItemContainer());
 
-		// Reaching a bank is what ends a run's opening leg; from here it routes to patches.
+		// Offered, not asserted. leaveBank ends the leg only once nothing is left to collect —
+		// opening a bank used to be enough on its own, which finished the shopping before any of
+		// it had been done. Called from here as well as from the tick so a withdrawal is acted on
+		// in the same tick it happens.
 		runPlanner.leaveBank();
 	}
 

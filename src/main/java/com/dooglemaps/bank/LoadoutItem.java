@@ -10,7 +10,10 @@ import lombok.Value;
  * cures, so telling you to withdraw those is worse than saying nothing. What is worth showing
  * is the difference between what the run needs and what you already have.
  */
+// AllArgsConstructor is explicit because @Value stops generating one the moment the class declares
+// a constructor of its own, and the shorter one below is exactly that.
 @Value
+@lombok.AllArgsConstructor
 public class LoadoutItem
 {
 	/** What, if anything, the player has to do about this item. */
@@ -69,6 +72,24 @@ public class LoadoutItem
 		}
 	}
 
+	/**
+	 * Which store a {@link Need#WITHDRAW} item comes out of.
+	 *
+	 * <p>{@link Need} says <i>that</i> something has to be fetched; this says <i>where from</i>,
+	 * and the two are not the same question. Everything the plugin tracks lives in the bank except
+	 * seeds, which can also be in the seed vault — and there is exactly one vault, in the Farming
+	 * Guild, so confusing the two is not a small error.
+	 *
+	 * <p>It was missing, and the guide said "From the bank:" over a list that included vault seeds.
+	 * Opening the bank then satisfied the whole step and the run moved on, leaving the vault
+	 * unvisited and the seeds behind.
+	 */
+	public enum From
+	{
+		BANK,
+		SEED_VAULT
+	}
+
 	int itemId;
 	String name;
 	Category category;
@@ -79,4 +100,19 @@ public class LoadoutItem
 
 	/** Why it is being suggested, for the tooltip. Never empty. */
 	String reason;
+
+	/** Where to fetch it. Meaningless unless {@link #need} is {@link Need#WITHDRAW}. */
+	From from;
+
+	/**
+	 * Everything except a seed comes out of the bank, so most callers do not say so.
+	 *
+	 * <p>Last in the field order and defaulted here rather than threaded through every call site,
+	 * because only {@code addSeeds} has anything to decide — a tool, a teleport or a payment is in
+	 * the bank or it is nowhere.
+	 */
+	LoadoutItem(int itemId, String name, Category category, Need need, int quantity, String reason)
+	{
+		this(itemId, name, category, need, quantity, reason, From.BANK);
+	}
 }

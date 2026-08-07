@@ -55,7 +55,7 @@ public class AvailabilityProfile
 	 * <p>A supplier rather than the store that owns it. {@code SeedInventoryStore} is a leaf and
 	 * this class sits above {@code PatchStateStore} in the lock order; taking a reference to
 	 * another store would add an edge to a graph that is deliberately kept a line. Reading one
-	 * int through a lambda keeps this a leaf-plus-a-number. See {@code NOTES.md} on lock
+	 * int through a lambda keeps this a leaf-plus-a-number. See {@code docs/NOTES.md} on lock
 	 * ordering.
 	 */
 	private java.util.function.IntSupplier farmingLevel = () -> 0;
@@ -109,7 +109,9 @@ public class AvailabilityProfile
 		{
 			return explicit;
 		}
-		return stateStore.get(patch) != null;
+		// hasSeen rather than get() != null: this runs per patch on every refresh, and get()
+		// copies the snapshot to hand it out safely. Asking whether one exists needs no copy.
+		return stateStore.hasSeen(patch);
 	}
 
 	/** Whether the player has made an explicit choice, as opposed to us inferring one. */

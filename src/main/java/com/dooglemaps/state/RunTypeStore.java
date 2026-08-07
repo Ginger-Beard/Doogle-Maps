@@ -98,15 +98,33 @@ public class RunTypeStore
 			&& !selected.contains(RunOption.full(group).getKey());
 	}
 
-	/** The patch type a stored key belongs to, or null if it names one this build has lost. */
+	/**
+	 * The patch type a stored key belongs to, or null if it names one this build has lost.
+	 *
+	 * <h2>Everything before the first {@code #}, rather than a list of known suffixes</h2>
+	 *
+	 * This stripped {@code "#harvest"} and {@code "#protected"} by name, and a key scheme with a
+	 * hand-maintained parser is a key scheme with one suffix missing. It was {@code "#contract"}:
+	 * a ticked farming contract stored as {@code CACTUS#contract}, failed to parse, and was
+	 * <b>dropped on load</b> — so the box came back unticked on every restart, which is how this
+	 * was reported.
+	 *
+	 * <p>The quieter half was worse. {@link #getSelected()} maps keys to types through here too, so
+	 * a contract was contributing no patch type at all: with only the contract ticked, the run
+	 * covered nothing and would have planned an empty trip. That failed silently, in the same
+	 * session, with nothing to suggest the tick had not registered.
+	 *
+	 * <p>Splitting on the marker cannot fall behind, and a fourth scope needs no change here.
+	 * {@code SeedSelectionStore} was already parsing its own keys this way, which is the version
+	 * that should have been copied. Nested suffixes are handled by taking the <i>first</i> marker —
+	 * a harvest-only contract would be {@code CACTUS#contract#harvest}, and the type is still
+	 * {@code CACTUS}.
+	 */
 	@Nullable
 	private static PatchImplementation typeOf(String key)
 	{
-		String name = key;
-		for (String suffix : new String[]{"#harvest", "#protected"})
-		{
-			name = name.replace(suffix, "");
-		}
+		int marker = key.indexOf('#');
+		String name = marker < 0 ? key : key.substring(0, marker);
 
 		try
 		{

@@ -85,7 +85,7 @@ public class GuidePlanTest
 		compost = construct(CompostSelectionStore.class, configManager, gson);
 		compost.load();
 		growthTimer = construct(GrowthTimer.class, configManager);
-		carried = construct(CarriedItems.class);
+		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
 		leprechaun = leprechaunHolding();
 		barbarian = construct(BarbarianFarming.class, configManager,
 			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
@@ -600,13 +600,232 @@ public class GuidePlanTest
 		return store;
 	}
 
+	/**
+	 * A grown tree, bush or cactus is checked before anything else can happen to it.
+	 *
+	 * <h2>The state that had no instruction at all</h2>
+	 *
+	 * These crops finish growing into a state the game still calls {@code GROWING}, because only
+	 * the player can make the transition to harvestable. {@code GrowthTimer} correctly declines to
+	 * promote them — and every branch of {@code forPatch} then read the patch as "still growing,
+	 * leave it alone", so it produced <b>no step and no highlight</b>.
+	 *
+	 * <p>Reported as a finished cactus contract being passed over for an avantoe two patches away.
+	 * The almanac said ready and the planner had routed to it; the guide simply had no word for it.
+	 *
+	 * <p>Worth pinning on more than one type, because {@code healthCheckRequired} is generated data
+	 * and the failure is per-type silence rather than an error.
+	 */
+	@Test
+	public void aGrownCropIsCheckedBeforeItCanBeHarvested()
+	{
+		for (PatchImplementation type : new PatchImplementation[]{
+			PatchImplementation.CACTUS, PatchImplementation.TREE, PatchImplementation.BUSH})
+		{
+			FarmPatch patch = grownUnchecked(type);
+			assertNotNull(type + " has no grown-but-unchecked varbit in the data", patch);
+
+            List<GuideStep> steps = steps(patch, null);
+			assertFalse(type + " produced no instruction at all", steps.isEmpty());
+			assertEquals(type + " should be checked first",
+				GuideAction.CHECK_HEALTH, steps.get(0).getAction());
+			assertTrue("the patch is what you click", steps.get(0).highlightsPatch());
+		}
+	}
+
+	/**
+	 * The three clicks a grown tree wants, in order, each said out loud.
+	 *
+	 * <h2>Two of them did not exist</h2>
+	 *
+	 * A tree patch is check, chop, dig — and the game gives those three states three varbit values.
+	 * The last two decode identically, so the guide said <i>"harvest the magic"</i> at the standing
+	 * tree, said it again at the stump, and went on saying it: nothing the player clicked changed
+	 * the state being tested, the patch never came out, and the stop never finished.
+	 *
+	 * <p>Reported from play as a yew contract that could not be started, with a grown magic tree in
+	 * the patch it wanted. The run had routed correctly and the withdraw list had the axe on it;
+	 * the guide simply could not describe the two clicks between checking the tree and planting.
+	 *
+	 * <p>Driven as three separate questions rather than one sequence, because the answer is a
+	 * function of the patch state — which is also what happens when a player does it out of order.
+	 */
+	@Test
+	public void aGrownTreeIsChecked_thenChopped_thenDugOut()
+	{
+		FarmPatch patch = grownUnchecked(PatchImplementation.TREE);
+		assertNotNull("no tree has a grown-but-unchecked fixture", patch);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+
+		// The value the fixture settled on is the crop's grown-but-unchecked one, so the two above
+		// it are the tree still standing and the stump it leaves.
+		int unchecked = patches.get(patch).getVarbitValue();
+
+		assertEquals("a grown tree is checked first - it is where the experience is",
+			GuideAction.CHECK_HEALTH, firstStepAt(patch, unchecked).getAction());
+
+		GuideStep chop = firstStepAt(patch, unchecked + 1);
+		assertEquals("a checked tree is chopped, not harvested", GuideAction.CHOP, chop.getAction());
+		assertTrue(chop.getText(), chop.getText().toLowerCase().startsWith("chop down"));
+		assertTrue("the patch is what you click", chop.highlightsPatch());
+
+		GuideStep dig = firstStepAt(patch, unchecked + 2);
+		assertEquals("what a felled tree leaves is a stump, and it has to come out",
+			GuideAction.CLEAR, dig.getAction());
+		assertTrue(dig.getText(), dig.getText().toLowerCase().contains("stump"));
+	}
+
+	/**
+	 * A harvest-only tree run stops once the logs are in the pack.
+	 *
+	 * <p>"Come back and take the logs" does not include digging the stump out — that is clearing a
+	 * patch the player has said they are not replanting. The stump therefore produces no step at
+	 * all, and, because {@code hasProduceToPick} answers no for one, nothing keeps the stop open
+	 * either. Getting only the first half of that right is what would leave a harvest-only run
+	 * parked at a patch it had already finished.
+	 */
+	@Test
+	public void aHarvestOnlyTreeRunLeavesTheStumpStanding()
+	{
+		FarmPatch patch = grownUnchecked(PatchImplementation.TREE);
+		assertNotNull(patch);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+
+		int unchecked = patches.get(patch).getVarbitValue();
+		recordValue(patch, unchecked + 2);
+
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		assertNotNull(projection);
+		assertTrue("the fixture is meant to be a stump", projection.isStump());
+		assertFalse("a stump has nothing on it to pick", projection.hasProduceToPick());
+
+		assertTrue("a harvest-only run is finished with this patch",
+			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch), null,
+				seeds, compost, carried, leprechaun, barbarian,
+				/* protecting */ false, /* harvestOnly */ true, 1).isEmpty());
+	}
+
+	/** The first instruction for this patch once its varbit reads the given value. */
+	private GuideStep firstStepAt(FarmPatch patch, int varbitValue)
+	{
+		recordValue(patch, varbitValue);
+		List<GuideStep> steps = steps(patch, Seed.YEW);
+		assertFalse("varbit " + varbitValue + " produced no instruction at all", steps.isEmpty());
+		return steps.get(0);
+	}
+
+	private void recordValue(FarmPatch patch, int varbitValue)
+	{
+		ProduceState decoded = patch.getImplementation().forVarbitValue(varbitValue);
+		assertNotNull("varbit " + varbitValue + " does not decode", decoded);
+		patches.recordVarbit(patch, varbitValue, decoded);
+	}
+
+	/**
+	 * A growing crop is left alone even when a contract wants its patch.
+	 *
+	 * <h2>Considered and rejected: digging it up</h2>
+	 *
+	 * The guild has one patch of each type, so a contract whose patch is occupied genuinely cannot
+	 * be started — and the first fix for that was a step to dig the occupant out and get on with it.
+	 * That trades a crop that is already days into growing for a contract that will still be there
+	 * next run, and it is not the guide's trade to make. The run walks past, and says why: see
+	 * {@code GuideTracker.contractNote}, which puts it in the chatbox as well as the panel.
+	 */
+	@Test
+	public void aGrowingCropIsLeftAloneEvenForAContract()
+	{
+		FarmPatch patch = growingIn(PatchImplementation.TREE);
+		assertNotNull("no tree patch has a growing fixture", patch);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+
+		for (GuideStep step : steps(patch, Seed.YEW,
+			com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE)))
+		{
+			assertFalse("nothing here may throw a growing crop away: " + step.getText(),
+				step.getAction() == GuideAction.CLEAR);
+		}
+	}
+
+	/** A patch of this type part-way through growing something — not ready, not empty. */
+	private FarmPatch growingIn(PatchImplementation type)
+	{
+		for (FarmPatch patch : FarmingWorldData.getPatches(type))
+		{
+			for (int value = 0; value < 256; value++)
+			{
+				ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+				if (decoded == null || decoded.getProduce() == null
+					|| !decoded.getProduce().isCrop()
+					|| decoded.getCropState() != com.dooglemaps.data.CropState.GROWING
+					|| decoded.getStage() != 0)
+				{
+					continue;
+				}
+
+				patches.recordVarbit(patch, value, decoded);
+				PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+				if (projection != null && !projection.isEmpty() && !projection.isReady())
+				{
+					return patch;
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * A patch of this type sitting at its <b>last growth stage</b>, which is grown-but-unchecked.
+	 *
+	 * <p>Found by walking the varbit range rather than hardcoding a value: these differ per crop and
+	 * are generated data, and the point of the test is that no type is silently missed.
+	 *
+	 * <p>The last stage is the whole trick, and it means no clock has to be faked. {@code
+	 * projectDone} returns the tick the patch was last seen on once there are no stages left, so the
+	 * done estimate is already in the past the moment it is recorded — which is exactly what
+	 * separates "grown" from "still growing". An earlier version of this helper backdated
+	 * {@code lastSeen} instead and then wrote the snapshot back, which quietly reset it to now,
+	 * because the store hands out copies.
+	 */
+	private FarmPatch grownUnchecked(PatchImplementation type)
+	{
+		for (FarmPatch patch : FarmingWorldData.getPatches(type))
+		{
+			for (int value = 0; value < 256; value++)
+			{
+				ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+				if (decoded == null || decoded.getProduce() == null
+					|| !decoded.getProduce().isCrop()
+					|| decoded.getCropState() != com.dooglemaps.data.CropState.GROWING
+					|| decoded.getStage() != decoded.getProduce().getStages() - 1)
+				{
+					continue;
+				}
+
+				patches.recordVarbit(patch, value, decoded);
+				PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+				if (projection != null && projection.needsHealthCheck())
+				{
+					return patch;
+				}
+			}
+		}
+		return null;
+	}
+
 	private List<GuideStep> steps(FarmPatch patch, Seed chosen)
+	{
+		return steps(patch, chosen, group(patch));
+	}
+
+	private List<GuideStep> steps(FarmPatch patch, Seed chosen,
+		com.dooglemaps.data.PlantingGroup group)
 	{
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		assertNotNull("fixture patch has no projection", projection);
 		return GuidePlan.forPatch(projection,
 			patches.get(patch) == null ? null : patches.get(patch).getCompost(),
-			group(patch), chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1);
+			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1);
 	}
 
 	private GuideStep firstStep(FarmPatch patch, Seed chosen)

@@ -2,8 +2,7 @@
 
 ## The name
 
-"Doogle Maps" was coined by **Sitta mango**, from the author's clan — a play on the OSRS
-*doogle leaves*.
+"Doogle Maps" was coined by **Sitta mango**, from the author's clan
 
 ## RuneLite core — Time Tracking (farming)
 

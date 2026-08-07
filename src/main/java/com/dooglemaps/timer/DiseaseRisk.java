@@ -77,6 +77,84 @@ public final class DiseaseRisk
 	{
 	}
 
+	/**
+	 * Patch kinds that can catch a disease at all, whether or not a rate is published.
+	 *
+	 * <h2>A different question from {@link #isRiskKnown}, and the difference is a real setting</h2>
+	 *
+	 * {@code isRiskKnown} asks whether Jagex has published a number, which is what
+	 * {@link #survivalChance} needs — inventing a rate would put a made-up penalty in the
+	 * projection. This asks whether treating the patch <i>does something in the game</i>, which is
+	 * what decides whether the player is offered the choice at all.
+	 *
+	 * <p>Conflating the two hid the compost dropdown on flowers, and that was wrong: a flower patch
+	 * can be diseased, compost cuts the chance by half, four fifths or nine tenths like anywhere
+	 * else, and a player who wants their limpwurts treated could not say so — so the run never
+	 * banked the buckets and the guide never applied them. Reported from play.
+	 *
+	 * <h2>Where the membership comes from</h2>
+	 *
+	 * Mostly from a table the plugin already keeps. <b>A patch with a gardener protection payment
+	 * can, by definition, be diseased</b> — nobody pays to prevent something that cannot happen —
+	 * so every patch type in {@code ProtectionPayment} belongs here, and
+	 * {@code RunOptionCoverageTest} asserts that rather than leaving it to be remembered. That
+	 * caught calquat and redwood, both of which a hand-written first version missed.
+	 *
+	 * <p>Five members are not payment-derived and each needs its own justification:
+	 *
+	 * <ul>
+	 *   <li><b>Herb, flower, mushroom, belladonna</b> — diseaseable and listed as such by the wiki,
+	 *       but no farmer will watch them at any price. They are {@link #UNPROTECTABLE}, which is
+	 *       the same fact stated from the other side.
+	 *   <li><b>Spirit tree</b> — <i>"may be tended by gnome gardeners for 5 monkey nuts, 1 monkey
+	 *       bar, and 1 ground suqah tooth"</i>. That is a protection payment, so it would be
+	 *       payment-derived if our model could express one: {@code ProtectionPayment} carries a
+	 *       single item and a quantity, and this is three items.
+	 * </ul>
+	 *
+	 * <p>Deliberately absent, having been checked rather than assumed: <b>grapes</b>, whose only
+	 * patches are at the Kourend vinery where the gardener protects them for free — see
+	 * {@link #DISEASE_FREE_REGIONS}, so compost buys nothing there — and <b>hespori</b>,
+	 * <b>anima</b> and <b>crystal tree</b>, which no source describes as diseaseable at all.
+	 *
+	 * <p>Poison ivy is the one bush that cannot catch anything and is handled by
+	 * {@code IMMUNE_PRODUCE}; the disease-free <i>locations</i> are handled separately again,
+	 * because those are about the patch rather than the crop.
+	 */
+	private static final Set<PatchImplementation> CAN_BE_DISEASED = ImmutableSet.of(
+		// Payment-derived, and asserted to stay in step with ProtectionPayment.
+		PatchImplementation.ALLOTMENT,
+		PatchImplementation.HOPS,
+		PatchImplementation.BUSH,
+		PatchImplementation.TREE,
+		PatchImplementation.FRUIT_TREE,
+		PatchImplementation.HARDWOOD_TREE,
+		PatchImplementation.CACTUS,
+		PatchImplementation.CALQUAT,
+		PatchImplementation.CELASTRUS,
+		PatchImplementation.REDWOOD,
+		PatchImplementation.SEAWEED,
+		PatchImplementation.CORAL,
+
+		// No farmer will take a payment for these, which does not make them safe.
+		PatchImplementation.HERB,
+		PatchImplementation.FLOWER,
+		PatchImplementation.MUSHROOM,
+		PatchImplementation.BELLADONNA,
+		PatchImplementation.SPIRIT_TREE);
+
+	/**
+	 * Whether treating this kind of patch lowers a disease chance that actually exists.
+	 *
+	 * <p>Says nothing about how much: for most of these the rate is unpublished, so
+	 * {@link #survivalChance} still returns certain survival and the projection does not move. The
+	 * effect is real in the game regardless, which is why the choice is offered.
+	 */
+	public static boolean canCatchDisease(PatchImplementation type)
+	{
+		return type != null && CAN_BE_DISEASED.contains(type);
+	}
+
 	/** Whether a published disease rate exists for this crop at all. */
 	public static boolean isRiskKnown(Produce produce)
 	{
@@ -167,6 +245,18 @@ public final class DiseaseRisk
 	public static boolean isProtectable(FarmPatch patch)
 	{
 		return patch.isProtectable() && !UNPROTECTABLE.contains(patch.getImplementation());
+	}
+
+	/**
+	 * Whether a farmer will ever watch this kind of patch.
+	 *
+	 * <p>The type alone, for the panel, which is choosing what to say about a whole tab rather than
+	 * about one patch. The per-patch answer above is narrower still — a patch can be of a
+	 * protectable type and have no farmer standing at it.
+	 */
+	public static boolean isProtectable(PatchImplementation type)
+	{
+		return type != null && !UNPROTECTABLE.contains(type);
 	}
 
 	/**

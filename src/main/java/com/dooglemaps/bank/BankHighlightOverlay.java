@@ -2,7 +2,7 @@ package com.dooglemaps.bank;
 
 import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.PatchImplementation;
-import com.dooglemaps.state.RunTypeStore;
+import com.dooglemaps.guide.ItemHighlight;
 import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.Graphics2D;
@@ -31,19 +31,30 @@ import net.runelite.client.util.ImageUtil;
  * Helper's: the item's own silhouette in the highlight colour, then a translucent wash over the
  * sprite. Consistency is the point — one plugin should not have two ways of saying "this one".
  *
- * <p>Two colours, meaning opposite things. One says <b>take this</b>; the other says the tool
- * leprechaun already has it, so leave it and ask when you reach the patch. Anything already in
- * your pack is left unmarked, because there is nothing to do about it and a busy bank tells you
- * less than a sparse one.
+ * <p>It marks what to <b>take</b>, and only that. Anything already in your pack, and anything the
+ * tool leprechaun is holding, is left alone — there is nothing to withdraw in either case, and a
+ * busy bank tells you less than a sparse one.
+ *
+ * <p>Two containers, and they earn their marks differently. The bank is only marked when it is
+ * showing everything; see {@link #render}. The seed vault is always marked, because nothing
+ * filters it.
+ *
+ * <p>A seed is marked in <b>one</b> of them, never both. Which store the run means is the loadout's
+ * answer — {@code LoadoutItem.From} — and ignoring it made a seed held in the bank and the vault
+ * look like two separate things to fetch.
  */
+@lombok.extern.slf4j.Slf4j
 public class BankHighlightOverlay extends Overlay
 {
-	private static final int ITEM_FILL_ALPHA = 65;
+	/** The wash over a marked item. Shared, so the two overlays cannot drift apart. */
+	private static final int ITEM_FILL_ALPHA = com.dooglemaps.guide.ItemHighlight.FILL_ALPHA;
 
 	private final Client client;
 	private final DoogleMapsConfig config;
 	private final RunLoadout loadout;
-	private final RunTypeStore runTypes;
+
+	/** Asked whether the bank is already narrowed to the run. See {@link #render}. */
+	private final BankFilter bankFilter;
 
 	/** Whether a run is actually under way; the highlighting means nothing otherwise. */
 	private final com.dooglemaps.route.RunPlanner planner;
@@ -58,9 +69,12 @@ public class BankHighlightOverlay extends Overlay
 	 * guide overlay: a tick is as fresh as any of it gets.
 	 */
 	private Map<Integer, LoadoutItem.Need> wanted = Collections.emptyMap();
+
+	/** The same, for the vault. Kept apart so a seed in both stores is not marked twice. */
+	private Map<Integer, LoadoutItem.Need> fromVault = Collections.emptyMap();
 	private int wantedTick = -1;
 
-	/** The same snapshot as {@link #wanted}, kept in order for the vault's step sequence. */
+	/** The run's loadout, for the withdraw counts. Rebuilt at most once a tick. */
 	private java.util.List<LoadoutItem> loadoutItems = java.util.Collections.emptyList();
 	private int loadoutTick = -1;
 
@@ -71,7 +85,7 @@ public class BankHighlightOverlay extends Overlay
 		if (tick != loadoutTick)
 		{
 			loadoutTick = tick;
-			Set<PatchImplementation> types = runTypes.getSelected();
+			Set<PatchImplementation> types = planner.coveredTypes();
 			loadoutItems = types.isEmpty()
 				? java.util.Collections.emptyList()
 				: loadout.forRun(types);
@@ -81,15 +95,15 @@ public class BankHighlightOverlay extends Overlay
 
 	@Inject
 	private BankHighlightOverlay(Client client, DoogleMapsConfig config, RunLoadout loadout,
-		RunTypeStore runTypes, ItemManager itemManager, TooltipManager tooltips,
-		com.dooglemaps.route.RunPlanner planner)
+		ItemManager itemManager, TooltipManager tooltips,
+		com.dooglemaps.route.RunPlanner planner, BankFilter bankFilter)
 	{
+		this.bankFilter = bankFilter;
 		this.planner = planner;
 		this.tooltips = tooltips;
 		this.client = client;
 		this.config = config;
 		this.loadout = loadout;
-		this.runTypes = runTypes;
 		this.itemManager = itemManager;
 
 		setPosition(OverlayPosition.DYNAMIC);
@@ -113,37 +127,54 @@ public class BankHighlightOverlay extends Overlay
 			return null;
 		}
 
-		Map<Integer, LoadoutItem.Need> marked = wantedItems();
-		if (marked.isEmpty())
+		net.runelite.api.Point mouse = client.getMouseCanvasPosition();
+
+		// The bank only when it is showing everything.
+		//
+		// Highlighting and filtering answer the same question two ways: "these ones" out of the
+		// whole bank, and "only these". Run both at once and every slot on screen is already an
+		// item the run wants, so marking them marks the lot — a wall of colour that distinguishes
+		// nothing, over a bank that had already done the distinguishing. The highlight is what you
+		// need when the bank is full of everything else, which is precisely when the filter is off.
+		//
+		// Asked of the filter rather than of the setting, because the setting being on is not the
+		// same as the filter being applied: without Bank Tags it never opens, and the highlight is
+		// then the only thing there is.
+		if (!bankFilter.isFiltering())
 		{
-			return null;
+			Map<Integer, LoadoutItem.Need> marked = wantedItems();
+			if (!marked.isEmpty())
+			{
+				highlightContainer(graphics, client.getWidget(InterfaceID.Bankmain.ITEMS), marked,
+					mouse);
+			}
 		}
 
-		net.runelite.api.Point mouse = client.getMouseCanvasPosition();
-		highlightContainer(graphics, client.getWidget(InterfaceID.Bankmain.ITEMS), marked, mouse);
+		// The vault regardless. Nothing filters it — it is the game's own interface, and Bank Tags
+		// does not reach it — so marking is the only thing pointing at the seeds in it.
 		highlightVault(graphics, mouse);
 		return null;
 	}
 
 	/**
-	 * The seed vault, one step at a time rather than all at once.
+	 * The seed vault: everything the run still wants out of it, marked at once.
 	 *
-	 * <p>The bank is marked wholesale because you can see the whole thing and pick your way
-	 * through it. The vault is not like that: it is divided by seed type, and a category shows its
-	 * own seeds and hides the rest — so lighting up everything the run needs would mostly be
-	 * lighting up things that are not on screen.
+	 * <h2>It used to be one seed at a time, pointing at a category tab</h2>
 	 *
-	 * <p>So it is a sequence. The next seed you have not withdrawn is either <b>in front of you</b>,
-	 * in which case it is outlined, or it is <b>in another category</b>, in which case that category
-	 * is outlined instead. Withdraw it and the loadout stops asking for it, so the next one becomes
-	 * the step — group, seed, next group, next seed, with nothing to keep your place in.
+	 * The reasoning was that the vault is divided by seed type and shows one category at a time, so
+	 * marking everything would mostly mark things that are off screen — and that the honest answer
+	 * for an off-screen seed was to outline the category holding it instead.
 	 *
-	 * <h2>Inferred rather than tracked, which is what makes it robust</h2>
+	 * <p>The category half never worked. Two attempts at finding the label failed to highlight
+	 * anything, and neither could be verified from outside the client. Meanwhile the premise was
+	 * doing real damage on its own: with one seed marked at a time, a vault you have to scroll
+	 * through tells you nothing until the right seed happens to be in view, and nothing at all
+	 * about how many more there are.
 	 *
-	 * Nothing here records which category is open, and it does not need to: <i>can I see the seed
-	 * right now</i> answers the same question and cannot fall out of step with the interface. It is
-	 * also why this works whether the vault filters by category or merely groups by it — if the
-	 * seed is on screen it gets outlined either way.
+	 * <p>So it marks the lot. Scrolling now reveals marks rather than hiding the only one — which
+	 * is what a player scrolling a long list actually wants, and it needs no guess about how the
+	 * interface is laid out. Off-screen marks cost nothing: the clip below means they are simply
+	 * not drawn.
 	 */
 	private void highlightVault(Graphics2D graphics, net.runelite.api.Point mouse)
 	{
@@ -153,115 +184,36 @@ public class BankHighlightOverlay extends Overlay
 			return;
 		}
 
-		LoadoutItem next = nextSeedToWithdraw();
-		if (next == null)
+		Map<Integer, LoadoutItem.Need> marked = vaultItems();
+		if (marked.isEmpty())
 		{
 			return;
 		}
 
+		// Clipped to the visible part of the list. A scrolling container reports bounds covering
+		// everything it holds, so a mark on a scrolled-off row would otherwise paint over the rest
+		// of the interface.
 		java.awt.Shape previousClip = graphics.getClip();
 		graphics.clip(visibleBounds(items));
 		try
 		{
 			for (Widget item : items.getDynamicChildren())
 			{
-				if (item == null || item.isSelfHidden() || item.getItemId() != next.getItemId())
+				if (item == null || item.isSelfHidden() || !marked.containsKey(item.getItemId()))
 				{
 					continue;
 				}
 
-				highlight(graphics, item, colourFor(next.getNeed()));
+				highlight(graphics, item, config.guideHighlightColour());
+				// The same count the bank gets. A seed is a seed wherever it is stored, and the
+				// vault is where the expensive ones live.
+				drawWithdrawCount(graphics, item);
 				if (mouse != null && items.getBounds().contains(mouse.getX(), mouse.getY())
 					&& item.getBounds().contains(mouse.getX(), mouse.getY()))
 				{
-					describe(item.getItemId(), next.getNeed());
-				}
-				return;
-			}
-		}
-		finally
-		{
-			graphics.setClip(previousClip);
-		}
-
-		// Not on screen, so the step is the category rather than the seed.
-		highlightCategoryFor(graphics, next);
-	}
-
-	/**
-	 * Outlines the category holding a seed we cannot currently see.
-	 *
-	 * <p>Matched on the category's own label against the patch type's name, rather than on an index
-	 * — the vault's categories are the game's taxonomy and ours is generated from RuneLite's, so
-	 * the two agree on words like "Herb" and "Fruit tree" but nothing guarantees they agree on
-	 * order. A label match that finds nothing simply highlights nothing, which is the right failure
-	 * for something that is only ever a convenience.
-	 *
-	 * <p>Both list widgets are searched because the constants do not say which one carries the
-	 * clickable entries, and looking in the wrong one is indistinguishable from the feature being
-	 * broken.
-	 */
-	private void highlightCategoryFor(Graphics2D graphics, LoadoutItem next)
-	{
-		com.dooglemaps.data.Seed seed = com.dooglemaps.data.Seed.forItemId(next.getItemId());
-		if (seed == null || seed.getPatchType() == null)
-		{
-			return;
-		}
-
-		String wanted = seed.getPatchType().getDisplayName();
-		for (int listId : CATEGORY_LISTS)
-		{
-			Widget list = client.getWidget(listId);
-			if (list == null || list.isHidden())
-			{
-				continue;
-			}
-
-			for (Widget entry : allChildren(list))
-			{
-				if (entry == null || entry.isSelfHidden() || entry.getText() == null)
-				{
-					continue;
-				}
-				if (matches(entry.getText(), wanted))
-				{
-					outlineWidget(graphics, list, entry, config.guideHighlightColour());
-					return;
+					describe(item.getItemId());
 				}
 			}
-		}
-	}
-
-	/**
-	 * Draws a box around a widget that is not an item.
-	 *
-	 * <p>{@link #highlight} cannot do this: it asks {@code ItemManager} for the item's outline and
-	 * a category tab has no item id, so there was no sprite to trace and nothing was drawn at all
-	 * — which is exactly how "the tabs aren't highlighting" looked. A tab is a label, so the thing
-	 * to draw round it is its own bounds.
-	 *
-	 * <p>Clipped to the list <b>and its parent</b>. A scrolling list reports bounds for its whole
-	 * contents rather than for the part you can see, so clipping to the list alone still let an
-	 * entry scrolled out of view paint over the rest of the interface. The parent is the viewport,
-	 * and the intersection of the two is the region actually on screen.
-	 */
-	private void outlineWidget(Graphics2D graphics, Widget list, Widget entry, Color colour)
-	{
-		java.awt.Rectangle bounds = entry.getBounds();
-		if (bounds == null || bounds.isEmpty())
-		{
-			return;
-		}
-
-		java.awt.Shape previousClip = graphics.getClip();
-		graphics.clip(visibleBounds(list));
-		try
-		{
-			graphics.setColor(ColorUtil.colorWithAlpha(colour, ITEM_FILL_ALPHA));
-			graphics.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
-			graphics.setColor(colour);
-			graphics.drawRect(bounds.x, bounds.y, bounds.width - 1, bounds.height - 1);
 		}
 		finally
 		{
@@ -273,9 +225,10 @@ public class BankHighlightOverlay extends Overlay
 	 * The part of a list that is actually on screen.
 	 *
 	 * <p>A scrolling container's own bounds cover everything it holds, including the rows above and
-	 * below the viewport — so an outline drawn on a scrolled-off row lands wherever those bounds
-	 * happen to reach, which is over the chat box and out of the interface. Intersecting with the
-	 * parent brings it back to the visible window.
+	 * below the viewport — so a mark drawn on a scrolled-off row lands wherever those bounds happen
+	 * to reach, which is over the chat box and out of the interface. Intersecting with the parent
+	 * brings it back to the visible window, and is what makes marking every needed seed safe: the
+	 * ones you have scrolled past are clipped away rather than drawn somewhere absurd.
 	 */
 	private static java.awt.Rectangle visibleBounds(Widget list)
 	{
@@ -286,61 +239,6 @@ public class BankHighlightOverlay extends Overlay
 			return bounds.intersection(parent.getBounds());
 		}
 		return bounds;
-	}
-
-	/** The vault's left-hand lists, either of which may carry the clickable categories. */
-	private static final int[] CATEGORY_LISTS = {
-		InterfaceID.SeedVault.CATEGORY_LIST,
-		InterfaceID.SeedVault.LEFT_LIST,
-	};
-
-	/**
-	 * Whether a category label names this patch type.
-	 *
-	 * <p>Loose on purpose: the vault says "Allotments" where the patch type says "Allotment", and
-	 * a strict match would silently never fire. Tags are stripped because interface text carries
-	 * colour markup.
-	 */
-	private static boolean matches(String label, String patchType)
-	{
-		String cleaned = net.runelite.client.util.Text.removeTags(label).trim().toLowerCase();
-		String wanted = patchType.trim().toLowerCase();
-		return cleaned.equals(wanted) || cleaned.equals(wanted + "s")
-			|| cleaned.startsWith(wanted);
-	}
-
-	/** A widget's children, whichever of the three lists the interface put them in. */
-	private static java.util.List<Widget> allChildren(Widget widget)
-	{
-		java.util.List<Widget> children = new java.util.ArrayList<>();
-		for (Widget[] group : new Widget[][]{
-			widget.getDynamicChildren(), widget.getStaticChildren(), widget.getNestedChildren()})
-		{
-			if (group != null)
-			{
-				children.addAll(java.util.Arrays.asList(group));
-			}
-		}
-		return children;
-	}
-
-	/**
-	 * The next seed the run still wants out of storage, or null when there are none left.
-	 *
-	 * <p>In loadout order, which is grouped by planting group — so the sequence walks the run the
-	 * way the run is organised rather than the way the vault happens to be sorted.
-	 */
-	private LoadoutItem nextSeedToWithdraw()
-	{
-		for (LoadoutItem item : loadoutThisTick())
-		{
-			if (item.getCategory() == LoadoutItem.Category.SEED
-				&& item.getNeed() == LoadoutItem.Need.WITHDRAW)
-			{
-				return item;
-			}
-		}
-		return null;
 	}
 
 	/** Marks whatever this container is holding that the run wants. */
@@ -375,15 +273,16 @@ public class BankHighlightOverlay extends Overlay
 					continue;
 				}
 
-				highlight(graphics, item, colourFor(need));
+				highlight(graphics, item, config.guideHighlightColour());
+				drawWithdrawCount(graphics, item);
 
-				// Hovering explains the colour. Without it a second colour is a puzzle rather than
-				// information — nobody should have to guess why their compost is marked
-				// differently from their seeds.
+				// Hovering says why. A mark tells you to take something; the reason it is on the
+				// list — which patch, which teleport, what the payment is for — is the part you
+				// would otherwise have to go back to the panel for.
 				if (mouse != null && container.getBounds().contains(mouse.getX(), mouse.getY())
 					&& item.getBounds().contains(mouse.getX(), mouse.getY()))
 				{
-					describe(item.getItemId(), need);
+					describe(item.getItemId());
 				}
 			}
 		}
@@ -394,18 +293,100 @@ public class BankHighlightOverlay extends Overlay
 	}
 
 	/**
-	 * Take it, or leave it and ask the leprechaun.
+	 * Writes how many to take over a marked slot.
 	 *
-	 * <p>Two colours because they mean opposite things. Marking the leprechaun's items in the
-	 * withdraw colour would have you banking compost you have a thousand of on site; leaving
-	 * them unmarked would read as the plugin having forgotten about compost entirely.
+	 * <h2>Only where the number is an instruction</h2>
+	 *
+	 * Seeds and protection payments, and nothing else. Those are the two the run needs a
+	 * <b>specific quantity</b> of, and the quantity is arithmetic nobody wants to do at a bank:
+	 * six patches of ranarr is six seeds, but four magic trees is a hundred coconuts, and getting
+	 * that wrong is discovered at the fourth tree having already travelled there.
+	 *
+	 * <p>Everything else on the list is "bring the thing" — one axe, one seed box, whichever
+	 * teleport you own. A "1" over each would be four more numbers to read and none of them a
+	 * decision, which is how a marker stops being worth looking at.
+	 *
+	 * <h2>Drawn like the game's own stack counts</h2>
+	 *
+	 * Yellow with a black offset shadow, top-left of the slot: the position and colour the game
+	 * uses for a stack size, so it reads as a quantity without a legend. Deliberately <i>not</i>
+	 * where the item's own stack number sits when the bank draws one — that is the same corner, so
+	 * this is nudged down to sit under it rather than over it. The two say different things: the
+	 * game's is what you own, this is what to take.
 	 */
-	private Color colourFor(LoadoutItem.Need need)
+	private void drawWithdrawCount(Graphics2D graphics, Widget item)
 	{
-		return need == LoadoutItem.Need.AT_LEPRECHAUN
-			? config.guideLeprechaunColour()
-			: config.guideHighlightColour();
+		Integer wanted = withdrawCounts().get(item.getItemId());
+		if (wanted == null || wanted <= 1)
+		{
+			// One is not worth saying. "Take 1 ranarr" is what a highlight already means, and the
+			// number would only be competing with the sprite for the same few pixels.
+			return;
+		}
+
+		java.awt.Rectangle bounds = item.getBounds();
+		String text = String.valueOf(wanted);
+		int x = (int) bounds.getX() + 1;
+		int y = (int) bounds.getY() + COUNT_BASELINE;
+
+		graphics.setFont(net.runelite.client.ui.FontManager.getRunescapeSmallFont());
+		graphics.setColor(java.awt.Color.BLACK);
+		graphics.drawString(text, x + 1, y + 1);
+		graphics.setColor(COUNT_COLOUR);
+		graphics.drawString(text, x, y);
 	}
+
+	/**
+	 * Where the count sits inside a 32px slot.
+	 *
+	 * <p>Below the game's own stack number rather than on top of it. A bank slot draws the amount
+	 * you own in the top-left corner; this is a different fact and has to be legible beside it
+	 * rather than fighting it for the same pixels.
+	 */
+	private static final int COUNT_BASELINE = 22;
+
+	/** The game's own quantity yellow, so the number reads as a count without being explained. */
+	private static final Color COUNT_COLOUR = new Color(0xFF, 0xFF, 0x00);
+
+	/**
+	 * How many of each marked item the run wants, rebuilt once a tick.
+	 *
+	 * <p>Keyed by every bank form, for the reason the filter is: the loadout names the planted
+	 * form and a tree crop sits in the bank as a seed, so keying on the loadout's own id alone
+	 * would silently put no number on exactly the items that are expensive enough to count.
+	 */
+	private Map<Integer, Integer> withdrawCounts()
+	{
+		int tick = client.getTickCount();
+		if (tick != countsTick)
+		{
+			countsTick = tick;
+			Map<Integer, Integer> counts = new java.util.HashMap<>();
+			for (LoadoutItem item : loadoutThisTick())
+			{
+				if (item.getQuantity() <= 1 || !COUNTED.contains(item.getCategory()))
+				{
+					continue;
+				}
+				for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+				{
+					// Summed rather than replaced. Two picked seeds can share a bank form only in
+					// contrived cases, but a payment shared by two crops is ordinary — protecting
+					// magic and yew both want coconuts, and the run needs the total.
+					counts.merge(form, item.getQuantity(), Integer::sum);
+				}
+			}
+			withdrawCounts = counts;
+		}
+		return withdrawCounts;
+	}
+
+	private Map<Integer, Integer> withdrawCounts = Collections.emptyMap();
+	private int countsTick = -1;
+
+	/** The categories whose quantity is a decision rather than "bring the one you own". */
+	private static final Set<LoadoutItem.Category> COUNTED = java.util.EnumSet.of(
+		LoadoutItem.Category.SEED, LoadoutItem.Category.PAYMENT);
 
 	/**
 	 * The hovered item's own entry, looked up at most once a tick.
@@ -420,14 +401,14 @@ public class BankHighlightOverlay extends Overlay
 	private int describedTick = -1;
 	private LoadoutItem described;
 
-	private void describe(int itemId, LoadoutItem.Need need)
+	private void describe(int itemId)
 	{
 		int tick = client.getTickCount();
 		if (tick != describedTick || itemId != describedItemId)
 		{
 			describedTick = tick;
 			describedItemId = itemId;
-			described = loadout.itemFor(runTypes.getSelected(), itemId);
+			described = loadout.itemFor(planner.coveredTypes(), itemId);
 		}
 
 		LoadoutItem item = described;
@@ -436,34 +417,84 @@ public class BankHighlightOverlay extends Overlay
 			return;
 		}
 
-		String lead = need == LoadoutItem.Need.AT_LEPRECHAUN
-			? "No need to take this - "
-			: "For your run - ";
-		tooltips.add(new Tooltip(lead + item.getReason()));
+		tooltips.add(new Tooltip("For your run - " + item.getReason()));
 	}
 
+	/**
+	 * What to take out of the <b>bank</b>, rebuilt once a tick.
+	 *
+	 * <p>Split from the vault's list rather than shared with it, and that is a fix rather than
+	 * tidiness. {@code Need.WITHDRAW} means "not on you", which is true of a seed sitting in either
+	 * store — so a seed you hold in both was marked in the bank <i>and</i> queued in the vault, and
+	 * the run appeared to want two lots of it. {@code LoadoutItem.From} is the loadout's own answer
+	 * to which one it means, and it was being ignored here.
+	 */
 	private Map<Integer, LoadoutItem.Need> wantedItems()
 	{
-		int tick = client.getTickCount();
-		if (tick != wantedTick)
-		{
-			wantedTick = tick;
-			Set<PatchImplementation> types = runTypes.getSelected();
-			wanted = types.isEmpty() ? Collections.emptyMap() : loadout.highlights(types);
-		}
+		refreshWanted();
 		return wanted;
+	}
+
+	/** The same, for the seed vault. See {@link #wantedItems()}. */
+	private Map<Integer, LoadoutItem.Need> vaultItems()
+	{
+		refreshWanted();
+		return fromVault;
+	}
+
+	/**
+	 * Rebuilds both lists together, once a tick.
+	 *
+	 * <p>Together because they are one pass over one loadout, and because two caches keyed on the
+	 * same tick that could disagree is exactly the kind of thing that produces an item marked in
+	 * neither place.
+	 */
+	private void refreshWanted()
+	{
+		int tick = client.getTickCount();
+		if (tick == wantedTick)
+		{
+			return;
+		}
+		wantedTick = tick;
+
+		Set<PatchImplementation> types = planner.coveredTypes();
+		if (types.isEmpty())
+		{
+			wanted = Collections.emptyMap();
+			fromVault = Collections.emptyMap();
+			return;
+		}
+
+		Map<Integer, LoadoutItem.Need> bank = new java.util.HashMap<>();
+		Map<Integer, LoadoutItem.Need> vault = new java.util.HashMap<>();
+		for (LoadoutItem item : loadout.forRun(types))
+		{
+			if (item.getNeed() != LoadoutItem.Need.WITHDRAW)
+			{
+				continue;
+			}
+
+			Map<Integer, LoadoutItem.Need> target =
+				item.getFrom() == LoadoutItem.From.SEED_VAULT ? vault : bank;
+			// Every form it could be sitting as. A loadout item names the planted form, and a tree
+			// crop is a seed in storage — the same expansion the filter does.
+			for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+			{
+				target.put(form, item.getNeed());
+			}
+		}
+
+		wanted = bank;
+		fromVault = vault;
 	}
 
 	private void highlight(Graphics2D graphics, Widget item, Color colour)
 	{
-		Rectangle bounds = item.getBounds();
-		BufferedImage outline =
-			itemManager.getItemOutline(item.getItemId(), item.getItemQuantity(), colour);
-		graphics.drawImage(outline, (int) bounds.getX(), (int) bounds.getY(), null);
-		graphics.drawImage(
-			ImageUtil.fillImage(
-				itemManager.getImage(item.getItemId(), item.getItemQuantity(), false),
-				ColorUtil.colorWithAlpha(colour, ITEM_FILL_ALPHA)),
-			(int) bounds.getX(), (int) bounds.getY(), null);
+		// Shared with the inventory overlay rather than written twice. The two mark the same item
+		// at two moments of one errand — take this out of the bank, then click this one — so they
+		// have to look identical, and that is easier to guarantee than to remember.
+		ItemHighlight.draw(graphics, itemManager, item.getBounds(),
+			item.getItemId(), item.getItemQuantity(), colour);
 	}
 }

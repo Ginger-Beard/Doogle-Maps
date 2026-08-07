@@ -75,6 +75,29 @@ public interface DoogleMapsConfig extends Config
 	}
 
 	/**
+	 * What to suggest when the farming contract wants a seed you do not have.
+	 *
+	 * <p>Both routes are real and neither is free. <b>Buying</b> keeps the contract and its reward
+	 * tier, and is simply not available to an ironman for most contract crops. <b>Asking Jane for
+	 * an easier one</b> works on any account, but she swaps <i>downwards</i> — you give up the tier
+	 * — and an easy contract cannot be swapped at all.
+	 *
+	 * <p>Which is right therefore depends on the account and on how much the player cares about
+	 * the tier, and the plugin cannot know either. So it is asked rather than detected.
+	 */
+	enum ContractSeedAdvice
+	{
+		/** Name the swap. Correct on every account, which is why it is the default. */
+		ASK_FOR_EASIER,
+
+		/** Name buying. Keeps the tier, and is no use to an ironman. */
+		BUY,
+
+		/** Say only that the seed is missing, and let the player decide what to do about it. */
+		SAY_NOTHING_MORE
+	}
+
+	/**
 	 * Keys for the two maintenance triggers.
 	 *
 	 * <p>Named constants because the plugin has to match on them in {@code onConfigChanged},
@@ -172,6 +195,24 @@ public interface DoogleMapsConfig extends Config
 		return true;
 	}
 
+	@ConfigItem(
+		keyName = "contractSeedAdvice",
+		name = "Contract seed you do not own",
+		description = "What to suggest when Guildmaster Jane's contract wants a seed you have "
+			+ "none of. Asking her for an easier one works on any account but drops the reward "
+			+ "tier, and easy contracts cannot be swapped at all. Buying keeps the tier and is no "
+			+ "use to an ironman.",
+		position = 2,
+		section = guideSection
+	)
+	default ContractSeedAdvice contractSeedAdvice()
+	{
+		// The route that is correct on every account. Buying is better advice for a main and wrong
+		// advice for an ironman, and defaulting to advice that is wrong for someone is worse than
+		// defaulting to advice that merely costs them a tier.
+		return ContractSeedAdvice.ASK_FOR_EASIER;
+	}
+
 	/**
 	 * The bank layout, as a map you draw.
 	 *
@@ -185,7 +226,7 @@ public interface DoogleMapsConfig extends Config
 			+ "line. T teleports, S seeds, P payments, G gear (tools, outfit, storage, compost), "
 			+ ". empty. Eight columns (A-H) per row, up to eight rows. Needs \"Filter the bank to "
 			+ "this run\" switched on; a map that does not parse is ignored with a warning.",
-		position = 3,
+		position = 5,
 		section = guideSection
 	)
 	default String bankLayoutMap()
@@ -208,11 +249,12 @@ public interface DoogleMapsConfig extends Config
 	@ConfigItem(
 		keyName = "teleportItems",
 		name = "Teleport items",
-		description = "Which teleports count as part of a run, comma separated by item name. "
-			+ "They are grouped together in the bank filter and layout. Defaults to every "
-			+ "teleport the plugin already knows about; add your own, or cut it down to the ones "
-			+ "you actually use.",
-		position = 4,
+		description = "Which teleports count as part of a run, comma separated by item name. Only "
+			+ "these are offered, and only when you own them - the plugin knows where a lot of "
+			+ "teleports go, but which ones you actually travel by is your call. Grouped together "
+			+ "in the bank filter and layout. Wildcards work (Ardougne cloak*), and an empty list "
+			+ "falls back to every teleport the plugin knows.",
+		position = 6,
 		section = guideSection
 	)
 	default String teleportItems()
@@ -225,7 +267,7 @@ public interface DoogleMapsConfig extends Config
 		name = "Highlight run items in the bank",
 		description = "When the bank is open, mark the items this run still needs - seeds, "
 			+ "protection payments, teleports you own, and your storage items.",
-		position = 1,
+		position = 3,
 		section = guideSection
 	)
 	default boolean highlightBankItems()
@@ -256,7 +298,7 @@ public interface DoogleMapsConfig extends Config
 		description = "Hide everything in the bank except what the run needs, arranged by the "
 			+ "layout map below. Turn it off to leave your bank alone - highlighting works either "
 			+ "way, and marks the same items without hiding anything.",
-		position = 2,
+		position = 4,
 		section = guideSection
 	)
 	default boolean filterBankToRun()
@@ -270,7 +312,7 @@ public interface DoogleMapsConfig extends Config
 		description = "You have Otto Godblessed's Barbarian Farming, so seeds go in without a "
 			+ "dibber. The plugin works this out by itself the first time it watches you plant "
 			+ "without one - tick this to say so up front rather than waiting for that.",
-		position = 2,
+		position = 13,
 		section = guideSection
 	)
 	default boolean barbarianFarmingOverride()
@@ -285,7 +327,7 @@ public interface DoogleMapsConfig extends Config
 			+ "so you can pick a different seed for them. Only the ones you have actually "
 			+ "unlocked appear - Trollheim, Weiss, Hosidius and Harmony are each detected from "
 			+ "the quest or diary that makes them safe.",
-		position = 3,
+		position = 11,
 		section = guideSection
 	)
 	default boolean separateProtectedHerbs()
@@ -300,7 +342,7 @@ public interface DoogleMapsConfig extends Config
 			+ "the Civitas illa Fortis herb patch disease-free. Unlike the other four this cannot "
 			+ "be detected - the client exposes no varbit for it - so tick it yourself and the "
 			+ "patch joins the protected list.",
-		position = 4,
+		position = 12,
 		section = guideSection
 	)
 	default boolean fortisColosseumChampion()
@@ -312,7 +354,7 @@ public interface DoogleMapsConfig extends Config
 		keyName = "guideHighlightStyle",
 		name = "Highlight style",
 		description = "How the patch and the leprechaun are marked",
-		position = 2,
+		position = 7,
 		section = guideSection
 	)
 	default GuideHighlightStyle guideHighlightStyle()
@@ -324,7 +366,7 @@ public interface DoogleMapsConfig extends Config
 		keyName = "guideHighlightColour",
 		name = "Highlight colour",
 		description = "The colour of the outline and of the inventory item marker",
-		position = 3,
+		position = 8,
 		section = guideSection
 	)
 	default java.awt.Color guideHighlightColour()
@@ -334,27 +376,12 @@ public interface DoogleMapsConfig extends Config
 		return new java.awt.Color(0x3F, 0xC1, 0xC9);
 	}
 
-	@ConfigItem(
-		keyName = "guideLeprechaunColour",
-		name = "Leprechaun item colour",
-		description = "Colour for bank items the tool leprechaun already stores - compost and "
-			+ "tools. Marked so you know not to take them, and to ask at the patch instead.",
-		position = 4,
-		section = guideSection
-	)
-	default java.awt.Color guideLeprechaunColour()
-	{
-		// Amber against the withdraw colour's cyan: the two mean opposite things, so they have
-		// to be tellable apart at a glance rather than merely different.
-		return new java.awt.Color(0xC8, 0xA2, 0x2D);
-	}
-
 	@Range(min = 0, max = 20)
 	@ConfigItem(
 		keyName = "guideOutlineThickness",
 		name = "Outline thickness",
 		description = "How heavy the outline around the target is",
-		position = 5,
+		position = 9,
 		section = guideSection
 	)
 	default int guideOutlineThickness()
@@ -367,7 +394,7 @@ public interface DoogleMapsConfig extends Config
 		keyName = "guideOutlineFeathering",
 		name = "Outline feathering",
 		description = "How far the outline fades out at its edge",
-		position = 6,
+		position = 10,
 		section = guideSection
 	)
 	default int guideOutlineFeathering()

@@ -158,6 +158,64 @@ public class PlantingGroupsTest
 		}
 	}
 
+	/**
+	 * A grown contract's patch stays out of its ordinary group until the reward is collected.
+	 *
+	 * <h2>This guards the most expensive mistake the plugin can make</h2>
+	 *
+	 * The grouping is what reserves the ground: a patch in the contract group is not in the flower
+	 * group, so nothing offers to plant an ordinary flower in it. Reported from play as the run
+	 * wanting to compost a grown limpwurt contract and sow an ordinary limpwurt on top — which
+	 * locks the contract out until the replacement finishes growing.
+	 *
+	 * <p>The window is narrow and easy to miss, which is why it wants a test rather than a careful
+	 * reading: it opens the instant the crop finishes, because the completion message clears both
+	 * config keys, and it closes when the reward is taken. In between the patch looks unclaimed to
+	 * anything asking whether a contract is <i>assigned</i>, and is more spoken for than ever.
+	 */
+	@Test
+	public void aGrownContractsPatchIsNotOfferedToItsOrdinaryGroup() throws Exception
+	{
+		when(config.guideFarmingContracts()).thenReturn(true);
+
+		FarmPatch guildFlower = null;
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.FLOWER))
+		{
+			if (patch.getRegion().getRegionId() == ContractState.FARMING_GUILD_REGION)
+			{
+				guildFlower = patch;
+			}
+		}
+		org.junit.Assert.assertNotNull("the guild has a flower patch", guildFlower);
+		availability.setAvailable(guildFlower, true);
+
+		PlantingGroups groups = build();
+
+		assertEquals("no contract, so it is an ordinary flower patch",
+			PlantingGroup.of(PatchImplementation.FLOWER), groups.groupFor(guildFlower));
+
+		// Assigned: the contract takes the ground.
+		stored.put("contract", String.valueOf(
+			com.dooglemaps.data.Produce.LIMPWURT.getItemID()));
+		assertEquals(PlantingGroup.contract(PatchImplementation.FLOWER),
+			groups.groupFor(guildFlower));
+
+		// Grown. The game's completion message clears Time Tracking's key, and ours records that
+		// the reward is waiting — so nothing is "assigned" any more.
+		stored.remove("contract");
+		stored.put("contractAwaitingHandIn", com.dooglemaps.data.Produce.LIMPWURT.name());
+
+		assertEquals("still the contract's ground, or the run plants over it",
+			PlantingGroup.contract(PatchImplementation.FLOWER), groups.groupFor(guildFlower));
+		assertTrue("and the group still exists to hold it",
+			groups.hasContract(PatchImplementation.FLOWER));
+
+		// Handed in.
+		stored.remove("contractAwaitingHandIn");
+		assertEquals("released once the reward is collected",
+			PlantingGroup.of(PatchImplementation.FLOWER), groups.groupFor(guildFlower));
+	}
+
 	private PlantingGroups build() throws Exception
 	{
 		return construct(PlantingGroups.class, config,

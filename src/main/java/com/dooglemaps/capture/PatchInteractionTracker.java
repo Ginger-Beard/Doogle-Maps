@@ -207,12 +207,19 @@ public class PatchInteractionTracker
 
 		boolean changed = stateStore.recordVarbit(patch, varbitValue, decoded);
 
-		// A patch that has just stopped being actionable is one the player has dealt with,
-		// which is exactly what advances a run to its next stop.
-		if (changed && previousValue != null && previousValue != varbitValue
-			&& !isActionable(decoded))
+		// Any change at all is reported; the planner decides whether it finished a stop.
+		//
+		// This used to filter on !isActionable(decoded) — "has the player planted something" — and
+		// that was the capture layer answering a question it is not in a position to answer. A run
+		// finishes with a patch for reasons this class cannot see: a harvest-only trip never plants
+		// anything, a patch with no seed allocated has nothing to plant, and a picked-clean bush is
+		// still "harvestable" by any local test. Every one of those left the run unable to move on.
+		//
+		// Reporting the event and letting RunPlanner judge it costs a cheap check per varbit change
+		// and puts the decision where the run's own definition of "done" lives.
+		if (changed && previousValue != null && previousValue != varbitValue)
 		{
-			runPlanner.markServiced(patch);
+			runPlanner.onPatchChanged(patch);
 		}
 	}
 
@@ -288,21 +295,6 @@ public class PatchInteractionTracker
 
 	/** So the planted-with-a-dibber note is said once a session rather than every planting. */
 	private boolean loggedPlantWithDibber;
-
-	/** Whether a patch in this state still wants something doing to it. */
-	private static boolean isActionable(ProduceState decoded)
-	{
-		switch (decoded.getCropState())
-		{
-			case HARVESTABLE:
-			case DISEASED:
-			case DEAD:
-			case EMPTY:
-				return true;
-			default:
-				return !decoded.getProduce().isCrop();
-		}
-	}
 
 	/**
 	 * Learns the growth-tick grid's phase from a transition we just watched.

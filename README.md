@@ -4,8 +4,6 @@ A RuneLite plugin that keeps a live overview of every farming patch you use — 
 whole farm without running around it, plan a run against what is actually ready, and be walked
 through it patch by patch.
 
-The name is a play on the OSRS *doogle leaves*, coined by **Sitta mango** from the author's clan.
-
 ![A run under way: the patch outlined on the ground, the seed lit in the inventory, the next instruction on screen, and the sidebar listing every patch on the account](docs/images/in-game.png)
 
 ## The overview
@@ -20,8 +18,8 @@ time remaining.
 
 - **Fills itself in as you play.** Rake, compost, plant, pay the farmer, check health, harvest —
   the plugin follows each step and remembers it. Walking past a patch is enough to refresh it.
-- **Works without Geomancy.** The Lunar spell fills everything in at once if you have it, but it
-  is a shortcut, not a requirement.
+- **Needs no Geomancy.** The Lunar spell is not required, not asked for, and not used — walking
+  past a patch is all it takes.
 - **Keeps growing while you are logged out**, and recomputes every timer on login against the
   game's growth-tick grid.
 - **Says when it is guessing.** An unprotected crop can catch a disease you were not there to see,
@@ -95,8 +93,8 @@ suggests buying anything on the Grand Exchange, so it works the same for an iron
 
 ## Planned
 
-Bulk refresh from the Geomancy interface, a bank tag tab to filter rather than only highlight, and
-crowdsourced yield data once the plugin is on the Hub. `TODO.md` has what is open.
+Crowdsourced yield data once the plugin is on the Hub, and a stats tab for what the harvest log can
+already answer. `docs/TODO.md` has what is open.
 
 ## Licence and attribution
 

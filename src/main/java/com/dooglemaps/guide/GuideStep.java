@@ -97,17 +97,14 @@ public class GuideStep
 	 * click; the item is outlined so you know what to click <i>on</i> him.
 	 *
 	 * <p>The right test turned out not to be which <i>direction</i> the item moves, which is what
-	 * this was first written as — handing over versus taking out. It is <b>which screen is in
-	 * front of you when the click happens</b>, and those are not the same question:
+	 * this was first written as — handing over versus taking out.
 	 *
 	 * <ul>
-	 *   <li><b>Noting a crop</b> is an inventory click. You use the crop on him, and the pack is
-	 *       what you are looking at.</li>
-	 *   <li><b>Returning buckets</b> is not, even though it also hands something over. His store
-	 *       opens over the inventory, listing his own contents, and the bucket slot in <i>that</i>
-	 *       is what gets clicked. Reported from play, and it is why direction was the wrong
-	 *       rule.</li>
-	 *   <li><b>Withdrawing</b> anything is likewise a click in his store.</li>
+	 *   <li><b>Noting a crop</b> is an ordinary inventory click. You use the crop on him, his
+	 *       interface is not open, and the pack is what you are looking at.</li>
+	 *   <li><b>Withdrawing</b> and <b>returning buckets</b> both happen inside his interface, so
+	 *       both are looked up as slots rather than scanned for in the inventory. Which
+	 *       <i>pane</i> differs; see {@link #itemIsOnYourSideOfTheStore()}.</li>
 	 * </ul>
 	 */
 	public boolean itemIsInStore()
@@ -115,6 +112,30 @@ public class GuideStep
 		return action == GuideAction.WITHDRAW_COMPOST
 			|| action == GuideAction.WITHDRAW_TOOL
 			|| action == GuideAction.RETURN_BUCKETS;
+	}
+
+	/**
+	 * Whether the slot to click is on <b>your</b> side of the leprechaun's interface.
+	 *
+	 * <h2>His interface has two panes, and this took three attempts to get right</h2>
+	 *
+	 * Opening the tool leprechaun shows <b>both</b> at once: his own store in a pane of its own,
+	 * and a second pane laid <i>over your inventory</i> listing the same categories — bucket,
+	 * composts, tools, watering can — but holding <b>your</b> items. Depositing is a click on the
+	 * second one.
+	 *
+	 * <p>The two wrong answers before this both came from not knowing that. Treating a bucket
+	 * return as a store click lit up <i>his</i> bucket slot, which shows the thousand he already
+	 * holds — reading as "take these" at the moment the instruction is "give him yours". Treating
+	 * it as an ordinary inventory click then lit nothing at all, because the inventory is covered
+	 * by his side pane and the widget behind it is hidden.
+	 *
+	 * <p>So the question is not store-versus-inventory. Both are slots in one interface, and what
+	 * differs is whose column the item is in: you take out of his, and you put into yours.
+	 */
+	public boolean itemIsOnYourSideOfTheStore()
+	{
+		return action == GuideAction.RETURN_BUCKETS;
 	}
 
 	static GuideStep of(GuideAction action, FarmPatch patch, String text)

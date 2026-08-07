@@ -35,7 +35,20 @@ public class ReadyInfoBox extends InfoBox
 		setPriority(net.runelite.client.ui.overlay.infobox.InfoBoxPriority.LOW);
 	}
 
-	/** Recomputes counts and tooltip. Call from the client thread, not the EDT. */
+	/**
+	 * Recomputes the counts and the tooltip.
+	 *
+	 * <p>Called from <b>every</b> thread the plugin has: the client thread on the idle tick, the
+	 * Swing thread whenever a seed is picked — {@code SeedSelectorPanel} toggles the selection
+	 * straight off a mouse listener and the store fires its change listeners synchronously — and
+	 * whichever thread happens to run a profile load.
+	 *
+	 * <p>So nothing here may touch an API that asserts a thread. Everything it reads goes through
+	 * the stores' own locks, and {@code GrowthTimer.project} is deliberately pure arithmetic over a
+	 * snapshot. This used to claim the client thread only, which was never true of its own caller —
+	 * and a comment that is wrong is worse than none, because it is the one someone trusts when
+	 * they add a {@code client.getVarbitValue} to the projection.
+	 */
 	public void update()
 	{
 		List<String> ready = new ArrayList<>();

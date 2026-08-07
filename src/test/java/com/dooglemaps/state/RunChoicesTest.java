@@ -2,6 +2,8 @@ package com.dooglemaps.state;
 
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PlantingGroup;
+import com.dooglemaps.data.RunOption;
 import com.dooglemaps.data.Seed;
 import com.google.gson.Gson;
 import java.lang.reflect.Constructor;
@@ -190,6 +192,62 @@ public class RunChoicesTest
 	{
 		return construct(SeedSelectionStore.class, configManager, gson,
 			construct(com.dooglemaps.state.ContractState.class, configManager));
+	}
+
+	/**
+	 * A ticked farming contract survives a restart, and counts towards the run while it is ticked.
+	 *
+	 * <h2>Reported as the checkbox not persisting, and that was the smaller half</h2>
+	 *
+	 * A contract line is stored as {@code CACTUS#contract}. The key parser stripped
+	 * {@code "#harvest"} and {@code "#protected"} by name and had never been told about contracts,
+	 * so the key failed to resolve to a patch type — and {@code load} drops anything that does not.
+	 * The box came back unticked on every restart.
+	 *
+	 * <p>The quieter failure is asserted here too, because it is worse and nothing would have shown
+	 * it: {@code getSelected} maps keys to types through the same parser, so a ticked contract
+	 * contributed <b>no patch type at all</b>. With only the contract ticked the run covered
+	 * nothing, in the same session, with no hint that the tick had not taken.
+	 */
+	@Test
+	public void aTickedFarmingContractSurvivesAReload()
+	{
+		RunOption contract = RunOption.full(PlantingGroup.contract(PatchImplementation.CACTUS));
+
+		RunTypeStore types = newTypes();
+		types.setSelected(java.util.Collections.singleton(contract));
+
+		assertTrue("ticked, so the run covers the cactus patches it claims",
+			types.getSelected().contains(PatchImplementation.CACTUS));
+
+		// What a restart does: throw the store away and read config back.
+		RunTypeStore reloaded = newTypes();
+		reloaded.load();
+
+		assertTrue("the contract tick has to come back", reloaded.isSelected(contract));
+		assertTrue("and still contribute its type",
+			reloaded.getSelected().contains(PatchImplementation.CACTUS));
+	}
+
+	/** The other two scopes keep working, since the parser that broke was shared. */
+	@Test
+	public void protectedAndHarvestOnlyLinesStillRoundTrip()
+	{
+		RunOption protectedHerbs =
+			RunOption.full(PlantingGroup.protectedOnly(PatchImplementation.HERB));
+		RunOption pickBushes = RunOption.harvestOnly(PlantingGroup.of(PatchImplementation.BUSH));
+
+		RunTypeStore types = newTypes();
+		types.setSelected(new java.util.LinkedHashSet<>(
+			java.util.Arrays.asList(protectedHerbs, pickBushes)));
+
+		RunTypeStore reloaded = newTypes();
+		reloaded.load();
+
+		assertTrue(reloaded.isSelected(protectedHerbs));
+		assertTrue(reloaded.isSelected(pickBushes));
+		assertTrue(reloaded.getSelected().contains(PatchImplementation.HERB));
+		assertTrue(reloaded.getSelected().contains(PatchImplementation.BUSH));
 	}
 
 	private RunTypeStore newTypes()

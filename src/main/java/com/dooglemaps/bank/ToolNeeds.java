@@ -25,7 +25,7 @@ import javax.inject.Singleton;
  *
  * <p>It depends only on leaves — the leprechaun's store, what is carried, the bank, the seed
  * selection — and calls back into nothing. That keeps the lock graph one-way with
- * {@code RunPlanner} above it; see {@code NOTES.md}.
+ * {@code RunPlanner} above it; see {@code docs/NOTES.md}.
  *
  * <h2>Why a tool that is only in the bank matters at all</h2>
  *

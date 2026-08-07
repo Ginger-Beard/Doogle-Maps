@@ -84,6 +84,19 @@ public class RunLoadout
 	private final com.dooglemaps.data.ItemNames itemNames;
 	private final com.dooglemaps.DoogleMapsConfig config;
 
+	/**
+	 * Which groups are being visited for their harvest alone.
+	 *
+	 * <p>Missing entirely before, which is what had a harvest-only fruit tree run asking you to
+	 * withdraw palm saplings. The planner already narrows those stops to ripe patches — see
+	 * {@code RunPlanner.isActionable} — so this list came through as "four fruit tree patches to
+	 * deal with", and everything downstream read that as four patches to plant in.
+	 */
+	private final com.dooglemaps.state.RunTypeStore runTypes;
+
+	/** Which crop Jane wants, so a finished contract stops asking for its own seed. */
+	private final com.dooglemaps.state.ContractState contracts;
+
 	/** For the tick number the per-tick cache is keyed on; never asked for anything else. */
 	private final net.runelite.api.Client client;
 
@@ -92,8 +105,11 @@ public class RunLoadout
 		CompostSelectionStore compost, CarriedItems carried, BankContents bank, ToolNeeds tools,
 		LeprechaunStore leprechaun, ProtectionSelectionStore protection,
 		com.dooglemaps.data.ItemNames itemNames, com.dooglemaps.DoogleMapsConfig config,
-		net.runelite.api.Client client)
+		net.runelite.api.Client client, com.dooglemaps.state.RunTypeStore runTypes,
+		com.dooglemaps.state.ContractState contracts)
 	{
+		this.contracts = contracts;
+		this.runTypes = runTypes;
 		this.client = client;
 		this.config = config;
 		this.protection = protection;
@@ -149,10 +165,123 @@ public class RunLoadout
 		}
 	}
 
+	/**
+	 * The categories a run genuinely cannot get on with, so the supply leg waits for them.
+	 *
+	 * <p>Not every line on the list. Teleports are a convenience and the player may well mean to
+	 * walk; the yield gear is optional by definition; the herb sack and seed box only change how
+	 * much you can carry back. Holding the run at the bank for any of those would be the plugin
+	 * refusing to let you play, and it is exactly the noise this list is otherwise careful to
+	 * avoid.
+	 *
+	 * <p>What is left is the set whose absence makes a stop pointless when you reach it: no seed,
+	 * no compost, no payment, no tool — and the axe, which is a {@code TOOL} here and is not in
+	 * {@code ToolNeeds} at all, because the leprechaun does not stock one.
+	 */
+	private static final Set<LoadoutItem.Category> CANNOT_PROCEED_WITHOUT = EnumSet.of(
+		LoadoutItem.Category.SEED,
+		LoadoutItem.Category.COMPOST,
+		LoadoutItem.Category.PAYMENT,
+		LoadoutItem.Category.TOOL);
+
+	/**
+	 * Whether the supply leg still has something it must collect.
+	 *
+	 * <h2>Why the planner asks this rather than working it out again</h2>
+	 *
+	 * {@code RunPlanner.suppliesOutstanding} used to derive its own answer from two of the inputs
+	 * this list is built from — a tool that exists only in the bank, and a seed the run is short
+	 * of. That is most of the answer and it was wrong in the same way three times over, because
+	 * anything the loadout learned to ask for afterwards was not added to it:
+	 *
+	 * <ul>
+	 *   <li>the <b>axe</b>, which {@code ToolNeeds} has never known about, so a tree contract could
+	 *       close the leg and send you to check a grown magic tree bare-handed;</li>
+	 *   <li>the <b>protection payment</b>, so the leg could finish with none of the cactus spine
+	 *       the run was about to need; and</li>
+	 *   <li>the <b>contract's own seed</b>, which the planner resolves by patch type and therefore
+	 *       cannot see — see {@code SeedSelectionStore.getSelectedFor(PlantingGroup)}.</li>
+	 * </ul>
+	 *
+	 * <p>Asking the list instead means there is one answer to "what does this trip need", and the
+	 * thing that decides you are finished is the same thing that told you what to take.
+	 *
+	 * <p><b>Nothing unobtainable blocks.</b> Only {@link LoadoutItem.Need#WITHDRAW} counts, which
+	 * is by construction something that is somewhere we can see and reach. An item you own none of
+	 * is {@code MISSING} and one we have not looked for yet is {@code UNKNOWN}; neither can hold
+	 * the run at a bank, which is the property that stops this being a leg that never ends.
+	 */
+	public boolean anythingLeftToWithdraw(Set<PatchImplementation> types)
+	{
+		for (LoadoutItem item : forRun(types))
+		{
+			if (item.getNeed() == LoadoutItem.Need.WITHDRAW
+				&& CANNOT_PROCEED_WITHOUT.contains(item.getCategory()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** The last answer, and what it was worked out for. See {@link #forRun}. */
 	private List<LoadoutItem> tickCache;
 	private int cachedTick = -1;
 	private Set<PatchImplementation> cachedTypes = EnumSet.noneOf(PatchImplementation.class);
+
+	/**
+	 * Whether this group is being visited for its harvest alone, so nothing goes in the ground.
+	 *
+	 * <p>Three things follow from planting and none of them apply to a harvest-only stop: the seed,
+	 * the compost that goes under it, and the payment that protects it. Asking for any of them is
+	 * asking the player to bank for something the run has explicitly decided not to do — reported
+	 * as a fruit tree harvest run wanting palm saplings, which is the case that makes it obvious,
+	 * because a fruit tree you are picking is a fruit tree you are deliberately leaving standing.
+	 *
+	 * <p>Nothing else in the loadout is affected. You still want the axe for a dead tree, the
+	 * teleports to get there, and the seed box and herb sack for what you pick up.
+	 */
+	private boolean plantsNothing(PlantingGroup group)
+	{
+		return runTypes.isHarvestOnly(group) || contractIsStandingThere(group);
+	}
+
+	/**
+	 * Whether this group is a contract whose crop is already grown and waiting.
+	 *
+	 * <h2>A finished contract needs no seed, and asking for one inverts the whole errand</h2>
+	 *
+	 * The contract cycle is <b>harvest, hand in, take the next one, then plant that</b>. Until the
+	 * hand-in there is nothing to sow: the patch is full, and what goes in it next is whichever
+	 * crop Jane asks for after — which nobody knows yet, least of all this class.
+	 *
+	 * <p>The loadout could not see that. A ripe patch is actionable, so a grown contract put its
+	 * group into {@code actionableByGroup} exactly like a ripe herb patch, and every ripe patch
+	 * means "clear it and replant" — so the run told you to withdraw a cactus seed for a cactus
+	 * that was standing there finished. Reported from play, and it is the worst possible advice at
+	 * that moment: the seed is the one thing the trip does not need, and banking for it is time
+	 * spent instead of handing the contract in.
+	 *
+	 * <p>Asked of what is <i>actually growing</i> rather than of {@code getAwaitingHandIn}, because
+	 * the two disagree in the case that matters. A contract that ripened while you were logged out
+	 * sends no chat message, so nothing captured it and the hand-in flag is unset — but the patch
+	 * is standing there full, which is a fact no event can be missed for. See
+	 * {@code ContractState} on why both sources exist.
+	 *
+	 * <p>Once it is handed in the patch empties, the group's ripe produce no longer matches, and
+	 * the next contract's seed is asked for normally — on the same trip, since taking the contract
+	 * moves its patch into this group immediately.
+	 */
+	private boolean contractIsStandingThere(PlantingGroup group)
+	{
+		if (!group.isContract())
+		{
+			return false;
+		}
+
+		com.dooglemaps.data.Produce contract = contracts.getContract();
+		return contract != null && planner.ripeProduceIn(group).containsKey(contract);
+	}
 
 	private List<LoadoutItem> build(Set<PatchImplementation> types)
 	{
@@ -313,7 +442,7 @@ public class RunLoadout
 		//
 		// The one that was already wrong: this loop asks for `patches * seedsPerPatch` for *every*
 		// selected seed, so picking two seeds for one type asked for two runs of seed for a
-		// one-run trip. Scoping to the group does not fix that on its own — see TODO.md, "Picking
+		// one-run trip. Scoping to the group does not fix that on its own — see docs/TODO.md, "Picking
 		// more than one seed for a patch type" — but it stops the split multiplying it.
 		Map<PlantingGroup, List<FarmPatch>> actionable = planner.actionableByGroup(types);
 
@@ -322,7 +451,7 @@ public class RunLoadout
 			PlantingGroup group = entry.getKey();
 			List<FarmPatch> plantable = entry.getValue();
 			PatchImplementation type = group.getType();
-			if (plantable.isEmpty())
+			if (plantable.isEmpty() || plantsNothing(group))
 			{
 				continue;
 			}
@@ -371,9 +500,39 @@ public class RunLoadout
 						? "Guildmaster Jane's contract"
 						: patches + (patches == 1 ? " patch" : " patches") + " of "
 							+ type.getDisplayName().toLowerCase())
-						+ (needsPotting ? " - needs potting into a sapling first" : "")));
+						+ (needsPotting ? " - needs potting into a sapling first" : ""),
+					fetchFrom(seed, wanted)));
 			}
 		}
+	}
+
+	/**
+	 * Which store to fetch a seed out of.
+	 *
+	 * <p>The same rule the planner routes by, and deliberately so: {@code getSupplySources} decides
+	 * where the opening leg goes, and this decides what the guide says when you get there. If they
+	 * disagreed you would be sent to one and told to look in the other.
+	 *
+	 * <p><b>A full patch's worth, not merely present.</b> One seed in the bank is not a reason to
+	 * call this a bank job when the vault has the other five, and the bank wins the tie because
+	 * everything else the run needs is there anyway — one stop rather than two.
+	 */
+	private LoadoutItem.From fetchFrom(Seed seed, int wanted)
+	{
+		if (seeds.getCount(seed, SeedSource.BANK) >= wanted)
+		{
+			return LoadoutItem.From.BANK;
+		}
+		if (seeds.getCount(seed, SeedSource.SEED_VAULT) >= wanted)
+		{
+			return LoadoutItem.From.SEED_VAULT;
+		}
+		// Neither has a full run's worth. Whichever holds any at all is where topping up starts,
+		// and the bank again wins a tie.
+		return seeds.getCount(seed, SeedSource.BANK) > 0
+			|| seeds.getCount(seed, SeedSource.SEED_VAULT) == 0
+			? LoadoutItem.From.BANK
+			: LoadoutItem.From.SEED_VAULT;
 	}
 
 	/**
@@ -429,6 +588,10 @@ public class RunLoadout
 		Set<CompostTier> wanted = new LinkedHashSet<>();
 		for (PlantingGroup group : planner.countActionableByGroup(types).keySet())
 		{
+			if (plantsNothing(group))
+			{
+				continue;
+			}
 			CompostTier tier = compost.get(group);
 			if (tier != CompostTier.NONE)
 			{
@@ -517,6 +680,11 @@ public class RunLoadout
 		Map<PlantingGroup, Integer> actionable = planner.countActionableByGroup(types);
 		for (PlantingGroup group : actionable.keySet())
 		{
+			// Nothing is being planted here, so there is nothing to protect. See plantsNothing.
+			if (plantsNothing(group))
+			{
+				continue;
+			}
 			int patches = actionable.getOrDefault(group, 0);
 			for (Seed seed : selection.getSelectedFor(group))
 			{
@@ -736,6 +904,46 @@ public class RunLoadout
 	 * in the table, or nothing you own, simply produces no suggestion rather than advice you
 	 * cannot follow.
 	 */
+	/**
+	 * Whether this teleport is one the player has said they use.
+	 *
+	 * <h2>The list decides <i>what</i>; the table decides <i>why</i></h2>
+	 *
+	 * There are two sources of teleports and they are not duplicates, but they did overlap in one
+	 * place and the overlap was the wrong way round.
+	 *
+	 * <ul>
+	 *   <li>{@link TeleportItems} is a table of <b>facts</b>: an Ardougne cloak reaches Ardougne.
+	 *       Only it can say that, and it is what lets the guide outline the right jewellery-box row
+	 *       and say "use your Ardougne cloak" while travelling.</li>
+	 *   <li>The setting is a <b>habit</b>: which of those you actually carry. Nothing can derive
+	 *       it, which is why it is a text field.</li>
+	 * </ul>
+	 *
+	 * <p>The bank offering used to come from the table alone, so cutting the list down changed
+	 * nothing — every city tablet you happened to own still turned up because the table knew where
+	 * it went. The setting's own description promises otherwise: <i>"cut it down to the ones you
+	 * actually use"</i>. It does now.
+	 *
+	 * <p><b>An empty list means "no opinion", not "nothing".</b> That is the long-standing reading
+	 * — see {@code listedTeleportIds} — and it keeps the feature working for anyone who never opens
+	 * the setting: the table answers alone, exactly as before.
+	 */
+	public boolean isOnTeleportList(int itemId)
+	{
+		return offeredByTheList(itemId);
+	}
+
+	private boolean offeredByTheList(int itemId)
+	{
+		String setting = config.teleportItems();
+		if (setting == null || setting.trim().isEmpty())
+		{
+			return true;
+		}
+		return listedTeleportIds().contains(itemId);
+	}
+
 	private void addTeleports(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
 		// Asked once and kept. This used to be walked here and then walked again inside
@@ -870,20 +1078,33 @@ public class RunLoadout
 		Set<Integer> found = new LinkedHashSet<>();
 		for (int itemId : bankIds)
 		{
+			// Two names per item, and an entry matching either counts. The game's, learned from
+			// the bank, is what a player reads off their own screen; the table's is what they read
+			// in this setting's default. They are not always the same string — "Teleport to house"
+			// against "Teleport to house tablet", "Skills necklace(6)" against "Skills necklace" —
+			// and matching only the first is why the shipped default quietly offered neither.
+			// See TeleportItems.nameFor.
 			String name = itemNames.get(itemId, null);
-			if (name == null)
+			String label = TeleportItems.nameFor(itemId);
+			if (name == null && label == null)
 			{
-				// Not read yet. Names are learned when a bank is opened, so this resolves itself
-				// the moment there is a bank to resolve it against.
+				// Not read yet, and not ours. Names are learned when a bank is opened, so this
+				// resolves itself the moment there is a bank to resolve it against.
 				continue;
 			}
 
-			if (exact.contains(name.toLowerCase()) || matchesAny(wildcards, name))
+			if (matchesName(exact, wildcards, name) || matchesName(exact, wildcards, label))
 			{
 				found.add(itemId);
 			}
 		}
 		return found;
+	}
+
+	private static boolean matchesName(Set<String> exact, List<String> wildcards,
+		@javax.annotation.Nullable String name)
+	{
+		return name != null && (exact.contains(name.toLowerCase()) || matchesAny(wildcards, name));
 	}
 
 	private static boolean matchesAny(List<String> wildcards, String name)
@@ -903,6 +1124,12 @@ public class RunLoadout
 	{
 		int itemId = teleport.getItemId();
 		if (!offered.add(itemId))
+		{
+			return;
+		}
+
+		// Knowing where it goes is not a reason to suggest it. See offeredByTheList.
+		if (!offeredByTheList(itemId))
 		{
 			return;
 		}
@@ -957,23 +1184,24 @@ public class RunLoadout
 	}
 
 	/**
-	 * What the bank should mark, and why.
+	 * What the bank should mark: the things to take out of it, and nothing else.
 	 *
-	 * <p>Two kinds, and the second is the point. {@code WITHDRAW} is "take this". But an item
-	 * the leprechaun already holds is worth marking too, in its own colour: seeing your
-	 * ultracompost lit differently in the bank is what stops you withdrawing it, and cues you
-	 * to ask the leprechaun once you are at the patch. Leaving it unmarked would just look like
-	 * the plugin had forgotten about compost.
+	 * <p>Items the leprechaun already holds used to be marked too, in a second colour meaning
+	 * "leave this". The argument for it was that unmarked compost reads as the plugin having
+	 * forgotten about compost — but in practice a bank with your buckets and your ultracompost
+	 * lit up reads as a bank telling you to take them, whatever colour it uses, and a highlight
+	 * that means <i>don't</i> is a highlight fighting what a highlight is for. The leprechaun's
+	 * store is the guide's job to talk about, at the patch, where the errand actually is.
 	 *
-	 * <p>Things already carried are absent, since there is nothing to do about those.
+	 * <p>Things already carried are absent for the same reason they always were: there is nothing
+	 * to do about those.
 	 */
 	public Map<Integer, LoadoutItem.Need> highlights(Set<PatchImplementation> types)
 	{
 		Map<Integer, LoadoutItem.Need> marked = new LinkedHashMap<>();
 		for (LoadoutItem item : forRun(types))
 		{
-			if (item.getNeed() == LoadoutItem.Need.WITHDRAW
-				|| item.getNeed() == LoadoutItem.Need.AT_LEPRECHAUN)
+			if (item.getNeed() == LoadoutItem.Need.WITHDRAW)
 			{
 				for (int itemId : bankFormsOf(item.getItemId()))
 				{

@@ -108,20 +108,99 @@ public class GrowthTimer
 	 */
 	private long getOffsetSeconds(int tickRate)
 	{
-		Integer precision = readOffsetSetting(FARM_TICK_OFFSET_PRECISION, OWN_OFFSET_PRECISION);
-		Integer offsetMinutes = readOffsetSetting(FARM_TICK_OFFSET, OWN_OFFSET);
-
-		if (precision == null || offsetMinutes == null)
+		Offset offset = offset();
+		if (offset == null)
 		{
 			return 0;
 		}
 		// An offset learned from a shorter cycle than the one being asked about does not
 		// constrain it, unless it came from a cycle long enough to pin down all of them.
-		if (precision < tickRate && precision < OFFSET_PRECISION_TRUSTED)
+		if (offset.precision < tickRate && offset.precision < OFFSET_PRECISION_TRUSTED)
 		{
 			return 0;
 		}
-		return (long) (offsetMinutes % tickRate) * 60;
+		return (long) (offset.minutes % tickRate) * 60;
+	}
+
+	/**
+	 * The account's observed grid offset, read from config at most once between invalidations.
+	 *
+	 * <h2>Why this is cached rather than read each time</h2>
+	 *
+	 * {@link #project} used to reach config seven to fourteen times <b>per patch</b>: once for
+	 * auto-weed, then two reads for every {@link #readOffsetSetting} inside every
+	 * {@link #getOffsetSeconds}, inside each of the three or four {@link #getTickTime} calls a
+	 * projection makes. The panel projects every available patch, twice a refresh — the summary
+	 * line and the ready infobox each walk the whole list — so a refresh was on the order of
+	 * <b>2,800 config lookups</b>.
+	 *
+	 * <p>The guide is worse, and it is the one that matters: {@code GuideTracker.computeStepsHere}
+	 * runs on every game tick, and its {@code patchesWanting} loops the stop's patches inside a
+	 * loop over the same patches, projecting each time. At the Farming Guild's eleven patches that
+	 * is 121 projections a tick, on the client thread, in the frame budget.
+	 *
+	 * <p>None of it could change between those calls. The farm tick offset is a per-account
+	 * constant learned once by watching a crop advance; auto-weed changes when you buy the unlock.
+	 * So this is the case {@code docs/NOTES.md} describes as putting the cache on the thing being
+	 * computed rather than on each caller — the four per-tick caches dotted around the overlays
+	 * are all working around this method.
+	 *
+	 * <p>Volatile and immutable rather than synchronised: it is read from the client thread and
+	 * the Swing thread, and a racing pair of readers both filling it in is harmless because they
+	 * compute the same answer.
+	 */
+	@Nullable
+	private Offset offset()
+	{
+		Offset cached = offset;
+		if (cached != null)
+		{
+			return cached == Offset.NONE ? null : cached;
+		}
+
+		Integer precision = readOffsetSetting(FARM_TICK_OFFSET_PRECISION, OWN_OFFSET_PRECISION);
+		Integer minutes = readOffsetSetting(FARM_TICK_OFFSET, OWN_OFFSET);
+
+		Offset resolved = precision == null || minutes == null
+			? Offset.NONE
+			: new Offset(precision, minutes);
+		offset = resolved;
+		return resolved == Offset.NONE ? null : resolved;
+	}
+
+	/** The observed offset, or {@link Offset#NONE} for "config has nothing to say". */
+	private volatile Offset offset;
+
+	/** Auto-weed, cached beside the offset and invalidated with it. */
+	private volatile Boolean autoweed;
+
+	private static final class Offset
+	{
+		/** Stands in for "read, and there was nothing there", so absence is cached too. */
+		private static final Offset NONE = new Offset(0, 0);
+
+		private final int precision;
+		private final int minutes;
+
+		private Offset(int precision, int minutes)
+		{
+			this.precision = precision;
+			this.minutes = minutes;
+		}
+	}
+
+	/**
+	 * Drops the cached offset and auto-weed flag.
+	 *
+	 * <p>Called whenever the values behind them could have moved: a profile load, which may be a
+	 * different account entirely, and the two observations that write them. Cheap to call
+	 * spuriously — the cost of being wrong here is one config read, and the cost of <i>not</i>
+	 * calling it is a projection using another account's grid.
+	 */
+	public void invalidate()
+	{
+		offset = null;
+		autoweed = null;
 	}
 
 	/** Prefers core Time Tracking's observation, falling back to our own. */
@@ -166,18 +245,34 @@ public class GrowthTimer
 		log.debug("Observed a {}-minute growth tick, offset {} minutes", tickRate, offsetMinutes);
 		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, OWN_OFFSET_PRECISION, tickRate);
 		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, OWN_OFFSET, offsetMinutes);
+		// The value the cache holds has just changed underneath it. This is the whole reason
+		// invalidate() exists as a method rather than the cache being filled once at load.
+		invalidate();
 	}
 
-	/** Whether the account's auto-weed is on, so weeds should not be shown regrowing. */
+	/**
+	 * Whether the account's auto-weed is on, so weeds should not be shown regrowing.
+	 *
+	 * <p>Cached for the reason {@link #offset()} gives — {@link #project} asks this for every
+	 * patch it projects, and the answer changes when you buy the unlock rather than between two
+	 * patches in one loop.
+	 */
 	public boolean isAutoweedEnabled()
 	{
-		Integer own = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, AUTOWEED, int.class);
-		if (own != null)
+		Boolean cached = autoweed;
+		if (cached != null)
 		{
-			return own == AUTOWEED_ON;
+			return cached;
 		}
-		String core = configManager.getRSProfileConfiguration(TIMETRACKING_GROUP, AUTOWEED);
-		return String.valueOf(AUTOWEED_ON).equals(core);
+
+		Integer own = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, AUTOWEED, int.class);
+		boolean enabled = own != null
+			? own == AUTOWEED_ON
+			: String.valueOf(AUTOWEED_ON).equals(
+				configManager.getRSProfileConfiguration(TIMETRACKING_GROUP, AUTOWEED));
+
+		autoweed = enabled;
+		return enabled;
 	}
 
 	/** Value of {@code Varbits.AUTOWEED} meaning auto-weed is unlocked and switched on. */
@@ -195,6 +290,7 @@ public class GrowthTimer
 		if (stored == null || stored != varbitValue)
 		{
 			configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, AUTOWEED, varbitValue);
+			invalidate();
 		}
 	}
 
@@ -302,7 +398,10 @@ public class GrowthTimer
 			regrowEstimate,
 			confidenceFor(patch, snapshot, produce, cropState, stage, growthStages),
 			stale,
-			snapshot.getLastSeen()
+			snapshot.getLastSeen(),
+			// From the raw varbit, which goes no further than here. A checked tree and the stump it
+			// leaves decode identically, so this is the only place the difference survives.
+			patch.getImplementation().isStumpVarbitValue(snapshot.getVarbitValue())
 		);
 	}
 

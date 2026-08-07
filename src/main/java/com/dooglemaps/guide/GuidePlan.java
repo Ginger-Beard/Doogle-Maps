@@ -98,9 +98,72 @@ public final class GuidePlan
 			return steps;
 		}
 
-		// 1. Take what is on it. A regrowing crop counts as harvestable while it still holds
-		//    fruit, which is why this is a state test rather than "is the patch finished".
-		if (projection.getCropState() == CropState.HARVESTABLE)
+		// 0.5 Check it, for the crops that will not let you touch them until you have.
+		//
+		//     A tree, bush, cactus, calquat, celastrus or redwood finishes growing into a state the
+		//     game still calls GROWING, and nothing about it is clickable except the check. Every
+		//     branch below this one therefore declined to say anything: the patch fell through to
+		//     "still growing, leave it alone", produced no step, and was never highlighted.
+		//
+		//     Reported as a finished cactus contract being skipped in favour of an avantoe two
+		//     patches away. The almanac said ready and the planner had routed to it correctly —
+		//     the guide simply had no word for the state it was in.
+		//
+		//     Before the harvest branch because it has to be: hasProduceToPick is false until the
+		//     check happens, so the two can never both fire. It is also where the experience is —
+		//     a magic tree pays over 13,000 for this click and almost nothing for the logs.
+		if (projection.needsHealthCheck())
+		{
+			steps.add(GuideStep.of(GuideAction.CHECK_HEALTH, patch,
+				"Check the health of the " + projection.getProduce().getName().toLowerCase() + "."));
+			return steps;
+		}
+
+		// 0.6 A felled stump, which is not an empty patch and not something you can pick.
+		//
+		//     Before the harvest branch because the game gives a stump the same crop and the same
+		//     HARVESTABLE state as the tree that was standing there a moment ago — so without this,
+		//     branch 1 fires, says "harvest the magic" at a stump, and returns. It said it forever:
+		//     nothing the player could click would change the state it was testing, so the patch
+		//     never finished and the stop never completed. Reported from play as a yew contract
+		//     that could not be started because the magic tree in front of it never came out.
+		//
+		//     A spade, not an axe. This is the one step in the sequence the leprechaun can help
+		//     with, which is why it goes through addToolStep like the dead-crop clear below.
+		//     Gated on the full run. "Come back and take the logs" does not include digging the
+		//     stump out, and a harvest-only tree run is finished the moment the tree is down —
+		//     which is why hasProduceToPick answers no for a stump, so the branch below lets it
+		//     fall through to the harvest-only gate rather than looping on it.
+		if (projection.isStump() && !harvestOnly)
+		{
+			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
+			steps.add(GuideStep.of(GuideAction.CLEAR, patch,
+				"Dig up the " + projection.getProduce().getName().toLowerCase() + " stump."));
+			return steps;
+		}
+
+		// 0.7 A checked tree still standing. "Harvest" is the wrong word and the wrong expectation:
+		//     you chop it, it does not empty the patch, and there is a stump behind it — which is
+		//     what 0.6 above is for. Said separately so the player knows two clicks are coming
+		//     rather than wondering why the patch is still occupied after the first.
+		//
+		//     No axe step. The leprechaun stores every farming tool except an axe, so there is
+		//     nothing to withdraw here; carrying one is a bank-leg problem and RunLoadout says so.
+		if (projection.isChoppable())
+		{
+			steps.add(GuideStep.of(GuideAction.CHOP, patch,
+				"Chop down the " + projection.getProduce().getName().toLowerCase() + "."));
+			return steps;
+		}
+
+		// 1. Take what is on it — if there is anything on it.
+		//
+		//    hasProduceToPick rather than the raw state. "Harvestable" for a regrowing crop means
+		//    grown, not laden: a picked-clean fruit tree still reports HARVESTABLE, so this branch
+		//    fired forever and said "harvest the papaya" at a tree with no papayas. It also
+		//    returns, so the patch produced that one impossible step and nothing else — which is
+		//    what left harvest-only stops unable to finish. See PatchProjection.hasProduceToPick.
+		if (projection.hasProduceToPick())
 		{
 			if (carried.getFreeSlots() <= FULL_INVENTORY_SLACK)
 			{

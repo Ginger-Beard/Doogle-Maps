@@ -35,12 +35,14 @@ public class LeprechaunErrandOrderTest
 {
 	private GuideTracker tracker;
 	private CarriedItems carried;
+	private com.dooglemaps.timer.GrowthTimer growthTimer;
 
 	@Before
 	public void setUp() throws Exception
 	{
-		carried = construct(CarriedItems.class);
-		tracker = trackerWith(carried);
+		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
+		growthTimer = Mockito.mock(com.dooglemaps.timer.GrowthTimer.class);
+		tracker = trackerWith(carried, growthTimer);
 	}
 
 	/** The whole point: everything handed over before anything is taken out. */
@@ -155,32 +157,123 @@ public class LeprechaunErrandOrderTest
 	}
 
 	/**
-	 * Which screen each leprechaun step is clicked on.
+	 * Which pane of the leprechaun's interface each step is clicked on.
 	 *
-	 * <p>The first version keyed this on the <i>direction</i> the item moves — handing over versus
-	 * taking out — and that turned out to be the wrong question. Returning buckets hands something
-	 * over and is still a click in his store, because the store opens over the inventory and the
-	 * bucket slot in it is the target. Reported from play as the wrong object being highlighted.
+	 * <h2>This assertion has now been wrong three times, and the reason is always the same</h2>
+	 *
+	 * Each attempt reasoned from a model of the interface rather than from what is on screen:
+	 *
+	 * <ol>
+	 *   <li><b>By direction</b> — handing over versus taking out. Put returning buckets with noting
+	 *       a crop, which is wrong because noting happens with his interface shut.</li>
+	 *   <li><b>By which interface is open</b> — "his store opens, so it is a store click". Lit up
+	 *       <i>his</i> bucket slot, showing the thousand he already holds, at the moment the
+	 *       instruction is "give him yours".</li>
+	 *   <li><b>By store versus inventory</b> — so a bucket return became an ordinary inventory
+	 *       click. Lit nothing at all, because his interface covers the inventory.</li>
+	 * </ol>
+	 *
+	 * <p>What is actually there, reported from play: <b>two panes at once</b>. His store in a pane
+	 * of its own, and a second pane laid over your inventory listing the same categories — bucket,
+	 * composts, tools, watering can — holding <b>your</b> items. So both withdrawing and depositing
+	 * are slot lookups inside one interface, and the only question is whose column.
+	 *
+	 * <p>Noting a crop remains the odd one out and always was: it happens with his interface shut,
+	 * so it is a genuine inventory click.
 	 */
 	@Test
-	public void bucketsAreReturnedThroughHisStoreButCropsAreNoted() throws Exception
+	public void withdrawingUsesHisPaneAndReturningUsesYours() throws Exception
 	{
 		carrying(Produce.LIMPWURT.getItemID(), 4, ItemID.BUCKET_EMPTY, 3);
 
 		List<GuideStep> steps = new ArrayList<>();
-		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
-			ItemID.BUCKET_ULTRACOMPOST, null, "Withdraw ultracompost."));
+		GuideStep withdraw = GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+			ItemID.BUCKET_ULTRACOMPOST, null, "Withdraw ultracompost.");
+		steps.add(withdraw);
 		bundle(steps);
 
 		GuideStep note = stepWith(steps, GuideAction.NOTE_AT_LEPRECHAUN);
 		GuideStep buckets = stepWith(steps, GuideAction.RETURN_BUCKETS);
 
-		assertEquals("the crop is used from the pack, which is what you are looking at",
+		assertEquals("his interface is shut, so the crop is used from the pack",
 			false, note.itemIsInStore());
-		assertEquals("his store opens over the inventory and the bucket slot is the target",
-			true, buckets.itemIsInStore());
-		assertEquals("and it is the empty bucket that has a slot there",
+
+		assertEquals("both sides of his interface are slot lookups, not inventory scans",
+			true, withdraw.itemIsInStore());
+		assertEquals(true, buckets.itemIsInStore());
+
+		assertEquals("you take out of his column",
+			false, withdraw.itemIsOnYourSideOfTheStore());
+		assertEquals("and put into your own",
+			true, buckets.itemIsOnYourSideOfTheStore());
+
+		assertEquals("and it is the empty bucket that gets pointed at",
 			ItemID.BUCKET_EMPTY, buckets.getItemId());
+		assertEquals("all three still happen at him, which is the separate question",
+			true, note.isAtLeprechaun() && buckets.isAtLeprechaun() && withdraw.isAtLeprechaun());
+	}
+
+	/**
+	 * A patch waiting to be checked keeps the tidying-up errands away.
+	 *
+	 * <h2>What it looked like</h2>
+	 *
+	 * "Check the health of the magic tree", and directly beneath it "note your crops with the
+	 * leprechaun <i>before moving on</i>" — at a patch not yet started. Checking is never the last
+	 * thing you do at a tree, bush or cactus: a harvest and a clear follow it, and neither exists as
+	 * a step until the check happens, so the errands had nothing to sit behind.
+	 *
+	 * <p>Reported from play on a mid-run tree contract.
+	 */
+	@Test
+	public void tidyingUpWaitsForAPatchStillToBeChecked() throws Exception
+	{
+		carrying(Produce.LIMPWURT.getItemID(), 4);
+		checkPending();
+
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.of(GuideAction.CHECK_HEALTH, somePatch(),
+			"Check the health of the magic tree."));
+
+		bundle(steps);
+
+		assertEquals("nothing may come between the check and the work behind it",
+			1, steps.size());
+	}
+
+	/**
+	 * Unless something is taking you to him anyway, in which case bundling still wins.
+	 *
+	 * <p>A compost withdrawal makes the visit certain whatever else is outstanding, and folding the
+	 * errands into a trip already happening is the whole reason this method exists.
+	 */
+	@Test
+	public void acertainVisitStillBundlesDespiteAPendingCheck() throws Exception
+	{
+		carrying(Produce.LIMPWURT.getItemID(), 4, ItemID.BUCKET_EMPTY, 2);
+		checkPending();
+
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.of(GuideAction.CHECK_HEALTH, somePatch(),
+			"Check the health of the magic tree."));
+		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+			ItemID.BUCKET_ULTRACOMPOST, null, "Withdraw ultracompost."));
+
+		bundle(steps);
+
+		assertEquals("the check is still what you do first",
+			GuideAction.CHECK_HEALTH, steps.get(0).getAction());
+		assertEquals("and the errands fold into the trip that was happening anyway",
+			GuideAction.NOTE_AT_LEPRECHAUN, steps.get(1).getAction());
+	}
+
+	/** Puts the stop's patch into the grown-but-unchecked state. */
+	private void checkPending()
+	{
+		com.dooglemaps.timer.PatchProjection projection =
+			Mockito.mock(com.dooglemaps.timer.PatchProjection.class, Mockito.RETURNS_DEEP_STUBS);
+		when(projection.needsHealthCheck()).thenReturn(true);
+		when(growthTimer.project(Mockito.any(), Mockito.any())).thenReturn(projection);
 	}
 
 	private static GuideStep stepWith(List<GuideStep> steps, GuideAction action)
@@ -236,7 +329,8 @@ public class LeprechaunErrandOrderTest
 	 * <p>Only {@code CarriedItems} matters here — the errand list is a function of the pack and
 	 * nothing else — so the rest are mocks rather than fixtures.
 	 */
-	private static GuideTracker trackerWith(CarriedItems carried) throws Exception
+	private static GuideTracker trackerWith(CarriedItems carried,
+		com.dooglemaps.timer.GrowthTimer growthTimer) throws Exception
 	{
 		Constructor<?> constructor = GuideTracker.class.getDeclaredConstructors()[0];
 		constructor.setAccessible(true);
@@ -245,7 +339,18 @@ public class LeprechaunErrandOrderTest
 		Object[] args = new Object[types.length];
 		for (int i = 0; i < types.length; i++)
 		{
-			args[i] = types[i] == CarriedItems.class ? carried : Mockito.mock(types[i]);
+			if (types[i] == CarriedItems.class)
+			{
+				args[i] = carried;
+			}
+			else if (types[i] == com.dooglemaps.timer.GrowthTimer.class)
+			{
+				args[i] = growthTimer;
+			}
+			else
+			{
+				args[i] = Mockito.mock(types[i]);
+			}
 		}
 		return (GuideTracker) constructor.newInstance(args);
 	}

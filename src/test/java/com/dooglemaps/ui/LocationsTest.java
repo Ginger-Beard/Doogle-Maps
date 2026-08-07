@@ -19,6 +19,11 @@ import static org.mockito.Mockito.when;
  * two lists of the same thing, which is exactly the arrangement that drifts — and it drifts
  * silently, because a region with no switch simply cannot be hidden and nothing complains. When
  * Jagex adds a farming area this test is what says so.
+ *
+ * <p><b>It guards one list fewer than it used to.</b> There was a third: a 36-case switch in
+ * {@code Locations} mapping each region name to its getter. {@code Locations.keyFor} now derives
+ * that mapping instead, so the only thing left to keep in step is the settings themselves — and
+ * {@link #theSettingNameIsDerivedFromTheRegionName} pins the rule the derivation depends on.
  */
 public class LocationsTest
 {
@@ -94,6 +99,28 @@ public class LocationsTest
 			}
 		}
 		assertEquals(Locations.allRegions().size(), settings);
+	}
+
+	/**
+	 * The rule that turns a region name into its setting, pinned by its awkward cases.
+	 *
+	 * <p>{@code Locations} resolves the mapping rather than switching on it, which is what removed
+	 * the 36-case list that could drift from the data. That only holds while the naming rule holds,
+	 * and these four are the ones it could plausibly get wrong: an apostrophe, a lower-case word in
+	 * the middle of a name, a multi-word name, and a plain one.
+	 *
+	 * <p>If a region ever breaks the rule the honest fix is an explicit override, not a looser
+	 * rule — {@code everyRegionInTheDataHasASwitch} is what will say so.
+	 */
+	@Test
+	public void theSettingNameIsDerivedFromTheRegionName()
+	{
+		assertEquals("showLocationArdougne", Locations.keyFor("Ardougne"));
+		assertEquals("an apostrophe is dropped, not turned into a word boundary",
+			"showLocationAnglersRetreat", Locations.keyFor("Anglers' Retreat"));
+		assertEquals("every word is capitalised, including one the game leaves lower case",
+			"showLocationCivitasIllaFortis", Locations.keyFor("Civitas illa Fortis"));
+		assertEquals("showLocationTaiBwoWannai", Locations.keyFor("Tai Bwo Wannai"));
 	}
 
 	/** Toggling one has to rebuild the tabs, or every tab but the visible one goes stale. */

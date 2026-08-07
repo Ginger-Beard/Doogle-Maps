@@ -82,7 +82,11 @@ public class SupplyRoutingTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			// Nothing outstanding on the withdraw list, so these tests keep measuring the seed
+			// routing they were written for rather than the loadout's other errands.
+			(javax.inject.Provider<com.dooglemaps.bank.RunLoadout>)
+				() -> Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
 	}
 
 	private void stock(SeedSource source, Seed seed, int quantity)
@@ -122,13 +126,24 @@ public class SupplyRoutingTest
 	}
 
 	/**
-	 * When both are needed, the vault still wins — because it is also a bank.
+	 * When both are needed, both are offered — the vault is not a substitute for a bank.
 	 *
-	 * <p>The Farming Guild has a bank chest beside the vault, so one stop covers both. Offering
-	 * the banks as alternatives would send the player to a bank and strand the vault seeds.
+	 * <h2>The claim this used to make, and why it was false</h2>
+	 *
+	 * It asserted the vault alone, on the reasoning that "the vault is also a bank" because the
+	 * Farming Guild has a bank chest beside it. The seed vault stores <b>seeds and saplings and
+	 * nothing else</b>: you cannot take an axe, a rune pouch or twenty-five coconuts out of it. So
+	 * routing to it and calling the errand covered sent the player to a container that could not
+	 * hold most of what the run had just told them to withdraw. Reported from play as a line drawn
+	 * to the guild bank chest, the vault outlined, and a withdraw list reading "From the bank: yew,
+	 * yew, rune pouch, book of the dead".
+	 *
+	 * <p>Nothing is stranded by offering both. The router picks whichever is cheaper to reach — in
+	 * the guild they are paces apart — and the leg does not end until {@code suppliesOutstanding}
+	 * is false, which counts both. Emptying one redraws the route for the other.
 	 */
 	@Test
-	public void needingBothStillRoutesToTheGuild()
+	public void needingBothOffersBoth()
 	{
 		selection.toggle(Seed.GUAM);
 		selection.toggle(Seed.RANARR);
@@ -136,8 +151,11 @@ public class SupplyRoutingTest
 		stock(SeedSource.SEED_VAULT, Seed.RANARR, 100);
 
 		assertEquals(Set.of(SeedSource.BANK, SeedSource.SEED_VAULT), planner.getSupplySources());
-		assertEquals("the Farming Guild covers both", Set.of(BankLocations.SEED_VAULT),
-			supplyTargets());
+
+		Set<WorldPoint> targets = supplyTargets();
+		assertTrue("the vault holds the ranarr", targets.contains(BankLocations.SEED_VAULT));
+		assertTrue("and a bank holds everything the vault cannot",
+			targets.size() > 1);
 	}
 
 	/** Nothing to fetch means no supply trip at all. */

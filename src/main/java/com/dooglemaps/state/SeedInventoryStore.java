@@ -29,8 +29,14 @@ import net.runelite.client.config.ConfigManager;
  * and it still knows what you have. Every visit overwrites that source with what is
  * actually there, so a stale count only survives until you next look.
  *
- * <p>The inventory is the exception — the client always has it, so it is read live and
- * never cached. Persisting it would also mean writing config on every item pickup.
+ * <p>The inventory is the exception — it is held in memory like the rest, but <b>never
+ * persisted</b>: the client sends it on login and on every change, so config would be rewritten
+ * on each item pickup for something that is always about to arrive anyway.
+ *
+ * <p>That distinction is load-bearing rather than pedantic, and {@link #load()} turns on it. This
+ * once said the inventory was "never cached", which is a different claim and a false one — and
+ * following it is how {@code load()} came to clear the whole map and restore only the persisted
+ * half, throwing away an inventory nothing would re-send.
  */
 @Slf4j
 @Singleton

@@ -38,7 +38,7 @@ import net.runelite.client.eventbus.Subscribe;
  *
  * <p>Read on the client thread, in the tick handler, and handed out as an immutable snapshot —
  * so the panel and the overlays can ask from any thread. It holds no reference to any other
- * store, which keeps it a leaf in the lock graph. See {@code NOTES.md} on lock ordering.
+ * store, which keeps it a leaf in the lock graph. See {@code docs/NOTES.md} on lock ordering.
  */
 @Slf4j
 @Singleton

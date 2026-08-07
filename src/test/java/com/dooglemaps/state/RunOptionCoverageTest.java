@@ -164,54 +164,125 @@ public class RunOptionCoverageTest
 	}
 
 	/**
-	 * The compost dropdown is offered exactly where compost can change a number we produce.
+	 * Anything a farmer can be paid to protect can be diseased, so compost helps it.
 	 *
-	 * <p>Two reasons it can: the yield, via the lives mechanic — herbs, allotments, hops and
-	 * giant seaweed — or the disease chance, wherever Jagex has published a rate. The second is
-	 * why trees and fruit trees keep the control despite giving the same crop either way.
+	 * <h2>The check that catches a hand-written list going stale</h2>
 	 *
-	 * <p>Pinned as a set rather than restated as a rule, so a change to either half shows up here
-	 * as a decision rather than sliding through.
+	 * {@code DiseaseRisk.CAN_BE_DISEASED} decides where the compost dropdown appears, and the first
+	 * version of it was written out by hand from a wiki summary. It missed <b>calquat</b> and
+	 * <b>redwood</b> — both of which the plugin's own {@code ProtectionPayment} table already knew
+	 * about, because you pay the calquat gardener 8 poison ivy berries and the redwood one 6
+	 * dragonfruit.
+	 *
+	 * <p>That is the tell: <b>nobody pays to prevent something that cannot happen.</b> A protection
+	 * payment is proof of a disease risk, and the payment table is maintained from the wiki
+	 * already — so it can check the disease list for free, in the direction that matters. The
+	 * reverse does not hold and is not asserted: herbs and flowers can be diseased and no farmer
+	 * will touch them.
 	 */
 	@Test
-	public void compostIsOfferedExactlyWhereItChangesSomething()
+	public void everyPatchTypeWithAProtectionPaymentCanBeDiseased()
 	{
-		Set<PatchImplementation> offered = EnumSet.noneOf(PatchImplementation.class);
-		for (PatchImplementation type : PatchImplementation.values())
+		Set<PatchImplementation> paid = EnumSet.noneOf(PatchImplementation.class);
+		for (com.dooglemaps.data.ProtectionPayment payment
+			: com.dooglemaps.data.ProtectionPayment.values())
 		{
-			if (CropYieldModel.compostMatters(type))
+			PatchImplementation type = payment.getProduce().getPatchImplementation();
+			if (type != null)
 			{
-				offered.add(type);
+				paid.add(type);
 			}
 		}
 
-		assertEquals("the set of types where compost changes something has moved",
-			EnumSet.of(PatchImplementation.HERB, PatchImplementation.ALLOTMENT,
-				PatchImplementation.HOPS, PatchImplementation.SEAWEED,
-				PatchImplementation.FRUIT_TREE, PatchImplementation.TREE,
-				PatchImplementation.CORAL), offered);
+		assertFalse("the payment table is empty, so this proves nothing", paid.isEmpty());
+
+		for (PatchImplementation type : paid)
+		{
+			assertTrue(type + " has a gardener protection payment, so it can be diseased - and "
+					+ "compost has to be offered for it",
+				com.dooglemaps.timer.DiseaseRisk.canCatchDisease(type));
+		}
 	}
 
-	/** And which of those are disease-only, which is what the note is shown for. */
+	/**
+	 * The compost dropdown is offered wherever compost does something <b>in the game</b>.
+	 *
+	 * <h2>Which is not the same as "wherever it moves our number"</h2>
+	 *
+	 * This used to pin a set of seven, derived from: the yield, via the lives mechanic — herbs,
+	 * allotments, hops, giant seaweed — or a <i>published</i> disease rate, which exists for herbs,
+	 * fruit trees, two tree species and coral and nowhere else.
+	 *
+	 * <p>That second half was the wrong test and this test was pinning it in place. A flower patch
+	 * can be diseased and compost cuts the chance exactly as it does anywhere — Jagex has simply
+	 * never published the rate. Gating the control on our ability to <i>display</i> the effect
+	 * meant a player could not ask for their flowers to be treated at all, so the run banked no
+	 * buckets and the guide applied none. Reported from play.
+	 *
+	 * <p>So the rule is now "can this patch catch a disease, or does compost raise its yield", and
+	 * the members below are asserted individually rather than as a frozen set — the interesting
+	 * claims are what is in and what is out, not the count.
+	 */
 	@Test
-	public void theDiseaseOnlyNoteAppearsOnTheRightTypes()
+	public void compostIsOfferedWhereverItDoesSomethingInGame()
 	{
-		Set<PatchImplementation> diseaseOnly = EnumSet.noneOf(PatchImplementation.class);
+		// The lives mechanic: compost genuinely raises what these give.
+		for (PatchImplementation type : EnumSet.of(PatchImplementation.HERB,
+			PatchImplementation.ALLOTMENT, PatchImplementation.HOPS, PatchImplementation.SEAWEED))
+		{
+			assertTrue(type + " responds to compost by yield", CropYieldModel.compostMatters(type));
+		}
+
+		// Diseaseable, so compost protects them — whether or not the rate is published.
+		for (PatchImplementation type : EnumSet.of(PatchImplementation.FLOWER,
+			PatchImplementation.BUSH, PatchImplementation.TREE, PatchImplementation.FRUIT_TREE,
+			PatchImplementation.HARDWOOD_TREE, PatchImplementation.CACTUS,
+			PatchImplementation.MUSHROOM, PatchImplementation.BELLADONNA,
+			PatchImplementation.CELASTRUS, PatchImplementation.CORAL))
+		{
+			assertTrue(type + " can be diseased, so treating it is a real choice",
+				CropYieldModel.compostMatters(type));
+		}
+
+		// And still not everywhere. A compost bin takes buckets and weeds rather than seeds, and
+		// offering to treat one would be nonsense.
+		assertFalse("a compost bin cannot be composted",
+			CropYieldModel.compostMatters(PatchImplementation.COMPOST));
+	}
+
+	/**
+	 * The disease-only note appears exactly where the dropdown will not move the yield.
+	 *
+	 * <p>Asserted as a relationship rather than a list, because the list is now long and the thing
+	 * worth guarding has never been its membership: a note with no dropdown under it is orphaned
+	 * text, and a yield-raising type carrying the note would be telling the player the opposite of
+	 * what the estimate is about to show them.
+	 */
+	@Test
+	public void theDiseaseOnlyNoteAppearsExactlyWhereTheYieldWillNotMove()
+	{
 		for (PatchImplementation type : PatchImplementation.values())
 		{
-			if (CropYieldModel.compostOnlyHelpsDisease(type))
+			if (!CropYieldModel.compostOnlyHelpsDisease(type))
 			{
-				diseaseOnly.add(type);
+				continue;
+			}
+
+			assertTrue(type + " shows the note with no dropdown to sit under",
+				CropYieldModel.compostMatters(type));
+
+			for (com.dooglemaps.data.Seed seed : com.dooglemaps.data.Seed.forPatchType(type))
+			{
+				assertFalse(type + " says compost only helps disease, but " + seed
+						+ " raises its yield too",
+					CropYieldModel.respondsToCompost(seed));
 			}
 		}
 
-		assertEquals(EnumSet.of(PatchImplementation.FRUIT_TREE, PatchImplementation.TREE,
-			PatchImplementation.CORAL), diseaseOnly);
-
-		for (PatchImplementation type : diseaseOnly)
-		{
-			assertTrue("a note without a dropdown to sit under", CropYieldModel.compostMatters(type));
-		}
+		assertTrue("a flower is the case this was widened for",
+			CropYieldModel.compostOnlyHelpsDisease(PatchImplementation.FLOWER));
+		assertFalse("a herb's compost is bought for the yield, so the note would be wrong",
+			CropYieldModel.compostOnlyHelpsDisease(PatchImplementation.HERB));
 	}
 
 	/**
@@ -230,13 +301,30 @@ public class RunOptionCoverageTest
 		CompostSelectionStore store = ctor.newInstance(
 			Mockito.mock(net.runelite.client.config.ConfigManager.class), new com.google.gson.Gson());
 
+		// Derived rather than named. This used to use a bush as the no-dropdown example, and a
+		// bush has one now that the rule is "can it be diseased" — so the test failed for a
+		// reason that had nothing to do with the invariant it exists to protect. The invariant is
+		// about the *relationship* between the two, and it should not have to be revisited every
+		// time the set moves.
+		PatchImplementation withoutDropdown = null;
+		for (PatchImplementation type : PatchImplementation.values())
+		{
+			if (!CropYieldModel.compostMatters(type))
+			{
+				withoutDropdown = type;
+				break;
+			}
+		}
+		assertNotNull("no type lacks a compost dropdown, so this can no longer be tested",
+			withoutDropdown);
+
 		store.set(PatchImplementation.TREE, com.dooglemaps.data.CompostTier.ULTRACOMPOST);
-		store.set(PatchImplementation.BUSH, com.dooglemaps.data.CompostTier.ULTRACOMPOST);
+		store.set(withoutDropdown, com.dooglemaps.data.CompostTier.ULTRACOMPOST);
 
 		assertEquals("a tree's compost buys disease protection and must reach the estimate",
 			com.dooglemaps.data.CompostTier.ULTRACOMPOST, store.get(PatchImplementation.TREE));
-		assertEquals("a bush has no dropdown, so a stored tier must not be assumed",
-			com.dooglemaps.data.CompostTier.NONE, store.get(PatchImplementation.BUSH));
+		assertEquals(withoutDropdown + " has no dropdown, so a stored tier must not be assumed",
+			com.dooglemaps.data.CompostTier.NONE, store.get(withoutDropdown));
 	}
 
 	/**

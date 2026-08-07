@@ -82,7 +82,7 @@ public class RunPlanner
 	 *
 	 * <p>A one-way edge, like everything else this class calls: {@code ToolNeeds} holds no
 	 * reference back here and reads only leaf stores, so it cannot take the locks in the other
-	 * order. See {@code NOTES.md} on lock ordering.
+	 * order. See {@code docs/NOTES.md} on lock ordering.
 	 */
 	private final ToolNeeds tools;
 
@@ -98,12 +98,55 @@ public class RunPlanner
 	/** Stops still to do, keyed by region id so a patch can be found quickly. */
 	private final Map<Integer, RunStop> stops = new LinkedHashMap<>();
 
-	@Getter
-	private boolean active;
+	/**
+	 * Regions whose stop has already been reported finished.
+	 *
+	 * <p>Completion is derived from patch state, so it stays true once reached — this is what turns
+	 * that level into an edge, so the router is asked for a new route once rather than on every
+	 * subsequent change. Cleared with the run. See {@link #onPatchChanged}.
+	 */
+	private final Set<Integer> announced = new java.util.HashSet<>();
 
-	/** True while the run is still routing to a bank rather than to patches. */
+	/**
+	 * Patch keys the guide has nothing to offer for, so the run stops waiting on them.
+	 *
+	 * <h2>Why the guide is asked rather than worked out here</h2>
+	 *
+	 * A patch can be genuinely actionable and still impossible to act on: an empty patch always
+	 * wants planting, but not if the allocation gave it no seed; a dead crop always wants clearing,
+	 * but not without an axe. Those left the run waiting for something the player could never do.
+	 *
+	 * <p>Answering it here would mean rebuilding the seed allocation — including the protection
+	 * budget it is capped by, which needs the bank and the pack — and then hoping the answer
+	 * matched the guide's. Two independent allocations that must agree is exactly the arrangement
+	 * {@code SeedAllocation} was written to end. The guide already computes the real one and the
+	 * real step list, so it is asked instead, and it reports the whole set fresh each tick: nothing
+	 * here can go stale, because nothing here is remembered longer than a tick.
+	 *
+	 * <p>The dependency runs guide → planner, which is the direction it already ran.
+	 */
+	private volatile Set<String> nothingToDo = Collections.emptySet();
+
+	/**
+	 * Whether a run is under way.
+	 *
+	 * <p>Volatile, and that is not decoration. It is written under this class's monitor and read
+	 * through a Lombok getter, which is not synchronised — so without this there is no
+	 * happens-before edge between the write and the read at all. The writer is usually the Swing
+	 * thread (the Start/Stop button) and the readers are usually the client thread: the bank
+	 * filter, the bank highlight overlay and the guide tracker all ask every tick. A missed write
+	 * leaves the overlay drawing for a run that has stopped, intermittently and unreproducibly.
+	 *
+	 * <p>{@code volatile} rather than a synchronised getter because nothing needs this consistent
+	 * with {@link #atBankLeg} or with {@link #stops} — every reader wants one flag. See
+	 * {@code ShortestPathIntegration}, which does the same for the same reason.
+	 */
 	@Getter
-	private boolean atBankLeg;
+	private volatile boolean active;
+
+	/** True while the run is still routing to a bank rather than to patches. Volatile; see {@link #active}. */
+	@Getter
+	private volatile boolean atBankLeg;
 
 	/** Patch types this run covers, for scoping which seeds it actually needs. */
 	private final Set<PatchImplementation> runTypes = EnumSet.noneOf(PatchImplementation.class);
@@ -117,13 +160,41 @@ public class RunPlanner
 	 */
 	private boolean supplyOwed;
 
+	/**
+	 * The supply sources the current route was drawn for, or null when not collecting.
+	 *
+	 * <p>The leg visits two containers now, and empties them one at a time. Emptying one changes
+	 * where the run still has to go, and the route is posted rather than polled — so without
+	 * noticing the change, the line keeps pointing at a vault whose seeds are already in the pack.
+	 */
+	@Nullable
+	private Set<SeedSource> postedSources;
+
+	/**
+	 * The withdraw list, for deciding when the supply leg is finished.
+	 *
+	 * <h2>Why a Provider</h2>
+	 *
+	 * {@code RunLoadout} is built from this planner — it asks {@link #actionableByGroup} which
+	 * patches the run will service — so injecting it directly here is a cycle Guice will not
+	 * construct. A {@code Provider} breaks it by deferring the lookup to first use, by which time
+	 * both objects exist.
+	 *
+	 * <p>Only ever dereferenced with this planner's lock released. The loadout calls back into the
+	 * synchronised methods above, and the standing rule here is that nothing outside this class is
+	 * called while holding the monitor.
+	 */
+	private final javax.inject.Provider<com.dooglemaps.bank.RunLoadout> loadout;
+
 	@Inject
 	private RunPlanner(AvailabilityProfile availability, PatchLocationStore locations,
 		BankLocationStore banks, SeedSelectionStore selection, SeedInventoryStore seedInventory,
 		PatchStateStore stateStore, GrowthTimer growthTimer, ShortestPathIntegration router,
 		PlayerLocation playerLocation, ToolNeeds tools, ProtectedPatches protectedPatches,
-		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions)
+		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions,
+		javax.inject.Provider<com.dooglemaps.bank.RunLoadout> loadout)
 	{
+		this.loadout = loadout;
 		this.runOptions = runOptions;
 		this.protection = protection;
 		this.groups = groups;
@@ -153,6 +224,7 @@ public class RunPlanner
 		synchronized (this)
 		{
 			stops.clear();
+			announced.clear();
 			stops.putAll(planStops(types));
 			runTypes.clear();
 			runTypes.addAll(types);
@@ -231,7 +303,7 @@ public class RunPlanner
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (!isActionable(patch))
+				if (!inTheRun(patch) || !isActionable(patch))
 				{
 					continue;
 				}
@@ -246,6 +318,49 @@ public class RunPlanner
 			planned.put(region.getRegionId(), new RunStop(region, patches));
 		}
 		return planned;
+	}
+
+	/**
+	 * Whether the player actually asked for this patch, as opposed to its patch type.
+	 *
+	 * <h2>Run options are per group; stop planning was per type</h2>
+	 *
+	 * Every box on the run panel is a {@link PlantingGroup} — "Herb", "Herb (protected)", "Cactus
+	 * (contract)" — but a run is carried around as a set of {@link PatchImplementation}, because
+	 * that is what the availability profile is keyed by. The two are not interchangeable, and
+	 * collapsing one into the other is how a single tick came to mean far more than it said.
+	 *
+	 * <p>A farming contract is the case that makes it obvious. Its option is stored as
+	 * {@code TREE#contract}, {@code RunTypeStore.typeOf} strips everything from the {@code #} so the
+	 * run covers {@code TREE}, and stop planning then swept in <b>every tree patch on the account</b>
+	 * — the guild's contract patch and five others nobody asked about. Reported from play as an
+	 * eighteen-stop run that should have been twelve: two yew saplings to withdraw instead of one,
+	 * twenty-five coconuts to protect a magic tree in another kingdom, and ten cactus spines for the
+	 * yew, none of which the player had ticked anything to ask for.
+	 *
+	 * <p>That type-stripping is not itself wrong — it is what stops a contract-only run from
+	 * covering nothing at all, and its own javadoc explains why. The type is the right answer to
+	 * "which patches might this run touch"; it is the wrong answer to "which patches does it want",
+	 * and only this asks the second question.
+	 *
+	 * <h2>Deliberately not folded into {@link #isActionable}</h2>
+	 *
+	 * They look like the same filter and are not. {@code isActionable} asks whether a patch wants
+	 * something doing, which is a fact about the patch; this asks whether the run was asked to go
+	 * there, which is a fact about the player. {@code isComplete} walks a stop's patches through
+	 * {@code isActionable} to decide the stop is finished — so a patch failing <i>this</i> test
+	 * would read as needing nothing, and a contract patch adopted mid-run by {@link #reviewContract}
+	 * would let its stop finish without the contract being done.
+	 */
+	private boolean inTheRun(FarmPatch patch)
+	{
+		PlantingGroup group = groups.groupFor(patch);
+		if (group == null)
+		{
+			return true;
+		}
+		return runOptions.isSelected(com.dooglemaps.data.RunOption.full(group))
+			|| runOptions.isSelected(com.dooglemaps.data.RunOption.harvestOnly(group));
 	}
 
 	/**
@@ -271,7 +386,10 @@ public class RunPlanner
 			int actionable = 0;
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (isActionable(patch))
+				// Same pair of questions planStops asks, and for the same reason: this prices the
+				// run the panel offers, so counting patches the run will not visit would quote a
+				// trip nobody asked for. See inTheRun.
+				if (inTheRun(patch) && isActionable(patch))
 				{
 					actionable++;
 				}
@@ -315,7 +433,7 @@ public class RunPlanner
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (!isActionable(patch))
+				if (!inTheRun(patch) || !isActionable(patch))
 				{
 					continue;
 				}
@@ -376,8 +494,14 @@ public class RunPlanner
 	 * pays, which is most people growing anything expensive. The choice is per planting group;
 	 * see {@code ProtectionSelectionStore}.
 	 */
-	public synchronized RunEstimate.Survival survivalAcross(Set<PatchImplementation> types)
+	public RunEstimate.Survival survivalAcross(Set<PatchImplementation> types)
 	{
+		// Not synchronised, and it used to be — over nothing. The body constructs a closure and
+		// returns; the traversal happens later, from RunEstimate, on whatever thread calls it. So
+		// the keyword covered the allocation and left the store walk unguarded, which is the exact
+		// opposite of what it read as. Worse for the next person than for the machine: this class
+		// documents a lock ordering, and a method that looks compliant and is not is how that
+		// ordering gets quietly broken.
 		return (seed, compost) ->
 		{
 			if (seed == null || !types.contains(seed.getPatchType()))
@@ -403,26 +527,34 @@ public class RunPlanner
 	 * <p>Each group is already priced separately, against its own seeds and its own compost, so
 	 * its survival belongs on the same footing.
 	 */
-	public synchronized RunEstimate.Survival survivalIn(PlantingGroup group)
+	public RunEstimate.Survival survivalIn(PlantingGroup group)
 	{
-		return (seed, compost) ->
+		if (group == null)
 		{
-			if (seed == null || group == null || seed.getPatchType() != group.getType())
-			{
-				return 1;
-			}
+			return (seed, compost) -> 1;
+		}
 
-			List<FarmPatch> patches = new ArrayList<>();
-			for (FarmPatch patch : availability.getAvailablePatches(group.getType()))
+		// The patch list is resolved <b>now</b> rather than inside the lambda, and that is a
+		// correctness fix rather than a tidy-up. The estimate invokes the returned function later,
+		// from another thread, so a lazily-read list could be a different set of patches from the
+		// counts priced beside it — the group discounted for a disease risk averaged over patches
+		// the count never included.
+		//
+		// It also removes the `synchronized` this method used to carry, which guarded the lambda's
+		// construction and nothing else. See survivalAcross.
+		List<FarmPatch> patches = new ArrayList<>();
+		for (FarmPatch patch : availability.getAvailablePatches(group.getType()))
+		{
+			PlantingGroup patchGroup = groups.groupFor(patch);
+			if (patchGroup != null && patchGroup.equals(group))
 			{
-				PlantingGroup patchGroup = groups.groupFor(patch);
-				if (patchGroup != null && patchGroup.equals(group))
-				{
-					patches.add(patch);
-				}
+				patches.add(patch);
 			}
-			return survivalOver(patches, seed, compost);
-		};
+		}
+
+		return (seed, compost) -> seed == null || seed.getPatchType() != group.getType()
+			? 1
+			: survivalOver(patches, seed, compost);
 	}
 
 	/**
@@ -456,6 +588,61 @@ public class RunPlanner
 		return counted == 0 ? 1 : total / counted;
 	}
 
+	/**
+	 * Whether a stop still wants anything doing.
+	 *
+	 * <h2>Derived, not counted, and that is the whole fix</h2>
+	 *
+	 * A stop is finished exactly when none of its patches is still actionable — which is the same
+	 * test {@code planStops} used to decide the stop existed. So a stop ends precisely when it
+	 * would no longer be created, and the two cannot disagree.
+	 *
+	 * <p>What this replaces was {@code RunStop.isComplete}, a count of patches the capture layer
+	 * had watched turn into a growing crop. That made completion depend on the player planting
+	 * every patch, and stranded the run whenever they could not: a harvest-only stop plants nothing
+	 * ever, a patch with no seed allocated has nothing to click, a dead crop with no axe cannot be
+	 * cleared, and a patch that turns out to want nothing was never going to change state at all.
+	 * The run then sat with no route and no instruction, because {@link #retarget()} clears the
+	 * router while there is work in the region you are standing in.
+	 *
+	 * <p>It is also the principle {@code GuidePlan} already states for itself — <i>"a pure function
+	 * of the patch's current state, no progress counter"</i>. The step list was derived and the
+	 * stop list was counted, and only the counted half could get stuck.
+	 *
+	 * <p>Called with the planner's monitor held in some paths and not others; it reads only the
+	 * availability and patch stores, so it takes no lock of this class's own. See the ordering note
+	 * at the top of the file.
+	 */
+	private boolean isComplete(RunStop stop)
+	{
+		Set<String> blocked = nothingToDo;
+		for (FarmPatch patch : stop.getPatches())
+		{
+			// Actionable *and* actually doable. A patch the guide has no step for is one the
+			// player cannot act on however long they stand there, so waiting on it is waiting
+			// forever. See nothingToDo.
+			if (isActionable(patch) && !blocked.contains(patch.getKey()))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Told which patches the guide currently has no step for.
+	 *
+	 * <p>Replaced wholesale each tick rather than added to, so a patch that becomes doable again —
+	 * you withdraw the seed you were missing, or fetch an axe — starts blocking completion again on
+	 * the very next tick. Accumulating would have meant a patch skipped once staying skipped.
+	 */
+	public void setNothingToDo(Set<String> patchKeys)
+	{
+		nothingToDo = patchKeys == null || patchKeys.isEmpty()
+			? Collections.emptySet()
+			: Collections.unmodifiableSet(new LinkedHashSet<>(patchKeys));
+	}
+
 	private boolean isActionable(FarmPatch patch)
 	{
 		PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
@@ -465,13 +652,18 @@ public class RunPlanner
 			return true;
 		}
 
-		// Harvest-only: ripe counts and nothing else does. An empty bush patch is not a reason to
-		// travel when the player has said they are not replanting, and a *grown* one is precisely
-		// what they came for — so this narrows the trip rather than merely changing what happens
-		// once you arrive.
+		// Harvest-only: something to pick counts and nothing else does. An empty bush patch is not a
+		// reason to travel when the player has said they are not replanting, and a laden one is
+		// precisely what they came for — so this narrows the trip rather than merely changing what
+		// happens once you arrive.
+		//
+		// hasProduceToPick, not the raw HARVESTABLE state. A picked-clean bush is still
+		// "harvestable" — grown, with a stock of zero — so this stayed true after the player had
+		// stripped it, the stop never stopped being actionable, and a harvest-only run could not
+		// finish a stop at all. See PatchProjection.hasProduceToPick.
 		if (runOptions.isHarvestOnly(groups.groupFor(patch)))
 		{
-			return projection.isReady() || projection.getCropState() == CropState.HARVESTABLE;
+			return projection.hasProduceToPick();
 		}
 
 		// Finished growing counts, even while the varbit still says GROWING. A tree that is fully
@@ -483,6 +675,18 @@ public class RunPlanner
 		// using it here makes the run agree with what the panel above it already says.
 		if (projection.isReady())
 		{
+			// One exception, and it is narrow on purpose: a regrowing crop that has been checked
+			// and stripped is finished with. The fruit comes back on its own, digging up a healthy
+			// tree is the last thing anyone wants, and leaving it "actionable" meant the stop it
+			// sits in could never complete.
+			//
+			// Narrowed to HARVESTABLE deliberately. A fruit tree that has finished growing but not
+			// been health-checked also regrows and also has no fruit — and it very much does want
+			// something doing, which is the check itself.
+			if (projection.regrows() && projection.getCropState() == CropState.HARVESTABLE)
+			{
+				return projection.hasProduceToPick();
+			}
 			return true;
 		}
 
@@ -527,7 +731,64 @@ public class RunPlanner
 			// work is handled separately, by starting the run where you are.
 			return true;
 		}
-		return !getSupplySources().isEmpty();
+		if (!getSupplySources().isEmpty())
+		{
+			return true;
+		}
+		// The rest of the list: the axe, the protection payments, the compost. Opening at a bank
+		// for those is the same decision as staying at one until they are collected, and asking
+		// the same question at both ends is what keeps the two from disagreeing — see
+		// suppliesOutstanding. This is the clause that sends a tree contract back for its axe.
+		return loadout.get().anythingLeftToWithdraw(coveredTypes());
+	}
+
+	/**
+	 * Whether anything specific is still waiting to be collected.
+	 *
+	 * <h2>Not the same question as {@link #needsSupplyTrip()}, and the difference is the whole point</h2>
+	 *
+	 * That one decides whether to <b>open</b> at a bank, and it answers yes in a case this must
+	 * answer no: when no seed has been picked for anything the run visits, it sends you to a bank
+	 * on the reasoning that we cannot know what the trip needs and a bank is the useful default.
+	 *
+	 * <p>Sound for opening. Fatal for closing — "we do not know what you need" is not a state any
+	 * amount of banking resolves, so using the same test for both ends left the leg unable to
+	 * finish and the run parked at the bank permanently. {@code RunPlannerTest} caught it, which is
+	 * exactly what those tests are for.
+	 *
+	 * <p>So this is the same test with that clause removed: a tool that exists only in the bank, or
+	 * a seed the run is short of and can actually reach. Both are things a withdrawal makes go
+	 * away.
+	 *
+	 * <p><b>Nothing unobtainable blocks.</b> {@link #getSupplySources()} only reports sources that
+	 * genuinely hold the seed, so one you own none of anywhere is not outstanding — the leg
+	 * completes and the run skips those patches, which {@code LoadoutSummary} says out loud.
+	 *
+	 * <h2>Asked of the withdraw list, which it did not used to be</h2>
+	 *
+	 * This derived its own answer from two of the loadout's inputs — a tool only in the bank, and a
+	 * seed the run is short of — and so was blind to everything the loadout learned to ask for
+	 * afterwards. Three things were on the list and could not close the leg: the axe, the
+	 * protection payment, and a contract's own seed. All three were reported from play as arriving
+	 * at a patch unable to do anything there.
+	 *
+	 * <p>{@code RunLoadout.anythingLeftToWithdraw} is the same question asked once, of the list the
+	 * player is actually reading. The two clauses below are kept in front of it rather than
+	 * deleted: they hold before a bank has ever been opened, where the loadout can only answer
+	 * {@code UNKNOWN}, and they are the pair every existing test pins.
+	 */
+	private boolean suppliesOutstanding()
+	{
+		if (tools.anyOnlyInBank(runTypesSnapshot()))
+		{
+			return true;
+		}
+		if (!getSupplySources().isEmpty())
+		{
+			return true;
+		}
+		// Outside the lock, like everything else on this path: it calls back into actionableByGroup.
+		return loadout.get().anythingLeftToWithdraw(coveredTypes());
 	}
 
 	/** Each tool the run wants and where it is, for the {@code Run planned:} line. */
@@ -542,6 +803,41 @@ public class RunPlanner
 	}
 
 	/** The run's patch types, copied under the lock so callers can walk them without it. */
+	/**
+	 * The patch types this run actually covers.
+	 *
+	 * <h2>Why asking {@code RunTypeStore} directly is not the same question</h2>
+	 *
+	 * That store holds the boxes the player ticked, and for most of a run the two agree. They stop
+	 * agreeing the moment a farming contract is taken mid-run: {@link #reviewContract} adds the
+	 * contract's type to the live run, because the guild's patch for it has to be serviced whether
+	 * or not the player ticked that type — and nothing told the store, which is right, since it is
+	 * a record of a choice and the player did not make one.
+	 *
+	 * <p>So everything scoped to "what does this run need" has to ask the run, not the boxes.
+	 * Reported from play: a yew contract accepted on a herb run left the withdraw list naming only
+	 * teleports while the seed vault was outlined for a sapling the list had never heard of — the
+	 * highlight was scoped to the run and the list to the boxes.
+	 *
+	 * <p>Falls back to the ticked types when nothing is running, because the panel prices up runs
+	 * that have not been started and that is the only set there is then.
+	 */
+	public Set<PatchImplementation> coveredTypes()
+	{
+		synchronized (this)
+		{
+			if (active && !runTypes.isEmpty())
+			{
+				Set<PatchImplementation> copy = EnumSet.noneOf(PatchImplementation.class);
+				copy.addAll(runTypes);
+				return copy;
+			}
+		}
+
+		// Outside the lock: RunPlanner -> RunTypeStore, the order everything else here takes them in.
+		return runOptions.getSelected();
+	}
+
 	private Set<PatchImplementation> runTypesSnapshot()
 	{
 		synchronized (this)
@@ -562,15 +858,34 @@ public class RunPlanner
 	 *
 	 * <p>Also skips a type with no actionable patch. Owning no seed for a patch that is not
 	 * going to be planted is not a problem to solve.
+	 *
+	 * <h2>By planting group, which it did not used to be</h2>
+	 *
+	 * This asked {@code selection.getSelectedFor(PatchImplementation)} for each type in the run,
+	 * and that overload cannot answer for a contract. A contract's seed is <b>derived</b> —
+	 * {@code SeedSelectionStore.contractSelection()} reads it off the assignment — and is
+	 * deliberately never written into the flat set of picks, because nobody picked it. Filtering
+	 * that flat set by patch type therefore returns every seed except the one the contract needs.
+	 *
+	 * <p>{@code RunLoadout.addSeeds} has always resolved by <i>group</i> and so has always seen it.
+	 * The two disagreeing is what put a yew on the withdraw list while every routing decision here
+	 * — where to send the supply leg, whether the vault is owed, whether the shopping is finished —
+	 * was made as though no yew existed. The run could and did leave the bank without it.
+	 *
+	 * <p>The same overload was wrong a second way in the same case. A contract adds its patch type
+	 * to the run ({@link #reviewContract}), so asking by type pulled in <b>every tree seed ever
+	 * ticked</b> for a run whose only tree patch is the contract's — a magic sapling selected
+	 * months ago became a thing this trip had to go and fetch. Groups do not have that problem:
+	 * the guild's tree patch belongs to the contract group and to nothing else.
+	 *
+	 * <p>So this now walks {@link #actionableByGroup} and asks per group, which is precisely what
+	 * the loadout does. Sharing the shape rather than the code is deliberate — the two need
+	 * different quantities, one patch's worth against the whole run's — but the set of seeds is
+	 * one question and there is now one way of asking it.
 	 */
 	private Set<Seed> selectedForThisRun()
 	{
-		Set<PatchImplementation> types;
-		synchronized (this)
-		{
-			types = EnumSet.noneOf(PatchImplementation.class);
-			types.addAll(runTypes);
-		}
+		Set<PatchImplementation> types = runTypesSnapshot();
 
 		if (types.isEmpty())
 		{
@@ -580,17 +895,41 @@ public class RunPlanner
 			return selection.getSelected();
 		}
 
-		Map<PatchImplementation, Integer> actionable = countActionable(types);
-
 		Set<Seed> wanted = new LinkedHashSet<>();
-		for (PatchImplementation type : types)
+		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionableByGroup(types).entrySet())
 		{
-			if (actionable.getOrDefault(type, 0) > 0)
+			if (entry.getValue().isEmpty() || plantsNothing(entry.getKey()))
 			{
-				wanted.addAll(selection.getSelectedFor(type));
+				continue;
 			}
+			wanted.addAll(selection.getSelectedFor(entry.getKey()));
 		}
 		return wanted;
+	}
+
+	/**
+	 * Whether this group is being visited without anything going in the ground.
+	 *
+	 * <p>The same two cases {@code RunLoadout.plantsNothing} covers, and it has to be the same two
+	 * or the run banks for one plan and plants another. An actionable patch is not a patch about to
+	 * be sown: a harvest-only group is deliberately being left standing, and a contract whose crop
+	 * has finished growing wants handing in, not replanting — what goes in it next is decided by
+	 * whichever contract Jane gives out afterwards, which nobody knows yet.
+	 *
+	 * <p>Called with the lock released; {@link #ripeProduceIn} takes it for itself.
+	 */
+	private boolean plantsNothing(PlantingGroup group)
+	{
+		if (runOptions.isHarvestOnly(group))
+		{
+			return true;
+		}
+		if (!group.isContract())
+		{
+			return false;
+		}
+		Produce contract = groups.contractCrop();
+		return contract != null && ripeProduceIn(group).containsKey(contract);
 	}
 
 	/** Stop regions, for the diagnostic. */
@@ -637,7 +976,7 @@ public class RunPlanner
 		synchronized (this)
 		{
 			RunStop here = stops.get(region);
-			return here != null && !here.isComplete();
+			return here != null && !isComplete(here);
 		}
 	}
 
@@ -736,23 +1075,76 @@ public class RunPlanner
 	 */
 	private Set<WorldPoint> getSupplyTargets()
 	{
-		Set<SeedSource> sources = getSupplySources();
-
-		if (sources.contains(SeedSource.SEED_VAULT))
-		{
-			return new LinkedHashSet<>(Collections.singletonList(banks.getSeedVault()));
-		}
-
-		// Every bank the account can use; the router knows which is genuinely nearest.
-		return new LinkedHashSet<>(banks.getUsableBanks());
+		return supplyTargetsFor(getSupplySources());
 	}
 
 	/**
-	 * Marks the bank leg done, so routing moves on to the patches.
+	 * Everywhere the supply leg still has to visit.
 	 *
-	 * <p>Driven by the player actually reaching a bank rather than by us guessing when they
-	 * have everything: what a trip needs depends on a loadout that does not exist yet, and
-	 * pretending otherwise would strand the run at the bank.
+	 * <h2>Both, when the trip needs both</h2>
+	 *
+	 * This used to return the vault <i>instead of</i> the banks whenever a single seed lived there,
+	 * collapsing a two-container errand into one. The rest of the plugin never agreed to that: the
+	 * loadout lists the two separately because they are separate jobs, and the leg does not end
+	 * until <b>both</b> are empty. So the route pointed at the vault while the withdraw list read
+	 * "From the bank: yew, yew, rune pouch, book of the dead", and the player was left to work out
+	 * which of the two the plugin meant. Reported from play.
+	 *
+	 * <p>Handing over both lets the router do what it does everywhere else here — pick whichever is
+	 * cheapest to reach, then be asked again once that one is done. Neither is imposed first, which
+	 * is the same "either order" the summary and the highlight already promise.
+	 *
+	 * <p>Banks are the answer to an empty set as well as to {@code BANK}. Empty means nothing needs
+	 * <i>seeds</i>, which is not the same as nothing needing collecting — a tool that exists only in
+	 * the bank puts the run on this leg with no seed source at all, and the vault holds nothing but
+	 * seeds.
+	 */
+	private Set<WorldPoint> supplyTargetsFor(Set<SeedSource> sources)
+	{
+		Set<WorldPoint> targets = new LinkedHashSet<>();
+
+		if (sources.contains(SeedSource.SEED_VAULT))
+		{
+			targets.add(banks.getSeedVault());
+		}
+		if (sources.contains(SeedSource.BANK) || sources.isEmpty())
+		{
+			// Every bank the account can use; the router knows which is genuinely nearest.
+			targets.addAll(banks.getUsableBanks());
+		}
+		return targets;
+	}
+
+	/**
+	 * Ends the supply leg once there is nothing left to collect.
+	 *
+	 * <h2>Reaching a bank is not the same as having been to one</h2>
+	 *
+	 * This used to fire on the first bank container event and end the leg outright — so
+	 * <i>opening</i> a bank finished the shopping, whether or not anything came out of it. Two
+	 * things followed, and the second is the one that was reported:
+	 *
+	 * <ul>
+	 *   <li>Open a bank, withdraw nothing, and the run moved on to the patches regardless.</li>
+	 *   <li>With seeds in the <b>seed vault</b>, opening the guild's bank chest for the payments
+	 *       ended the leg — and the vault, three steps away, never got its turn. The run then
+	 *       arrived at the patches with no seed for them.</li>
+	 * </ul>
+	 *
+	 * <p>So the condition is now the one that was always meant: <b>is anything still outstanding
+	 * that we can actually go and get</b>. That is the same question {@link #needsSupplyTrip()}
+	 * answers to decide whether to open at a bank in the first place, which is what makes the two
+	 * ends of the leg agree.
+	 *
+	 * <p><b>An item you own none of does not block.</b> {@code getSupplySources} only counts seeds
+	 * that are somewhere reachable, so a seed you have none of anywhere is not a supply source and
+	 * the leg completes without it — the run goes ahead and skips those patches, which is what
+	 * {@code LoadoutSummary} says out loud rather than leaving you to discover on arrival. Waiting
+	 * at a bank for something that cannot be withdrawn would be a run that never starts.
+	 *
+	 * <p>Safe to call often, and called from the tick as well as from the bank capture: it costs a
+	 * flag check unless a supply leg is actually in progress. Being driven by the tick is what lets
+	 * the <i>vault</i> finish the leg too, since nothing about the vault fires a bank event.
 	 */
 	public void leaveBank()
 	{
@@ -762,10 +1154,56 @@ public class RunPlanner
 			{
 				return;
 			}
+		}
+
+		// Asked with the lock released: it walks the tool store, the seed selection and the
+		// availability profile, and the ordering rule is RunPlanner -> Availability -> everything
+		// else. Re-checked under the lock below rather than trusted, since the answer is computed
+		// outside it.
+		if (suppliesOutstanding())
+		{
+			// Still collecting, but possibly not from the same places. Emptying the vault leaves
+			// the bank outstanding and vice versa, and each is a separate errand that the route
+			// has to follow as it is finished.
+			followSupplyProgress();
+			return;
+		}
+
+		synchronized (this)
+		{
+			if (!atBankLeg)
+			{
+				return;
+			}
 			atBankLeg = false;
 			supplyOwed = false;
+			postedSources = null;
 		}
-		log.debug("Leaving the bank; routing to patches");
+		log.debug("Supplies collected; routing to patches");
+		retarget();
+	}
+
+	/**
+	 * Redraws the supply route when one of its containers has been emptied.
+	 *
+	 * <p>Only on a change, so the tick this is called from costs a set comparison rather than a
+	 * cross-thread route post. Asked outside the lock, like every other question that walks the
+	 * seed stores.
+	 */
+	private void followSupplyProgress()
+	{
+		Set<SeedSource> now = getSupplySources();
+
+		synchronized (this)
+		{
+			if (!atBankLeg || now.equals(postedSources))
+			{
+				return;
+			}
+			postedSources = now;
+		}
+
+		log.debug("Supply sources narrowed to {}; redrawing", now);
 		retarget();
 	}
 
@@ -779,6 +1217,7 @@ public class RunPlanner
 		synchronized (this)
 		{
 			stops.clear();
+			announced.clear();
 			runTypes.clear();
 			active = false;
 			atBankLeg = false;
@@ -800,7 +1239,7 @@ public class RunPlanner
 		List<RunStop> remaining = new ArrayList<>();
 		for (RunStop stop : stops.values())
 		{
-			if (!stop.isComplete())
+			if (!isComplete(stop))
 			{
 				remaining.add(stop);
 			}
@@ -809,14 +1248,221 @@ public class RunPlanner
 	}
 
 	/**
-	 * Records that a patch has been dealt with, advancing the run.
+	 * Re-checks whether any stop has quietly finished, without waiting to be told.
 	 *
-	 * <p>Driven by the same capture that fills the overview: when a patch's state changes
-	 * to freshly planted, that stop is done with it.
+	 * <h2>Because the event is not guaranteed to arrive</h2>
 	 *
-	 * @return true if this completed a stop
+	 * {@link #onPatchChanged} is the fast path and covers the ordinary case, but it can only fire
+	 * on a varbit <i>transition</i> the tracker actually witnesses — and there are stops that
+	 * finish without one. The plain case is a patch this session has never seen: it is included in
+	 * the run optimistically, on the reasoning that it may well be empty, and when you arrive the
+	 * first varbit read has no previous value to differ from. If that patch is the only one at the
+	 * stop, nothing ever reports a change and the run waits forever for news that is not coming.
+	 *
+	 * <p>Polling once a tick removes the whole class of problem rather than the instance of it.
+	 * Completion is derived from patch state now, so asking again is cheap and always correct —
+	 * there is no counter to get out of step, which is the entire reason the derived form was
+	 * worth the change.
+	 *
+	 * <p>Costs one flag check per tick unless a run is under way, and a walk of the outstanding
+	 * stops when one is. Called from the plugin's tick beside {@link #leaveBank()}.
 	 */
-	public boolean markServiced(FarmPatch patch)
+	/**
+	 * Pulls a contract's patch into the run, for one that was taken after the run was planned.
+	 *
+	 * <h2>Why the stop cannot simply have been planned with it</h2>
+	 *
+	 * The contract chain happens <i>inside</i> the Farming Guild stop: hand the finished one in,
+	 * take the next, plant it before you leave. Which crop Jane names is not knowable until she
+	 * names it — so at planning time there is no way to include the patch it wants, and by the time
+	 * there is, {@link #planStops} has already run and the stop's list is fixed.
+	 *
+	 * <p>Everything downstream keys off that list. {@code GuideTracker.contractNote} checks whether
+	 * the contract's patch is in the stop you are standing in and, finding it absent, said the run
+	 * could not deal with the contract at all — "the patch it wants is not free, it will be picked
+	 * up on the next run". Reported from play as a yew contract written off for the week, with a
+	 * grown tree standing in the patch that only needed checking and clearing.
+	 *
+	 * <p>Adds a stop outright when the run has none in the guild, because a contract is the one
+	 * thing that can create work in a region the player never selected: it can only be done there.
+	 *
+	 * <p>Polled beside {@link #reviewProgress}, and for the same reason — a contract is taken
+	 * through a dialogue, and there is no event here worth trusting to catch every one.
+	 */
+	public void reviewContract()
+	{
+		// Unlike reviewProgress, this runs during the supply leg too. The guild holds a bank and the
+		// seed vault as well as Jane, so a contract can perfectly well be taken while the run is
+		// still collecting — and adopting the patch early costs nothing, since it only makes the
+		// stop aware of work it will reach later.
+		if (!active)
+		{
+			return;
+		}
+
+		Produce wanted = groups.contractCrop();
+		if (wanted == null)
+		{
+			return;
+		}
+
+		boolean joined = false;
+		synchronized (this)
+		{
+			for (FarmPatch patch : availability.getAvailablePatches(wanted.getPatchImplementation()))
+			{
+				if (!groups.groupFor(patch).isContract() || !isActionable(patch))
+				{
+					continue;
+				}
+
+				int regionId = patch.getRegion().getRegionId();
+				RunStop stop = stops.get(regionId);
+				if (stop == null)
+				{
+					stops.put(regionId, new RunStop(patch.getRegion(),
+						java.util.Collections.singletonList(patch)));
+					log.debug("Contract added a stop at {}", patch.getRegion().getName());
+					joined = true;
+					continue;
+				}
+
+				if (!stop.contains(patch))
+				{
+					stop.adopt(patch);
+					// It has work again, so a completion announced before the contract arrived must
+					// not keep the stop from being routed to.
+					announced.remove(regionId);
+					log.debug("Contract patch {} joined the {} stop",
+						patch.getDisplayName(), stop.getName());
+					joined = true;
+				}
+			}
+
+			// The run now covers a patch type it was never planned for, and everything that decides
+			// what to carry is scoped to this set: which seeds count as "for this run", and which
+			// tools. Without it the contract's own seed is not in the loadout and neither is the axe
+			// its tree needs.
+			if (joined)
+			{
+				joined = runTypes.add(wanted.getPatchImplementation());
+			}
+		}
+
+		if (joined)
+		{
+			collectForTheContract();
+		}
+	}
+
+	/**
+	 * Sends the run back for whatever a mid-run contract has just made it need.
+	 *
+	 * <h2>Why the supply leg cannot simply have covered it</h2>
+	 *
+	 * The bank trip happens at the start, and a contract taken from Jane an hour later can want
+	 * things nothing on that trip had any reason to bring: its seed, and — for a tree, bush or
+	 * hardwood contract on a run that was never going to visit one — an axe. Reported from play as
+	 * being told to check a magic tree with no axe and no sapling in the pack.
+	 *
+	 * <p>Asks the same two questions {@link #start} asks, for the same reasons, and honours the same
+	 * rule about not teleporting you off work you are standing on — except that in the Farming Guild
+	 * that rule never bites, because the bank and the seed vault are both a few steps from Jane.
+	 *
+	 * <p>Both questions are asked with the lock released: they walk the availability and patch
+	 * stores, and the order has to stay RunPlanner → Availability → PatchStateStore.
+	 */
+	private void collectForTheContract()
+	{
+		boolean wantsSupplies = needsSupplyTrip();
+		if (!wantsSupplies)
+		{
+			return;
+		}
+
+		// Both read the stores, so they are asked before the lock is taken — see start().
+		boolean canBankHere = supplyPointIsHere();
+		boolean here = standingAtAStop();
+
+		boolean collecting;
+		synchronized (this)
+		{
+			supplyOwed = true;
+			atBankLeg = atBankLeg || !here || canBankHere;
+			collecting = atBankLeg;
+		}
+
+		// Re-posted even when the leg was already running, which is the case that looked broken.
+		//
+		// The route is posted once per leg, and getSupplyTargets is derived from the run's types —
+		// which have just grown. Starting a run at a bank meant atBankLeg was already true, so the
+		// old "only if we are diverting" test skipped the re-post and left the line pointing where
+		// it was aimed before the contract existed, while the seed vault highlight, read fresh
+		// every tick, had already moved. Same value, two ages of it.
+		//
+		// Fires once per contract: reviewContract only calls this when runTypes.add reports the
+		// type is new, so the tick loop cannot turn it into a stream of route requests.
+		if (collecting)
+		{
+			log.info("Contract needs collecting for; routing to a supply point");
+			retarget();
+		}
+	}
+
+	public void reviewProgress()
+	{
+		if (!active || atBankLeg)
+		{
+			return;
+		}
+
+		boolean finishedSomething = false;
+		synchronized (this)
+		{
+			for (RunStop stop : stops.values())
+			{
+				if (isComplete(stop) && announced.add(stop.getRegion().getRegionId()))
+				{
+					log.debug("Stop at {} finished with nothing left to do", stop.getName());
+					finishedSomething = true;
+				}
+			}
+		}
+
+		// Outside the lock, like every other route post. See start().
+		if (finishedSomething)
+		{
+			retarget();
+		}
+	}
+
+	/**
+	 * Told that a patch changed, so the run can see whether that finished a stop.
+	 *
+	 * <h2>"A patch changed", not "a patch was serviced"</h2>
+	 *
+	 * This used to be {@code markServiced}, and both the name and the contract were wrong. The
+	 * caller decided what counted — {@code PatchInteractionTracker} called it only when a varbit
+	 * changed into a growing crop — so a stop finished only if the player planted every patch in
+	 * it. Anything else stranded the run: a harvest-only stop plants nothing at all, a patch with
+	 * no seed has nothing to click, a dead crop with no axe cannot be cleared.
+	 *
+	 * <p>Now the caller reports the <i>event</i> and this decides the <i>meaning</i>, by asking
+	 * {@link #isComplete(RunStop)} whether anything at the stop is still actionable. The tracker no
+	 * longer needs an opinion about what a run considers finished, which is not a question the
+	 * capture layer was ever in a position to answer.
+	 *
+	 * <h2>Announced once</h2>
+	 *
+	 * Completion is derived, so it stays true on every later change and would retarget repeatedly.
+	 * {@link #announced} is what makes the transition an edge rather than a level. It cannot use
+	 * the serviced hint for this: a patch commonly changes twice at one stop — harvest, then plant
+	 * — and the stop becomes complete on the second, so a per-patch guard would swallow exactly the
+	 * change that finished it.
+	 *
+	 * @return true if this change completed a stop
+	 */
+	public boolean onPatchChanged(FarmPatch patch)
 	{
 		boolean completedStop;
 		synchronized (this)
@@ -827,13 +1473,15 @@ public class RunPlanner
 			}
 
 			RunStop stop = stops.get(patch.getRegion().getRegionId());
-			if (stop == null || !stop.contains(patch) || stop.isComplete())
+			if (stop == null || !stop.contains(patch))
 			{
 				return false;
 			}
 
+			// A hint for ordering, not the completion test. See RunStop.isFullyServiced.
 			stop.markServiced(patch);
-			completedStop = stop.isComplete();
+			completedStop = isComplete(stop)
+				&& announced.add(patch.getRegion().getRegionId());
 		}
 
 		// Only when the whole stop is done. Retargeting per patch was wrong twice over: it
@@ -874,8 +1522,16 @@ public class RunPlanner
 	{
 		if (isAtBankLeg())
 		{
+			// Recorded as it is posted, so the leg can tell later whether the answer has moved on
+			// without it — see followSupplyProgress.
+			Set<SeedSource> sources = getSupplySources();
+			synchronized (this)
+			{
+				postedSources = sources;
+			}
+
 			// Bank detours allowed here, and only here: the point of this leg is to collect.
-			router.setTargets(getSupplyTargets(), true);
+			router.setTargets(supplyTargetsFor(sources), true);
 			return;
 		}
 

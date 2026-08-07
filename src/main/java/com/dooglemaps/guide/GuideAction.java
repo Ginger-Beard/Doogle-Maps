@@ -12,13 +12,43 @@ package com.dooglemaps.guide;
  */
 public enum GuideAction
 {
+	/**
+	 * Check a grown crop's health, which is what turns it into something you can pick.
+	 *
+	 * <p>Every tree, bush, cactus, calquat, celastrus and redwood wants this first, and until it
+	 * happens the patch is still {@code GROWING} as far as the game is concerned — so nothing else
+	 * about it is clickable. It is also where the experience is: a magic tree pays over 13,000 for
+	 * this one click and almost nothing for the logs.
+	 *
+	 * <p>Its absence was the reason a finished contract could stop a run dead. The crop was grown,
+	 * the almanac said "ready", and the guide had no action for it — so the patch produced no step,
+	 * nothing was highlighted, and the run moved on to something else entirely.
+	 */
+	CHECK_HEALTH("Check health"),
+
 	/** Pick the patch. Repeats until nothing is left on it or the inventory fills. */
 	HARVEST("Harvest"),
+
+	/**
+	 * Chop a checked tree down, which is what a tree's "harvest" actually is.
+	 *
+	 * <p>Split out from {@link #HARVEST} because a tree is not picked and what it leaves behind is
+	 * not an empty patch. Checking the health turns a grown tree into one you can chop; chopping it
+	 * leaves a <b>stump</b>, and the stump has to be dug out before anything else goes in. Three
+	 * clicks, three different tools, and the game gives them three different varbit values.
+	 *
+	 * <p>The plugin had one word for all of it. A checked tree and its stump decode identically —
+	 * same crop, same {@code HARVESTABLE}, same stage — so the guide said <i>"harvest the magic"</i>
+	 * at the tree, said it again at the stump, and went on saying it until the player worked out on
+	 * their own that a spade was wanted. Reported from play on a yew contract that could not start
+	 * because the magic tree in front of it never finished.
+	 */
+	CHOP("Chop it down"),
 
 	/** Trade the crop to the leprechaun so it comes back noted and stops filling the pack. */
 	NOTE_AT_LEPRECHAUN("Note with the leprechaun"),
 
-	/** Clear a dead crop, or the weeds, so the patch can be planted. */
+	/** Clear a dead crop, the weeds, or a felled stump, so the patch can be planted. */
 	CLEAR("Clear the patch"),
 
 	/** Take compost out of the leprechaun's storage. */

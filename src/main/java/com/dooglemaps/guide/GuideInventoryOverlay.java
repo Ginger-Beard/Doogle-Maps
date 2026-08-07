@@ -44,7 +44,8 @@ import net.runelite.client.util.ImageUtil;
 public class GuideInventoryOverlay extends Overlay
 {
 	/** Alpha for the tint over a highlighted item, matching Quest Helper's. */
-	private static final int ITEM_FILL_ALPHA = 65;
+	/** The wash over a marked item. Shared, so the two overlays cannot drift apart. */
+	private static final int ITEM_FILL_ALPHA = ItemHighlight.FILL_ALPHA;
 
 	/** Lighter than an item tint: a leprechaun slot is a big panel, not a 32px square. */
 	private static final int SLOT_FILL_ALPHA = 40;
@@ -125,7 +126,8 @@ public class GuideInventoryOverlay extends Overlay
 		// after the withdrawal was done.
 		if (step.itemIsInStore())
 		{
-			highlightInLeprechaunStore(graphics, step.getItemId(), colour);
+			highlightInLeprechaunStore(graphics, step.getItemId(), colour,
+				step.itemIsOnYourSideOfTheStore());
 		}
 		else
 		{
@@ -254,12 +256,6 @@ public class GuideInventoryOverlay extends Overlay
 	private java.util.List<Widget> scannedRows = new java.util.ArrayList<>();
 	private String scannedRowFor = "";
 	private int scannedRowTick = -1;
-
-	/** Whether a destination menu is open, so the category button can stop competing with it. */
-	private boolean destinationMenuOpen()
-	{
-		return !matchingRows(scannedRowFor).isEmpty();
-	}
 
 	/** The destination a miss was last reported for, so it is said once rather than every frame. */
 	private String loggedUnmatchedFor;
@@ -465,20 +461,24 @@ public class GuideInventoryOverlay extends Overlay
 	 * <p>Without it, telling someone to withdraw ultracompost lit up the leprechaun and then
 	 * left them to find it among a dozen identical-looking buckets.
 	 */
-	private void highlightInLeprechaunStore(Graphics2D graphics, int itemId, Color colour)
+	private void highlightInLeprechaunStore(Graphics2D graphics, int itemId, Color colour,
+		boolean yourSide)
 	{
-		Integer slot = LEPRECHAUN_SLOTS.get(itemId);
-		if (slot == null)
-		{
-			return;
-		}
+		// Whose column to point at, not which layout happens to be up.
+		//
+		// This used to try his pane and fall back to the side one "because only one is ever open",
+		// which is simply not true: opening his store shows his contents in one pane *and* a
+		// second pane over your inventory holding yours. His slot is therefore always present, the
+		// fallback never fired, and a bucket return pointed at the thousand he already has.
+		Integer preferred = (yourSide ? LEPRECHAUN_SIDE_SLOTS : LEPRECHAUN_SLOTS).get(itemId);
+		Integer other = (yourSide ? LEPRECHAUN_SLOTS : LEPRECHAUN_SIDE_SLOTS).get(itemId);
 
-		Widget widget = client.getWidget(slot);
+		Widget widget = preferred == null ? null : client.getWidget(preferred);
 		if (widget == null || widget.isHidden())
 		{
-			// The store has a full-screen form and a sidebar form, and only one is ever open.
-			Integer sideSlot = LEPRECHAUN_SIDE_SLOTS.get(itemId);
-			widget = sideSlot == null ? null : client.getWidget(sideSlot);
+			// Only when the right pane genuinely is not there — a layout we have not seen, rather
+			// than a guess about which is open.
+			widget = other == null ? null : client.getWidget(other);
 		}
 
 		if (widget == null || widget.isHidden())
@@ -502,11 +502,7 @@ public class GuideInventoryOverlay extends Overlay
 	private void drawItemHighlight(Graphics2D graphics, Rectangle bounds, int itemId,
 		int quantity, Color colour)
 	{
-		BufferedImage outline = itemManager.getItemOutline(itemId, quantity, colour);
-		graphics.drawImage(outline, (int) bounds.getX(), (int) bounds.getY(), null);
-		graphics.drawImage(
-			ImageUtil.fillImage(itemManager.getImage(itemId, quantity, false),
-				ColorUtil.colorWithAlpha(colour, ITEM_FILL_ALPHA)),
-			(int) bounds.getX(), (int) bounds.getY(), null);
+		// Shared with the bank overlay; see ItemHighlight for why the two must not diverge.
+		ItemHighlight.draw(graphics, itemManager, bounds, itemId, quantity, colour);
 	}
 }

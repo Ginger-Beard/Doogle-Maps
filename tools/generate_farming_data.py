@@ -1389,7 +1389,7 @@ def parse_crop_xp(path, known_seeds):
                     values[col] = float(raw)
 
             # A single unlabelled figure cannot be placed, so it is left out rather than
-            # guessed at - see the note in TODO.md about fruit trees.
+            # guessed at - see the note in docs/TODO.md about fruit trees.
             if "unlabelled" in values or not values.get("plant"):
                 skipped.append(name.strip())
                 continue

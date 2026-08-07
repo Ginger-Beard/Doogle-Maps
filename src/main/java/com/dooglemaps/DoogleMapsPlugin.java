@@ -160,6 +160,10 @@ public class DoogleMapsPlugin extends Plugin
 	@Inject
 	private PatchStateStore stateStore;
 
+	/** Only ever told to drop its cached offset when a profile loads. See {@link #load()}. */
+	@Inject
+	private com.dooglemaps.timer.GrowthTimer growthTimer;
+
 	@Inject
 	private AvailabilityProfile availability;
 
@@ -519,6 +523,7 @@ public class DoogleMapsPlugin extends Plugin
 				seedStore.recordFarmingLevel();
 				seedStore.recordWoodcuttingLevel();
 				seedStore.relearnFromClient();
+				carriedItems.relearnFromClient();
 			}
 		});
 	}
@@ -534,12 +539,34 @@ public class DoogleMapsPlugin extends Plugin
 			load();
 		}
 
+		// The supply leg ends when there is nothing left to collect, and that can become true
+		// without a bank event: withdrawing the last seed from the *vault* fires nothing the bank
+		// capture listens for. Cheap — a flag check unless a supply leg is actually in progress.
+		runPlanner.leaveBank();
+
+		// And a stop can finish without a varbit transition to announce it — a patch never seen
+		// before this session has no previous value to differ from, so arriving at one is silent.
+		// Polling is what stops the run waiting for news that will never come; completion is
+		// derived, so asking again is always correct.
+		runPlanner.reviewProgress();
+
+		// And a contract taken from Jane mid-stop brings a patch the run was never planned around.
+		// Ordered after reviewProgress deliberately: adopting the patch is what stops the guild
+		// being written off as finished, so it must not be undone by the review that runs next.
+		runPlanner.reviewContract();
+
 		// Which herb patches cannot be diseased, re-read rather than sampled once at login.
 		// The load fires the instant LOGGED_IN does, and the quest and diary varbits are not
 		// all synced by then — a sample taken a second early reads nothing and used to latch,
 		// which is exactly how the protected herb tab went missing for a whole session. This
 		// is on the client thread already, and the read leaves early when nothing has changed.
 		protectedPatches.refresh(client);
+
+		// The sidebar's current-step line, which the guide re-derives every tick. It used to wait
+		// for the idle refresh below and so ran up to twenty seconds behind the on-screen panel —
+		// long enough to still be naming a patch you had finished and walked away from. Cheap: one
+		// label and one button, not the tab rebuild that timer exists to space out.
+		panel.refreshLive();
 
 		Instant now = Instant.now();
 		if (Duration.between(lastIdleRefresh, now).compareTo(IDLE_REFRESH_INTERVAL) >= 0)
@@ -559,6 +586,11 @@ public class DoogleMapsPlugin extends Plugin
 			log.debug("No RuneScape profile yet; deferring load");
 			return;
 		}
+
+		// Before anything reads a projection. The growth timer caches the account's farm-tick
+		// offset and auto-weed flag, and a load may be a different account entirely — a stale
+		// offset puts every "ready in" on the wrong grid, silently, by up to half an hour.
+		growthTimer.invalidate();
 
 		stateStore.load();
 		// Anything Time Tracking recorded that we never watched happen. After the load, because
@@ -587,6 +619,11 @@ public class DoogleMapsPlugin extends Plugin
 				// having moved in it. An inventory nobody has touched is never re-sent, so
 				// without this the seeds in it stay invisible until something disturbs them.
 				seedStore.relearnFromClient();
+
+				// The same read, for the same reason, over the pack and the worn items rather
+				// than the seed containers. Without it every teleport, cloak and ring you are
+				// already carrying reads as missing and goes on the withdraw list.
+				carriedItems.relearnFromClient();
 
 				// Protection payment names, read here because getItemComposition is a client
 				// thread call and the sidebar needs them on Swing. A fixed set, read once.

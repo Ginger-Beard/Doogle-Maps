@@ -63,6 +63,12 @@ public class RunLoadoutTest
 	private CarriedItems carried;
 	private BankContents bank;
 	private RunLoadout loadout;
+
+	/** Stubbed per test where a group is being visited for its harvest alone. */
+	private com.dooglemaps.state.RunTypeStore runTypes;
+
+	/** Stubbed per test where a farming contract is in play. */
+	private com.dooglemaps.state.ContractState contracts;
 	private SeedInventoryStore seeds;
 	private com.dooglemaps.DoogleMapsConfig config;
 
@@ -115,9 +121,13 @@ public class RunLoadoutTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			// The planner asks the loadout whether anything is still to be withdrawn, and the
+			// loadout is built from the planner. Guice breaks that cycle with a Provider; here the
+			// same job is done by a holder filled in once both exist, a few lines below.
+			(javax.inject.Provider<RunLoadout>) () -> loadoutUnderTest[0]);
 
-		carried = construct(CarriedItems.class);
+		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
 		bank = construct(BankContents.class);
 
 		net.runelite.api.Client leprechaunClient = Mockito.mock(net.runelite.api.Client.class);
@@ -144,9 +154,29 @@ public class RunLoadoutTest
 		when(itemNames.get(Mockito.anyInt(), Mockito.any()))
 			.thenAnswer(i -> names.get(i.<Integer>getArgument(0)));
 
+		// A mock rather than a real store: every test here is a full run, and isHarvestOnly
+		// defaults to false, which is what "a full run" means. The harvest-only path has its own
+		// test below.
+		runTypes = Mockito.mock(com.dooglemaps.state.RunTypeStore.class);
+
+		// No contract assigned by default, which is what every test here but the contract ones
+		// wants: getContract() answering null means contractIsStandingThere can never fire.
+		contracts = Mockito.mock(com.dooglemaps.state.ContractState.class);
+
 		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
-			toolNeeds, leprechaun, protection, itemNames, config, tickingClient());
+			toolNeeds, leprechaun, protection, itemNames, config, tickingClient(), runTypes,
+			contracts);
+		loadoutUnderTest[0] = loadout;
 	}
+
+	/**
+	 * The loadout, reachable from the planner that was built before it.
+	 *
+	 * <p>An array rather than a field because the Provider handed to the planner is created during
+	 * setup and has to see an assignment made after it — the same deferral Guice does for the real
+	 * cycle, done by hand. See the Provider argument in {@code setUp}.
+	 */
+	private final RunLoadout[] loadoutUnderTest = new RunLoadout[1];
 
 	/**
 	 * Compost he is holding is not a withdrawal, whatever the bank has.
@@ -345,14 +375,14 @@ public class RunLoadoutTest
 	}
 
 	/**
-	 * Leprechaun items are marked in the bank, just not as withdrawals.
+	 * Leprechaun items are not marked in the bank at all.
 	 *
-	 * <p>Leaving compost unmarked would read as the plugin having forgotten about it. Marking
-	 * it as a withdrawal would have you banking a bucket you have a thousand of on site. So it
-	 * is marked, in its own right, to cue asking the leprechaun once you are at the patch.
+	 * <p>They used to be, in a second colour meaning "leave this" — but a highlight over your
+	 * ultracompost reads as take it whatever colour it is, and the errand is at the patch rather
+	 * than at the bank. The loadout still knows he has it; the bank simply stays quiet.
 	 */
 	@Test
-	public void compostIsMarkedInTheBankWithoutBeingAWithdrawal()
+	public void compostTheLeprechaunHoldsIsNotMarkedInTheBank()
 	{
 		readyHerbPatch();
 		selection.toggle(Seed.RANARR);
@@ -360,10 +390,12 @@ public class RunLoadoutTest
 		leprechaunHolds(FarmingTool.ULTRACOMPOST, 1000);
 
 		int bucket = CompostTier.ULTRACOMPOST.getItemID();
-		assertEquals("marked, so it shows up in the bank",
-			LoadoutItem.Need.AT_LEPRECHAUN, loadout.highlights(HERBS).get(bucket));
-		assertFalse("but not as something to take",
+		assertNull("he has it, so the bank has nothing to say about it",
+			loadout.highlights(HERBS).get(bucket));
+		assertFalse("and it is certainly not something to take",
 			withdrawals(HERBS).contains(bucket));
+		assertEquals("but the loadout still knows where it is",
+			LoadoutItem.Need.AT_LEPRECHAUN, loadout.itemFor(HERBS, bucket).getNeed());
 	}
 
 	/**
@@ -462,6 +494,103 @@ public class RunLoadoutTest
 	}
 
 	/**
+	 * The shipped default names have to match items the player actually owns.
+	 *
+	 * <h2>A default that could never match anything</h2>
+	 *
+	 * The teleport setting is a list of names, resolved by comparing them with the names of things
+	 * in the bank. The default shipped {@code "Teleport to house tablet"}; the game calls item 8013
+	 * {@code "Teleport to house"}. A name that matches nothing fails silently by design, so the
+	 * house tablet was never offered to anyone who had not edited the setting by hand — and the
+	 * test that was meant to guard the defaults compared them against our own table rather than
+	 * against the game, so it agreed with itself and passed.
+	 *
+	 * <p>Both spellings now resolve, which is what {@code TeleportItems.nameFor} is for. This pins
+	 * the game's, because that is the one that was broken and the one a player would type.
+	 */
+	@Test
+	public void theGameSpellingOfATeleportResolvesTooNotJustOurLabel() throws Exception
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		int houseTablet = ItemID.POH_TABLET_TELEPORTTOHOUSE;
+		bankHolds(houseTablet, 25);
+		names.put(houseTablet, "Teleport to house");
+		when(config.teleportItems()).thenReturn(TeleportItems.defaultNames());
+
+		assertNotNull("the shipped default has to reach the item the game names differently",
+			find(LoadoutItem.Category.TELEPORT, "Teleport to house tablet"));
+	}
+
+	/**
+	 * Something you are already carrying is not a withdrawal, teleports included.
+	 *
+	 * <p>{@code CarriedItems} is fed only by container events, so a plugin switched on mid-session
+	 * knew nothing about a pack nobody had touched — and everything in it read as missing and went
+	 * on the withdraw list. Reported from play as being told to bank for house tablets with a stack
+	 * of them in the inventory. The priming that fixes it is
+	 * {@code CarriedItems.relearnFromClient}; this pins the behaviour it restores.
+	 */
+	@Test
+	public void aTeleportInYourPackIsNotAWithdrawal() throws Exception
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		int houseTablet = ItemID.POH_TABLET_TELEPORTTOHOUSE;
+		bankHolds(houseTablet, 25);
+		names.put(houseTablet, "Teleport to house");
+		when(config.teleportItems()).thenReturn("Teleport to house");
+		carrying(houseTablet, 4);
+
+		LoadoutItem entry = find(LoadoutItem.Category.TELEPORT, "Teleport to house tablet");
+		assertNotNull(entry);
+		assertEquals("they are in the pack, whatever the bank also has",
+			LoadoutItem.Need.HAVE, entry.getNeed());
+	}
+
+	/**
+	 * What the supply leg waits for, and what it does not.
+	 *
+	 * <h2>The gate the planner used to derive for itself</h2>
+	 *
+	 * {@code RunPlanner.suppliesOutstanding} worked out its own answer from a tool that was
+	 * bank-only and a seed the run was short of. That is most of the list and it missed three
+	 * things that were on it: the axe — which {@code ToolNeeds} has never known about — the
+	 * protection payment, and a contract's own seed. Each was reported from play as reaching a
+	 * patch unable to do anything there.
+	 *
+	 * <p>It asks the list now. Which means the list has to be clear about what is genuinely
+	 * blocking: a teleport is a convenience and holding the run at a bank for one would be the
+	 * plugin refusing to let somebody play.
+	 */
+	@Test
+	public void theAxeHoldsTheSupplyLegButATeleportDoesNot() throws Exception
+	{
+		readyTreePatch();
+
+		int axe = ItemID.RUNE_AXE;
+		bankHolds(axe, 1);
+		woodcuttingLevel(99);
+
+		assertTrue("an axe in the bank is a reason to still be at the bank",
+			loadout.anythingLeftToWithdraw(EnumSet.of(PatchImplementation.TREE)));
+
+		carrying(axe, 1);
+		assertFalse("and picking it up is what finishes the errand",
+			loadout.anythingLeftToWithdraw(EnumSet.of(PatchImplementation.TREE)));
+
+		int houseTablet = ItemID.POH_TABLET_TELEPORTTOHOUSE;
+		bankHolds(houseTablet, 25);
+		names.put(houseTablet, "Teleport to house");
+		when(config.teleportItems()).thenReturn("Teleport to house");
+
+		assertFalse("a teleport left in the bank is the player's business, not a blocker",
+			loadout.anythingLeftToWithdraw(EnumSet.of(PatchImplementation.TREE)));
+	}
+
+	/**
 	 * A wildcard covers every charge of an item, which is the whole reason it is wanted.
 	 *
 	 * <p>Jewellery is the case: a games necklace is eight different items and the game names each
@@ -533,7 +662,7 @@ public class RunLoadoutTest
 		readyHerbPatch();
 		selection.toggle(Seed.RANARR);
 
-		int houseTablet = net.runelite.api.gameval.ItemID.POH_TABLET_TELEPORTTOHOUSE;
+		int houseTablet = ItemID.POH_TABLET_TELEPORTTOHOUSE;
 		bankHolds(houseTablet, 1);
 		names.put(houseTablet, "Teleport to house");
 		when(config.teleportItems()).thenReturn("Teleport to house");
@@ -570,17 +699,58 @@ public class RunLoadoutTest
 		assertNotNull(loadout.forRun(HERBS));
 	}
 
-	/** The default list is derived from the table, so it cannot drift out of step with it. */
+	/**
+	 * Every name on the default list is one the table actually knows.
+	 *
+	 * <p>The default used to <i>be</i> the table — every entry, derived — which made drift
+	 * impossible and the list useless: twenty-eight city tablets nobody travels by. It is a
+	 * curated handful now, which reintroduces the one risk deriving it removed, a typo. A name
+	 * that matches nothing fails silently, because the list is resolved against bank item names
+	 * and an entry that matches none simply never appears.
+	 *
+	 * <p>So the direction that matters is checked and the other is not: the default must not name
+	 * something that does not exist, but the table is free to know teleports the default leaves
+	 * off. That is now the normal case rather than a fault.
+	 */
 	@Test
-	public void theDefaultTeleportListNamesEveryKnownTeleport()
+	public void everyDefaultTeleportIsOneTheTableKnows()
 	{
-		String defaults = TeleportItems.defaultNames();
-		for (TeleportItems.Teleport teleport : TeleportItems.forRegion(-1))
+		java.util.Set<String> known = new java.util.HashSet<>();
+		for (String name : TeleportItems.allKnownNames().split(","))
 		{
-			assertEquals("the universal teleports are on the default list too",
-				true, defaults.contains(teleport.getName()));
+			known.add(name.trim());
 		}
-		assertEquals("and it is comma separated", true, defaults.contains(", "));
+
+		for (String name : TeleportItems.defaultNames().split(","))
+		{
+			assertTrue("\"" + name.trim() + "\" is on the default teleport list but is not a name "
+				+ "any table entry uses - a typo here fails silently", known.contains(name.trim()));
+		}
+	}
+
+	/**
+	 * The list decides what is offered; the table only decides why.
+	 *
+	 * <p>These two overlapped, and the wrong one won. The bank offering came from the table alone,
+	 * so cutting the list down changed nothing — every tablet you happened to own still turned up,
+	 * because the table knew where it went. The setting's own description promises the opposite:
+	 * "cut it down to the ones you actually use".
+	 */
+	@Test
+	public void aTeleportTheTableKnowsIsNotOfferedUnlessItIsOnTheList()
+	{
+		readyHerbPatch();   // Ardougne
+		selection.toggle(Seed.RANARR);
+		bankHolds(ItemID.ARDY_CAPE_MEDIUM, 1);
+		names.put(ItemID.ARDY_CAPE_MEDIUM, "Ardougne cloak 2");
+
+		when(config.teleportItems()).thenReturn("Ectophial");
+		assertNull("the table knows it reaches Ardougne, but the player says they do not use it",
+			find(LoadoutItem.Category.TELEPORT, "Ardougne cloak 2"));
+
+		when(config.teleportItems()).thenReturn("Ardougne cloak 2");
+		assertNotNull("on the list, so offered - and the table still supplies the reason",
+			find(LoadoutItem.Category.TELEPORT, "Ardougne cloak 2"));
 	}
 
 	/**
@@ -812,6 +982,87 @@ public class RunLoadoutTest
 		availability.setAvailable(patch, true);
 	}
 
+	/**
+	 * A run that only picks what is ripe asks for nothing to put in the ground.
+	 *
+	 * <p>Reported as a fruit tree harvest-only run telling the player to withdraw palm saplings.
+	 * The planner already narrows a harvest-only stop to ripe patches, so the loadout received
+	 * "four fruit tree patches to deal with" and read that, reasonably, as four patches to plant
+	 * in — nothing here had ever been told the difference.
+	 *
+	 * <p>All three planting consequences are checked, not just the seed. Compost goes under a seed
+	 * and a payment protects one, so a stop that plants nothing wants none of them — and each was
+	 * a separate loop that would have needed the same guard.
+	 */
+	@Test
+	public void aHarvestOnlyRunAsksForNothingToPlant()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		seedsInBank(Seed.RANARR, 20);
+		compost.set(PatchImplementation.HERB, CompostTier.ULTRACOMPOST);
+		bankHolds(CompostTier.ULTRACOMPOST.getItemID(), 500);
+
+		assertFalse("a full run does want its seed",
+			itemsIn(LoadoutItem.Category.SEED).isEmpty());
+
+		Mockito.when(runTypes.isHarvestOnly(Mockito.any())).thenReturn(true);
+
+		assertTrue("nothing is being planted, so no seed",
+			itemsIn(LoadoutItem.Category.SEED).isEmpty());
+		assertTrue("and nothing to put under one",
+			itemsIn(LoadoutItem.Category.COMPOST).isEmpty());
+		assertTrue("and nothing to protect",
+			itemsIn(LoadoutItem.Category.PAYMENT).isEmpty());
+	}
+
+	/**
+	 * A seed is fetched from wherever it actually is.
+	 *
+	 * <p>{@code Need.WITHDRAW} says only that something is not on you. It was then reported as
+	 * <i>"From the bank:"</i> whatever the truth, so a vault seed sent you to the wrong container —
+	 * and there is one seed vault, in the Farming Guild, so that is not a near miss.
+	 *
+	 * <p>The bank wins a tie deliberately: everything else the run needs is in there anyway, so one
+	 * stop beats two.
+	 */
+	@Test
+	public void aSeedIsFetchedFromWhicheverStoreHoldsIt()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		seedsInVault(Seed.RANARR, 20);
+		assertEquals("only the vault has it", LoadoutItem.From.SEED_VAULT,
+			itemsIn(LoadoutItem.Category.SEED).get(0).getFrom());
+
+		seedsInBank(Seed.RANARR, 20);
+		assertEquals("both have it, so the bank - where the rest of the run's items are",
+			LoadoutItem.From.BANK, itemsIn(LoadoutItem.Category.SEED).get(0).getFrom());
+	}
+
+	/**
+	 * A seed held in both stores is fetched from one of them, not both.
+	 *
+	 * <p>{@code Need.WITHDRAW} only means "not on you", which is true of a seed sitting in either
+	 * store — so the bank highlight and the vault highlight both claimed it, and the run appeared
+	 * to want two lots. {@code From} is the answer to which one the run means, and it is what the
+	 * two overlays now split on.
+	 */
+	@Test
+	public void aSeedInBothStoresIsClaimedByOnlyOneOfThem()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		seedsInBank(Seed.RANARR, 20);
+		seedsInVault(Seed.RANARR, 20);
+
+		List<LoadoutItem> seedItems = itemsIn(LoadoutItem.Category.SEED);
+		assertEquals("one row, not one per store", 1, seedItems.size());
+		assertEquals("the bank wins a tie - everything else the run needs is there anyway",
+			LoadoutItem.From.BANK, seedItems.get(0).getFrom());
+	}
+
 	private List<LoadoutItem> itemsIn(LoadoutItem.Category category)
 	{
 		List<LoadoutItem> found = new java.util.ArrayList<>();
@@ -915,6 +1166,18 @@ public class RunLoadoutTest
 	{
 		bankHolds(seed.getItemID(), quantity);
 		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(seed.getItemID(), quantity));
+	}
+
+	/**
+	 * The same, in the seed vault.
+	 *
+	 * <p>Deliberately does <b>not</b> touch {@link BankContents}: the vault is not the bank, and a
+	 * fixture that stocked both would hide exactly the confusion these tests exist to catch.
+	 */
+	private void seedsInVault(Seed seed, int quantity)
+	{
+		seeds.record(com.dooglemaps.state.SeedSource.SEED_VAULT.getContainerId(),
 			containerOf(seed.getItemID(), quantity));
 	}
 
