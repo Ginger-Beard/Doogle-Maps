@@ -39,7 +39,19 @@ Settled with the owner. Treat as given.
 7. **Multi-account needs nothing built.** RuneLite's per-profile config already handles it.
 8. **This replaces** the farming role of Time Tracking and Lazy Farming rather than
    companioning them.
-9. **Availability is a global invariant.** Each patch has a manual on/off toggle that
+9. **Within a stop, patches are ordered nearest-first and the working patch is sticky.**
+   Settled after living with it: an efficiency ordering was considered and rejected, because
+   the step must not change while the player weaves between close patches — Ardougne's
+   layout has you passing half the farm on every trip to and from the leprechaun, and any
+   re-targeting there reads as the plugin losing its place. Deferrals (the leprechaun
+   errands, and anything like them) are the sanctioned way to move work later; re-sorting
+   is not.
+10. **Watering growing patches is not modelled**, and the wiki mechanics are why: it is
+    disease-only, one cycle per watering, on patch types whose first cycle is immune anyway —
+    structurally worthless for a farmer who leaves after planting, which is what a farm run
+    is. The seedling's mandatory watering is modelled (potting supplies and the bank-leg
+    advice); a can is asked for only there. See the closed section in `docs/TODO.md`.
+11. **Availability is a global invariant.** Each patch has a manual on/off toggle that
    persists per profile. No feature — overview, plantable, gather, routing, guided mode —
    may surface, plant into, route to or highlight a patch that is switched off. Auto-detecting
    unlocks is an optional convenience that pre-fills the toggles, never a requirement.

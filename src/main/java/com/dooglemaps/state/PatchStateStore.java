@@ -1,6 +1,5 @@
 package com.dooglemaps.state;
 
-import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropState;
 import com.dooglemaps.data.FarmPatch;
@@ -8,7 +7,6 @@ import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.time.Instant;
@@ -33,7 +31,7 @@ import net.runelite.client.config.ConfigManager;
  */
 @Slf4j
 @Singleton
-public class PatchStateStore
+public class PatchStateStore extends ProfileJsonStore
 {
 	/** Config key holding the serialised snapshot map. */
 	private static final String PATCHES_KEY = "patches";
@@ -47,9 +45,6 @@ public class PatchStateStore
 	{
 	}.getType();
 
-	private final ConfigManager configManager;
-	private final Gson gson;
-
 	/** Keyed by {@link FarmPatch#getKey()}. */
 	private final Map<String, PatchSnapshot> snapshots = new HashMap<>();
 
@@ -58,8 +53,7 @@ public class PatchStateStore
 	@Inject
 	PatchStateStore(ConfigManager configManager, Gson gson)
 	{
-		this.configManager = configManager;
-		this.gson = gson;
+		super(configManager, gson, PATCHES_KEY);
 	}
 
 	/** Registers a callback fired after any change, used to repaint the panel. */
@@ -359,46 +353,39 @@ public class PatchStateStore
 
 	// ----------------------------------------------------------- persistence
 
-	public void load()
-	{
-		doLoad();
-		fireChanged();
-	}
-
-	private synchronized void doLoad()
+	@Override
+	protected void resetForLoad()
 	{
 		snapshots.clear();
+	}
 
-		String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, PATCHES_KEY);
-		if (json != null && !json.isEmpty())
+	@Override
+	protected void applyJson(String json)
+	{
+		Map<String, PatchSnapshot> loaded = gson.fromJson(json, SNAPSHOT_MAP_TYPE);
+		if (loaded != null)
 		{
-			try
+			// Drop keys for patches that no longer exist, e.g. after a data update
+			// moved a patch to a different region.
+			loaded.forEach((key, snapshot) ->
 			{
-				Map<String, PatchSnapshot> loaded = gson.fromJson(json, SNAPSHOT_MAP_TYPE);
-				if (loaded != null)
+				if (FarmingWorldData.getPatch(key) != null && snapshot != null)
 				{
-					// Drop keys for patches that no longer exist, e.g. after a data update
-					// moved a patch to a different region.
-					loaded.forEach((key, snapshot) ->
+					snapshot.setPatchKey(key);
+					if (snapshot.getCompost() == null)
 					{
-						if (FarmingWorldData.getPatch(key) != null && snapshot != null)
-						{
-							snapshot.setPatchKey(key);
-							if (snapshot.getCompost() == null)
-							{
-								snapshot.setCompost(CompostTier.NONE);
-							}
-							snapshots.put(key, snapshot);
-						}
-					});
+						snapshot.setCompost(CompostTier.NONE);
+					}
+					snapshots.put(key, snapshot);
 				}
-			}
-			catch (JsonSyntaxException e)
-			{
-				log.warn("Discarding unreadable patch cache", e);
-			}
+			});
 		}
+	}
 
+	/** The backfill runs blob or no blob - a fresh install is its whole reason to exist. */
+	@Override
+	protected void afterLoad()
+	{
 		int backfilled = backfillFromTimeTracking();
 		if (backfilled > 0)
 		{
@@ -407,9 +394,16 @@ public class PatchStateStore
 		}
 	}
 
-	public synchronized void save()
+	@Override
+	protected Object serialized()
 	{
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, PATCHES_KEY, gson.toJson(snapshots));
+		return snapshots;
+	}
+
+	@Override
+	protected void loaded()
+	{
+		fireChanged();
 	}
 
 	/**
@@ -508,6 +502,6 @@ public class PatchStateStore
 	private synchronized void doClear()
 	{
 		snapshots.clear();
-		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, PATCHES_KEY);
+		unsetStored();
 	}
 }

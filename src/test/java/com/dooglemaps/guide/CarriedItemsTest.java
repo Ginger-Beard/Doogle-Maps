@@ -1,6 +1,5 @@
 package com.dooglemaps.guide;
 
-import java.lang.reflect.Constructor;
 import net.runelite.api.Client;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
@@ -8,6 +7,7 @@ import net.runelite.api.gameval.InventoryID;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -133,19 +133,5 @@ public class CarriedItemsTest
 		ItemContainer container = Mockito.mock(ItemContainer.class);
 		when(container.getItems()).thenReturn(items);
 		return container;
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

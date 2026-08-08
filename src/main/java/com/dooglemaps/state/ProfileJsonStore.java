@@ -68,6 +68,7 @@ public abstract class ProfileJsonStore
 					log.warn("Discarding unreadable {}", key, e);
 				}
 			}
+			afterLoad();
 		}
 		loaded();
 	}
@@ -83,6 +84,16 @@ public abstract class ProfileJsonStore
 	protected final synchronized void unsetStored()
 	{
 		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, key);
+	}
+
+	/**
+	 * Work that belongs to the load but not to the blob, run inside the monitor after the
+	 * parse step — <b>blob or no blob</b>, which is the point: {@code PatchStateStore}'s
+	 * Time Tracking backfill exists precisely for the fresh install where there is nothing
+	 * stored yet. No-op by default.
+	 */
+	protected void afterLoad()
+	{
 	}
 
 	/** Empties the in-memory state ahead of a read. Monitor held. */

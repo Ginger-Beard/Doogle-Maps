@@ -20,6 +20,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -282,19 +283,5 @@ public class RunControlsTest
 			GuideAction.class, FarmPatch.class, int.class, int.class, String.class);
 		ctor.setAccessible(true);
 		return ctor.newInstance(GuideAction.PLANT, patch, -1, -1, text);
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

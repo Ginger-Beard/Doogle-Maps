@@ -195,6 +195,26 @@ public interface DoogleMapsConfig extends Config
 		return true;
 	}
 
+	/**
+	 * Detected rather than asked: the reminder appears only when the Magic level makes the
+	 * spell castable at all, and the wording changes with the spellbook actually equipped.
+	 * A toggle because it is advice about a spell, not a step in the run — some players will
+	 * never swap books for a seed and should not be told about it twice a night.
+	 */
+	@ConfigItem(
+		keyName = "resurrectCropsReminder",
+		name = "Resurrect Crops reminder",
+		description = "Say in the chatbox when a dead crop could be revived with the Arceuus "
+			+ "Resurrect Crops spell - only shown when your Magic level is high enough, "
+			+ "whichever spellbook you are on. One line per dead crop.",
+		position = 36,
+		section = guideSection
+	)
+	default boolean resurrectCropsReminder()
+	{
+		return true;
+	}
+
 	@ConfigItem(
 		keyName = "contractSeedAdvice",
 		name = "Contract seed you do not own",

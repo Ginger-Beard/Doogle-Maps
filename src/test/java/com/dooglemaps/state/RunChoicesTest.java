@@ -6,7 +6,6 @@ import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.RunOption;
 import com.dooglemaps.data.Seed;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
@@ -16,6 +15,7 @@ import org.junit.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -253,26 +253,5 @@ public class RunChoicesTest
 	private RunTypeStore newTypes()
 	{
 		return construct(RunTypeStore.class, configManager, gson);
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args)
-	{
-		try
-		{
-			for (Constructor<?> candidate : type.getDeclaredConstructors())
-			{
-				if (candidate.getParameterCount() == args.length)
-				{
-					candidate.setAccessible(true);
-					return (T) candidate.newInstance(args);
-				}
-			}
-		}
-		catch (ReflectiveOperationException e)
-		{
-			throw new IllegalStateException(e);
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

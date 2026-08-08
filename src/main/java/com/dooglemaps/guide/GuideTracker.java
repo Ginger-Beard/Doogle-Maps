@@ -1,6 +1,7 @@
 package com.dooglemaps.guide;
 
 import com.dooglemaps.data.FarmPatch;
+import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropState;
 import com.dooglemaps.data.Produce;
@@ -85,6 +86,9 @@ public class GuideTracker
 	/** The item the current route uses, for the panel's "how you will leave" line. */
 	private final com.dooglemaps.bank.RouteItem routeItem;
 
+	/** For the Magic level and the spellbook, which decide the Resurrect Crops reminder. */
+	private final net.runelite.api.Client client;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -94,8 +98,9 @@ public class GuideTracker
 		com.dooglemaps.state.RunTypeStore runTypes, com.dooglemaps.bank.RunLoadout loadout,
 		ContractState contracts, com.dooglemaps.DoogleMapsConfig config,
 		net.runelite.client.chat.ChatMessageManager chat,
-		com.dooglemaps.bank.RouteItem routeItem)
+		com.dooglemaps.bank.RouteItem routeItem, net.runelite.api.Client client)
 	{
+		this.client = client;
 		this.routeItem = routeItem;
 		this.chat = chat;
 		this.contracts = contracts;
@@ -151,6 +156,7 @@ public class GuideTracker
 	public void onGameTick(GameTick event)
 	{
 		allocations.clear();
+		compostWanting.clear();
 		retargetIfMoved();
 
 		// Before anything reads getRemaining(), so completion is judged against this tick's
@@ -359,6 +365,7 @@ public class GuideTracker
 		// right now. They differ only in the Farming Guild, and only while a contract is waiting on
 		// something — see contractComesFirst.
 		List<FarmPatch> offered = contractComesFirst(stop, ordered);
+		offered = flowersAfterAllotments(offered, stop);
 
 		FarmPatch first = chooseWorkingPatch(offered, stop);
 
@@ -382,6 +389,7 @@ public class GuideTracker
 		// What this stop is passing over, in words for the panel. The planner's own exemptions
 		// are handled separately and for every stop — see reportIdlePatches.
 		announceSkips(stop, ordered);
+		announceResurrectables(ordered);
 
 		appendLeprechaunErrands(steps, stop);
 		appendContractErrands(steps, stop);
@@ -455,7 +463,45 @@ public class GuideTracker
 		{
 			outstanding |= !outstandingFor(patch, stop).isEmpty();
 		}
+
+		if (!outstanding)
+		{
+			// Said out loud, once per state, because this branch firing wrongly is invisible
+			// from in front of the client: the guild simply offers its herbs, and a contract
+			// patch that still wants chopping reads as the plugin having wandered off.
+			// Reported exactly that way — check health on the occupying magic tree, and the
+			// step jumped to the avantoe. What each claimed patch actually reads as is the
+			// evidence that decides where that went wrong.
+			StringBuilder held = new StringBuilder();
+			for (FarmPatch patch : claimed)
+			{
+				com.dooglemaps.state.PatchSnapshot snapshot = patches.get(patch);
+				PatchProjection projection = growthTimer.project(patch, snapshot);
+				held.append(patch.getDisplayName())
+					.append(snapshot == null ? " never seen" : " varbit " + snapshot.getVarbitValue())
+					.append(projection == null ? ", no projection"
+						: " -> " + projection.getCropState()
+							+ (projection.needsHealthCheck() ? " (check pending)" : "")
+							+ (projection.isChoppable() ? " (choppable)" : "")
+							+ (projection.isStump() ? " (stump)" : ""))
+					.append("; ");
+			}
+			logOnce("Contract business is settled here, so the guild is open to every patch: "
+				+ held);
+		}
 		return outstanding ? claimed : ordered;
+	}
+
+	/** The last thing said about the contract patch, so it is said once and not every tick. */
+	private String lastContractDiagnostic;
+
+	private void logOnce(String message)
+	{
+		if (!message.equals(lastContractDiagnostic))
+		{
+			lastContractDiagnostic = message;
+			log.info("{}", message);
+		}
 	}
 
 	/**
@@ -488,6 +534,9 @@ public class GuideTracker
 		if (!planner.isActive())
 		{
 			planner.setNothingToDo(java.util.Collections.emptySet());
+			// Cleared with the run, like the contract announcements: the next run's dead
+			// crops are new news.
+			announcedResurrect.clear();
 			return;
 		}
 
@@ -503,6 +552,71 @@ public class GuideTracker
 			}
 		}
 		planner.setNothingToDo(idle);
+	}
+
+	/** Resurrect Crops wants 78 Magic; the varbit value that means the Arceuus book is 3. */
+	private static final int RESURRECT_MAGIC_LEVEL = 78;
+	private static final int ARCEUUS_SPELLBOOK = 3;
+
+	/**
+	 * The crops the spell cannot save: grapes are not a valid target, and it fails on
+	 * Hespori outright — both wiki-checked.
+	 */
+	private static final java.util.Set<PatchImplementation> NOT_RESURRECTABLE =
+		java.util.EnumSet.of(PatchImplementation.GRAPES, PatchImplementation.HESPORI);
+
+	/** Dead crops already spoken for, so the line lands once. Cleared with the run. */
+	private final java.util.Set<String> announcedResurrect = new java.util.HashSet<>();
+
+	/**
+	 * Says, once per dead crop, that Resurrect Crops could save the clearing.
+	 *
+	 * <h2>Detected, not asked — and switchable off, because it is advice</h2>
+	 *
+	 * The reminder appears only when the Magic level makes the spell castable at all, and the
+	 * wording knows which spellbook is equipped: on Arceuus it is "cast it", elsewhere it is
+	 * "switch and cast it". Whether the swap is worth a seed is the player's call — some will
+	 * never do it, which is why the whole thing sits behind
+	 * {@code DoogleMapsConfig.resurrectCropsReminder}. The step list is untouched: the clear
+	 * instruction stands, and this is the one chance to mention the alternative before the
+	 * spade makes it moot.
+	 */
+	private void announceResurrectables(List<FarmPatch> ordered)
+	{
+		if (!config.resurrectCropsReminder()
+			|| client.getRealSkillLevel(net.runelite.api.Skill.MAGIC) < RESURRECT_MAGIC_LEVEL)
+		{
+			return;
+		}
+
+		for (FarmPatch patch : ordered)
+		{
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection == null || projection.getCropState() != CropState.DEAD
+				|| projection.getProduce() == null
+				|| NOT_RESURRECTABLE.contains(patch.getImplementation())
+				|| !announcedResurrect.add(patch.getKey()))
+			{
+				continue;
+			}
+
+			boolean onArceuus =
+				client.getVarbitValue(net.runelite.api.gameval.VarbitID.SPELLBOOK)
+					== ARCEUUS_SPELLBOOK;
+			chat.queue(net.runelite.client.chat.QueuedMessage.builder()
+				.type(net.runelite.api.ChatMessageType.GAMEMESSAGE)
+				.runeLiteFormattedMessage(new net.runelite.client.chat.ChatMessageBuilder()
+					.append(net.runelite.client.chat.ChatColorType.HIGHLIGHT)
+					.append("Your dead " + projection.getProduce().getName().toLowerCase())
+					.append(net.runelite.client.chat.ChatColorType.NORMAL)
+					.append(onArceuus
+						? " could be revived with Resurrect Crops - one attempt, "
+							+ "before you clear it."
+						: " could be revived with Resurrect Crops if you switch to the "
+							+ "Arceuus spellbook - one attempt, before you clear it.")
+					.build())
+				.build());
+		}
 	}
 
 	/**
@@ -1084,6 +1198,72 @@ public class GuideTracker
 	 * and doing them out of order is still fine because a patch someone else finished simply
 	 * stops producing steps.
 	 */
+	/**
+	 * Holds a grown flower's pick back until the allotments beside it are done.
+	 *
+	 * <p>A fully grown flower is the allotments' disease protection — wiki-checked, and the
+	 * moment it is picked the guard is gone while the crops beside it still stand. So a
+	 * flower whose only outstanding work is picking moves to the back of the offer, behind
+	 * the allotments it is guarding; picked last, it comes straight back as the replant that
+	 * guards the next cycle. A flower that needs <i>planting</i> keeps its place, because
+	 * getting the guard up early is the point.
+	 *
+	 * <p>Deferral, deliberately, not re-sorting — the sanctioned tool under design principle
+	 * #9. The sticky working patch is untouched: a flower already being worked stays worked.
+	 */
+	private List<FarmPatch> flowersAfterAllotments(List<FarmPatch> offered, RunStop stop)
+	{
+		boolean allotmentWork = false;
+		for (FarmPatch patch : offered)
+		{
+			if (patch.getImplementation() == PatchImplementation.ALLOTMENT
+				&& !outstandingFor(patch, stop).isEmpty())
+			{
+				allotmentWork = true;
+				break;
+			}
+		}
+		if (!allotmentWork)
+		{
+			return offered;
+		}
+
+		List<FarmPatch> reordered = new ArrayList<>();
+		List<FarmPatch> held = new ArrayList<>();
+		for (FarmPatch patch : offered)
+		{
+			if (patch.getImplementation() == PatchImplementation.FLOWER
+				&& pickOnly(outstandingFor(patch, stop)))
+			{
+				held.add(patch);
+			}
+			else
+			{
+				reordered.add(patch);
+			}
+		}
+		reordered.addAll(held);
+		return reordered;
+	}
+
+	/** Whether these steps are only the pick (and its noting) - nothing that plants or clears. */
+	private static boolean pickOnly(List<GuideStep> steps)
+	{
+		if (steps.isEmpty())
+		{
+			return false;
+		}
+		for (GuideStep step : steps)
+		{
+			if (step.getAction() != GuideAction.HARVEST
+				&& step.getAction() != GuideAction.NOTE_AT_LEPRECHAUN)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
 	@Nullable
 	private FarmPatch chooseWorkingPatch(List<FarmPatch> ordered, RunStop stop)
 	{
@@ -1098,6 +1278,30 @@ public class GuideTracker
 			}
 		}
 
+		// A finished allotment hands the baton to its twin before anything nearer. The
+		// allotments come as a pair everywhere they appear, and working them back to back is
+		// what lets one trip to the leprechaun note both harvests — settled with the owner,
+		// like the stickiness above. Only the handoff is special-cased: the opening pick at a
+		// stop is still simply the nearest patch with work.
+		if (working != null)
+		{
+			FarmPatch finished = patchIn(ordered, working);
+			if (finished != null
+				&& finished.getImplementation() == PatchImplementation.ALLOTMENT)
+			{
+				for (FarmPatch patch : ordered)
+				{
+					if (patch.getImplementation() == PatchImplementation.ALLOTMENT
+						&& !patch.getKey().equals(working)
+						&& !outstandingFor(patch, stop).isEmpty())
+					{
+						working = patch.getKey();
+						return patch;
+					}
+				}
+			}
+		}
+
 		for (FarmPatch patch : ordered)
 		{
 			if (!outstandingFor(patch, stop).isEmpty())
@@ -1108,6 +1312,19 @@ public class GuideTracker
 		}
 
 		working = null;
+		return null;
+	}
+
+	@Nullable
+	private static FarmPatch patchIn(List<FarmPatch> patches, String key)
+	{
+		for (FarmPatch patch : patches)
+		{
+			if (patch.getKey().equals(key))
+			{
+				return patch;
+			}
+		}
 		return null;
 	}
 
@@ -1165,11 +1382,11 @@ public class GuideTracker
 	/** Allocations built this tick, cleared at the start of the next. */
 	private final Map<String, SeedAllocation> allocations = new java.util.HashMap<>();
 
-	/** The steps outstanding at one patch, for the panel's per-patch view. */
-	public List<GuideStep> stepsFor(FarmPatch patch)
-	{
-		return stepsFor(patch, 1);
-	}
+	// A public stepsFor(patch) overload lived here, documented for a panel's per-patch view
+	// that was never built. It read the tick-scoped allocations map with no synchronisation,
+	// so the day a Swing caller arrived it would have raced onGameTick's clear() — a corrupt
+	// HashMap at worst, a wrong allocation shown at best. Deleted rather than fixed: dead
+	// code cannot be wrong, and a future panel wants the GuideStatus snapshot anyway.
 
 	private List<GuideStep> stepsFor(FarmPatch patch, int patchesToTreat)
 	{
@@ -1201,7 +1418,17 @@ public class GuideTracker
 	 * <p>So the withdrawal can say "take 4" rather than "take some". Counted per <i>tier</i>,
 	 * because a stop can mix them — ultra on the herbs and nothing on the hops is a normal way
 	 * to farm, and both are patches here.
+	 *
+	 * <p><b>Counted once per stop-and-tier per tick</b>, not per asking patch. The answer is
+	 * the same for every patch sharing a tier, and this used to be recomputed for each — a
+	 * loop over the stop inside a loop over the stop, 169 projections a tick at the Farming
+	 * Guild, and more once the idle report started asking for every stop. The projections
+	 * are individually cheap since {@code GrowthTimer} gained its cache; the shape was the
+	 * problem, and the cache below is what fixes the shape. Cleared with {@link #allocations}
+	 * at the top of the tick, for the same reason it is.
 	 */
+	private final Map<String, Integer> compostWanting = new java.util.HashMap<>();
+
 	private int patchesWanting(RunStop stop, FarmPatch patch)
 	{
 		CompostTier tier = compost.get(groups.groupFor(patch));
@@ -1209,7 +1436,13 @@ public class GuideTracker
 		{
 			return 0;
 		}
+		return compostWanting.computeIfAbsent(
+			stop.getRegion().getRegionId() + "#" + tier.name(),
+			key -> countWanting(stop, tier));
+	}
 
+	private int countWanting(RunStop stop, CompostTier tier)
+	{
 		int count = 0;
 		for (FarmPatch other : stop.getPatches())
 		{

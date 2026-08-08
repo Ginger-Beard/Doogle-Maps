@@ -22,7 +22,6 @@ import java.awt.Container;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
 import java.io.File;
-import java.lang.reflect.Constructor;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
@@ -42,6 +41,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -1017,19 +1017,5 @@ public class HarvestStatsPanelTest
 			}
 		}
 		return text.toString();
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

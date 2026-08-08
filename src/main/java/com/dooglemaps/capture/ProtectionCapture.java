@@ -16,7 +16,7 @@ import net.runelite.api.ScriptID;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.events.MenuOptionClicked;
 import net.runelite.api.events.ScriptPreFired;
-import net.runelite.api.widgets.ComponentID;
+import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.api.widgets.WidgetModelType;
 import net.runelite.client.eventbus.Subscribe;
@@ -60,13 +60,13 @@ public class ProtectionCapture
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
-		Widget text = client.getWidget(ComponentID.DIALOG_NPC_TEXT);
+		Widget text = client.getWidget(InterfaceID.ChatLeft.TEXT);
 		if (text == null || !PAYMENT_ACCEPTED.contains(text.getText()))
 		{
 			return;
 		}
 
-		Widget head = client.getWidget(ComponentID.DIALOG_NPC_HEAD_MODEL);
+		Widget head = client.getWidget(InterfaceID.ChatLeft.HEAD);
 		if (head == null || head.getModelType() != WidgetModelType.NPC_CHATHEAD)
 		{
 			return;
@@ -90,7 +90,7 @@ public class ProtectionCapture
 		{
 			// Picking a patch from the farmer's dialogue list by clicking it.
 			Widget widget = event.getWidget();
-			if (widget != null && widget.getId() == ComponentID.DIALOG_OPTION_OPTIONS
+			if (widget != null && widget.getId() == InterfaceID.Chatmenu.OPTIONS
 				&& widget.getIndex() > -1 && isPatchOption(widget.getText()))
 			{
 				// Child 0 is the "Select an Option" header.
@@ -118,7 +118,7 @@ public class ProtectionCapture
 		int componentId = intStack[0];
 		int subId = intStack[1];
 
-		if (componentId != ComponentID.DIALOG_OPTION_OPTIONS || subId <= -1)
+		if (componentId != InterfaceID.Chatmenu.OPTIONS || subId <= -1)
 		{
 			return;
 		}

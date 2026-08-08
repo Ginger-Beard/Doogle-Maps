@@ -1,6 +1,6 @@
 package com.dooglemaps.bank;
 
-import java.lang.reflect.Constructor;
+import com.dooglemaps.Construct;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import org.junit.Test;
@@ -144,7 +144,6 @@ public class BankContentsTest
 	}
 
 	/** A store over a fake config map, the same fixture shape the store tests all use. */
-	@SuppressWarnings("unchecked")
 	private static BankContents construct(java.util.Map<String, String> stored) throws Exception
 	{
 		net.runelite.client.config.ConfigManager configManager =
@@ -161,9 +160,6 @@ public class BankContentsTest
 			org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
 			org.mockito.ArgumentMatchers.any());
 
-		Constructor<BankContents> constructor =
-			(Constructor<BankContents>) BankContents.class.getDeclaredConstructors()[0];
-		constructor.setAccessible(true);
-		return constructor.newInstance(configManager, new com.google.gson.Gson());
+		return Construct.construct(BankContents.class, configManager, new com.google.gson.Gson());
 	}
 }

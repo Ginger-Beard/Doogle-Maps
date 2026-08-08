@@ -6,7 +6,6 @@ import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.ProduceState;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.HashMap;
 import java.util.Map;
 import net.runelite.client.config.ConfigManager;
@@ -14,6 +13,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -83,20 +83,6 @@ public class PersistenceTest
 		Object group = invocation.getArgument(0);
 		Object name = invocation.getArgument(1);
 		return group + "." + name;
-	}
-
-	@SuppressWarnings("unchecked")
-	private <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 
 	private PatchStateStore newStateStore() throws Exception

@@ -7,7 +7,6 @@ import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.HashMap;
 import java.util.Map;
 import net.runelite.client.config.ConfigManager;
@@ -16,6 +15,7 @@ import org.junit.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -289,19 +289,5 @@ public class DiseaseStatsStoreTest
 	{
 		assertEquals("expected one crop/tier row", 1, store.getAll().size());
 		return store.getAll().get(0);
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

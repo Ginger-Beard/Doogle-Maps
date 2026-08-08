@@ -585,8 +585,12 @@ public class RunPlanner
 			{
 				continue;
 			}
-			boolean paid = protection.isProtecting(groups.groupFor(patch), seed)
-				&& DiseaseRisk.isProtectable(patch);
+			// A grown flower beside an allotment is the same guarantee a payment buys -
+			// wiki-checked, see FlowerGuard - so the estimate treats the two alike.
+			boolean paid = (protection.isProtecting(groups.groupFor(patch), seed)
+				&& DiseaseRisk.isProtectable(patch))
+				|| com.dooglemaps.state.FlowerGuard.guarding(stateStore, patch,
+					seed.getProduce());
 			total += DiseaseRisk.survivalChance(patch, seed.getProduce(), compost, paid,
 				groups.isProtected(patch));
 			counted++;

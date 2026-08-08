@@ -17,9 +17,9 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
-import net.runelite.api.Varbits;
 import net.runelite.api.gameval.InventoryID;
 import net.runelite.api.gameval.ItemID;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.game.ItemManager;
 
@@ -151,10 +151,10 @@ public class FarmingBonusStore
 	 */
 	public void recordDiaries()
 	{
-		int flags = (client.getVarbitValue(Varbits.DIARY_KANDARIN_MEDIUM) == 1 ? 1 : 0)
-			| (client.getVarbitValue(Varbits.DIARY_KANDARIN_HARD) == 1 ? 2 : 0)
-			| (client.getVarbitValue(Varbits.DIARY_KANDARIN_ELITE) == 1 ? 4 : 0)
-			| (client.getVarbitValue(Varbits.DIARY_KOUREND_HARD) == 1 ? 8 : 0);
+		int flags = (client.getVarbitValue(VarbitID.KANDARIN_DIARY_MEDIUM_COMPLETE) == 1 ? 1 : 0)
+			| (client.getVarbitValue(VarbitID.KANDARIN_DIARY_HARD_COMPLETE) == 1 ? 2 : 0)
+			| (client.getVarbitValue(VarbitID.KANDARIN_DIARY_ELITE_COMPLETE) == 1 ? 4 : 0)
+			| (client.getVarbitValue(VarbitID.KOUREND_DIARY_HARD_COMPLETE) == 1 ? 8 : 0);
 
 		Integer stored = configManager.getRSProfileConfiguration(
 			DoogleMapsConfig.GROUP, DIARY_KEY, int.class);

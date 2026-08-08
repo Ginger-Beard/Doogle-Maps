@@ -182,17 +182,28 @@ class DataTable extends JPanel
 	 * <p>Millions get their own step. A run's projection never reaches seven figures, but the
 	 * plant-out one does the moment anyone banks a serious number of seeds — and "7279k" is both
 	 * wider than the column and harder to read at a glance than "7.3M".
+	 *
+	 * <p>The hand-off to millions goes by the rounded thousands, not the raw value: 999,500
+	 * rounds up to "1000k", which is exactly the five-character width the M step exists to
+	 * avoid, so it reads "1M" instead. And negatives — a costed projection can be a loss —
+	 * format their absolute value through the same steps behind a minus, rather than falling
+	 * through to a seven-digit raw number.
 	 */
 	static String shortNumber(double value)
 	{
-		long rounded = Math.round(value);
-		if (rounded >= 1_000_000)
+		if (value < 0)
+		{
+			return "-" + shortNumber(-value);
+		}
+		long thousands = Math.round(value / 1000);
+		if (thousands >= 1000)
 		{
 			return String.format("%.1fM", value / 1_000_000).replace(".0M", "M");
 		}
+		long rounded = Math.round(value);
 		if (rounded >= 100_000)
 		{
-			return Math.round(value / 1000) + "k";
+			return thousands + "k";
 		}
 		if (rounded >= 1_000)
 		{

@@ -1,6 +1,5 @@
 package com.dooglemaps.ui;
 
-import java.lang.reflect.Constructor;
 import java.util.HashMap;
 import java.util.Map;
 import net.runelite.client.config.ConfigManager;
@@ -8,6 +7,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -96,13 +96,5 @@ public class PanelLayoutStoreTest
 			.setRSProfileConfiguration(anyString(), anyString(), Mockito.<Object>any());
 		verify(configManager, never())
 			.getRSProfileConfiguration(anyString(), anyString(), Mockito.<Class<Boolean>>any());
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		Constructor<?> constructor = type.getDeclaredConstructors()[0];
-		constructor.setAccessible(true);
-		return (T) constructor.newInstance(args);
 	}
 }

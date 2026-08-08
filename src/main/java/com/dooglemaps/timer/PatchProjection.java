@@ -59,6 +59,22 @@ public class PatchProjection
 	 */
 	boolean stump;
 
+	/**
+	 * The raw varbit the projection was built from, or -1 where none was.
+	 *
+	 * <p>Here for the handful of states the decode genuinely cannot express — verified against
+	 * upstream's own source comments in the August mechanics audit. A celastrus at value 17 is
+	 * a <i>depleted</i> tree ("Chop"), at 28 a stump ("Clear"), and at 14–16 a tree with bark;
+	 * all five decode to the same {@code HARVESTABLE stage 0..2} tuples. A grape patch at 0 is
+	 * untreated soil and at 1 saltpetred; both decode as weeds. The raw value is the only
+	 * place those differences survive, exactly as it already was for tree stumps.
+	 */
+	int varbitValue;
+
+	/** The celastrus values whose decode lies: 17 is the stripped tree, 28 its stump. */
+	private static final int CELASTRUS_DEPLETED = 17;
+	private static final int CELASTRUS_STUMP = 28;
+
 	public boolean isReady()
 	{
 		return cropState == CropState.HARVESTABLE
@@ -120,6 +136,14 @@ public class PatchProjection
 			// your pack" has to be able to end that.
 			return false;
 		}
+		if (patch.getImplementation() == PatchImplementation.CELASTRUS
+			&& varbitValue == CELASTRUS_DEPLETED)
+		{
+			// Stripped of bark, and the decode cannot say so - value 17 reads identically to a
+			// tree with bark. Without this the guide said "chop the bark" at a tree with none,
+			// forever, which is the stale-instruction class the stump rule exists for.
+			return false;
+		}
 		return !regrows() || livesRemaining > 0;
 	}
 
@@ -133,6 +157,13 @@ public class PatchProjection
 	 */
 	public boolean isChoppable()
 	{
+		if (patch.getImplementation() == PatchImplementation.CELASTRUS)
+		{
+			// Only the stripped tree is chopped down; a celastrus with bark is harvested, and
+			// its stump is dug. The raw value is the only thing that can say which - see the
+			// field note on varbitValue.
+			return varbitValue == CELASTRUS_DEPLETED;
+		}
 		return cropState == CropState.HARVESTABLE
 			&& !stump
 			&& !isEmpty()

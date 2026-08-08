@@ -23,15 +23,16 @@ import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameObject;
 import net.runelite.api.GameState;
-import net.runelite.api.ItemID;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Tile;
+import net.runelite.api.WorldView;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.MenuOptionClicked;
-import net.runelite.api.widgets.ComponentID;
+import net.runelite.api.gameval.InterfaceID;
+import net.runelite.api.gameval.ItemID;
 import net.runelite.api.widgets.Widget;
 import net.runelite.client.eventbus.Subscribe;
 
@@ -62,10 +63,10 @@ public class CompostCapture
 		"This is an? .+\\. The soil has been treated with (?<compostType>ultra|super|)compost\\..*");
 
 	private static final Set<Integer> COMPOST_ITEMS = ImmutableSet.of(
-		ItemID.COMPOST,
-		ItemID.SUPERCOMPOST,
-		ItemID.ULTRACOMPOST,
-		ItemID.BOTTOMLESS_COMPOST_BUCKET_22997
+		ItemID.BUCKET_COMPOST,
+		ItemID.BUCKET_SUPERCOMPOST,
+		ItemID.BUCKET_ULTRACOMPOST,
+		ItemID.BOTTOMLESS_COMPOST_BUCKET_FILLED
 	);
 
 	@Value
@@ -116,8 +117,9 @@ public class CompostCapture
 			return;
 		}
 
+		WorldView worldView = client.getTopLevelWorldView();
 		WorldPoint actionLocation = WorldPoint.fromScene(
-			client, event.getParam0(), event.getParam1(), client.getPlane());
+			worldView, event.getParam0(), event.getParam1(), worldView.getPlane());
 
 		FarmPatch target = findPatch(actionLocation, patchDef.getVarbitId());
 		if (target == null)
@@ -156,7 +158,7 @@ public class CompostCapture
 				Widget selected = client.getSelectedWidget();
 				return selected != null
 					&& (COMPOST_ITEMS.contains(selected.getItemId())
-					|| selected.getId() == ComponentID.SPELLBOOK_FERTILE_SOIL);
+					|| selected.getId() == InterfaceID.MagicSpellbook.FERTILE_SOIL);
 
 			case GAME_OBJECT_FIRST_OPTION:
 			case GAME_OBJECT_SECOND_OPTION:
@@ -210,13 +212,14 @@ public class CompostCapture
 		}
 
 		// The scene may have reloaded since the click, so re-resolve from the world point.
-		LocalPoint localPatch = LocalPoint.fromWorld(client, pendingCompost.getPatchLocation());
+		WorldView worldView = client.getTopLevelWorldView();
+		LocalPoint localPatch = LocalPoint.fromWorld(worldView, pendingCompost.getPatchLocation());
 		if (localPatch == null)
 		{
 			return false;
 		}
 
-		Tile tile = client.getScene().getTiles()[client.getPlane()][localPatch.getSceneX()][localPatch.getSceneY()];
+		Tile tile = worldView.getScene().getTiles()[worldView.getPlane()][localPatch.getSceneX()][localPatch.getSceneY()];
 		if (tile == null)
 		{
 			return false;

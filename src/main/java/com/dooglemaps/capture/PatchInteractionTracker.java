@@ -342,9 +342,14 @@ public class PatchInteractionTracker
 		ProduceState current)
 	{
 		PatchSnapshot snapshot = stateStore.get(patch);
+		// A grown flower guarding the allotment counts as protection - same guarantee as the
+		// payment, and the prediction has to know or the stats read every guarded cycle as
+		// beating the odds. See FlowerGuard.
+		boolean flowerGuarded = com.dooglemaps.state.FlowerGuard.guarding(stateStore, patch,
+			current.getProduce());
 		diseaseStats.observe(patch, previous, current,
 			snapshot == null ? CompostTier.NONE : snapshot.getCompost(),
-			snapshot != null && snapshot.isPatchProtected(),
+			(snapshot != null && snapshot.isPatchProtected()) || flowerGuarded,
 			protectedPatches.isProtected(patch));
 	}
 
@@ -353,8 +358,23 @@ public class PatchInteractionTracker
 	{
 		if (previous.getProduce() == Produce.WEEDS
 			|| current.getProduce() == Produce.WEEDS
-			|| current.getProduce() != previous.getProduce()
-			|| previous.getTickRate() <= 0)
+			|| current.getProduce() != previous.getProduce())
+		{
+			return false;
+		}
+
+		// Before the tick-rate guard, which would otherwise swallow it: a DISEASED state
+		// carries a tick rate of 0 — the crop has stopped growing, which is what diseased
+		// means — but the death that follows is still a growth tick landing, and it is the
+		// one transition where knowing so matters most. Found by this method's own tests,
+		// which pinned the unreachable branch until this was decided.
+		if (previous.getCropState() == CropState.DISEASED
+			&& current.getCropState() == CropState.DEAD)
+		{
+			return true;
+		}
+
+		if (previous.getTickRate() <= 0)
 		{
 			return false;
 		}
@@ -379,7 +399,7 @@ public class PatchInteractionTracker
 			}
 		}
 
-		return previous.getCropState() == CropState.DISEASED && current.getCropState() == CropState.DEAD;
+		return false;
 	}
 
 }

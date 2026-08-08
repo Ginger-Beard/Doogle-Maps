@@ -11,7 +11,6 @@ import com.dooglemaps.state.FarmingBonusStore;
 import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.timer.FarmingBonuses;
-import java.lang.reflect.Constructor;
 import java.util.HashMap;
 import java.util.Map;
 import net.runelite.api.Item;
@@ -24,6 +23,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -549,19 +549,5 @@ public class HarvestLogTest
 		Map<String, HarvestRecord> open = new HashMap<>(log.getOpenHarvests());
 		assertEquals("expected exactly one harvest in flight", 1, open.size());
 		return open.values().iterator().next();
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

@@ -21,6 +21,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -247,13 +248,5 @@ public class SkippedStopStaysFinishedTest
 			}
 		}
 		return (GuideTracker) constructor.newInstance(args);
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		Constructor<?> constructor = type.getDeclaredConstructors()[0];
-		constructor.setAccessible(true);
-		return (T) constructor.newInstance(args);
 	}
 }

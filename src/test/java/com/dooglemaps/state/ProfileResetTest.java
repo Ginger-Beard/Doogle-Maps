@@ -11,7 +11,6 @@ import com.dooglemaps.timer.FarmingBonuses;
 import com.dooglemaps.validate.CropHarvestStats;
 import com.dooglemaps.validate.HarvestStatsStore;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Map;
@@ -22,6 +21,7 @@ import org.junit.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -357,19 +357,5 @@ public class ProfileResetTest
 		FarmPatch patch = FarmingWorldData.getPatch(FALADOR_NORTH);
 		assertNotNull("fixture patch no longer exists", patch);
 		return patch;
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

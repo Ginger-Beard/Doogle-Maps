@@ -17,7 +17,6 @@ import com.dooglemaps.state.SeedSource;
 import com.dooglemaps.timer.GrowthTimer;
 import com.dooglemaps.timer.PatchProjection;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.List;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
@@ -29,6 +28,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -813,6 +813,126 @@ public class GuidePlanTest
 		return null;
 	}
 
+	/**
+	 * A patch in a diseased state, found by scanning the varbit table.
+	 *
+	 * <p>Scanned rather than listed so the fixture survives table regeneration; null when the
+	 * type has no diseased state at all, which a test should treat as its answer.
+	 */
+	private FarmPatch diseased(PatchImplementation type)
+	{
+		for (FarmPatch patch : FarmingWorldData.getPatches(type))
+		{
+			for (int value = 0; value < 256; value++)
+			{
+				ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+				if (decoded == null
+					|| decoded.getCropState() != com.dooglemaps.data.CropState.DISEASED)
+				{
+					continue;
+				}
+				patches.recordVarbit(patch, value, decoded);
+				return patch;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * The cure, at last: a diseased crop was routed to and then silently skipped.
+	 *
+	 * <p>{@code DISEASED} has always been actionable, so the run walked the player to their
+	 * dying crop — and the plan then had no branch for the state, produced no step, and the
+	 * nothing-to-do exemption crossed the patch off. The most urgent click on the run was the
+	 * one with no word for it.
+	 */
+	@Test
+	public void aDiseasedHerbAsksForAPlantCure()
+	{
+		FarmPatch patch = diseased(PatchImplementation.HERB);
+		assertNotNull("no herb patch has a diseased state in the table", patch);
+
+		List<GuideStep> steps = steps(patch, Seed.RANARR);
+		assertEquals("cure before anything else", GuideAction.CURE, steps.get(0).getAction());
+		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("plant cure"));
+	}
+
+	/** Trees are pruned, not dosed - the cure tool splits by family. */
+	@Test
+	public void aDiseasedTreeIsPrunedWithSecateurs()
+	{
+		FarmPatch patch = diseased(PatchImplementation.TREE);
+		assertNotNull("no tree patch has a diseased state in the table", patch);
+
+		List<GuideStep> steps = steps(patch, Seed.YEW);
+		assertEquals(GuideAction.CURE, steps.get(0).getAction());
+		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("secateurs"));
+	}
+
+	/**
+	 * Harvest-only runs never see a cure, matching the routing: a diseased patch has nothing
+	 * to pick, so a harvest-only run is never sent to one in the first place.
+	 */
+	@Test
+	public void aHarvestOnlyRunIsNotAskedToCure()
+	{
+		FarmPatch patch = diseased(PatchImplementation.HERB);
+		assertNotNull(patch);
+
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		assertNotNull(projection);
+		assertTrue("nothing to do here on a harvest-only visit",
+			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch),
+				null, seeds, compost, carried, leprechaun, barbarian,
+				false, /* harvestOnly */ true, 1).isEmpty());
+	}
+
+	/**
+	 * The celastrus states the decode collapses, recovered by raw varbit.
+	 *
+	 * <p>Bark at 14–16, the stripped tree at 17, the stump at 28 — all decode HARVESTABLE, so
+	 * before the raw value was carried the guide said "chop the bark" at a tree with none,
+	 * forever. Values are upstream's own source comments, verified in the PatchRules audit.
+	 */
+	@Test
+	public void aCelastrusWalksBarkThenChopThenDig()
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.CELASTRUS).get(0);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+
+		recordValue(patch, 14);
+		GuideStep bark = firstStep(patch, Seed.CELASTRUS);
+		assertEquals("bark first", GuideAction.HARVEST, bark.getAction());
+		assertTrue(bark.getText(), bark.getText().toLowerCase().contains("bark"));
+
+		recordValue(patch, 17);
+		GuideStep chop = firstStep(patch, Seed.CELASTRUS);
+		assertEquals("a stripped tree is chopped down", GuideAction.CHOP, chop.getAction());
+
+		recordValue(patch, 28);
+		GuideStep dig = firstStep(patch, Seed.CELASTRUS);
+		assertEquals("and its stump is dug", GuideAction.CLEAR, dig.getAction());
+		assertTrue(dig.getText(), dig.getText().toLowerCase().contains("stump"));
+	}
+
+	/**
+	 * The vinery's soil states, likewise: 0 untreated, 1 saltpetred, both decoding as empty.
+	 */
+	@Test
+	public void aGrapePatchAsksForSaltpetreBeforeTheSeed()
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.GRAPES).get(0);
+
+		recordValue(patch, 0);
+		GuideStep treat = firstStep(patch, Seed.GRAPE);
+		assertTrue("untreated soil wants saltpetre, not a seed",
+			treat.getText().toLowerCase().contains("saltpetre"));
+
+		recordValue(patch, 1);
+		GuideStep plant = firstStep(patch, Seed.GRAPE);
+		assertEquals("treated soil takes the seed", GuideAction.PLANT, plant.getAction());
+	}
+
 	private List<GuideStep> steps(FarmPatch patch, Seed chosen)
 	{
 		return steps(patch, chosen, group(patch));
@@ -917,19 +1037,5 @@ public class GuidePlanTest
 	{
 		seeds.record(source.getContainerId(),
 			containerOf(seed.getPlantedItemID(), quantity));
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

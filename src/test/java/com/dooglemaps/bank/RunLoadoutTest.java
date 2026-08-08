@@ -21,7 +21,6 @@ import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.timer.FarmingOutfit;
 import com.dooglemaps.timer.GrowthTimer;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
@@ -34,6 +33,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -1130,7 +1130,12 @@ public class RunLoadoutTest
 
 	private void readyFruitTreePatch()
 	{
-		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.FRUIT_TREE))
+		readyPatchOf(PatchImplementation.FRUIT_TREE);
+	}
+
+	private void readyPatchOf(PatchImplementation type)
+	{
+		for (FarmPatch patch : FarmingWorldData.getPatches(type))
 		{
 			ProduceState decoded = patch.getImplementation().forVarbitValue(0);
 			assertNotNull(decoded);
@@ -1138,7 +1143,74 @@ public class RunLoadoutTest
 			availability.setAvailable(patch, true);
 			return;
 		}
-		throw new AssertionError("no fruit tree patch in the generated world data");
+		throw new AssertionError("no " + type + " patch in the generated world data");
+	}
+
+	/** The vinery refuses a grape seed until the soil is treated - one saltpetre per patch. */
+	@Test
+	public void aGrapeRunAsksForItsSaltpetre()
+	{
+		readyPatchOf(PatchImplementation.GRAPES);
+		bankHolds(net.runelite.api.gameval.ItemID.HOSIDIUS_SALTPETRE, 40);
+
+		LoadoutItem saltpetre = itemNamed(EnumSet.of(PatchImplementation.GRAPES), "Saltpetre");
+		assertNotNull("a grape run cannot plant a thing without it", saltpetre);
+		assertEquals(LoadoutItem.Need.WITHDRAW, saltpetre.getNeed());
+		assertEquals("one per patch", 1, saltpetre.getQuantity());
+		assertEquals("and counted on the slot like the seeds are", 1,
+			saltpetre.getWithdrawCount());
+	}
+
+	/** The underwater patches are sealed without the suit - both pieces, worn. */
+	@Test
+	public void aSeaweedRunAsksForTheDivingSuit()
+	{
+		readyPatchOf(PatchImplementation.SEAWEED);
+		bankHolds(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_HELMET, 1);
+		bankHolds(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_BACKPACK, 1);
+
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.SEAWEED);
+		assertNotNull("no helmet, no dive", itemNamed(types, "Fishbowl helmet"));
+		assertNotNull("no apparatus, no dive", itemNamed(types, "Diving apparatus"));
+	}
+
+	/** The medallion reaches the reef alone, so a coral-only run with one needs no suit. */
+	@Test
+	public void theMedallionSpareTheSuitForACoralOnlyRun()
+	{
+		readyPatchOf(PatchImplementation.CORAL);
+		carrying(net.runelite.api.gameval.ItemID.MEDALLION_OF_THE_DEEP, 1);
+		bankHolds(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_HELMET, 1);
+
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.CORAL);
+		assertNotNull("the medallion is the whole requirement",
+			itemNamed(types, "Medallion of the deep"));
+		assertNull("so the suit is not asked for", itemNamed(types, "Fishbowl helmet"));
+	}
+
+	/** A calquat clears with a spade alone, like a bush - the wiki is plain. No axe, ever. */
+	@Test
+	public void aCalquatRunNeedsNoAxe()
+	{
+		readyPatchOf(PatchImplementation.CALQUAT);
+		bankHolds(ItemID.RUNE_AXE, 1);
+		woodcuttingLevel(99);
+
+		assertNull("no chop anywhere in a calquat's life",
+			axeIn(EnumSet.of(PatchImplementation.CALQUAT)));
+	}
+
+	/** Celastrus bark comes off with an axe, so even harvest-only celastrus swings one. */
+	@Test
+	public void aHarvestOnlyCelastrusRunStillNeedsItsAxe()
+	{
+		readyPatchOf(PatchImplementation.CELASTRUS);
+		bankHolds(ItemID.RUNE_AXE, 1);
+		woodcuttingLevel(99);
+		Mockito.when(runTypes.isHarvestOnly(Mockito.any())).thenReturn(true);
+
+		assertNotNull("the bark IS the axe - the one type whose harvest swings it",
+			axeIn(EnumSet.of(PatchImplementation.CELASTRUS)));
 	}
 
 	/**
@@ -1161,16 +1233,23 @@ public class RunLoadoutTest
 		assertNull("picking fruit swings nothing", axeIn(fruit));
 	}
 
-	/** For a plain tree the harvest IS the chop, so harvest-only changes nothing. */
+	/**
+	 * A harvest-only tree run needs no axe either — wiki-checked, not assumed.
+	 *
+	 * <p>The health check is where a tree patch's value is and it needs no tool; the chop only
+	 * clears the patch for a replant, and farmed trees do not regrow for re-chopping. This
+	 * asserted the opposite for a day, on a "the harvest is the chop" model the wiki does not
+	 * support.
+	 */
 	@Test
-	public void aHarvestOnlyTreeRunStillNeedsItsAxe()
+	public void aHarvestOnlyTreeRunNeedsNoAxeEither()
 	{
 		readyTreePatch();
 		bankHolds(ItemID.RUNE_AXE, 1);
 		woodcuttingLevel(99);
 		Mockito.when(runTypes.isHarvestOnly(Mockito.any())).thenReturn(true);
 
-		assertNotNull("coming back for the logs still means swinging an axe",
+		assertNull("checking health swings nothing, and that is the whole visit",
 			axeIn(EnumSet.of(PatchImplementation.TREE)));
 	}
 
@@ -1500,19 +1579,5 @@ public class RunLoadoutTest
 		int[] tick = {0};
 		when(client.getTickCount()).thenAnswer(i -> tick[0]++);
 		return client;
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

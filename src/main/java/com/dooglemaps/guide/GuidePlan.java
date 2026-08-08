@@ -91,10 +91,27 @@ public final class GuidePlan
 		// deliberately treats WEEDS as empty. Only the un-raked case needs an instruction, and
 		// without it the guide said "treat the patch" and "plant the seed" on ground the game
 		// would not accept either on. Never seen in play because autoweed was on.
-		if (projection.getProduce() == Produce.WEEDS && projection.getStage() > 0)
+		if (projection.getProduce() == Produce.WEEDS && projection.getStage() > 0
+			&& patch.getImplementation() != PatchImplementation.GRAPES)
 		{
 			addToolStep(steps, patch, FarmingTool.RAKE, carried, leprechaun);
 			steps.add(GuideStep.of(GuideAction.CLEAR, patch, "Rake the weeds."));
+			return steps;
+		}
+
+		// 0.2 The vinery, whose empty states the decode disguises as weeds — a grape patch is
+		//     never raked, which is why it is excluded from the branch above. Varbit 0 is
+		//     untreated soil and 1 is saltpetred; upstream's source comments are the provenance
+		//     ("Empty, empty+fertilizer"), verified in the PatchRules audit. Without this the
+		//     guide said "rake the weeds" and then "plant the grape seed" at soil the game
+		//     refuses both on. State-driven: treat it, the varbit moves to 1, and the next
+		//     tick offers the planting.
+		if (patch.getImplementation() == PatchImplementation.GRAPES
+			&& projection.getVarbitValue() == 0
+			&& !harvestOnly && chosen != null)
+		{
+			steps.add(GuideStep.withItem(GuideAction.CLEAR, patch, ItemID.HOSIDIUS_SALTPETRE,
+				"Treat the soil with saltpetre before anything can be planted."));
 			return steps;
 		}
 
@@ -149,7 +166,13 @@ public final class GuidePlan
 		//
 		//     No axe step. The leprechaun stores every farming tool except an axe, so there is
 		//     nothing to withdraw here; carrying one is a bank-leg problem and RunLoadout says so.
-		if (projection.isChoppable())
+		//
+		//     Not on a harvest-only run, and that is a wiki fact rather than a modelling choice:
+		//     the health check above is where a tree patch's value is, farmed trees do not
+		//     regrow for re-chopping, and the chop only clears the patch for a replant the
+		//     player has said they are not making. A checked tree on a harvest-only run is a
+		//     finished one.
+		if (projection.isChoppable() && !harvestOnly)
 		{
 			steps.add(GuideStep.of(GuideAction.CHOP, patch,
 				"Chop down the " + projection.getProduce().getName().toLowerCase() + "."));
@@ -173,8 +196,7 @@ public final class GuidePlan
 						+ projection.getProduce().getName().toLowerCase()
 						+ " with the tool leprechaun."));
 			}
-			steps.add(GuideStep.of(GuideAction.HARVEST, patch,
-				"Harvest the " + projection.getProduce().getName().toLowerCase() + "."));
+			steps.add(GuideStep.of(GuideAction.HARVEST, patch, harvestText(projection)));
 			return steps;
 		}
 
@@ -190,9 +212,32 @@ public final class GuidePlan
 		//    and weeds are the same job from the player's side, so they read the same.
 		if (projection.getCropState() == CropState.DEAD)
 		{
+			// Except the redwood, which a spade cannot touch - the only tree with no
+			// self-removal. Clearing it is paying Alexandra 2,000 coins, wiki-checked.
+			if (patch.getImplementation() == PatchImplementation.REDWOOD)
+			{
+				steps.add(GuideStep.atNpc(GuideAction.CLEAR, patch, ItemID.COINS,
+					patch.getFarmer(),
+					"Pay Alexandra 2,000 coins to remove the dead redwood - a spade cannot."));
+				return steps;
+			}
 			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
 			steps.add(GuideStep.of(GuideAction.CLEAR, patch,
 				"Clear the dead " + projection.getProduce().getName().toLowerCase() + "."));
+			return steps;
+		}
+
+		// 2.5 Diseased is the state with a clock on it: the crop has stopped growing and the
+		//     next cycle can kill it, so curing is the most urgent click on the whole run —
+		//     and it used to be the one the guide had no word for. The patch was actionable,
+		//     the run routed to it, and this fell through to "growing, leave it alone": the
+		//     player was walked to their dying ranarr and told nothing.
+		//
+		//     Never for DEAD - a cure fails on a dead crop, which is why the branch above
+		//     returns first - and never for a mature crop, which cannot be diseased at all.
+		if (projection.getCropState() == CropState.DISEASED)
+		{
+			addCureSteps(steps, projection, carried, leprechaun);
 			return steps;
 		}
 
@@ -222,6 +267,7 @@ public final class GuidePlan
 		{
 			return steps;
 		}
+
 
 		// 3. Compost, then the seed. Preferred in that order because it is one fewer thing to
 		//    remember once a crop is in the ground — but not required: see the just-planted
@@ -294,6 +340,80 @@ public final class GuidePlan
 			"Pay the farmer " + payment.getQuantity() + " "
 				+ payment.getProduce().getName().toLowerCase()
 				+ " to protect the " + projection.getProduce().getName().toLowerCase() + "."));
+	}
+
+	/**
+	 * The families whose diseased crop is pruned back to health with secateurs.
+	 *
+	 * <p>Wiki-checked: trees, fruit trees, spirit trees, bushes and calquats are pruned
+	 * (either kind of secateurs; it can take a few attempts). Everything else takes a plant
+	 * cure — herbs, flowers, allotments, hops, hardwoods, celastrus, belladonna, cactus,
+	 * mushroom — and the Lunar Cure Plant spell stands in for either.
+	 */
+	private static final java.util.Set<PatchImplementation> PRUNED_HEALTHY = java.util.EnumSet.of(
+		PatchImplementation.TREE,
+		PatchImplementation.FRUIT_TREE,
+		PatchImplementation.SPIRIT_TREE,
+		PatchImplementation.BUSH,
+		PatchImplementation.CALQUAT);
+
+	/**
+	 * The cure, with the fetch for its tool in front of it when the leprechaun holds one.
+	 *
+	 * <p>The step is emitted even with nothing in hand: the instruction is still true, the
+	 * patch is still the thing to deal with, and the player has answers the plugin cannot see
+	 * — the Cure Plant spell, or the farming shop beside most patch areas.
+	 */
+	private static void addCureSteps(List<GuideStep> steps, PatchProjection projection,
+		CarriedItems carried, LeprechaunStore leprechaun)
+	{
+		FarmPatch patch = projection.getPatch();
+		String crop = projection.getProduce().getName().toLowerCase();
+
+		if (PRUNED_HEALTHY.contains(patch.getImplementation()))
+		{
+			if (!carried.hasAny(ItemID.SECATEURS, ItemID.FAIRY_ENCHANTED_SECATEURS)
+				&& (leprechaun.has(FarmingTool.SECATEURS)
+					|| leprechaun.has(FarmingTool.MAGIC_SECATEURS)))
+			{
+				steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_TOOL, patch,
+					ItemID.SECATEURS, null,
+					"Get your secateurs from the tool leprechaun - you are not carrying any."));
+			}
+			steps.add(GuideStep.of(GuideAction.CURE, patch,
+				"Prune the diseased " + crop + " with secateurs before it dies."));
+			return;
+		}
+
+		if (!carried.has(ItemID.PLANT_CURE) && leprechaun.has(FarmingTool.PLANT_CURE))
+		{
+			steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_TOOL, patch,
+				ItemID.PLANT_CURE, null,
+				"Get a plant cure from the tool leprechaun."));
+		}
+		steps.add(GuideStep.of(GuideAction.CURE, patch,
+			"Use a plant cure on the diseased " + crop + " before it dies."));
+	}
+
+	/**
+	 * What picking this patch is called, which is not always "harvest".
+	 *
+	 * <p>Celastrus bark comes off with an axe, so saying "harvest" undersells what the click
+	 * needs; belladonna burns bare hands, and the one moment to say so is the instruction to
+	 * touch it. Both wiki-checked.
+	 */
+	private static String harvestText(PatchProjection projection)
+	{
+		String crop = projection.getProduce().getName().toLowerCase();
+		switch (projection.getPatch().getImplementation())
+		{
+			case CELASTRUS:
+				return "Chop the bark from the celastrus tree - it takes an axe.";
+			case BELLADONNA:
+				return "Harvest the belladonna wearing gloves - bare hands take damage.";
+			default:
+				return "Harvest the " + crop + ".";
+		}
 	}
 
 	/**

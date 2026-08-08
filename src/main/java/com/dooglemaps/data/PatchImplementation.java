@@ -133,6 +133,15 @@ public enum PatchImplementation
 	 */
 	public boolean isStumpVarbitValue(int value)
 	{
+		// Celastrus has exactly one stump value and the table's shape cannot find it - the
+		// stripped tree at 17 and the stump at 28 both sit beside bark states that decode
+		// identically. The value is from upstream's own source comments ("Celastrus tree
+		// stump[Clear]"), verified in the August PatchRules audit.
+		if (this == CELASTRUS)
+		{
+			return value == 28;
+		}
+
 		if (this != TREE && this != HARDWOOD_TREE)
 		{
 			return false;

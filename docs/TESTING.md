@@ -1034,13 +1034,66 @@ whole feature, matched Ground Items style by the game's item names against the b
   diary teleports) have limits no plugin can see. Resolved by matching Shortest Path's
   display text against the names of items you own, suffixes stripped both sides; when
   nothing resolves, nothing appears.
-- **Pass**: the axe rule, plainly: a tree/hardwood/redwood run always asks (the harvest is
-  the chop), a fruit tree or calquat run asks only when replanting — harvest-only picks and
-  never chops — and a tree-shaped contract asks because a contract is never harvest-only.
+- **Pass**: the axe rule, wiki-checked: any replanting run over a tree-shaped type asks for
+  an axe; a harvest-only run never does — the health check is the value and needs no tool,
+  farmed trees do not regrow for re-chopping, and even clearing has the gardener's 200-coin
+  axeless removal. A tree-shaped contract asks because a contract is never harvest-only.
+  The guide agrees: a checked tree on a harvest-only run gets no chop step and counts as
+  finished.
+- **Watch for**: "Contract business is settled here, so the guild is open to every patch:
+  ..." at INFO. It fires when the contract's claimed patch produces no steps and prints the
+  patch's varbit and projection — if the guild's step ever jumps to a herb while the
+  contract patch still visibly wants chopping, that line is the evidence.
 - **Pass**: no cyan count on a placeholder slot, anywhere - an empty slot has nothing to
   withdraw.
 - **Fail signature**: route item never appears with a route drawn → Shortest Path reworded
   its transport text; check `RouteItem.match` against what the panel's transport lines show.
+
+### 1a-xxxiv. The cure step, and the wiki-audit guidance fixes — new
+
+From `docs/farming-mechanics-audit-2026-08.md`:
+
+- **Pass**: a diseased crop on a full run gets a cure step as its first instruction — "Prune
+  the diseased X with secateurs" for trees/fruit trees/spirit trees/bushes/calquats, "Use a
+  plant cure on the diseased X" for everything else — with a leprechaun fetch step in front
+  when the tool is stored there and not carried. Previously the run routed to the dying crop
+  and said nothing.
+- **Pass**: a dead crop still says clear, never cure; a harvest-only run is never routed to
+  a diseased patch and never asked to cure one.
+- **Pass**: a dead redwood's instruction is paying Alexandra 2,000 coins, not a spade.
+- **Pass**: celastrus picking reads "Chop the bark ... it takes an axe" (and the loadout now
+  brings the axe, even harvest-only); belladonna picking warns about gloves.
+- **Pass**: a grape run's loadout asks for one saltpetre per patch, counted on the slot.
+- **Mostly settled by the PatchRules audit** (upstream source comments, byte-verified): a
+  bark-stripped celastrus (varbit 17) now says "chop down", its stump (28) says dig, and the
+  vinery's untreated soil (0) asks for saltpetre before the seed — all recovered by raw
+  varbit, the same pattern as tree stumps. Crystal trees genuinely have no stump state, so
+  the generic flow is right. Left for the client: the celastrus transition *order* (does
+  bark walk 14-16 then 17?), grapes value 1 actually appearing on saltpetre use, and
+  whether the crystal chop needs an axe.
+
+### 1a-xxxv. Pairing, flower deferral, potting advice, and the perf batch — new
+
+- **Pass**: finishing one allotment hands the step to the other allotment at the stop before
+  anything nearer — both harvests, then one noting trip. The opening pick at a stop is still
+  simply the nearest patch with work, and stickiness is untouched (both settled decisions,
+  design principle #9).
+- **Pass**: a grown flower's pick waits behind the allotments it guards — its steps list
+  last, and it is not chosen as the working patch while an allotment still has work. A
+  flower that needs *planting* keeps its normal place. Pick it last, replant it, and the
+  guard is back up for the cycle you leave behind.
+- **Pass**: allotment survival estimates and the disease stats treat a grown guarding
+  flower like a payment (marigold/rosemary/nasturtium per crop, white lily for all).
+- **Pass**: when the supply list includes filled plant pots, it ends with the advice to pot
+  and water at the bank — the five-minute grow overlaps the travel.
+- **Feel, not a number**: guild frame-rate near patches should be unchanged or better — the
+  per-tick compost count is now cached per stop-and-tier, and the idle report rides it.
+- **Regression watch**: toggling a location filter then switching tabs repeatedly should
+  never produce a ghost patch row (the row map now prunes to the tab's own patches).
+- **Pass**: arriving at a dead crop with 78+ Magic puts one line in the chatbox — "could be
+  revived with Resurrect Crops", worded for the spellbook actually equipped — once per crop,
+  never for grapes or Hespori, and never at all with the `Resurrect Crops reminder` setting
+  off or below the level. The clear step itself is unchanged.
 
 ### 1b. The order is right
 

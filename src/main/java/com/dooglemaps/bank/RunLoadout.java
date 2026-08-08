@@ -294,10 +294,12 @@ public class RunLoadout
 		addSeeds(items, types);
 		addCompost(items, types);
 		addPayments(items, types);
+		addSaltpetre(items, types);
 		addTools(items, types);
 		addGear(items);
 		addAxe(items, types);
 		addStorage(items, types);
+		addDivingGear(items, types);
 		addListedTeleports(items);
 		return items;
 	}
@@ -309,13 +311,18 @@ public class RunLoadout
 	 * an axe is not an optimisation — without one the patch cannot be cleared at all. Fruit
 	 * trees are in the list because a dead one still has to come out, even though a healthy one
 	 * is left alone to keep fruiting.
+	 *
+	 * <p><b>Calquat is deliberately absent</b>, and it used to be here: the wiki is plain that a
+	 * calquat clears with a spade alone, like a bush — no chop, no axe. <b>Celastrus is
+	 * deliberately present</b>, and it used to be missing: its bark is harvested <i>with an
+	 * axe</i>, so a celastrus run cannot do the thing it came for without one.
 	 */
 	private static final Set<PatchImplementation> NEEDS_AN_AXE = EnumSet.of(
 		PatchImplementation.TREE,
 		PatchImplementation.FRUIT_TREE,
 		PatchImplementation.HARDWOOD_TREE,
 		PatchImplementation.REDWOOD,
-		PatchImplementation.CALQUAT);
+		PatchImplementation.CELASTRUS);
 
 	/**
 	 * The best axe you own and can actually swing.
@@ -325,35 +332,29 @@ public class RunLoadout
 	 * stores every other farming tool but not this one, so it genuinely has to be carried.
 	 */
 	/**
-	 * The chop-to-harvest types, whose axe is needed whatever kind of run it is.
-	 *
-	 * <p>For a tree, hardwood or redwood the harvest <i>is</i> the chop, so even a
-	 * harvest-only trip swings an axe. Fruit trees and calquats are picked, not chopped —
-	 * their axe is for clearing before a replant, which a harvest-only visit never does.
-	 */
-	private static final Set<PatchImplementation> CHOPPED_TO_HARVEST = EnumSet.of(
-		PatchImplementation.TREE,
-		PatchImplementation.HARDWOOD_TREE,
-		PatchImplementation.REDWOOD);
-
-	/**
 	 * Whether anything on this run swings an axe.
 	 *
-	 * <p>The rule, plainly: a tree run needs one, a fruit-shaped run needs one unless it is
-	 * harvest-only, and a contract for either counts — a contract group is never harvest-only,
-	 * so it asks by the same test. Per group rather than per type, because the same fruit
-	 * trees can be a harvest-only tick and a contract's replant at once.
+	 * <p>The rule, plainly: a replanting run over any tree-shaped type needs one, a
+	 * harvest-only run never does, and a contract for a tree-shaped type counts because a
+	 * contract group is never harvest-only. Wiki-checked rather than assumed: a tree patch's
+	 * value is the health check, which needs no tool — the chop is purely clearing the patch
+	 * for the next sapling, farmed trees do not regrow for re-chopping, and even the clearing
+	 * has an axeless alternative in the gardener's 200-coin removal. Per group rather than
+	 * per type, because the same fruit trees can be a harvest-only tick and a contract's
+	 * replant at once.
 	 */
 	private boolean axeNeeded(Set<PatchImplementation> types)
 	{
 		for (PlantingGroup group : planner.countActionableByGroup(types).keySet())
 		{
-			PatchImplementation type = group.getType();
-			if (!NEEDS_AN_AXE.contains(type))
+			// Celastrus is the one type whose HARVEST is the axe: the bark comes off with
+			// one, so even a harvest-only visit swings it. Everything else chops only to
+			// clear for a replant, which harvest-only never does.
+			if (group.getType() == PatchImplementation.CELASTRUS)
 			{
-				continue;
+				return true;
 			}
-			if (CHOPPED_TO_HARVEST.contains(type) || !runTypes.isHarvestOnly(group))
+			if (NEEDS_AN_AXE.contains(group.getType()) && !runTypes.isHarvestOnly(group))
 			{
 				return true;
 			}
@@ -865,6 +866,93 @@ public class RunLoadout
 					LoadoutItem.From.BANK));
 			}
 		}
+	}
+
+	/**
+	 * The diving gear, without which the underwater patches are not so much far as sealed.
+	 *
+	 * <p>Giant seaweed grows under Fossil Island and the coral nurseries under the Great
+	 * Conch, and both areas want the fishbowl helmet and diving apparatus worn to enter —
+	 * except the reef, which the Medallion of the deep reaches on its own. A coral-only run
+	 * with the medallion in hand is therefore asked for nothing else; every other underwater
+	 * run gets the two-piece suit as rows, in the same category as the axe because the trip
+	 * genuinely cannot proceed without them.
+	 */
+	private void addDivingGear(List<LoadoutItem> items, Set<PatchImplementation> types)
+	{
+		boolean seaweed = types.contains(PatchImplementation.SEAWEED);
+		boolean coral = types.contains(PatchImplementation.CORAL);
+		if (!seaweed && !coral)
+		{
+			return;
+		}
+
+		// The medallion covers the reef alone, so it only settles a run with no seaweed leg.
+		if (!seaweed && (carried.has(ItemID.MEDALLION_OF_THE_DEEP)
+			|| bank.has(ItemID.MEDALLION_OF_THE_DEEP)))
+		{
+			items.add(new LoadoutItem(ItemID.MEDALLION_OF_THE_DEEP, "Medallion of the deep",
+				LoadoutItem.Category.TOOL,
+				need(carried.has(ItemID.MEDALLION_OF_THE_DEEP),
+					bank.has(ItemID.MEDALLION_OF_THE_DEEP), false), 0,
+				"Reaches the coral nurseries without the diving suit"));
+			return;
+		}
+
+		items.add(new LoadoutItem(ItemID.HUNDRED_PIRATE_DIVING_HELMET, "Fishbowl helmet",
+			LoadoutItem.Category.TOOL,
+			need(carried.has(ItemID.HUNDRED_PIRATE_DIVING_HELMET),
+				bank.has(ItemID.HUNDRED_PIRATE_DIVING_HELMET), false), 0,
+			"Worn to dive to the underwater patches - there is no other way in"));
+		items.add(new LoadoutItem(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK, "Diving apparatus",
+			LoadoutItem.Category.TOOL,
+			need(carried.has(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK),
+				bank.has(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK), false), 0,
+			"Worn to dive to the underwater patches - there is no other way in"));
+	}
+
+	/**
+	 * Saltpetre, for the vinery: every grape planting starts by treating the soil with one.
+	 *
+	 * <p>Wiki-checked, and previously unmodelled entirely: the patch refuses a grape seed
+	 * until it has been treated, so a grape run without saltpetre arrives able to do nothing —
+	 * the same shape of wasted trip the payments section exists to prevent. One per patch,
+	 * counted like the seeds and pots are.
+	 */
+	private void addSaltpetre(List<LoadoutItem> items, Set<PatchImplementation> types)
+	{
+		if (!types.contains(PatchImplementation.GRAPES))
+		{
+			return;
+		}
+
+		int patches = 0;
+		for (Map.Entry<PlantingGroup, Integer> entry
+			: planner.countActionableByGroup(types).entrySet())
+		{
+			if (entry.getKey().getType() == PatchImplementation.GRAPES
+				&& !plantsNothing(entry.getKey()))
+			{
+				patches += entry.getValue();
+			}
+		}
+		if (patches == 0)
+		{
+			return;
+		}
+
+		int carriedCount = carried.getCount(ItemID.HOSIDIUS_SALTPETRE);
+		int held = bank.getCount(ItemID.HOSIDIUS_SALTPETRE) + carriedCount;
+		items.add(new LoadoutItem(ItemID.HOSIDIUS_SALTPETRE, "Saltpetre",
+			LoadoutItem.Category.TOOL,
+			carriedCount >= patches ? LoadoutItem.Need.HAVE
+				: held > 0 ? LoadoutItem.Need.WITHDRAW
+				: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
+			patches,
+			Math.max(0, Math.min(patches, held) - carriedCount),
+			"One per grape patch - the vinery soil is treated with saltpetre before every "
+				+ "planting",
+			LoadoutItem.From.BANK));
 	}
 
 	/**

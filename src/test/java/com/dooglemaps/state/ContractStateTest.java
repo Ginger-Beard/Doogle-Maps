@@ -8,7 +8,6 @@ import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.HashMap;
 import java.util.Map;
 import net.runelite.client.config.ConfigManager;
@@ -16,6 +15,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -376,20 +376,6 @@ public class ContractStateTest
 			}
 		}
 		throw new AssertionError("no herb patch outside the Farming Guild");
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 	/**
 	 * A grown contract keeps its patch out of the ordinary group until the reward is collected.

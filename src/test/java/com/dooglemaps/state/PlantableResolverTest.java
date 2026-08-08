@@ -3,7 +3,6 @@ package com.dooglemaps.state;
 import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.Seed;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.List;
 import net.runelite.api.Client;
 import net.runelite.api.Item;
@@ -13,6 +12,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -231,19 +231,5 @@ public class PlantableResolverTest
 		List<Seed> order = new java.util.ArrayList<>();
 		plantables.forEach(p -> order.add(p.getSeed()));
 		return order;
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 }

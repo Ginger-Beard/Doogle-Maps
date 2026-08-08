@@ -384,6 +384,21 @@ class PatchTypePanel extends JPanel
 			addRow(patch, growthTimer.project(patch, snapshot), snapshot, true);
 		}
 
+		// The rows just rebuilt are the rows worth keeping. The map is keyed by patch and the
+		// visible set is not, so without this a toggled-off location left its PatchRow behind
+		// forever — bounded retention rather than a true leak, but a map that drifts from the
+		// thing it caches is how a ghost row appears later.
+		java.util.Set<String> shown = new java.util.HashSet<>();
+		for (PatchProjection projection : projections)
+		{
+			shown.add(projection.getPatch().getKey());
+		}
+		for (FarmPatch patch : everything)
+		{
+			shown.add(patch.getKey());
+		}
+		rows.keySet().retainAll(shown);
+
 		emptyMessage.setText(emptyMessageFor(patches.size(), projections.size()));
 		showEmptyMessage();
 

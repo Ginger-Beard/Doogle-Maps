@@ -4,7 +4,6 @@ import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.Seed;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.HashMap;
 import java.util.Map;
 import net.runelite.client.config.ConfigManager;
@@ -12,6 +11,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -125,13 +125,5 @@ public class PlantingGroupTest
 		when(configManager.getRSProfileConfiguration(anyString(), anyString()))
 			.thenAnswer(i -> stored.get(i.getArgument(1)));
 		return configManager;
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		Constructor<?> constructor = type.getDeclaredConstructors()[0];
-		constructor.setAccessible(true);
-		return (T) constructor.newInstance(args);
 	}
 }

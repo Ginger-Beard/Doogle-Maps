@@ -64,20 +64,43 @@ each so a wrong result points somewhere.
 - **Dead code sweep**, deliberately deferred until the features above are verified — several
   of the unused-looking methods are scaffolding for things half-built. See the list in
   `docs/NOTES.md`. The two unused *imports* can go any time.
-- **The deprecated-API note on every build.** Four files still use the old
-  `net.runelite.api.ItemID`, `Varbits` and `widgets.ComponentID` rather than the `gameval`
-  replacements: `CompostCapture`, `ProtectionCapture`, `CompostTier` and `FarmingBonusStore`.
-  (`PatchInteractionTracker`'s was fixed in passing, and the unchecked note from
-  `DoogleMapsPluginTest` is suppressed with a reason.)
-  **Not a package swap** — the constant *names* differ between the two, which is the trap:
-  `net.runelite.api.ItemID.COMPOST` is `gameval.ItemID.BUCKET_COMPOST`, and a rename that
-  compiles can still be the wrong item. The underlying numbers do not change, so the right way
-  is one file at a time, checking each constant's value against the old one, and it wants doing
-  on its own rather than mixed into a diff you are about to test in-game. Also worth pairing
-  with `CompostCapture`'s three other deprecations — `Client.getPlane`, `Client.getScene` and
-  `WorldPoint.fromScene` — which are behavioural rather than cosmetic and want reading properly.
-- **Guided mode: the stop is not sequenced.** Patches at a stop are ordered nearest-first,
-  which is arbitrary where a position was never learned and only the region centre is known.
+- ~~The deprecated-API note on every build.~~ **Done**: all five files (the four listed plus
+  `ProtectedPatches`) are on `gameval` now, every constant migrated by value with the mapping
+  table in the session log, and `CompostCapture`'s three behavioural deprecations rewritten
+  through `getTopLevelWorldView()`.
+- **Bottomless compost bucket: the filled bucket satisfies any tier.** The item id cannot say
+  what is inside, but the game can: varbits `FARMING_TOOLS_BOTTOMLESS_BUCKET_TYPE` (7915) and
+  `_QUANTITY` (7916) exist in gameval. RuneLite core reads neither, so the type-value-to-tier
+  mapping is unverified — sixty seconds with the Var Inspector while switching the bucket's
+  contents settles it (note the value for compost, super and ultra). Once known,
+  `LeprechaunStore` is already the varbit reader, and `RunLoadout.addCompost`'s bottomless
+  check gains a tier match. Do not guess the mapping: wrongly denying a working bucket is
+  worse than the current blind spot.
+- **Cyan counts still draw over teleport placeholders in the filtered bank.** Cosmetic, and
+  it survived the obvious fix: `drawWithdrawCount` already skips widgets with
+  `getItemQuantity() <= 0`, so a placeholder slot in a bank tag layout is apparently
+  reporting a quantity above zero (or the placeholder's widget carries the real item id with
+  the layout's quantity). Wants the Widget Inspector on a placeholder slot in the filtered
+  view to see what id and quantity it actually reports before another blind guard is added.
+- ~~Guided mode: the stop is not sequenced.~~ **Settled the other way** — nearest-first with
+  a sticky working patch is the design, locked in `docs/design-principles.md` #9: the step
+  must not move while the player weaves between close patches (Ardougne, to and from the
+  leprechaun). Deferral is the sanctioned tool for ordering, re-sorting is not.
+- **From the wiki mechanics audit** (`docs/farming-mechanics-audit-2026-08.md`) — most of it
+  now done (cure step, redwood clear, celastrus/belladonna wording, saltpetre, the axe
+  table); still open:
+  - **Flower-protects-allotment.** Two halves. The disease model half: a grown adjacent
+    flower (white lily = everything) should feed `DiseaseRisk` for allotment estimates. The
+    ordering half is subtler than "flowers first": protection wants the flower <i>planted
+    before</i> the allotments and <i>picked after</i> them, which a patch-at-a-time guide
+    cannot express with a sort order — it needs the flower patch visited twice or its pick
+    deferred to stop-end, like the leprechaun errands are.
+  - **Spirit tree simultaneous cap** (1@83, 2@88, 3@93, 4@96, unlimited@99). The cap has to
+    count trees already growing elsewhere, and whatever enforces it must be shared by the
+    planner, the loadout and the allocation or they will disagree — fits naturally into the
+    `RunScope` refactor rather than bolting on before it.
+  - **Crystal tree and depleted celastrus decode** — in-client verification, see
+    `docs/TESTING.md` §1a-xxxiv.
 - **Guided potting steps.** The loadout now asks for the filled plant pots and the watering
   can when a tree seed has no sapling potted, but the guide does not sequence the potting
   itself: sow the seed into the pot at the bank, water it, and mind the wait — a seedling
@@ -87,19 +110,6 @@ each so a wrong result points somewhere.
 - **No menu swap for the seed box.** The original spec asked for Empty as left-click. It is also
   the first thing that would modify input rather than describe it, so it wants deciding on rather
   than assuming — see `docs/design-principles.md` on the compliance line.
-- **`GuideTracker.patchesWanting` is quadratic, once a tick.** It loops the stop's patches
-  (`GuideTracker.java:1155`) and projects each one, and is itself called once per patch from
-  three places in `computeStepsHere`. Thirteen patches at the Farming Guild is 169 projections a
-  tick for an answer — "how many patches here want this compost tier" — that is the same for
-  every patch sharing a tier. Projections are individually cheap since `GrowthTimer` gained its
-  cache, so this is shape rather than emergency: compute the counts **once per tier per tick**
-  and hand them down. Re-verified against the current tree; the earlier review found it and it
-  has not moved.
-- **`PatchTypePanel.rows` is never pruned.** `rows.computeIfAbsent` at `PatchTypePanel.java:400`
-  and no `remove` or `clear` anywhere in the file, so toggling a location filter leaves orphaned
-  `PatchRow` instances behind. Bounded by the number of patches on the tab rather than unbounded,
-  so it is retention rather than a true leak — but the map is keyed by patch and the visible set
-  is not, and those two drifting apart is the sort of thing that reads as a ghost row later.
 - **Four classes past readable size**, and the gap is widening: `RunPlanner` 1,613 ·
   `GuideTracker` 1,517 · `RunLoadout` 1,258 · `DoogleMapsConfig` 1,213. `RunLoadout` is the one
   that splits cleanly — eight `addX` builders that barely interact, each taking the run's types
@@ -113,38 +123,45 @@ each so a wrong result points somewhere.
   twenty-odd patch types are still unexamined, and it is generated, so anything found there is a
   generator fix rather than an edit.
 - **The `RunScope`/`RunSnapshot` refactor** — the one big item left from the August second-pass
-  review (`docs/code-review-2026-08b.md`, Architecture). Two halves, and the order matters:
-  1. **`RunScope`**: extract "which patches are actionable / blocked for this run" into a value
-     computed once per tick and consumed by planner, loadout and guide, so `RunPlanner` stops
-     holding `Provider<RunLoadout>` to dodge the Guice cycle and `setNothingToDo` stops being a
-     back-channel. `GuideTracker.reportIdlePatches` now computes exactly this set every tick, so
-     the computation exists — the refactor is moving its home and inverting the dependency.
+  review (`docs/code-review-2026-08b.md`, Architecture). Two halves; the first now has an
+  executable plan, worked out in full and deliberately not half-landed at the end of a long
+  session:
+  1. **`RunScope` (kill the Provider cycle)** — the steps, in order:
+     a. Move the supply-trip decision to the loadout: `RunLoadout.needsSupplyTrip(types)`,
+        built from `tools.anyOnlyInBank`, the selection being empty, `planner.getSupplySources()`
+        (loadout→planner is the kept direction) and its own `anythingLeftToWithdraw`.
+     b. `RunPlanner.start(types)` becomes `start(types, boolean wantsSupplies)`; the caller
+        (`RunPanel`'s start button) computes it via the loadout. The planner's own
+        `needsSupplyTrip()` and both `loadout.get()` call sites are deleted with the
+        `Provider<RunLoadout>` constructor parameter.
+     c. `setNothingToDo(Set)` widens to `updateScope(Set blocked, boolean suppliesOutstanding)`
+        — `GuideTracker.reportIdlePatches` already pushes the set every tick; it adds the one
+        extra boolean. `leaveBank()` reads the stored flag instead of calling the loadout.
+     d. `BankCapture` keeps the same-tick nicety by refreshing the flag before its
+        `leaveBank()` call: it gains a `RunLoadout` dependency (capture→loadout, no cycle) and
+        calls `planner.updateSupplies(loadout.anythingLeftToWithdraw(planner.coveredTypes()))`
+        first.
+     e. Test surgery: `RunPlannerTest` (~30 `start(...)` sites plus the Provider in the
+        fixture), `SkippedStopStaysFinishedTest`, `RunLoadoutTest`'s planner construction.
   2. **`RunSnapshot`**: give the planner the published-snapshot pattern `GuideStatus` already
      uses, so `RunPanel` and `ReadyInfoBox` stop taking the planner's monitor from the EDT.
      **The catch found on inspection:** `previewStops`/`countActionable` are queries
-     *parameterized by the panel's live tickboxes*, not pure state reads, so a snapshot cannot
-     precompute their answers. The snapshot has to carry per-patch facts (actionable, group,
-     projection summary) and the counting has to move panel-side — a query-layer redesign, not a
-     mechanical extraction. Which is why it is here and not already done.
-- **Finish the `ProfileJsonStore` migration where it fits.** Seven stores share the base now.
-  `PatchStateStore` fits with one addition — an under-monitor `afterLoad()` hook for its
-  Time Tracking backfill, which must run even when the blob is absent — plus deleting its public
-  `save()` (no external callers; verified). `SeedSelectionStore` and `ProtectionSelectionStore`
-  keep two config keys each for stored-data compatibility and genuinely do not fit; leave them.
-- **`GuideTracker.stepsFor(FarmPatch)` is a race waiting for a caller.** Public, documented for
-  a per-patch panel view, currently dead — and it reads the unsynchronized per-tick
-  `allocations` map, so the day a Swing panel is wired to it as its javadoc intends, it races
-  `onGameTick`'s `clear()`. Either delete it with the dead-code sweep or make it read a
-  published snapshot before wiring anything to it. `route/InventoryPlan.java` (188 lines,
-  referenced only by its own test) belongs to the same sweep.
-- **Small items from the second-pass review**, none urgent (details in
-  `docs/code-review-2026-08b.md`): `DataTable.shortNumber` renders 999,500–999,999 as `1000k`;
-  `describeExpectedValue` has no wording for a net loss; `BankHighlightOverlay.withdrawCounts()`
-  should gate on `Need == WITHDRAW` explicitly; the level 1–9 band is labelled `1` against the
-  N-to-N+9 convention; pin `runeLiteVersion` and demote `mavenLocal()`; the two committed
-  `tools/__pycache__/*.pyc` files want `git rm -r --cached tools/__pycache__` (now gitignored,
-  but ignore rules do not untrack); the reflection `construct()` helper is copy-pasted into 18
-  test files and wants one home.
+     *parameterized by the panel's live tickboxes*, not pure state reads — but the parameter
+     space is really just the currently-ticked set, so a per-tick snapshot keyed on
+     `RunTypeStore`'s selection covers it with at most one tick of lag after a checkbox
+     change. The snapshot carries per-patch facts; counting moves panel-side.
+- ~~Finish the `ProfileJsonStore` migration where it fits.~~ **Done**: `PatchStateStore` is on
+  the base via the `afterLoad()` hook (backfill runs blob or no blob), eight stores share it
+  now. `SeedSelectionStore` and `ProtectionSelectionStore` keep two config keys each for
+  stored-data compatibility and stay hand-rolled, deliberately.
+- **`route/InventoryPlan.java` is dead code** (188 lines, only its own test refers to it) -
+  wire it up or delete it with the sweep. The `stepsFor(FarmPatch)` race it used to share this
+  bullet with is gone - deleted rather than fixed.
+- **`PatchInteractionTracker.isGrowthTick` has an unreachable branch**, found by its new
+  tests: diseased-to-dead is meant to answer true, but a DISEASED state's tick rate is 0, so
+  the tick-rate guard above swallows the transition first. The test pins the actual behaviour
+  and says to flip the assertion if the guard is ever reordered; decide whether the guard or
+  the branch is the intent.
 - **Tests the review found missing**, in value order: `PatchInteractionTracker.isGrowthTick`
   (pure, branchy, the core of the capture pipeline, zero mocking needed); a `HarvestCsv`
   round-trip with a reordered and a subset header — the exact regression its own doc comment
@@ -185,43 +202,22 @@ or a hierarchy under `guidedMode`. Independent is simpler to implement and easy 
 confusing state — text off, highlighting off, guided mode nominally on. A hierarchy needs a
 decision about what the parent switch means when its children disagree.
 
-## Watering — worth deciding whether it is worth modelling at all
+## Watering — settled: not modelled, deliberately
 
-Raised from play: *"I never water. Do people?"* That is the actual question, and it is worth
-settling before any of this is built, because watering touches the yield model, the disease
-model, the timers and guided mode — and if nobody does it, all of that is cost for nothing.
+Closed with the owner after the wiki mechanics audit, and the mechanics decide it. Watering a
+growing patch affects **disease only** (never yield or speed), covers **allotments, flowers
+and hops only**, and suppresses disease for **one growth cycle per watering** — while the
+first cycle after planting is disease-immune anyway. So the single watering a run-based
+farmer could actually perform, right after planting and before teleporting out, protects a
+cycle that needs no protection; every vulnerable cycle after it happens while you are gone.
+Flowers, payments and compost are the protections that survive your absence, and all three
+are modelled. The one watering that matters — the **seedling's**, which is mandatory — is
+handled by the potting supplies and the bank-leg potting advice.
 
-**What is not in doubt** is that one kind of watering is already unavoidable and already
-half-modelled: a tree, fruit tree or bush **sapling** is a seed in a plant pot of soil that has
-to be watered *once* to become a sapling. The plugin already knows about potting — the seed
-list greys an unpotted tree seed with a "needs potting" tooltip — so the watering can belongs in
-that sentence too. That part is a bank-side chore, not a farm-run one, and it is cheap.
-
-**The expensive kind is watering a growing patch**, and that is what needs deciding:
-
-- **What it actually buys.** The mechanic to confirm is that watering a growing allotment, hops
-  or bush patch prevents disease for that growth stage, and that it does nothing for growth
-  speed. If it is per-*stage*, protecting a crop fully means being there at every stage — which
-  is the objection: farm runs are a thing you do twice a day precisely because you are not
-  standing over the patch, and this turns it into a full-time activity. Whether that is a bad
-  thing is a separate question; there is an argument for a bank-to-patch AFK loop, and this
-  plugin would be well placed to guide one. It is just not the same feature as a farm run.
-- **What it would do to the numbers.** `DiseaseRisk` currently discounts yield by a per-crop
-  rate that assumes nobody waters. Someone who does water would be quietly under-promised, and
-  the harvest log would keep scoring them as beating prediction with no idea why. That is the
-  half of this that is *already* wrong for waterers rather than merely unbuilt.
-- **The can, which changes the arithmetic.** An ordinary watering can holds 8 doses and
-  **Gricoller's can** (Tithe Farm) holds far more — the reward page says 1,000. Eight doses is
-  one patch area and a return trip; a thousand is not a constraint at all. So "is watering
-  practical" has two different answers depending on a reward most accounts do not have, and any
-  advice that ignores which can you own would be wrong for one group or the other.
-  The leprechaun's watering-can varbit is already being read (`FarmingTool.WATERING_CAN`), but
-  whether that number is doses or cans is unknown — see the note in that file.
-
-**Suggested order if it is taken up**: confirm the mechanic; make `DiseaseRisk` aware that a
-watered stage is protected; only then consider guiding it. The first two are worth doing even if
-nobody ever waters on purpose, because they are what stop the estimates being wrong for people
-who do.
+Left open inside the closure, in case a camping/AFK loop is ever wanted: `DiseaseRisk` still
+assumes nobody waters, so a dedicated waterer would be quietly under-promised and would show
+in the Stats tab as beating prediction. That is an estimates refinement for a play style the
+plugin does not serve, not a gap in the runs it does.
 
 ## Coral and seaweed — tracked, but not runnable
 

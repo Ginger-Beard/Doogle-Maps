@@ -93,6 +93,22 @@ public final class LoadoutSummary
 		boolean toWithdrawEmpty = fromBank.isEmpty() && fromVault.isEmpty();
 		appendSection(lines, "From the bank:", fromBank);
 		appendSection(lines, "From the seed vault:", fromVault);
+
+		// The potting is sequenced here, not at the tree patch, because the timing is the
+		// point: a watered seedling is a sapling in about five minutes, and the travel to the
+		// first stop pays for the wait. Discovering it at the patch costs a growth cycle.
+		for (LoadoutItem item : items)
+		{
+			if (item.getItemId() == net.runelite.api.gameval.ItemID.PLANTPOT_COMPOST
+				&& item.getQuantity() > 0
+				&& item.getNeed() != LoadoutItem.Need.MISSING
+				&& item.getNeed() != LoadoutItem.Need.UNKNOWN)
+			{
+				lines.add("Pot and water the tree seeds before you set off - they are "
+					+ "saplings in five minutes, and the travel pays for the wait.");
+				break;
+			}
+		}
 		if (!missing.isEmpty())
 		{
 			// Named as skipped rather than merely absent. "Not found anywhere" left it to the

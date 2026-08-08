@@ -30,6 +30,17 @@ public enum GuideAction
 	HARVEST("Harvest"),
 
 	/**
+	 * Cure a diseased crop before it dies.
+	 *
+	 * <p>The state with a clock on it: a diseased crop stops growing and, left alone, the next
+	 * cycle can kill it. The run used to route to it — {@code DISEASED} is actionable — and
+	 * then have no word for it, so the one patch on the trip that was actually urgent was the
+	 * one silently skipped. The tool splits by family: secateurs prune trees, fruit trees,
+	 * spirit trees, bushes and calquats; a plant cure does everything else.
+	 */
+	CURE("Cure"),
+
+	/**
 	 * Chop a checked tree down, which is what a tree's "harvest" actually is.
 	 *
 	 * <p>Split out from {@link #HARVEST} because a tree is not picked and what it leaves behind is

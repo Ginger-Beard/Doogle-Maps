@@ -401,7 +401,10 @@ public class GrowthTimer
 			snapshot.getLastSeen(),
 			// From the raw varbit, which goes no further than here. A checked tree and the stump it
 			// leaves decode identically, so this is the only place the difference survives.
-			patch.getImplementation().isStumpVarbitValue(snapshot.getVarbitValue())
+			patch.getImplementation().isStumpVarbitValue(snapshot.getVarbitValue()),
+			// And the value itself, for the handful of other states the decode cannot express -
+			// depleted celastrus, untreated grape soil. See PatchProjection.varbitValue.
+			snapshot.getVarbitValue()
 		);
 	}
 

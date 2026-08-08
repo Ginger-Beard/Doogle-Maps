@@ -582,7 +582,7 @@ public class SeedInventoryStore
 			cached.clear();
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, SEEDS_KEY);
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_LEVEL_KEY);
-		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_XP_KEY);
+			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_XP_KEY);
 		}
 		fireChanged();
 	}

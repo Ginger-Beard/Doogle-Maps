@@ -10,7 +10,6 @@ import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.state.SeedSource;
 import com.dooglemaps.timer.GrowthTimer;
 import com.google.gson.Gson;
-import java.lang.reflect.Constructor;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -27,6 +26,7 @@ import org.junit.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
 
+import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -688,20 +688,6 @@ public class RunPlannerTest
 		Object group = invocation.getArgument(0);
 		Object name = invocation.getArgument(1);
 		return group + "." + name;
-	}
-
-	@SuppressWarnings("unchecked")
-	private static <T> T construct(Class<T> type, Object... args) throws Exception
-	{
-		for (Constructor<?> candidate : type.getDeclaredConstructors())
-		{
-			if (candidate.getParameterCount() == args.length)
-			{
-				candidate.setAccessible(true);
-				return (T) candidate.newInstance(args);
-			}
-		}
-		throw new IllegalStateException("no constructor of arity " + args.length + " on " + type);
 	}
 
 	private static FarmPatch patch(String key)

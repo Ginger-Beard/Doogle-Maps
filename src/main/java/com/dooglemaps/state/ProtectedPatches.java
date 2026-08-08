@@ -13,7 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
 import net.runelite.api.QuestState;
 import net.runelite.api.Quest;
-import net.runelite.api.Varbits;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.config.ConfigManager;
 
 /**
@@ -95,9 +95,9 @@ public class ProtectedPatches
 		// Hosidius. Easy tier, not hard — worth being exact, because assuming the harder tier
 		// would hide the patch from most of the accounts that actually have it.
 		unlock(6967, "Hosidius (Kourend easy diary)", client ->
-			client.getVarbitValue(Varbits.DIARY_KOUREND_EASY) == 1);
+			client.getVarbitValue(VarbitID.KOUREND_DIARY_EASY_COMPLETE) == 1);
 		unlock(15148, "Harmony (Morytania elite diary)", client ->
-			client.getVarbitValue(Varbits.DIARY_MORYTANIA_ELITE) == 1);
+			client.getVarbitValue(VarbitID.MORYTANIA_DIARY_ELITE_COMPLETE) == 1);
 	}
 
 	private static final String KEY = "protectedHerbRegions";

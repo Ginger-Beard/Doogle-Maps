@@ -322,7 +322,7 @@ public class ContractHandInOrderTest
 		Constructor<PatchProjection> ctor = PatchProjection.class.getDeclaredConstructor(
 			FarmPatch.class, Produce.class, CropState.class, int.class, int.class,
 			long.class, int.class, long.class, Confidence.class, boolean.class, long.class,
-			boolean.class);
+			boolean.class, int.class);
 		ctor.setAccessible(true);
 
 		// A done estimate already in the past, which is what makes a last-stage GROWING patch read
@@ -330,7 +330,7 @@ public class ContractHandInOrderTest
 		// tree, and TreeStumpTest covers the patches that can be one.
 		PatchProjection projection = ctor.newInstance(patch, produce, state, stage,
 			produce.getStages(), done ? now - 60 : now + 3600, lives,
-			0L, Confidence.CERTAIN, false, now, false);
+			0L, Confidence.CERTAIN, false, now, false, -1);
 
 		when(growthTimer.project(Mockito.eq(patch), any())).thenReturn(projection);
 	}

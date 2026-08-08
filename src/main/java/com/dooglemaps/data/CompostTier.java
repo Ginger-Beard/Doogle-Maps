@@ -2,7 +2,7 @@ package com.dooglemaps.data;
 
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import net.runelite.api.ItemID;
+import net.runelite.api.gameval.ItemID;
 
 /** How a patch was treated, for the compost-bucket icon on each row. */
 @Getter
@@ -10,9 +10,9 @@ import net.runelite.api.ItemID;
 public enum CompostTier
 {
 	NONE("Untreated", -1, 0),
-	COMPOST("Compost", ItemID.COMPOST, 1),
-	SUPERCOMPOST("Supercompost", ItemID.SUPERCOMPOST, 2),
-	ULTRACOMPOST("Ultracompost", ItemID.ULTRACOMPOST, 3);
+	COMPOST("Compost", ItemID.BUCKET_COMPOST, 1),
+	SUPERCOMPOST("Supercompost", ItemID.BUCKET_SUPERCOMPOST, 2),
+	ULTRACOMPOST("Ultracompost", ItemID.BUCKET_ULTRACOMPOST, 3);
 
 	private final String displayName;
 	private final int itemID;

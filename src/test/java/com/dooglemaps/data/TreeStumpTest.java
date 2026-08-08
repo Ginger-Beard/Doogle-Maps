@@ -142,7 +142,7 @@ public class TreeStumpTest
 	 * walks every value of every excluded family and insists none of them is ever a stump.
 	 */
 	@Test
-	public void nothingButTreesAndHardwoodsIsEverAStump()
+	public void nothingButTreesHardwoodsAndTheCelastrusIsEverAStump()
 	{
 		for (PatchImplementation implementation : PatchImplementation.values())
 		{
@@ -154,6 +154,16 @@ public class TreeStumpTest
 
 			for (int value = 0; value < 256; value++)
 			{
+				// The celastrus exception is a single hand-carried value, not a table shape:
+				// upstream's comment names 28 as "Celastrus tree stump[Clear]", and the shape
+				// rule cannot find it because the bark states beside it decode identically.
+				// See the PatchRules audit.
+				if (implementation == PatchImplementation.CELASTRUS && value == 28)
+				{
+					assertTrue("28 is the celastrus stump",
+						implementation.isStumpVarbitValue(value));
+					continue;
+				}
 				assertFalse(implementation + " must have no stump values, and " + value + " read as one",
 					implementation.isStumpVarbitValue(value));
 			}

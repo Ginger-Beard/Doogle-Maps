@@ -1051,9 +1051,19 @@ class HarvestStatsPanel extends JPanel
 			.append(DataTable.shortNumber(value)).append(" gp of produce");
 		if (cost > 0)
 		{
+			// Expensive compost on a cheap crop makes this negative, and "so -3k net" reads
+			// like a typo rather than a warning — a loss gets called one.
+			long net = value - cost;
 			text.append(", against ").append(DataTable.shortNumber(cost))
-				.append(" of seeds and compost - so ")
-				.append(DataTable.shortNumber(value - cost)).append(" net");
+				.append(" of seeds and compost - ");
+			if (net < 0)
+			{
+				text.append("a ").append(DataTable.shortNumber(-net)).append(" loss");
+			}
+			else
+			{
+				text.append("so ").append(DataTable.shortNumber(net)).append(" net");
+			}
 		}
 		text.append(". Today's prices, and no protection payments counted.");
 		return text.toString();
