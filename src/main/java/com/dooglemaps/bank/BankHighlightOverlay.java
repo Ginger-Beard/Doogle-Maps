@@ -93,11 +93,15 @@ public class BankHighlightOverlay extends Overlay
 		return loadoutItems;
 	}
 
+	/** The route's own item, marked in cyan wherever it sits. See {@link RouteItem}. */
+	private final RouteItem routeItem;
+
 	@Inject
-	private BankHighlightOverlay(Client client, DoogleMapsConfig config, RunLoadout loadout,
+	BankHighlightOverlay(Client client, DoogleMapsConfig config, RunLoadout loadout,
 		ItemManager itemManager, TooltipManager tooltips,
-		com.dooglemaps.route.RunPlanner planner, BankFilter bankFilter)
+		com.dooglemaps.route.RunPlanner planner, BankFilter bankFilter, RouteItem routeItem)
 	{
+		this.routeItem = routeItem;
 		this.bankFilter = bankFilter;
 		this.planner = planner;
 		this.tooltips = tooltips;
@@ -129,7 +133,7 @@ public class BankHighlightOverlay extends Overlay
 
 		net.runelite.api.Point mouse = client.getMouseCanvasPosition();
 
-		// The bank only when it is showing everything.
+		// The bank's outlines only when it is showing everything.
 		//
 		// Highlighting and filtering answer the same question two ways: "these ones" out of the
 		// whole bank, and "only these". Run both at once and every slot on screen is already an
@@ -148,6 +152,16 @@ public class BankHighlightOverlay extends Overlay
 				highlightContainer(graphics, client.getWidget(InterfaceID.Bankmain.ITEMS), marked,
 					mouse);
 			}
+		}
+		else
+		{
+			// The counts, though, draw either way — and filtering on by default meant "either
+			// way" is mostly this way. The reasoning above is about redundancy: a filtered bank
+			// has already answered *which* items, so the wash adds nothing. It has said nothing
+			// about *how many*, which no part of the filter conveys, and which is the entire
+			// point of the number. Skipping the counts with the outlines was how the cyan figure
+			// shipped and then never appeared on anyone's screen.
+			countContainer(graphics, client.getWidget(InterfaceID.Bankmain.ITEMS), mouse);
 		}
 
 		// The vault regardless. Nothing filters it — it is the game's own interface, and Bank Tags
@@ -268,12 +282,15 @@ public class BankHighlightOverlay extends Overlay
 				}
 
 				LoadoutItem.Need need = marked.get(item.getItemId());
-				if (need == null)
+				boolean route = isRouteItem(item.getItemId());
+				if (need == null && !route)
 				{
 					continue;
 				}
 
-				highlight(graphics, item, config.guideHighlightColour());
+				// The route's own item in cyan - the router picked it, so it outranks the
+				// run's ordinary mark. Everything else keeps the configured colour.
+				highlight(graphics, item, route ? COUNT_COLOUR : config.guideHighlightColour());
 				drawWithdrawCount(graphics, item);
 
 				// Hovering says why. A mark tells you to take something; the reason it is on the
@@ -293,43 +310,105 @@ public class BankHighlightOverlay extends Overlay
 	}
 
 	/**
+	 * The counts alone, for a bank the filter has already narrowed.
+	 *
+	 * <p>Same clip and same walk as {@link #highlightContainer}, minus the wash — the filter has
+	 * done the marking, and the number and the hover reason are the two things it cannot say.
+	 */
+	private void countContainer(Graphics2D graphics, Widget container,
+		net.runelite.api.Point mouse)
+	{
+		if (container == null || container.isHidden() || container.getDynamicChildren() == null)
+		{
+			return;
+		}
+
+		java.awt.Shape previousClip = graphics.getClip();
+		graphics.clip(container.getBounds());
+		try
+		{
+			for (Widget item : container.getDynamicChildren())
+			{
+				if (item == null || item.isSelfHidden())
+				{
+					continue;
+				}
+
+				// The one wash a filtered bank gets: the route's own item, in cyan. A single
+				// slot, so the wall-of-colour reasoning against washing a filtered bank does
+				// not apply to it.
+				if (isRouteItem(item.getItemId()))
+				{
+					highlight(graphics, item, COUNT_COLOUR);
+				}
+				drawWithdrawCount(graphics, item);
+				if (mouse != null && container.getBounds().contains(mouse.getX(), mouse.getY())
+					&& item.getBounds().contains(mouse.getX(), mouse.getY()))
+				{
+					describe(item.getItemId());
+				}
+			}
+		}
+		finally
+		{
+			graphics.setClip(previousClip);
+		}
+	}
+
+	/**
 	 * Writes how many to take over a marked slot.
 	 *
-	 * <h2>Only where the number is an instruction</h2>
+	 * <h2>Every withdrawal gets one</h2>
 	 *
-	 * Seeds and protection payments, and nothing else. Those are the two the run needs a
-	 * <b>specific quantity</b> of, and the quantity is arithmetic nobody wants to do at a bank:
-	 * six patches of ranarr is six seeds, but four magic trees is a hundred coconuts, and getting
-	 * that wrong is discovered at the fourth tree having already travelled there.
+	 * The counted rows — seeds, payments, pots — show the arithmetic nobody wants to do at a
+	 * bank: six patches of ranarr is six seeds, but four magic trees is a hundred coconuts,
+	 * and getting that wrong is discovered at the fourth tree having already travelled there.
+	 * The unit rows — an axe, a can, a seed box — show a plain {@code 1} until they are on
+	 * you. That used to be suppressed as noise the highlight had already covered, which
+	 * stopped being true the moment the filter replaced the highlight: a filtered-in slot
+	 * with no number carried no mark at all. See {@link LoadoutItem#getWithdrawCount}.
 	 *
-	 * <p>Everything else on the list is "bring the thing" — one axe, one seed box, whichever
-	 * teleport you own. A "1" over each would be four more numbers to read and none of them a
-	 * decision, which is how a marker stops being worth looking at.
+	 * <h2>Its own corner, and its own colour</h2>
 	 *
-	 * <h2>Drawn like the game's own stack counts</h2>
+	 * <b>Top-right, in cyan.</b> The bank draws what you own in the top-<i>left</i> of the slot,
+	 * in yellow. This is a different fact — what is still to come out — and the two must not be
+	 * mistakable for one another, so it takes the corner the bank leaves empty and a colour the
+	 * bank never uses. It was previously yellow and nudged down the left edge to sit under the
+	 * game's number, which put two yellow figures in one column and left the reader to work out
+	 * which was which.
 	 *
-	 * Yellow with a black offset shadow, top-left of the slot: the position and colour the game
-	 * uses for a stack size, so it reads as a quantity without a legend. Deliberately <i>not</i>
-	 * where the item's own stack number sits when the bank draws one — that is the same corner, so
-	 * this is nudged down to sit under it rather than over it. The two say different things: the
-	 * game's is what you own, this is what to take.
+	 * <h2>It counts down</h2>
+	 *
+	 * From {@link LoadoutItem#getOutstanding}, so withdrawing three of your thirty spines leaves
+	 * twenty-seven on the icon, and putting them back puts it to thirty again — the pack is what
+	 * it is measured against, and {@code CarriedItems} is watching that live.
 	 */
 	private void drawWithdrawCount(Graphics2D graphics, Widget item)
 	{
-		Integer wanted = withdrawCounts().get(item.getItemId());
-		if (wanted == null || wanted <= 1)
+		// Not on a placeholder. An empty slot has nothing to withdraw, so a count over it is
+		// an instruction that cannot be followed - reported as "1"s over placeholder
+		// teleports in the filtered bank.
+		if (item.getItemQuantity() <= 0)
 		{
-			// One is not worth saying. "Take 1 ranarr" is what a highlight already means, and the
-			// number would only be competing with the sprite for the same few pixels.
+			return;
+		}
+
+		Integer left = withdrawCounts().get(item.getItemId());
+		if (left == null || left <= 0)
+		{
 			return;
 		}
 
 		java.awt.Rectangle bounds = item.getBounds();
-		String text = String.valueOf(wanted);
-		int x = (int) bounds.getX() + 1;
-		int y = (int) bounds.getY() + COUNT_BASELINE;
+		String text = String.valueOf(left);
 
 		graphics.setFont(net.runelite.client.ui.FontManager.getRunescapeSmallFont());
+		// Measured rather than assumed, because it is right-aligned: a two-digit count and a
+		// three-digit one have to end at the same edge, not start at the same one.
+		int width = graphics.getFontMetrics().stringWidth(text);
+		int x = (int) bounds.getMaxX() - width - COUNT_INSET;
+		int y = (int) bounds.getY() + COUNT_BASELINE;
+
 		graphics.setColor(java.awt.Color.BLACK);
 		graphics.drawString(text, x + 1, y + 1);
 		graphics.setColor(COUNT_COLOUR);
@@ -339,14 +418,21 @@ public class BankHighlightOverlay extends Overlay
 	/**
 	 * Where the count sits inside a 32px slot.
 	 *
-	 * <p>Below the game's own stack number rather than on top of it. A bank slot draws the amount
-	 * you own in the top-left corner; this is a different fact and has to be legible beside it
-	 * rather than fighting it for the same pixels.
+	 * <p>Level with the game's own stack number rather than under it, because it is no longer in
+	 * the same corner and no longer has to get out of its way.
 	 */
-	private static final int COUNT_BASELINE = 22;
+	private static final int COUNT_BASELINE = 10;
 
-	/** The game's own quantity yellow, so the number reads as a count without being explained. */
-	private static final Color COUNT_COLOUR = new Color(0xFF, 0xFF, 0x00);
+	/** Breathing room from the right edge, so the last digit is not against the slot border. */
+	private static final int COUNT_INSET = 2;
+
+	/**
+	 * Cyan, and specifically not the game's quantity yellow.
+	 *
+	 * <p>The colour is carrying the distinction between "how many you own" and "how many to
+	 * take". Reusing yellow made this read as a second opinion about the first number.
+	 */
+	private static final Color COUNT_COLOUR = new Color(0x00, 0xFF, 0xFF);
 
 	/**
 	 * How many of each marked item the run wants, rebuilt once a tick.
@@ -364,7 +450,11 @@ public class BankHighlightOverlay extends Overlay
 			Map<Integer, Integer> counts = new java.util.HashMap<>();
 			for (LoadoutItem item : loadoutThisTick())
 			{
-				if (item.getQuantity() <= 1 || !COUNTED.contains(item.getCategory()))
+				// The one shared rule for whether a number is an instruction — see
+				// LoadoutItem.getWithdrawCount, which the withdraw list uses too, so the slot
+				// and the list can never disagree.
+				int count = item.getWithdrawCount();
+				if (count <= 0)
 				{
 					continue;
 				}
@@ -373,7 +463,7 @@ public class BankHighlightOverlay extends Overlay
 					// Summed rather than replaced. Two picked seeds can share a bank form only in
 					// contrived cases, but a payment shared by two crops is ordinary — protecting
 					// magic and yew both want coconuts, and the run needs the total.
-					counts.merge(form, item.getQuantity(), Integer::sum);
+					counts.merge(form, count, Integer::sum);
 				}
 			}
 			withdrawCounts = counts;
@@ -383,10 +473,6 @@ public class BankHighlightOverlay extends Overlay
 
 	private Map<Integer, Integer> withdrawCounts = Collections.emptyMap();
 	private int countsTick = -1;
-
-	/** The categories whose quantity is a decision rather than "bring the one you own". */
-	private static final Set<LoadoutItem.Category> COUNTED = java.util.EnumSet.of(
-		LoadoutItem.Category.SEED, LoadoutItem.Category.PAYMENT);
 
 	/**
 	 * The hovered item's own entry, looked up at most once a tick.
@@ -487,6 +573,13 @@ public class BankHighlightOverlay extends Overlay
 
 		wanted = bank;
 		fromVault = vault;
+	}
+
+	/** Whether this slot holds the item the current route travels by, in any bank form. */
+	private boolean isRouteItem(int itemId)
+	{
+		int route = routeItem.currentItemId();
+		return route > 0 && RunLoadout.bankFormsOf(route).contains(itemId);
 	}
 
 	private void highlight(Graphics2D graphics, Widget item, Color colour)

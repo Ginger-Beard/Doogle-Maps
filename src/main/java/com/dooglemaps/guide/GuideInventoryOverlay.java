@@ -79,7 +79,7 @@ public class GuideInventoryOverlay extends Overlay
 	private final ItemManager itemManager;
 
 	@Inject
-	private GuideInventoryOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
+	GuideInventoryOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
 		ItemManager itemManager)
 	{
 		this.client = client;

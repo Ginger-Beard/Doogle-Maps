@@ -55,7 +55,7 @@ public class LeprechaunStore
 	private volatile boolean read;
 
 	@Inject
-	private LeprechaunStore(Client client)
+	LeprechaunStore(Client client)
 	{
 		this.client = client;
 	}

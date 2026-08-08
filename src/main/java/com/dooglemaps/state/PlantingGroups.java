@@ -43,7 +43,7 @@ public class PlantingGroups
 	private final ContractState contracts;
 
 	@Inject
-	private PlantingGroups(DoogleMapsConfig config, ProtectedPatches protectedPatches,
+	PlantingGroups(DoogleMapsConfig config, ProtectedPatches protectedPatches,
 		AvailabilityProfile availability, ContractState contracts)
 	{
 		this.config = config;

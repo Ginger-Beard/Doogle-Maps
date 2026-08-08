@@ -62,7 +62,7 @@ public class GrowthTimer
 	private final ConfigManager configManager;
 
 	@Inject
-	private GrowthTimer(ConfigManager configManager)
+	GrowthTimer(ConfigManager configManager)
 	{
 		this.configManager = configManager;
 	}

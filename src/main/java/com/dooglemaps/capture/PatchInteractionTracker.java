@@ -1,5 +1,6 @@
 package com.dooglemaps.capture;
 
+import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropState;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmRegion;
@@ -9,6 +10,7 @@ import com.dooglemaps.data.ProduceState;
 import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.state.BarbarianFarming;
+import com.dooglemaps.state.PatchSnapshot;
 import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.validate.HarvestLog;
 import com.dooglemaps.timer.GrowthTimer;
@@ -65,6 +67,8 @@ public class PatchInteractionTracker
 	private final HarvestLog harvestLog;
 	private final BarbarianFarming barbarianFarming;
 	private final CarriedItems carried;
+	private final com.dooglemaps.validate.DiseaseStatsStore diseaseStats;
+	private final com.dooglemaps.state.ProtectedPatches protectedPatches;
 
 	/** Last raw varbit value seen per patch key, to spot transitions. */
 	private final Map<String, Integer> lastVarbitValues = new HashMap<>();
@@ -75,10 +79,14 @@ public class PatchInteractionTracker
 	private boolean modalWasOpen;
 
 	@Inject
-	private PatchInteractionTracker(Client client, PatchStateStore stateStore,
+	PatchInteractionTracker(Client client, PatchStateStore stateStore,
 		GrowthTimer growthTimer, RunPlanner runPlanner, HarvestLog harvestLog,
-		BarbarianFarming barbarianFarming, CarriedItems carried)
+		BarbarianFarming barbarianFarming, CarriedItems carried,
+		com.dooglemaps.validate.DiseaseStatsStore diseaseStats,
+		com.dooglemaps.state.ProtectedPatches protectedPatches)
 	{
+		this.diseaseStats = diseaseStats;
+		this.protectedPatches = protectedPatches;
 		this.barbarianFarming = barbarianFarming;
 		this.carried = carried;
 		this.client = client;
@@ -203,6 +211,7 @@ public class PatchInteractionTracker
 			// closes a validation record.
 			harvestLog.onPatchState(patch, previous, decoded);
 			maybeObserveBarbarianFarming(patch, previous, decoded);
+			observeDisease(patch, previous, decoded);
 		}
 
 		boolean changed = stateStore.recordVarbit(patch, varbitValue, decoded);
@@ -319,6 +328,24 @@ public class PatchInteractionTracker
 		{
 			growthTimer.observeGrowthTick(previous.getTickRate());
 		}
+	}
+
+	/**
+	 * Reports a state change to the disease record.
+	 *
+	 * <p>The snapshot is read <b>before</b> {@code recordVarbit} overwrites it, because the
+	 * compost and protection that mattered are the ones this cycle was grown under. Reading them
+	 * afterwards is still right today — neither is cleared by a state change — but it would stop
+	 * being right the moment one of them was, and silently.
+	 */
+	private void observeDisease(FarmPatch patch, @Nullable ProduceState previous,
+		ProduceState current)
+	{
+		PatchSnapshot snapshot = stateStore.get(patch);
+		diseaseStats.observe(patch, previous, current,
+			snapshot == null ? CompostTier.NONE : snapshot.getCompost(),
+			snapshot != null && snapshot.isPatchProtected(),
+			protectedPatches.isProtected(patch));
 	}
 
 	/** Whether a transition can only have been caused by a growth tick landing. */

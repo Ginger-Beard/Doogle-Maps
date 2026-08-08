@@ -10,7 +10,6 @@ import com.dooglemaps.data.Seed;
 import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.route.ProtectionBudget;
-import com.dooglemaps.route.RunStop;
 import com.dooglemaps.route.SeedAllocation;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.LeprechaunStore;
@@ -45,6 +44,7 @@ import net.runelite.api.gameval.ItemID;
  * and a thousand plant cures. What is worth showing is the <b>difference</b> between what the
  * run needs and what you already have — see {@link LoadoutItem.Need}.
  */
+@lombok.extern.slf4j.Slf4j
 @Singleton
 public class RunLoadout
 {
@@ -101,7 +101,7 @@ public class RunLoadout
 	private final net.runelite.api.Client client;
 
 	@Inject
-	private RunLoadout(RunPlanner planner, SeedSelectionStore selection, SeedInventoryStore seeds,
+	RunLoadout(RunPlanner planner, SeedSelectionStore selection, SeedInventoryStore seeds,
 		CompostSelectionStore compost, CarriedItems carried, BankContents bank, ToolNeeds tools,
 		LeprechaunStore leprechaun, ProtectionSelectionStore protection,
 		com.dooglemaps.data.ItemNames itemNames, com.dooglemaps.DoogleMapsConfig config,
@@ -298,7 +298,7 @@ public class RunLoadout
 		addGear(items);
 		addAxe(items, types);
 		addStorage(items, types);
-		addTeleports(items, types);
+		addListedTeleports(items);
 		return items;
 	}
 
@@ -324,9 +324,46 @@ public class RunLoadout
 	 * naming it would send someone to the bank for something they cannot use. The leprechaun
 	 * stores every other farming tool but not this one, so it genuinely has to be carried.
 	 */
+	/**
+	 * The chop-to-harvest types, whose axe is needed whatever kind of run it is.
+	 *
+	 * <p>For a tree, hardwood or redwood the harvest <i>is</i> the chop, so even a
+	 * harvest-only trip swings an axe. Fruit trees and calquats are picked, not chopped —
+	 * their axe is for clearing before a replant, which a harvest-only visit never does.
+	 */
+	private static final Set<PatchImplementation> CHOPPED_TO_HARVEST = EnumSet.of(
+		PatchImplementation.TREE,
+		PatchImplementation.HARDWOOD_TREE,
+		PatchImplementation.REDWOOD);
+
+	/**
+	 * Whether anything on this run swings an axe.
+	 *
+	 * <p>The rule, plainly: a tree run needs one, a fruit-shaped run needs one unless it is
+	 * harvest-only, and a contract for either counts — a contract group is never harvest-only,
+	 * so it asks by the same test. Per group rather than per type, because the same fruit
+	 * trees can be a harvest-only tick and a contract's replant at once.
+	 */
+	private boolean axeNeeded(Set<PatchImplementation> types)
+	{
+		for (PlantingGroup group : planner.countActionableByGroup(types).keySet())
+		{
+			PatchImplementation type = group.getType();
+			if (!NEEDS_AN_AXE.contains(type))
+			{
+				continue;
+			}
+			if (CHOPPED_TO_HARVEST.contains(type) || !runTypes.isHarvestOnly(group))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private void addAxe(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
-		if (types.stream().noneMatch(NEEDS_AN_AXE::contains))
+		if (!axeNeeded(types))
 		{
 			return;
 		}
@@ -446,6 +483,7 @@ public class RunLoadout
 		// more than one seed for a patch type" — but it stops the split multiplying it.
 		Map<PlantingGroup, List<FarmPatch>> actionable = planner.actionableByGroup(types);
 
+		int potsNeeded = 0;
 		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionable.entrySet())
 		{
 			PlantingGroup group = entry.getKey();
@@ -487,11 +525,24 @@ public class RunLoadout
 				// Owned, but not in a form that can go in the ground yet. Worth saying at the
 				// bank, because a plant pot is the one thing you cannot fix at the patch.
 				boolean needsPotting = seed.isSapling() && seeds.getOwnedPlantable(seed) < wanted;
+				if (needsPotting)
+				{
+					// One pot per seed still to pot, totalled across the run's tree types and
+					// added once after the loop - two tree crops short of saplings want one
+					// row of pots, not two.
+					potsNeeded += Math.max(0, Math.min(wanted, owned)
+						- seeds.getOwnedPlantable(seed));
+				}
 
-				items.add(new LoadoutItem(seed.getPlantedItemID(), seed.getName(),
+				items.add(new LoadoutItem(seed.getPlantedItemID(), displayName(seed),
 					LoadoutItem.Category.SEED,
 					need(inPack >= wanted, owned > inPack, false),
 					Math.min(wanted, Math.max(owned, 1)),
+					// What is left to fetch: what the run wants, less what is already on you,
+					// and never more than you actually own. Owning fewer than the run wants is
+					// the ordinary case - the answer there is "take all of them", not the
+					// shortfall, which would send you to the bank for seeds that are not in it.
+					Math.max(0, Math.min(wanted, owned) - inPack),
 					// The contract says *why* rather than only how many, because it is the one
 					// seed on this list the player did not choose — and the one whose absence is
 					// worth knowing about at the bank rather than at the patch, since arriving
@@ -504,6 +555,87 @@ public class RunLoadout
 					fetchFrom(seed, wanted)));
 			}
 		}
+
+		if (potsNeeded > 0)
+		{
+			addPottingSupplies(items, potsNeeded);
+		}
+	}
+
+	/**
+	 * What to call a seed on the list: the item you would actually pick up.
+	 *
+	 * <p>The Seed enum's own name is the crop — "Yew" — which is ambiguous at a bank holding
+	 * yew seeds, yew saplings and yew logs at once. The game's own name for the planted form
+	 * is used where it is known; item names are learned from banks, so a form never banked
+	 * falls back to the crop with its form spelt out.
+	 */
+	private String displayName(Seed seed)
+	{
+		return itemNames.get(seed.getPlantedItemID(),
+			seed.getName() + (seed.isSapling() ? " sapling" : " seed"));
+	}
+
+	/** Every can that waters, most charged first; the empty one still counts - water is free. */
+	private static final int[] WATERING_CANS = {
+		ItemID.ZEAH_WATERINGCAN, ItemID.WATERING_CAN_8, ItemID.WATERING_CAN_7,
+		ItemID.WATERING_CAN_6, ItemID.WATERING_CAN_5, ItemID.WATERING_CAN_4,
+		ItemID.WATERING_CAN_3, ItemID.WATERING_CAN_2, ItemID.WATERING_CAN_1,
+		ItemID.WATERING_CAN_0,
+	};
+
+	/**
+	 * The pots and the can, for tree seeds that are still seeds.
+	 *
+	 * <p>A tree seed cannot go in the ground: it is sown into a filled plant pot, watered, and
+	 * becomes the sapling the patch actually takes a few minutes later. The seed's own row
+	 * already says <i>needs potting</i>; these are what the potting itself needs, which
+	 * otherwise get discovered at the patch, a teleport too late.
+	 *
+	 * <p>One row of pots however many tree types are short — a pot is a pot — and one can
+	 * whatever the pot count, since a can waters everything and refills anywhere with water.
+	 */
+	private void addPottingSupplies(List<LoadoutItem> items, int pots)
+	{
+		int carriedPots = carried.getCount(ItemID.PLANTPOT_COMPOST);
+		int held = bank.getCount(ItemID.PLANTPOT_COMPOST) + carriedPots;
+		items.add(new LoadoutItem(ItemID.PLANTPOT_COMPOST, "Filled plant pot",
+			LoadoutItem.Category.TOOL,
+			carriedPots >= pots ? LoadoutItem.Need.HAVE
+				: held > 0 ? LoadoutItem.Need.WITHDRAW
+				: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
+			pots,
+			// Take what exists even when it is short - potting three of four seeds still
+			// plants three trees, unlike a payment, where a partial withdrawal buys a
+			// partial protection nobody asked for.
+			Math.max(0, Math.min(pots, held) - carriedPots),
+			"To pot " + pots + (pots == 1 ? " tree seed" : " tree seeds")
+				+ " into saplings - sow, water, and they are plantable in minutes. An empty "
+				+ "pot fills with a trowel at any soil",
+			LoadoutItem.From.BANK));
+
+		Integer carriedCan = firstOwned(WATERING_CANS, carried::has);
+		Integer bankedCan = firstOwned(WATERING_CANS, bank::has);
+		items.add(new LoadoutItem(
+			carriedCan != null ? carriedCan : bankedCan != null ? bankedCan
+				: ItemID.WATERING_CAN_8,
+			"Watering can", LoadoutItem.Category.TOOL,
+			carriedCan != null ? LoadoutItem.Need.HAVE
+				: bankedCan != null ? LoadoutItem.Need.WITHDRAW
+				: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
+			0, "A freshly potted sapling has to be watered before it starts growing"));
+	}
+
+	private static Integer firstOwned(int[] itemIds, java.util.function.IntPredicate owned)
+	{
+		for (int itemId : itemIds)
+		{
+			if (owned.test(itemId))
+			{
+				return itemId;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -562,7 +694,8 @@ public class RunLoadout
 			if (payment != null && protection.isProtecting(group, seed))
 			{
 				payments.put(payment.getItemID(),
-					bank.getCount(payment.getItemID()) + carried.getCount(payment.getItemID()));
+					bank.getCount(payment.getItemID())
+						+ carried.getCountIncludingNoted(payment.getItemID()));
 			}
 		}
 
@@ -707,8 +840,11 @@ public class RunLoadout
 				// The slot count is still one: payments may be noted, and a noted stack is one
 				// slot whatever its size. That is why this is a quantity fix rather than an
 				// inventory one.
+				// Counting noted ones, because that is how anyone actually carries thirty
+				// spines - the gardener takes the note. Counting only the exact id left the
+				// row on the withdraw list with the payment already in the pack.
 				int wanted = payment.getQuantity() * patches;
-				int held = carried.getCount(payment.getItemID())
+				int held = carried.getCountIncludingNoted(payment.getItemID())
 					+ bank.getCount(payment.getItemID());
 
 				// Named after the item to bring, not the crop it protects. This row said "Magic"
@@ -718,11 +854,15 @@ public class RunLoadout
 					itemNames.get(payment.getItemID(), payment.getProduce().getName()),
 					LoadoutItem.Category.PAYMENT,
 					paymentNeed(payment, wanted, held), wanted,
+					// Against what is carried rather than what is held: held counts the bank
+					// too, and the bank is where you are about to take them from.
+					Math.max(0, wanted - carried.getCountIncludingNoted(payment.getItemID())),
 					held < wanted
 						? "Protects " + seed.getName().toLowerCase() + " - you have " + held
 							+ " of the " + wanted + " this run needs"
 						: "Protects " + seed.getName().toLowerCase()
-							+ " - may be noted, but has to be the exact item"));
+							+ " - noted is fine; the gardener takes the note",
+					LoadoutItem.From.BANK));
 			}
 		}
 	}
@@ -741,7 +881,7 @@ public class RunLoadout
 		{
 			return bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN;
 		}
-		return carried.getCount(payment.getItemID()) >= wanted
+		return carried.getCountIncludingNoted(payment.getItemID()) >= wanted
 			? LoadoutItem.Need.HAVE
 			: LoadoutItem.Need.WITHDRAW;
 	}
@@ -944,67 +1084,36 @@ public class RunLoadout
 		return listedTeleportIds().contains(itemId);
 	}
 
-	private void addTeleports(List<LoadoutItem> items, Set<PatchImplementation> types)
-	{
-		// Asked once and kept. This used to be walked here and then walked again inside
-		// regionName for every region in it, which turned one replan into one per stop.
-		List<RunStop> stops = planner.previewStops(types);
-
-		Set<Integer> regions = new LinkedHashSet<>();
-		for (RunStop stop : stops)
-		{
-			regions.add(stop.getRegion().getRegionId());
-		}
-
-		Set<Integer> offered = new LinkedHashSet<>();
-		for (int region : regions)
-		{
-			String where = regionName(region, stops);
-			for (TeleportItems.Teleport teleport : TeleportItems.forRegion(region))
-			{
-				addTeleportIfOwned(items, offered, teleport, "Reaches " + where);
-			}
-		}
-
-		for (TeleportItems.Teleport teleport : TeleportItems.universal())
-		{
-			addTeleportIfOwned(items, offered, teleport, "Needed to use fairy rings");
-		}
-
-		addListedTeleports(items, offered);
-	}
-
 	/**
-	 * Whatever the player put on the teleport list, found by name in their bank.
+	 * The teleports on the player's list, and nothing else — the whole of the feature.
 	 *
-	 * <p>The table above knows which teleports <i>reach a farming region</i>, which is a fact
-	 * about the map. It cannot know that you always bring a games necklace, or that your house
-	 * tab is how every trip starts — that is a fact about you, so it is a setting.
+	 * <h2>The region table no longer offers anything, by owner decision</h2>
 	 *
-	 * <h2>Matched by name, against the bank, which is what makes it need no ids</h2>
+	 * This used to walk {@code TeleportItems} for every region the run visits and offer
+	 * whatever reached one, with the list as a filter on top. That was the plugin modelling a
+	 * question another plugin already owns: Shortest Path routes with the player's own
+	 * transport settings, and knows their unlocks in a way a static table never can — there
+	 * are too many teleport options across account types and progression for a table to be
+	 * right about anyone's. So the loadout's teleports are exactly the player's own list,
+	 * Ground Items style: names in a setting, matched against items they actually own. The
+	 * table survives only to power the travel hint's "which item gets you there" and to match
+	 * the alternate spellings in {@code resolve}.
+	 *
+	 * <h2>Matched by name, against the bank and the pack, which is what makes it need no ids</h2>
 	 *
 	 * A list of item names cannot be turned into ids without an index of every item in the game,
-	 * and there is no such thing to hand. But the only ids that matter here are the ones in your
-	 * bank — nothing else can be filtered, laid out or highlighted — and the bank <i>is</i> that
-	 * index, for exactly the items in question. So the names are read off it and matched.
-	 *
-	 * <p>The same reasoning as Ground Items' highlighted and hidden lists, which match on name for
-	 * the same reason: what belongs on such a list is per account and cannot be derived.
+	 * and there is no such thing to hand. But the only ids that matter here are the ones you own
+	 * — nothing else can be filtered, laid out or highlighted — and the bank and the pack
+	 * together <i>are</i> that index, for exactly the items in question. So the names are read
+	 * off both and matched. The pack half matters more than it looks: a teleport you always
+	 * carry may exist in the bank only as a placeholder, which is not contents.
 	 *
 	 * <p>Anything listed but not owned simply never appears — no advice to go and buy things.
 	 */
-	private void addListedTeleports(List<LoadoutItem> items, Set<Integer> offered)
+	private void addListedTeleports(List<LoadoutItem> items)
 	{
 		for (int itemId : listedTeleportIds())
 		{
-			if (offered.contains(itemId))
-			{
-				// Already offered by the region table, which knows where it goes — a better
-				// reason than "you listed it" for the same item.
-				continue;
-			}
-
-			offered.add(itemId);
 			items.add(new LoadoutItem(itemId, itemNames.get(itemId, "Teleport"),
 				LoadoutItem.Category.TELEPORT,
 				carried.has(itemId) ? LoadoutItem.Need.HAVE : LoadoutItem.Need.WITHDRAW, 0,
@@ -1012,9 +1121,10 @@ public class RunLoadout
 		}
 	}
 
-	/** The setting and bank the cached answer below was worked out from. */
+	/** The setting, bank and pack the cached answer below was worked out from. */
 	private String resolvedFrom;
 	private Set<Integer> resolvedBank;
+	private Set<Integer> resolvedCarried;
 	private Set<Integer> resolvedIds = Collections.emptySet();
 
 	/**
@@ -1038,14 +1148,26 @@ public class RunLoadout
 		String setting = config.teleportItems();
 		setting = setting == null ? "" : setting.trim();
 
+		// The pack as well as the bank, and the gap was reported from play: every house tab
+		// carried, none banked, and the bank holding only their placeholder — which
+		// BankContents rightly does not count. Matching the bank alone meant the tabs had no
+		// row at all, so the filter would not even show the placeholder, until one was
+		// deposited and became bank contents. What you are carrying is as good an index of
+		// "items you own whose names we know" as the bank is.
 		Set<Integer> bankIds = bank.getItemIds();
-		if (setting.equals(resolvedFrom) && bankIds.equals(resolvedBank))
+		Set<Integer> carriedIds = carried.getItemIds();
+		if (setting.equals(resolvedFrom) && bankIds.equals(resolvedBank)
+			&& carriedIds.equals(resolvedCarried))
 		{
 			return resolvedIds;
 		}
 		resolvedFrom = setting;
 		resolvedBank = bankIds;
-		resolvedIds = resolve(setting, bankIds);
+		resolvedCarried = carriedIds;
+
+		Set<Integer> owned = new LinkedHashSet<>(bankIds);
+		owned.addAll(carriedIds);
+		resolvedIds = resolve(setting, owned);
 		return resolvedIds;
 	}
 
@@ -1119,45 +1241,6 @@ public class RunLoadout
 		return false;
 	}
 
-	private void addTeleportIfOwned(List<LoadoutItem> items, Set<Integer> offered,
-		TeleportItems.Teleport teleport, String reason)
-	{
-		int itemId = teleport.getItemId();
-		if (!offered.add(itemId))
-		{
-			return;
-		}
-
-		// Knowing where it goes is not a reason to suggest it. See offeredByTheList.
-		if (!offeredByTheList(itemId))
-		{
-			return;
-		}
-
-		boolean have = carried.has(itemId);
-		if (!have && !bank.has(itemId))
-		{
-			// Not owned. Saying nothing is the point: a list of teleports to go and buy is
-			// advice, and advice is wrong for anyone whose unlocks differ.
-			return;
-		}
-
-		items.add(new LoadoutItem(itemId, teleport.getName(), LoadoutItem.Category.TELEPORT,
-			have ? LoadoutItem.Need.HAVE : LoadoutItem.Need.WITHDRAW, 0, reason));
-	}
-
-	private String regionName(int regionId, List<RunStop> stops)
-	{
-		for (RunStop stop : stops)
-		{
-			if (stop.getRegion().getRegionId() == regionId)
-			{
-				return stop.getName();
-			}
-		}
-		return "a stop on this run";
-	}
-
 	/**
 	 * What to do about an item.
 	 *
@@ -1210,6 +1293,45 @@ public class RunLoadout
 			}
 		}
 		return marked;
+	}
+
+	/**
+	 * Says what the loadout resolved to, once, when a bank is opened.
+	 *
+	 * <p>Same reasoning as the contract state and the stats totals: nothing showing in the bank
+	 * has several quite different causes and every one of them looks identical from in front of
+	 * it. No run types ticked, no seeds picked, no patch wanting anything, a bank never opened so
+	 * every item still reads as {@code UNKNOWN} rather than {@code WITHDRAW}, or a run not
+	 * started at all — the overlay can only respond to all five by drawing nothing.
+	 *
+	 * <p>One line so the answer is in {@code client.log} rather than in a back-and-forth.
+	 */
+	public void logState(Set<PatchImplementation> types, boolean runActive)
+	{
+		List<LoadoutItem> items = forRun(types);
+
+		int withdraw = 0;
+		StringBuilder counted = new StringBuilder();
+		for (LoadoutItem item : items)
+		{
+			if (item.getNeed() != LoadoutItem.Need.WITHDRAW)
+			{
+				continue;
+			}
+			withdraw++;
+			if (item.getOutstanding() > 0)
+			{
+				counted.append(counted.length() == 0 ? "" : ", ")
+					.append(item.getName()).append(" x").append(item.getOutstanding());
+			}
+		}
+
+		log.info("Doogle Maps loadout: run {}, types {}, bank seen {}; {} items, {} to withdraw"
+				+ "{}",
+			runActive ? "active" : "not started (bank highlight needs a started run)",
+			types.isEmpty() ? "none ticked" : types.toString(),
+			bank.hasBeenSeen(), items.size(), withdraw,
+			counted.length() == 0 ? ", none with a count" : " - counted: " + counted);
 	}
 
 	/**

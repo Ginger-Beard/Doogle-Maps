@@ -136,12 +136,14 @@ is the substantial one, and the only part of it still open is how a *diseased* p
 
   **Validation is automated now — see `HarvestLog`.** Rather than eyeballing it, the plugin
   records every finished patch to the client log and to `~/.runelite/doogle-maps/harvests.csv`
-  with the prediction beside the actual. Config toggle "Log harvests for validation",
+  with the prediction beside the actual. Recorded whenever the plugin is enabled; the config
+  toggle "Verbose harvest logging" governs only the client-log commentary,
   currently defaulted **on**; turn it off before release if it stays noisy. Nothing is sent
   anywhere.
 
-  Columns: `time, patch, crop, level, compost, secateurs, cape, attas, lives, predicted,
-  actual, predicted_xp, actual_xp, completed`. Rows with `completed=false` are patches you
+  Columns: `version, time, patch, crop, level, compost, secateurs, cape, attas, lives,
+  predicted, actual, predicted_xp, actual_xp, completed` — but read by **name**, from whatever
+  header the file itself carries, so an older log keeps working unchanged. See `HarvestCsv`. Rows with `completed=false` are patches you
   walked away from — **exclude those when averaging**, or partial picks will look like low
   yields. A couple of dozen completed herb rows settles whether the formula matches the game;
   the mean of `actual` should land on the mean of `predicted`.

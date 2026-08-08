@@ -57,7 +57,7 @@ public class PlayerHouse
 	private volatile List<TileObject> teleports = Collections.emptyList();
 
 	@Inject
-	private PlayerHouse(Client client)
+	PlayerHouse(Client client)
 	{
 		this.client = client;
 	}

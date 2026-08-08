@@ -96,7 +96,7 @@ public class ToolNeeds
 	private final BarbarianFarming barbarianFarming;
 
 	@Inject
-	private ToolNeeds(LeprechaunStore leprechaun, CarriedItems carried, BankContents bank,
+	ToolNeeds(LeprechaunStore leprechaun, CarriedItems carried, BankContents bank,
 		SeedSelectionStore selection, GrowthTimer growthTimer, BarbarianFarming barbarianFarming)
 	{
 		this.barbarianFarming = barbarianFarming;

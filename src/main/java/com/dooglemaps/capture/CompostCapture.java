@@ -82,7 +82,7 @@ public class CompostCapture
 	private final Map<FarmPatch, PendingCompost> pending = new HashMap<>();
 
 	@Inject
-	private CompostCapture(Client client, PatchStateStore stateStore)
+	CompostCapture(Client client, PatchStateStore stateStore)
 	{
 		this.client = client;
 		this.stateStore = stateStore;

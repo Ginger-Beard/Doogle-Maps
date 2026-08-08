@@ -1,10 +1,8 @@
 package com.dooglemaps.route;
 
-import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.HashMap;
@@ -32,7 +30,7 @@ import net.runelite.client.config.ConfigManager;
  */
 @Slf4j
 @Singleton
-public class PatchLocationStore
+public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 {
 	private static final String LOCATIONS_KEY = "patchLocations";
 
@@ -43,17 +41,13 @@ public class PatchLocationStore
 	/** Regions are 64x64 tiles, so their centre is 32 in from the corner. */
 	private static final int REGION_SIZE = 64;
 
-	private final ConfigManager configManager;
-	private final Gson gson;
-
 	/** Patch key to {x, y, plane}. */
 	private final Map<String, int[]> learned = new HashMap<>();
 
 	@Inject
-	private PatchLocationStore(ConfigManager configManager, Gson gson)
+	PatchLocationStore(ConfigManager configManager, Gson gson)
 	{
-		this.configManager = configManager;
-		this.gson = gson;
+		super(configManager, gson, LOCATIONS_KEY);
 	}
 
 	/**
@@ -122,44 +116,34 @@ public class PatchLocationStore
 	public synchronized void clear()
 	{
 		learned.clear();
-		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, LOCATIONS_KEY);
+		unsetStored();
 	}
 
-	public void load()
+	@Override
+	protected void resetForLoad()
 	{
-		synchronized (this)
+		learned.clear();
+	}
+
+	@Override
+	protected void applyJson(String json)
+	{
+		Map<String, int[]> loaded = gson.fromJson(json, LOCATION_MAP_TYPE);
+		if (loaded != null)
 		{
-			learned.clear();
-
-			String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, LOCATIONS_KEY);
-			if (json == null || json.isEmpty())
+			loaded.forEach((key, value) ->
 			{
-				return;
-			}
-
-			try
-			{
-				Map<String, int[]> loaded = gson.fromJson(json, LOCATION_MAP_TYPE);
-				if (loaded != null)
+				if (value != null && value.length == 3 && FarmingWorldData.getPatch(key) != null)
 				{
-					loaded.forEach((key, value) ->
-					{
-						if (value != null && value.length == 3 && FarmingWorldData.getPatch(key) != null)
-						{
-							learned.put(key, value);
-						}
-					});
+					learned.put(key, value);
 				}
-			}
-			catch (JsonSyntaxException e)
-			{
-				log.warn("Discarding unreadable patch locations", e);
-			}
+			});
 		}
 	}
 
-	private synchronized void save()
+	@Override
+	protected Object serialized()
 	{
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, LOCATIONS_KEY, gson.toJson(learned));
+		return learned;
 	}
 }

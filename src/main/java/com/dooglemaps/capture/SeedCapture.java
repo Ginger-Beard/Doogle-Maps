@@ -44,7 +44,7 @@ public class SeedCapture
 	private final ItemManager itemManager;
 
 	@Inject
-	private SeedCapture(SeedInventoryStore seeds, FarmingBonusStore bonuses, ItemManager itemManager)
+	SeedCapture(SeedInventoryStore seeds, FarmingBonusStore bonuses, ItemManager itemManager)
 	{
 		this.seeds = seeds;
 		this.bonuses = bonuses;

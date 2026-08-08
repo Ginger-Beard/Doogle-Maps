@@ -30,7 +30,7 @@ public class PanelLayoutStore
 	private final ConfigManager configManager;
 
 	@Inject
-	private PanelLayoutStore(ConfigManager configManager)
+	PanelLayoutStore(ConfigManager configManager)
 	{
 		this.configManager = configManager;
 	}

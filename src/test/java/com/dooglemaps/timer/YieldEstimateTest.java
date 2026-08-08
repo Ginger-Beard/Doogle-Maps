@@ -3,6 +3,7 @@ package com.dooglemaps.timer;
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropYield;
 import com.dooglemaps.data.Seed;
+import java.util.Random;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -167,6 +168,70 @@ public class YieldEstimateTest
 					expected >= YieldEstimate.BASE_LIVES);
 			}
 		}
+	}
+
+	/**
+	 * The mean and the spread both match a patch actually being picked, a few hundred thousand
+	 * times.
+	 *
+	 * <p>Simulated rather than asserted against a restated formula, which would only check the
+	 * arithmetic against itself. Picking is a short loop — roll, keep the life or spend it,
+	 * stop at none left — and it is the definition {@code harvestVariance} claims to be the
+	 * closed form of, so running it is an independent route to the same two numbers.
+	 *
+	 * <p>The spread is the one worth pinning. It is invisible in play, it feeds a percentile
+	 * that is stated with confidence, and {@code r·p/(1-p)²} is easy to write as
+	 * {@code r·p/(1-p)} without anything ever looking wrong.
+	 */
+	@Test
+	public void theSpreadMatchesActuallyPickingThePatch()
+	{
+		CropYield ranarr = CropYield.forSeed(Seed.RANARR);
+		int lives = YieldEstimate.lives(CompostTier.ULTRACOMPOST);
+		double save = YieldEstimate.chanceToSave(ranarr, 85, BARE);
+
+		// Fixed seed: a flaky statistical test is worse than no test.
+		Random random = new Random(20260807L);
+		int trials = 200_000;
+		double total = 0;
+		double totalSquares = 0;
+
+		for (int trial = 0; trial < trials; trial++)
+		{
+			int remaining = lives;
+			int picks = 0;
+			while (remaining > 0)
+			{
+				picks++;
+				if (random.nextDouble() >= save)
+				{
+					remaining--;
+				}
+			}
+			total += picks;
+			totalSquares += (double) picks * picks;
+		}
+
+		double mean = total / trials;
+		double variance = totalSquares / trials - mean * mean;
+
+		assertEquals(YieldEstimate.expectedHarvest(ranarr, 85, lives, BARE), mean, 0.02);
+		assertEquals(YieldEstimate.harvestVariance(ranarr, 85, lives, BARE), variance, 0.05);
+	}
+
+	/**
+	 * Ultracompost widens the spread as well as raising the mean, which is worth knowing.
+	 *
+	 * <p>More lives means more picks and so more room to scatter. It is the reason a percentile
+	 * has to be computed from each patch's own parameters rather than from a crop-wide figure:
+	 * the same crop under two tiers is two different distributions.
+	 */
+	@Test
+	public void moreLivesWidenTheSpread()
+	{
+		CropYield ranarr = CropYield.forSeed(Seed.RANARR);
+		assertTrue(YieldEstimate.harvestVariance(ranarr, 85, CompostTier.ULTRACOMPOST, BARE)
+			> YieldEstimate.harvestVariance(ranarr, 85, CompostTier.NONE, BARE));
 	}
 
 	/**

@@ -15,7 +15,9 @@ Ordered by how likely each is to be wrong, so a short session still buys the mos
 2. **Clear the harvest history.** Settings → Maintenance → *Clear harvest history*. Everything
    currently stored was collected by the broken attribution and will drag every average it
    touches. New rows written after this are trustworthy; old ones are not.
-3. Leave **Log harvests for validation** on. It is what makes the rest of this measurable.
+3. Leave **Verbose harvest logging** on. It no longer gates the recording — statistics are
+   collected whenever the plugin is enabled — but it puts a line per patch in `client.log`,
+   which is what makes the capture itself checkable.
 4. Note that **guided mode defaults to on**, so it starts working the moment a run does.
 
 ---
@@ -381,7 +383,12 @@ which one to go and look at.
   old list said which the rows do not say for themselves.
 - **Pass, and this is the one that used to be impossible**: a patch you have never visited can be
   switched off and on. Under the old arrangement `Hide empty patches` could hide the row while the
-  checkbox list still listed it, which is how the same patch could be in two states at once.
+  checkbox list still listed it, which is how the same patch could be in two states at once. That
+  setting has since been **removed entirely** — see below.
+- **Pass**: there is no *Hide empty patches* setting in Overview, and an empty patch is always
+  listed. It was removed rather than defaulted off: an empty patch is the one you are about to
+  plant into, and it never changed which patches a run actually visited — so it hid a run's own
+  targets from the overview you check while running it.
 - **Pass**: click through the patch tabs, then click back through them again. No gap opens between
   the tab strip and the *Patch status* heading. Two of the three places setting the "nothing here
   yet" line's visibility asked `isEnabled()` — a property nothing sets, so always true — and one of
@@ -901,6 +908,140 @@ worth for a one-run trip. `docs/TODO.md` had it listed as a known open bug.
 - **Pass**: tree seeds still appear even when you own none potted. The bank list allocates on
   either form, deliberately unlike the guide, which can only plant a sapling — you pot on the way.
 
+### 1a-xxviii. Withdraw counts: the cyan number and the itemised list — new, a fix
+
+Reported from play as doing neither of the two things it promised. Two separate causes: the
+supply list was prose without quantities ("From the bank: yew sapling, cactus spine."), and the
+cyan slot number — built and correct — was skipped whenever bank filtering was applied, which
+is the default, so it had never drawn on anyone's screen. Both now read one shared rule,
+`LoadoutItem.getWithdrawCount`, so they cannot disagree.
+
+- **Pass**: on the supply leg, the on-screen panel lists one row per item with its count —
+  "From the bank:" then "- Yew sapling x3", "- Cactus spine x30" — and "From the seed vault:"
+  as its own section when the run wants both. No count on bring-the-thing items (axe, seed
+  box, teleports).
+- **Pass**: each highlighted (or filtered-in) bank slot carries a cyan count in its
+  **top-right** corner — the bank's own yellow quantity owns the top-left — for seeds and
+  payments only.
+- **Pass, the live half**: withdraw three of thirty spines and the slot and the list both read
+  27 on the next tick; deposit them and both go back to 30.
+- **Pass**: with bank filtering active there is no colour wash (the filter already did the
+  marking) but the counts and the hover reason still appear.
+- **Fail signatures**:
+  - Counts in the list but not on the slots while filtered → `countContainer` is not being
+    reached; check `bankFilter.isFiltering()`.
+  - A count that never moves → `outstanding` is not being rebuilt; `CarriedItems` may not be
+    seeing the withdrawal, or the loadout cache is not refreshing per tick.
+  - A count on a slot the run only wants one of → the `quantity > 1` gate in
+    `getWithdrawCount` has regressed.
+
+### 1a-xxix. The bank is remembered across sessions — new, a fix
+
+Reported as bank filtering not working on first load and the withdraw list not appearing until
+a bank was opened. The log showed the mechanism (`Run planned` at 23:07:16, `bank seen false;
+12 items, 0 to withdraw` at :25, `bank seen true; 19 items, 7 to withdraw` at :30): nothing of
+the bank survived a relaunch, so payments and tools read as unknown, the protection budget was
+zero, and a protected seed was allocated no patches at all — no yew row, nothing to withdraw,
+and a filter narrowed to a set missing exactly the things the trip was for. `BankContents` now
+persists per profile, corrected wholesale on every real bank read.
+
+- **Pass**: relaunch the client, log in, start a run that wants a protected tree and payments —
+  **without opening a bank**: the withdraw list is already itemised (the sapling, the
+  payments, the tools), the slot counts are ready, and the loadout log line says
+  `bank seen true`.
+- **Pass**: the first bank open of the session filters correctly at once — no close-and-reopen.
+- **Pass**: teleports matched by name appear before the first open too (item names are now
+  learned from the remembered bank at login).
+- **Expected, not a bug**: counts reflect the bank as last seen, so something spent from
+  another client shows stale until the first open corrects it — the same deal the seed
+  counts have always had.
+- **Fail signatures**:
+  - `bank seen false` at login on a profile that has banked → `bankContents.load()` not
+    running or profile key not yet resolved; check the deferred-load guard.
+  - Right at login but wrong after banking → the `record()` path stopped saving; check the
+    change-detection branch.
+
+### 1a-xxx. Withdraw list refinements: names, x1, potting supplies, no teleports — new
+
+Four refinements from the first live session of 1a-xxviii/xxix:
+
+- **Pass**: a tree seed row is named as the item — "Yew sapling", or the game's own name once
+  the sapling has been seen in a bank — never the bare crop "Yew".
+- **Pass**: every withdrawal carries a cyan count — the counted rows their arithmetic, the
+  unit rows (felling axe, watering can, seed box, each teleport) a plain "1" that vanishes
+  once the item is on you. The old suppression assumed the highlight would carry the
+  message, and a filtered bank has no highlight; reported as a markless felling axe.
+  Compost is the one deliberate exception — its true bucket count is not computed yet, and
+  a "1" over forty buckets would be a wrong number rather than a missing one.
+- **Pass**: a tree seed with no sapling potted adds "Filled plant pot xN" (one per seed to
+  pot) and one "Watering can x1" row to the list and the filter. Gricoller's can counts.
+- **Pass**: teleports are filtered in and highlighted but no longer listed as text rows.
+- **Pass**: the on-screen panel titles as "Farm run - Farming Guild" (name first, place
+  second), and plain "Farm run" between stops.
+- **Pass**: while the bank is open and filtered, an item joining the run's wants — a name
+  learned late, a patch ripening — appears in the filtered view within a tick, with no
+  deposit or close-and-reopen needed. This was the reported teleport weirdness: the layout
+  rebuilt only when bank *contents* changed, so wants that grew after the first open stayed
+  invisible until a deposit happened to shake the bank.
+- **Fail signature**: filtered view still missing late arrivals → `relayoutIfBankChanged` is
+  not seeing the wants change; check `laidOutWanted`.
+
+### 1a-xxxi. Carried teleports, noted payments, and the game's names — new, fixes
+
+Three from the same live session as 1a-xxx:
+
+- **Pass**: a listed teleport you only carry — every house tab on you, the bank holding just
+  its placeholder — is offered (as HAVE), in the filter from the first open, placeholder
+  included when placeholders are on. The gap was `offeredByTheList` resolving names against
+  the bank alone; the pack now counts as part of the index, and item names are learned from
+  the inventory and equipment as they change, not only from bank reads.
+- **Pass**: a stack of **noted** protection payments in the pack satisfies the payment — the
+  row reads HAVE, drops off the withdraw list, and funds the protection budget the
+  allocation is capped by. Noted counts live under `CarriedItems.getCountIncludingNoted`,
+  deliberately separate from `getCount`: a noted seed still cannot be planted.
+- **Pass**: teleport rows carry the game's own item name — "Teleport to house", never the
+  table's "Teleport to house tablet".
+- **Fail signatures**:
+  - Carried-only teleport still absent until deposited → its name is not resolving; check
+    the inventory name capture in `DoogleMapsPlugin.onItemContainerChanged`.
+  - Noted payments still on the list → `getItemDefinition` not identifying the note; check
+    the `getNote() != -1` branch in `CarriedItems.record`.
+
+### 1a-xxxii. Teleports are the list, the whole list, and nothing but the list — new
+
+The region table no longer offers anything, by owner decision: Shortest Path routes with the
+player's own transport settings and unlocks, so the plugin suggesting teleports of its own was
+modelling a question another plugin already answers better — and one with too many options
+across account types to ever be right about anyone's. The `Teleport items` setting is now the
+whole feature, matched Ground Items style by the game's item names against the bank and pack.
+
+- **Pass**: exactly the teleports on the list appear — in the loadout, the filter and the
+  highlight — and only when owned. Nothing appears for owning a teleport that reaches a stop
+  if it is not listed.
+- **Pass**: an empty list offers no teleports (it used to fall back to the table).
+- **Pass**: the travel hint ("use your house tab", with the outline) still works — the table
+  survives for that one job, still gated to listed items.
+- **Fail signature**: a teleport you listed by its on-screen name never appears → its name
+  has not been learned; check it is in the bank or pack and see 1a-xxxi.
+
+### 1a-xxxiii. The route's own item, the axe rule, and placeholder counts — new
+
+- **Pass**: with Shortest Path drawing a route that uses an item you own, that item is
+  marked in **cyan** in the bank (filtered or not), sits in **slot A1** of the layout (a
+  swap with whatever the map had there, nothing else moves), and the step panel's supply
+  section ends with "Route: <name>" in cyan. All soft: it never joins the withdraw list and
+  never holds the supply leg — some transports are not items, and some items (daily-charge
+  diary teleports) have limits no plugin can see. Resolved by matching Shortest Path's
+  display text against the names of items you own, suffixes stripped both sides; when
+  nothing resolves, nothing appears.
+- **Pass**: the axe rule, plainly: a tree/hardwood/redwood run always asks (the harvest is
+  the chop), a fruit tree or calquat run asks only when replanting — harvest-only picks and
+  never chops — and a tree-shaped contract asks because a contract is never harvest-only.
+- **Pass**: no cyan count on a placeholder slot, anywhere - an empty slot has nothing to
+  withdraw.
+- **Fail signature**: route item never appears with a route drawn → Shortest Path reworded
+  its transport text; check `RouteItem.match` against what the panel's transport lines show.
+
 ### 1b. The order is right
 
 Work one patch through its whole cycle and check each instruction appears in turn:
@@ -1085,8 +1226,18 @@ whether it is seen at all during normal play.
 |---|---|---|
 | **Farmer chatheads** | Almanac, a protected patch | A recognisable face, not a green shield. Tooltip names them ("Protected - Elstan paid"). Coral patch keeps a shield — that one has no wiki page. |
 | **Saplings** | Tree / fruit tree tab seed list | Saplings you own appear. A tree *seed* also appears, greyed, tooltip saying it needs potting. |
-| **Stats tab** | Stats | Columns read crop / n / got / avg. Hovering a crop gives the per-compost split. |
+| **Stats tab** | Stats | Five sections down the page: Lifetime, Luck, Runs, Expected, Validation. Hovering a crop gives the per-compost split. |
+| **Stats — Runs** | Stats | Sittings clustered from harvest timestamps, showing last / best / average. Rates must read **"xp a day"** and **"while you are actually farming"** — an unlabelled hourly figure is the failure. |
+| **Stats — path to 99** | Stats, low level with seeds banked | "Unlocks on the way" lists crops by the level they need, ascending. Where 99 is reached it splits the bank into what got you there and what is surplus. |
+| **Stats — disease** | Stats, after ~50 growth cycles | Observed disease against predicted, in Validation. Nothing shown below 50 cycles. A cured patch still counts as diseased; a patch found dead counts as diseased too. |
+| **Stats — value** | Stats | Coin figures must say **"what it would fetch now"** and **"no protection payments counted"**. Before prices load there should be no coin line at all, rather than 0 gp — they appear a moment after login. |
+| **Stats — no client-thread errors** | `client.log`, after opening Stats | No `AssertionError: must be called on client thread`. Prices come from `ItemPrices`, read on the client thread; calling `ItemManager.getItemPrice` from the panel unwinds the whole refresh and blanks the tab. |
+| **Stats — Luck** | Stats | The `luck` column is **blank on any history recorded before the spread was captured**, and stays blank until a crop has 20 newly recorded patches. The `+/-` column beside it is filled either way. A percentile appearing on old data is the failure. |
+| **Stats — Expected** | Stats, with seeds banked | Lists seeds you hold, ordered by xp each. Should appear even with an empty harvest history. A crop whose patches are all switched off must not be listed; a crop above your Farming level is counted in the note, not in the table. |
+| **Stats — seeds per patch** | Stats, holding allotment seeds | 100 potato seeds must read as **33 patches** in the tooltip, not 100. |
 | **Run destinations** | Doogle Maps, before starting | "Show destinations (n)" lists every stop with its patch count. |
+| **Bank withdraw count** | Bank, run planned | A **cyan** number in the **top-right** of each marked slot, opposite the game's own yellow stack count in the top-left. It is what is left to fetch: withdraw some and it falls; deposit them and it goes back up. No number where the run wants only one of something. |
+| **Infobox withdraw list** | Hover the infobox at the bank | A *To withdraw* section listing items with counts — "Cactus spine x30". Shortens as you withdraw. The infobox stays visible for it even with *Hide infobox when nothing is ready* on, since that is exactly when you are getting a run ready. |
 | **Stats reset** | Settings → Maintenance | *Clear harvest history* prompts, then empties the Stats tab. Patch states and settings survive. |
 | **Fruit tree XP** | Check-health a fruit tree | The tooltip now gives a figure. One clean drop settles pineapple (4,605 vs 4,605.7) and papaya (6,146.6 vs 6,146.4). |
 

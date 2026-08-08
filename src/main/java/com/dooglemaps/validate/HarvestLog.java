@@ -43,7 +43,6 @@ import net.runelite.api.events.GameTick;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.events.StatChanged;
 import net.runelite.api.gameval.InventoryID;
-import net.runelite.client.RuneLite;
 import net.runelite.client.eventbus.Subscribe;
 
 /**
@@ -96,10 +95,6 @@ public class HarvestLog
 	 */
 	private static final int MAX_ATTRIBUTION_DISTANCE = 64;
 
-	private static final String CSV_HEADER =
-		"time,patch,crop,level,compost,secateurs,cape,attas,lives,predicted,actual,"
-			+ "predicted_xp,actual_xp,completed";
-
 	/** Produce keyed by the item it drops, for the crops we make claims about. */
 	private static final Map<Integer, Produce> BY_ITEM = new HashMap<>();
 
@@ -124,6 +119,7 @@ public class HarvestLog
 	private final SeedInventoryStore seeds;
 	private final FarmingBonusStore bonuses;
 	private final HarvestStatsStore stats;
+	private final HarvestHistory history;
 	private final PatchLocationStore locations;
 	private final Client client;
 
@@ -152,13 +148,20 @@ public class HarvestLog
 
 	private int lastFarmingXp = -1;
 	private String lastActivePatch;
-	private boolean headerWritten;
+
+	/** The CSV's own column order, read from its header the first time it is appended to. */
+	private java.util.List<String> columns;
+
+	/** For the profile scoping of the file - see {@link HarvestFiles}. */
+	private final net.runelite.client.config.ConfigManager configManager;
 
 	@Inject
-	private HarvestLog(DoogleMapsConfig config, PatchStateStore patches,
+	HarvestLog(DoogleMapsConfig config, PatchStateStore patches,
 		SeedInventoryStore seeds, FarmingBonusStore bonuses, HarvestStatsStore stats,
-		PatchLocationStore locations, Client client)
+		HarvestHistory history, PatchLocationStore locations, Client client,
+		net.runelite.client.config.ConfigManager configManager)
 	{
+		this.history = history;
 		this.locations = locations;
 		this.client = client;
 		this.config = config;
@@ -166,6 +169,7 @@ public class HarvestLog
 		this.seeds = seeds;
 		this.bonuses = bonuses;
 		this.stats = stats;
+		this.configManager = configManager;
 	}
 
 	/** Drops everything in flight. Nothing half-observed survives a logout or a hop. */
@@ -177,6 +181,9 @@ public class HarvestLog
 		inventoryPrimed = false;
 		lastFarmingXp = -1;
 		lastActivePatch = null;
+		// The column order was learned from one profile's file, and a reset may mean a
+		// different profile whose file was created by a different version.
+		columns = null;
 	}
 
 	// ------------------------------------------------------------------- events
@@ -184,7 +191,7 @@ public class HarvestLog
 	@Subscribe
 	public void onItemContainerChanged(ItemContainerChanged event)
 	{
-		if (!config.logHarvests() || event.getContainerId() != InventoryID.INV)
+		if (event.getContainerId() != InventoryID.INV)
 		{
 			return;
 		}
@@ -221,7 +228,7 @@ public class HarvestLog
 		int previous = lastFarmingXp;
 		lastFarmingXp = total;
 
-		if (!config.logHarvests() || previous < 0 || total <= previous)
+		if (previous < 0 || total <= previous)
 		{
 			return;
 		}
@@ -419,11 +426,6 @@ public class HarvestLog
 	 */
 	public void onPatchState(FarmPatch patch, @Nullable ProduceState previous, ProduceState current)
 	{
-		if (!config.logHarvests())
-		{
-			return;
-		}
-
 		HarvestRecord record = open.get(patch.getKey());
 		if (record == null)
 		{
@@ -572,9 +574,38 @@ public class HarvestLog
 
 	// -------------------------------------------------------------------- output
 
+	/**
+	 * Files one finished patch.
+	 *
+	 * <h2>Recording is not optional; the commentary is</h2>
+	 *
+	 * Everything down to {@link #appendCsv} runs whenever the plugin is enabled. These are the
+	 * player's own numbers — what the Stats tab is made of — and they accumulate over months, so
+	 * a setting that switched them off would not cost you a feature you could switch back on. It
+	 * would cost you the history you did not know you were not keeping.
+	 *
+	 * <p>That is what {@code logHarvests} used to do. It reads as a developer's CSV toggle and
+	 * was gating every observation behind it, so turning it off silently emptied the whole tab.
+	 * It now governs only the client-log chatter below, which is genuinely a diagnostic: a line
+	 * per patch and two warnings about the capture itself.
+	 */
 	private void write(HarvestRecord record)
 	{
 		if (record.getItemsHarvested() <= 0)
+		{
+			return;
+		}
+
+		// The rolled-up totals are the part that outlives this session and can be shown back
+		// to the player; the CSV is the raw trail behind them, and since the runs and the level
+		// curve are reconstructed from it, it is a store rather than a debug artifact.
+		stats.record(record);
+		// Folded in here as well as written, so the run clustering stays current without the
+		// file being read again - and so it does not depend on the write having succeeded.
+		history.record(record);
+		appendCsv(record);
+
+		if (!config.logHarvests())
 		{
 			return;
 		}
@@ -605,11 +636,6 @@ public class HarvestLog
 				record.getProduce().getName(), predictedXp, record.getItemsHarvested(),
 				record.getXpGained());
 		}
-
-		// The rolled-up totals are the part that outlives this session and can be shown back
-		// to the player; the CSV is the raw trail behind them.
-		stats.record(record);
-		appendCsv(record);
 	}
 
 	/**
@@ -671,50 +697,51 @@ public class HarvestLog
 	/**
 	 * Appends one row to the CSV, creating it on first use.
 	 *
+	 * <p>Written in <b>the file's own column order</b>, learned from its header the first time
+	 * this session appends to it. That is what lets a file created by an older version keep
+	 * being appended to rather than needing a migration: its header still describes it, and
+	 * {@link HarvestCsv} lays each row out to match.
+	 *
 	 * <p>Failures are logged once and otherwise ignored. Being unable to write a validation
 	 * file is not a reason to interfere with anyone's game.
 	 */
 	private void appendCsv(HarvestRecord record)
 	{
-		File dir = new File(RuneLite.RUNELITE_DIR, "doogle-maps");
-		File file = new File(dir, "harvests.csv");
-		try
+		File dir = HarvestFiles.directory();
+		File file = HarvestFiles.forProfile(configManager);
+		// Under the shared lock because the history's initial read - and the trim it can
+		// trigger, a whole-file rewrite - runs on the executor. See HarvestFiles.FILE_LOCK.
+		synchronized (HarvestFiles.FILE_LOCK)
 		{
-			if (!dir.exists() && !dir.mkdirs())
+			try
 			{
-				return;
-			}
-
-			boolean needsHeader = !headerWritten && !file.exists();
-			try (Writer writer = Files.newBufferedWriter(file.toPath(), StandardCharsets.UTF_8,
-				StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-				PrintWriter out = new PrintWriter(writer))
-			{
-				if (needsHeader)
+				if (!dir.exists() && !dir.mkdirs())
 				{
-					out.println(CSV_HEADER);
+					return;
 				}
-				out.printf("%s,%s,%s,%d,%s,%b,%b,%b,%d,%.2f,%d,%.1f,%.1f,%b%n",
-					Instant.now(),
-					record.getPatch().getDisplayName().replace(',', ' '),
-					record.getProduce().getName().replace(',', ' '),
-					record.getFarmingLevel(),
-					record.getCompost().name(),
-					record.getBonuses().isMagicSecateurs(),
-					record.getBonuses().isFarmingCape(),
-					record.getBonuses().isAttas(),
-					record.getLives(),
-					record.getPredictedYield(),
-					record.getItemsHarvested(),
-					record.getPredictedXp(),
-					record.getXpGained(),
-					record.isCompleted());
+
+				boolean needsHeader = !file.exists() || file.length() == 0;
+				if (columns == null)
+				{
+					columns = needsHeader ? HarvestCsv.COLUMNS : HarvestCsv.columnsOf(file);
+				}
+
+				try (Writer writer = Files.newBufferedWriter(file.toPath(), StandardCharsets.UTF_8,
+					StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+					PrintWriter out = new PrintWriter(writer))
+				{
+					if (needsHeader)
+					{
+						out.println(String.join(",", columns));
+					}
+					out.println(HarvestCsv.line(columns,
+						HarvestCsv.valuesOf(record, Instant.now().getEpochSecond())));
+				}
 			}
-			headerWritten = true;
-		}
-		catch (IOException e)
-		{
-			log.warn("Could not write {}", file, e);
+			catch (IOException e)
+			{
+				log.warn("Could not write {}", file, e);
+			}
 		}
 	}
 

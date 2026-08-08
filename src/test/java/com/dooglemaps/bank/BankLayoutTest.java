@@ -270,6 +270,38 @@ public class BankLayoutTest
 	}
 
 	/** Spreadsheet addressing: column letter and 1-based row, to a flat index. */
+	/**
+	 * The route's own item takes slot A1 by swapping, so the map does not shift.
+	 *
+	 * <p>Shortest Path picked it, so it is the next thing the player clicks on the way out —
+	 * it outranks the map for that one slot and nothing else moves.
+	 */
+	@Test
+	public void theRouteItemIsPinnedToSlotOneBySwap()
+	{
+		int[] layout = BankLayout.build(loadout(), BankLayout.DEFAULT_MAP);
+		int displaced = layout[at('A', 1)];
+
+		BankLayout.pinFirst(layout, TELE_B, null);
+
+		assertEquals("the route's item sits first", TELE_B, layout[at('A', 1)]);
+		assertEquals("and what was there took its old slot - a swap, not a shift",
+			displaced, layout[at('B', 1)]);
+	}
+
+	/** An absent route item is not pinned: a ghost in slot one is worse than no pin. */
+	@Test
+	public void aRouteItemTheBankDoesNotHoldIsNotPinned()
+	{
+		int[] layout = BankLayout.build(loadout(), BankLayout.DEFAULT_MAP);
+		int first = layout[at('A', 1)];
+
+		BankLayout.pinFirst(layout, TELE_B,
+			new java.util.HashSet<>(java.util.Arrays.asList(SEED_A)));
+
+		assertEquals("nothing moved", first, layout[at('A', 1)]);
+	}
+
 	private static int at(char column, int row)
 	{
 		return (row - 1) * BankLayout.COLUMNS + (column - 'A');

@@ -43,12 +43,25 @@ public class CarriedItems
 	 */
 	private final Map<Integer, Integer> inventory = new HashMap<>();
 	private final Map<Integer, Integer> equipment = new HashMap<>();
+
+	/**
+	 * Noted items in the pack, counted under their <b>unnoted</b> id.
+	 *
+	 * <p>A noted cactus spine is a cactus spine to the gardener — protection payments are
+	 * accepted noted, which is precisely how anyone carries thirty of them. Counting only the
+	 * exact id meant a pack full of noted spines still read as "0 of the 30 this run needs",
+	 * and the payment never left the withdraw list however many you were holding.
+	 *
+	 * <p>Which id is a note of which is the client's knowledge, asked while the container is
+	 * being recorded — the one moment this class is guaranteed to be on the client thread.
+	 */
+	private final Map<Integer, Integer> noted = new HashMap<>();
 	private int usedSlots;
 
 	private final Client client;
 
 	@Inject
-	private CarriedItems(Client client)
+	CarriedItems(Client client)
 	{
 		this.client = client;
 	}
@@ -104,6 +117,7 @@ public class CarriedItems
 	public synchronized void record(@Nullable ItemContainer container)
 	{
 		inventory.clear();
+		noted.clear();
 		usedSlots = 0;
 
 		if (container == null)
@@ -121,6 +135,15 @@ public class CarriedItems
 			// One slot per item entry, whatever the quantity: a stack of a thousand seeds is
 			// still one slot, which is the whole reason noting is worth doing.
 			usedSlots++;
+
+			// A note is also counted as the thing it is a note of - see the field note. The
+			// null guard is for tests handing in containers with no client behind them; in
+			// the client every id resolves.
+			net.runelite.api.ItemComposition composition = client.getItemDefinition(item.getId());
+			if (composition != null && composition.getNote() != -1)
+			{
+				noted.merge(composition.getLinkedNoteId(), item.getQuantity(), Integer::sum);
+			}
 		}
 	}
 
@@ -155,6 +178,27 @@ public class CarriedItems
 		return inventory.getOrDefault(itemId, 0);
 	}
 
+	/**
+	 * How many are on the player counting noted ones, for the items where a note is as good.
+	 *
+	 * <p>Protection payments are the case: the gardener takes them noted, so the loadout has
+	 * to see a stack of noted spines as spines. Deliberately a separate question from
+	 * {@link #getCount} — a noted seed cannot be planted and a noted bucket cannot compost
+	 * anything, so most callers must keep not counting them.
+	 */
+	public synchronized int getCountIncludingNoted(int itemId)
+	{
+		return getCount(itemId) + noted.getOrDefault(itemId, 0);
+	}
+
+	/** Every item id on the player, pack and worn together. */
+	public synchronized java.util.Set<Integer> getItemIds()
+	{
+		java.util.Set<Integer> ids = new java.util.LinkedHashSet<>(inventory.keySet());
+		ids.addAll(equipment.keySet());
+		return ids;
+	}
+
 	/** Whether any of these are on the player. For items with several forms — see ItemFamilies. */
 	public synchronized boolean hasAny(int... itemIds)
 	{
@@ -183,6 +227,7 @@ public class CarriedItems
 	{
 		inventory.clear();
 		equipment.clear();
+		noted.clear();
 		usedSlots = 0;
 	}
 }

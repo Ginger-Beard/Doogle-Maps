@@ -143,11 +143,16 @@ public class BankFilter
 	 */
 	private final ClientThread clientThread;
 
+	/** The item the current route uses, offered softly - see {@link RouteItem}. */
+	private final RouteItem routeItem;
+
 	@Inject
-	private BankFilter(Client client, com.dooglemaps.route.RunPlanner planner,
+	BankFilter(Client client, com.dooglemaps.route.RunPlanner planner,
 		PluginManager pluginManager, RunLoadout loadout,
-		DoogleMapsConfig config, ClientThread clientThread, BankContents bank)
+		DoogleMapsConfig config, ClientThread clientThread, BankContents bank,
+		RouteItem routeItem)
 	{
+		this.routeItem = routeItem;
 		this.bank = bank;
 		this.clientThread = clientThread;
 		this.planner = planner;
@@ -281,9 +286,13 @@ public class BankFilter
 			// a faded stand-in, which is untidy; a layout with nothing in it is simply broken.
 			Set<Integer> banked = bank.hasBeenSeen() ? bank.getItemIds() : null;
 			laidOutFor = banked;
+			laidOutWanted = wanted;
 
-			layoutManager.saveLayout(new Layout(TAG,
-				BankLayout.build(loadout.forRun(planner.coveredTypes()), map, banked)));
+			int[] slots = BankLayout.build(loadout.forRun(planner.coveredTypes()), map, banked);
+			// The route's own item in slot one - Shortest Path picked it, so it is the next
+			// thing to be clicked and outranks the map for that single slot.
+			BankLayout.pinFirst(slots, routeItem.currentItemId(), banked);
+			layoutManager.saveLayout(new Layout(TAG, slots));
 		}
 		catch (RuntimeException e)
 		{
@@ -438,12 +447,12 @@ public class BankFilter
 		}
 
 		Set<Integer> now = bank.getItemIds();
-		if (now.equals(laidOutFor))
+		if (now.equals(laidOutFor) && wanted.equals(laidOutWanted))
 		{
 			return;
 		}
 
-		log.debug("Bank contents changed while filtered; rebuilding the layout");
+		log.debug("The bank or the run's wants changed while filtered; rebuilding the layout");
 		open();
 	}
 
@@ -456,6 +465,19 @@ public class BankFilter
 	 */
 	private Set<Integer> laidOutFor;
 
+	/**
+	 * The wanted set the current layout was built from, for the same comparison.
+	 *
+	 * <p>The bank's contents are not the only thing that can move under an open filter: the
+	 * <b>run's wants</b> grow on their own timetable too. The reported case was teleports —
+	 * they are matched by item <i>name</i>, names are learned from the container read, and on
+	 * the first open of a session that read can land after the layout was written. Two
+	 * teleports showed; the rest joined {@code wanted} a tick later and stayed invisible until
+	 * a deposit happened to change the bank. Comparing the wants catches every cause at once —
+	 * names arriving, a patch ripening mid-bank, a seed switch — not just that one.
+	 */
+	private Set<Integer> laidOutWanted;
+
 	/** Puts the bank back the way it was. */
 	public void close()
 	{
@@ -467,6 +489,7 @@ public class BankFilter
 		// Forgotten with the filter, so the next open rebuilds rather than trusting a layout
 		// written for a bank we may not have looked at since.
 		laidOutFor = null;
+		laidOutWanted = null;
 
 		try
 		{
@@ -586,6 +609,14 @@ public class BankFilter
 			// through as its sapling — and the filter then hid the magic seeds it was there to
 			// show you, because what is in the bank is the seed. See RunLoadout.bankFormsOf.
 			items.addAll(RunLoadout.bankFormsOf(item.getItemId()));
+		}
+
+		// Plus whatever item the route itself uses - not a loadout need, but the one thing
+		// the player is about to click on the way out. Soft by design; -1 adds nothing.
+		int route = routeItem.currentItemId();
+		if (route > 0)
+		{
+			items.addAll(RunLoadout.bankFormsOf(route));
 		}
 		wanted = items;
 	}

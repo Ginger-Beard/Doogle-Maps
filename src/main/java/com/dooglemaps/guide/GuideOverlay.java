@@ -69,7 +69,7 @@ public class GuideOverlay extends Overlay
 	private final PlayerHouse house;
 
 	@Inject
-	private GuideOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
+	GuideOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
 		ModelOutlineRenderer outlineRenderer, PatchLocationStore locations, PlayerHouse house)
 	{
 		this.house = house;

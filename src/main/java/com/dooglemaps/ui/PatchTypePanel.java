@@ -317,10 +317,22 @@ class PatchTypePanel extends JPanel
 	 * the only way to find out why was to open the other one.
 	 *
 	 * <p>Now the row is the control. Switched-off patches stay exactly where they were, washed
-	 * red, and clicking one puts it back. That also means a patch you have never seen is visible
-	 * and clickable rather than being hidden by {@code hideEmptyPatches} — a filter for tidying
-	 * away patches you do not care about must not be able to hide the thing you would use to say
-	 * that you do.
+	 * red, and clicking one puts it back. A filter for tidying away patches you do not care
+	 * about must not be able to hide the thing you would use to say that you do.
+	 *
+	 * <h2>Every patch is listed. There is no state filter</h2>
+	 *
+	 * There used to be a <i>Hide empty patches</i> setting, and it has been removed rather than
+	 * defaulted off. An empty patch is not clutter — it is the patch you are about to plant
+	 * into, so a planting run hid its own targets from the overview you check while running it.
+	 * It never changed which patches a run <i>visited</i> ({@code RunPlanner} works from
+	 * {@link com.dooglemaps.state.AvailabilityProfile}, not from this list), which made it worse
+	 * rather than better: the run went somewhere the sidebar said was not there.
+	 *
+	 * <p>The thing it was reaching for is already covered twice over, and both are better because
+	 * they are <b>decisions rather than states</b>: the per-patch availability toggle, and the
+	 * per-type tabs. Those stay put. A filter keyed on what the patch happens to be doing changes
+	 * under you as the crop grows.
 	 */
 	void refresh()
 	{
@@ -335,10 +347,6 @@ class PatchTypePanel extends JPanel
 
 			PatchProjection projection = growthTimer.project(patch, snapshot);
 			if (projection == null)
-			{
-				continue;
-			}
-			if (config.hideEmptyPatches() && projection.isEmpty())
 			{
 				continue;
 			}

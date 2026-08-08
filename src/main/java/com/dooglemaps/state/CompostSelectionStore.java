@@ -1,11 +1,9 @@
 package com.dooglemaps.state;
 
-import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.PatchImplementation;
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.EnumMap;
@@ -31,7 +29,7 @@ import net.runelite.client.config.ConfigManager;
  */
 @Slf4j
 @Singleton
-public class CompostSelectionStore
+public class CompostSelectionStore extends ProfileJsonStore
 {
 	private static final String COMPOST_KEY = "runCompost";
 
@@ -47,9 +45,6 @@ public class CompostSelectionStore
 	 */
 	private static final CompostTier DEFAULT = CompostTier.ULTRACOMPOST;
 
-	private final ConfigManager configManager;
-	private final Gson gson;
-
 	/**
 	 * Per-group choices, for groups that have been set explicitly.
 	 *
@@ -64,10 +59,9 @@ public class CompostSelectionStore
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private CompostSelectionStore(ConfigManager configManager, Gson gson)
+	CompostSelectionStore(ConfigManager configManager, Gson gson)
 	{
-		this.configManager = configManager;
-		this.gson = gson;
+		super(configManager, gson, COMPOST_KEY);
 	}
 
 	public void addChangeListener(Runnable listener)
@@ -169,55 +163,44 @@ public class CompostSelectionStore
 		}
 	}
 
-	public void load()
+	@Override
+	protected void resetForLoad()
 	{
-		synchronized (this)
+		chosen.clear();
+		byGroup.clear();
+	}
+
+	@Override
+	protected void applyJson(String json)
+	{
+		Map<String, String> loaded = gson.fromJson(json, NAME_MAP_TYPE);
+		if (loaded != null)
 		{
-			chosen.clear();
-			byGroup.clear();
-
-			String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, COMPOST_KEY);
-			if (json == null || json.isEmpty())
+			loaded.forEach((key, tier) ->
 			{
-				return;
-			}
-
-			try
-			{
-				Map<String, String> loaded = gson.fromJson(json, NAME_MAP_TYPE);
-				if (loaded != null)
+				CompostTier parsed;
+				try
 				{
-					loaded.forEach((key, tier) ->
-					{
-						CompostTier parsed;
-						try
-						{
-							parsed = CompostTier.valueOf(tier);
-						}
-						catch (IllegalArgumentException e)
-						{
-							// A tier that no longer exists; drop it.
-							return;
-						}
-
-						// A bare enum name is a patch type; anything else is a planting group.
-						// Same rule as save, and it is what lets a file written before groups
-						// existed load unchanged.
-						try
-						{
-							chosen.put(PatchImplementation.valueOf(key), parsed);
-						}
-						catch (IllegalArgumentException e)
-						{
-							byGroup.put(key, parsed);
-						}
-					});
+					parsed = CompostTier.valueOf(tier);
 				}
-			}
-			catch (JsonSyntaxException e)
-			{
-				log.warn("Discarding unreadable compost selection", e);
-			}
+				catch (IllegalArgumentException e)
+				{
+					// A tier that no longer exists; drop it.
+					return;
+				}
+
+				// A bare enum name is a patch type; anything else is a planting group.
+				// Same rule as save, and it is what lets a file written before groups
+				// existed load unchanged.
+				try
+				{
+					chosen.put(PatchImplementation.valueOf(key), parsed);
+				}
+				catch (IllegalArgumentException e)
+				{
+					byGroup.put(key, parsed);
+				}
+			});
 		}
 	}
 
@@ -237,11 +220,12 @@ public class CompostSelectionStore
 	 * group key, which is the same rule {@code load} applies — and it means everything written by
 	 * an older build still reads correctly.
 	 */
-	private synchronized void save()
+	@Override
+	protected Object serialized()
 	{
 		Map<String, String> names = new HashMap<>();
 		chosen.forEach((type, tier) -> names.put(type.name(), tier.name()));
 		byGroup.forEach((key, tier) -> names.put(key, tier.name()));
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, COMPOST_KEY, gson.toJson(names));
+		return names;
 	}
 }

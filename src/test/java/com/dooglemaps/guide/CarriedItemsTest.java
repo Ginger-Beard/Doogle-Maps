@@ -75,6 +75,40 @@ public class CarriedItemsTest
 			CarriedItems.INVENTORY_SIZE, carried.getFreeSlots());
 	}
 
+	/**
+	 * Noted payments count as the payment.
+	 *
+	 * <p>The gardener takes a noted stack, which is precisely how anyone carries thirty cactus
+	 * spines — so a pack of noted spines has to read as spines, or the payment never leaves the
+	 * withdraw list. Under {@code getCountIncludingNoted} only: a noted seed cannot be planted,
+	 * so {@code getCount} must keep not counting them.
+	 */
+	@Test
+	public void notedItemsCountUnderTheirRealIdWhenAskedTo() throws Exception
+	{
+		int spine = 6016;
+		int notedSpine = 6017;
+
+		ItemContainer pack = containerOf(notedSpine, 30);
+		Client client = Mockito.mock(Client.class);
+		when(client.getItemContainer(InventoryID.INV)).thenReturn(pack);
+
+		net.runelite.api.ItemComposition noted =
+			Mockito.mock(net.runelite.api.ItemComposition.class);
+		when(noted.getNote()).thenReturn(799);
+		when(noted.getLinkedNoteId()).thenReturn(spine);
+		when(client.getItemDefinition(notedSpine)).thenReturn(noted);
+
+		CarriedItems carried = construct(CarriedItems.class, client);
+		carried.relearnFromClient();
+
+		assertEquals("thirty noted spines are thirty spines to the gardener",
+			30, carried.getCountIncludingNoted(spine));
+		assertEquals("but not to a patch - the exact-id count stays exact",
+			0, carried.getCount(spine));
+		assertEquals("one noted stack is one slot", 27, carried.getFreeSlots());
+	}
+
 	/** Logging out with no containers to read empties it rather than throwing. */
 	@Test
 	public void nothingToReadIsNotAFailure() throws Exception

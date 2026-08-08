@@ -32,7 +32,7 @@ public class PlayerLocation
 	private volatile WorldPoint location;
 
 	@Inject
-	private PlayerLocation(Client client)
+	PlayerLocation(Client client)
 	{
 		this.client = client;
 	}

@@ -239,21 +239,22 @@ public interface DoogleMapsConfig extends Config
 	 *
 	 * <p>A plain string, which RuneLite renders as a text area — the same shape as Ground Items'
 	 * highlighted and hidden item lists, and for the same reason: what belongs on it is per
-	 * account and cannot be derived. What the plugin knows is which teleports reach a farming
-	 * region; what it cannot know is that you always bring a games necklace, or that your house
-	 * tab is how you start every trip.
+	 * account and cannot be derived. This list is the <b>whole</b> of the teleport feature:
+	 * routing already belongs to Shortest Path, which uses the player's own transport settings
+	 * and knows their unlocks in a way no table here ever could, so the plugin does not try to
+	 * suggest teleports of its own — there are too many options across account types and
+	 * progression for a suggestion to be right about anyone's.
 	 *
-	 * <p>Matched on the item's own name against your bank, so it needs no ids and no unlocks
-	 * table. Anything on the list that you do not own simply never appears.
+	 * <p>Matched on the item's own name against your bank and your pack, so it needs no ids and
+	 * no unlocks table. Anything on the list that you do not own simply never appears.
 	 */
 	@ConfigItem(
 		keyName = "teleportItems",
 		name = "Teleport items",
-		description = "Which teleports count as part of a run, comma separated by item name. Only "
-			+ "these are offered, and only when you own them - the plugin knows where a lot of "
-			+ "teleports go, but which ones you actually travel by is your call. Grouped together "
-			+ "in the bank filter and layout. Wildcards work (Ardougne cloak*), and an empty list "
-			+ "falls back to every teleport the plugin knows.",
+		description = "Which teleports count as part of a run, comma separated by item name - "
+			+ "the ones you actually travel by, matched like Ground Items' lists. Only these "
+			+ "are offered, and only when you own them. Grouped together in the bank filter and "
+			+ "layout. Wildcards work (Ardougne cloak*); an empty list offers no teleports.",
 		position = 6,
 		section = guideSection
 	)
@@ -402,6 +403,33 @@ public interface DoogleMapsConfig extends Config
 		return 4;
 	}
 
+	/**
+	 * The Geomancy dump. Kept working, taken off the settings panel.
+	 *
+	 * <h2>Why it is hidden rather than offered</h2>
+	 *
+	 * <ul>
+	 *   <li><b>It researched a feature that was dropped.</b> The Geomancy bulk refresh is not
+	 *       parked, it is abandoned — see {@code DEVELOPMENT.md}, <i>Roads not taken</i> — and
+	 *       locked decision 2 now reads that nothing reads Geomancy at all. Its output has no
+	 *       consumer in the plugin and will not get one.</li>
+	 *   <li><b>Its job is done and the answers are committed.</b> The last unknown was captured
+	 *       on 2026-08-05 and the whole rendering is written up in {@code docs/NOTES.md}. There
+	 *       is nothing left for anyone to find by running it.</li>
+	 *   <li><b>It is a development aid, and said so in its own description.</b> A player who
+	 *       ticks it gets files they have no use for, and every setting on the panel costs the
+	 *       attention of everyone who scrolls past it.</li>
+	 *   <li><b>It writes uncapped files, one per cast.</b> No rotation and no limit, unlike the
+	 *       harvest log — so ticking it and forgetting accumulates a file per Geomancy cast.</li>
+	 *   <li><b>It dumps more than the interface</b>, including the plugin's whole cached patch
+	 *       state: the player's own data, on disk, in a format meant for a developer to read.</li>
+	 * </ul>
+	 *
+	 * <p><b>Not deleted</b>, because it is still what would confirm a rendering change after a
+	 * game update, and rebuilding it to answer one question would be worse than leaving it here.
+	 * That is an argument for keeping the code, not for showing the switch — so the switch is
+	 * hidden and anyone who needs it can set {@code dooglemaps.probeGeomancy} directly.
+	 */
 	@ConfigItem(
 		keyName = "probeGeomancy",
 		name = "Dump the Geomancy interface",
@@ -410,7 +438,8 @@ public interface DoogleMapsConfig extends Config
 			+ "~/.runelite/doogle-maps/geomancy-<time>.tsv, so the two can be matched up. "
 			+ "Nothing is sent anywhere.",
 		position = 2,
-		section = resetSection
+		section = resetSection,
+		hidden = true
 	)
 	default boolean probeGeomancy()
 	{
@@ -1150,18 +1179,6 @@ public interface DoogleMapsConfig extends Config
 	}
 
 	@ConfigItem(
-		keyName = "hideEmptyPatches",
-		name = "Hide empty patches",
-		description = "Leave patches with nothing planted out of the overview",
-		position = 4,
-		section = overviewSection
-	)
-	default boolean hideEmptyPatches()
-	{
-		return false;
-	}
-
-	@ConfigItem(
 		keyName = "showStaleness",
 		name = "Show how stale each row is",
 		description = "Show when a patch's state was last confirmed, so you know how much to trust it",
@@ -1197,12 +1214,24 @@ public interface DoogleMapsConfig extends Config
 		return true;
 	}
 
+	/**
+	 * Verbose logging only. It used to gate the recording itself, and must not again.
+	 *
+	 * <p>The key is unchanged so nobody's existing setting is orphaned, but what it does has
+	 * narrowed a long way. It reads as a developer's toggle and was switching off <i>every</i>
+	 * harvest observation, so anyone who turned it off got an empty Stats tab and no hint why —
+	 * and lost months of history they did not know they were not keeping.
+	 *
+	 * <p>Statistics are now collected whenever the plugin is enabled, like any other store. This
+	 * governs the per-patch line in the client log and the two warnings about the capture
+	 * itself, which is the part that genuinely is a diagnostic.
+	 */
 	@ConfigItem(
 		keyName = "logHarvests",
-		name = "Log harvests for validation",
-		description = "Record each finished patch to the client log and to "
-			+ "~/.runelite/doogle-maps/harvests.csv, with the predicted yield and experience "
-			+ "beside what you actually got. Nothing is sent anywhere.",
+		name = "Verbose harvest logging",
+		description = "Write a line to the client log for each finished patch, with the predicted "
+			+ "yield and experience beside what you actually got. For diagnosing the tracking "
+			+ "itself - the Stats tab records either way. Nothing is sent anywhere.",
 		position = 3,
 		section = inGameSection
 	)

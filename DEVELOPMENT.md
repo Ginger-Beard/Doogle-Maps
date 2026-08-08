@@ -240,11 +240,16 @@ past, in one action — which was the original appeal, and the plugin's own READ
   and the tint colour that encodes state. Green is diseased and red is dead, which is
   counter-intuitive enough that the entry states it plainly and says how it was confirmed rather
   than inferred.
-- `GeomancyProbe` is the tool that produced all of it. Off by default, config *"Dump the Geomancy
-  interface"*; it writes the widget tree **and** everything the plugin already knows at that moment
-  to `~/.runelite/doogle-maps/geomancy-<time>.tsv`, so casting somewhere familiar puts both halves
-  of the mapping side by side. It is kept switched off rather than deleted, because it is also what
-  would confirm a rendering change after a game update.
+- `GeomancyProbe` is the tool that produced all of it. It writes the widget tree **and**
+  everything the plugin already knows at that moment to
+  `~/.runelite/doogle-maps/geomancy-<time>.tsv`, so casting somewhere familiar puts both halves of
+  the mapping side by side. It is kept rather than deleted, because it is also what would confirm
+  a rendering change after a game update.
+- **Its setting is now hidden** (`hidden = true` on `probeGeomancy`). It researched a feature that
+  was dropped, its job is finished and written up, it writes uncapped files one per cast, and it
+  dumps the player's own cached patch state alongside the interface — none of which belongs on a
+  panel a player reads. Keeping the code is the argument; showing the switch was not. Set
+  `dooglemaps.probeGeomancy=true` in the RuneLite properties file to use it.
 - `GeomancyProbeTest.theInterfaceHoldsExactlyThePatchesWeDo` pins the patch set, so a RuneLite data
   update that adds a patch fails a test rather than going unnoticed.
 

@@ -73,7 +73,7 @@ public class ContractCapture
 	private String lastHandled;
 
 	@Inject
-	private ContractCapture(Client client, ContractState contracts)
+	ContractCapture(Client client, ContractState contracts)
 	{
 		this.client = client;
 		this.contracts = contracts;

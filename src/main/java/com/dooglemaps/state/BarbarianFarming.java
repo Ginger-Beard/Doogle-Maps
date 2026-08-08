@@ -43,7 +43,7 @@ public class BarbarianFarming
 	private final DoogleMapsConfig config;
 
 	@Inject
-	private BarbarianFarming(ConfigManager configManager, DoogleMapsConfig config)
+	BarbarianFarming(ConfigManager configManager, DoogleMapsConfig config)
 	{
 		this.configManager = configManager;
 		this.config = config;

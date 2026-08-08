@@ -118,4 +118,38 @@ public final class YieldEstimate
 	{
 		return expectedHarvest(yield, level, lives(compost), bonuses);
 	}
+
+	/**
+	 * How widely the item count scatters around {@link #expectedHarvest}, as a variance.
+	 *
+	 * <p>The same negative binomial the mean comes from, so it costs the same two numbers: the
+	 * lives are the {@code r} failures, a saved life is a success at probability {@code p}, and
+	 * that distribution's variance is {@code r·p/(1-p)²}.
+	 *
+	 * <p>Worth carrying because a mean alone cannot say whether a harvest was <i>unusual</i>.
+	 * Twelve herbs off a patch predicted nine is either luck or a modelling error, and only the
+	 * spread separates them. Variances of independent patches add exactly as their means do, so
+	 * a running total of this is the whole of what a "where did I land" figure needs — no
+	 * per-patch history, and no comparison against other players.
+	 */
+	public static double harvestVariance(CropYield yield, int level, int lives,
+		FarmingBonuses bonuses)
+	{
+		double save = chanceToSave(yield, level, bonuses);
+		if (save >= 1.0)
+		{
+			// Matching expectedHarvest: a certain save is unreachable, and a zero spread beside
+			// its floor is the honest pair rather than an infinity.
+			return 0;
+		}
+		double spread = 1.0 - save;
+		return lives * save / (spread * spread);
+	}
+
+	/** Convenience for the common case: a patch treated with this compost, at this level. */
+	public static double harvestVariance(CropYield yield, int level, CompostTier compost,
+		FarmingBonuses bonuses)
+	{
+		return harvestVariance(yield, level, lives(compost), bonuses);
+	}
 }

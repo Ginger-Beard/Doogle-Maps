@@ -16,6 +16,7 @@ import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Client;
+import net.runelite.api.Experience;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.Skill;
@@ -44,6 +45,16 @@ public class SeedInventoryStore
 {
 	private static final String SEEDS_KEY = "seeds";
 	private static final String FARMING_LEVEL_KEY = "farmingLevel";
+
+	/**
+	 * Total Farming experience, cached beside the level.
+	 *
+	 * <p>The level alone is not enough for anything that <i>adds</i> experience and asks what
+	 * level that reaches — which is what the Stats tab's plant-out projection does. Starting
+	 * from {@code getXpForLevel(level)} would silently discard up to a whole level of progress
+	 * before the first patch is planted, and at the top of the table that is millions.
+	 */
+	private static final String FARMING_XP_KEY = "farmingXp";
 
 	/**
 	 * Woodcutting, cached the same way and for the same reason.
@@ -76,7 +87,7 @@ public class SeedInventoryStore
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private SeedInventoryStore(Client client, ConfigManager configManager, Gson gson)
+	SeedInventoryStore(Client client, ConfigManager configManager, Gson gson)
 	{
 		this.client = client;
 		this.configManager = configManager;
@@ -313,9 +324,23 @@ public class SeedInventoryStore
 		return changed;
 	}
 
-	/** Caches the Farming level so the plugin can filter seeds while logged out. */
+	/**
+	 * Caches the Farming level, and the experience behind it, so both survive a logout.
+	 *
+	 * <p>Only a level change fires a refresh. Experience moves on every pick, and rebuilding
+	 * the panel per herb would be a refresh a second on a run — the projection that reads it is
+	 * on a tab you are not looking at while farming, and it catches up on the next redraw.
+	 */
 	public void recordFarmingLevel()
 	{
+		int xp = client.getSkillExperience(Skill.FARMING);
+		Integer storedXp = configManager.getRSProfileConfiguration(
+			DoogleMapsConfig.GROUP, FARMING_XP_KEY, int.class);
+		if (storedXp == null || storedXp != xp)
+		{
+			configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_XP_KEY, xp);
+		}
+
 		int level = client.getRealSkillLevel(Skill.FARMING);
 		Integer stored = configManager.getRSProfileConfiguration(
 			DoogleMapsConfig.GROUP, FARMING_LEVEL_KEY, int.class);
@@ -356,6 +381,27 @@ public class SeedInventoryStore
 		Integer stored = configManager.getRSProfileConfiguration(
 			DoogleMapsConfig.GROUP, FARMING_LEVEL_KEY, int.class);
 		return stored == null ? 0 : stored;
+	}
+
+	/**
+	 * Total Farming experience, from the cache when logged out. 0 if never seen.
+	 *
+	 * <p>Falls back to the experience the cached <b>level</b> starts at, for accounts that have
+	 * been running the plugin since before this was recorded. That understates by up to a level,
+	 * which is the right way to be wrong: it makes a projection built on it conservative rather
+	 * than optimistic, and it corrects itself the first time Farming experience is gained.
+	 */
+	public int getFarmingXp()
+	{
+		Integer stored = configManager.getRSProfileConfiguration(
+			DoogleMapsConfig.GROUP, FARMING_XP_KEY, int.class);
+		if (stored != null)
+		{
+			return stored;
+		}
+
+		int level = getFarmingLevel();
+		return level <= 0 ? 0 : Experience.getXpForLevel(level);
 	}
 
 	/**
@@ -536,6 +582,7 @@ public class SeedInventoryStore
 			cached.clear();
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, SEEDS_KEY);
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_LEVEL_KEY);
+		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_XP_KEY);
 		}
 		fireChanged();
 	}

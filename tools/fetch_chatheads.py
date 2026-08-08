@@ -169,14 +169,48 @@ def find_page(npc_id):
     return None, None
 
 
+# What may pass from the wiki into this repo. Everything fetched here is attacker-writable
+# in principle — the wiki is publicly editable — and two of the outputs are dangerous sinks:
+# names are interpolated into Farmers.java as string literals (a quote in a page title would
+# otherwise end the literal and compile whatever follows), and filenames become URL paths and
+# local file writes. So each is checked against the shape the real data actually has, and a
+# mismatch kills the run rather than being cleaned up: a farmer the wiki suddenly calls
+# `Alan"); do_evil("` is a thing to look at, not to sanitise into `Alan do_evil`.
+NAME_OK = re.compile(r"^[A-Za-z0-9 .'-]+$")
+TITLE_OK = re.compile(r"^[A-Za-z0-9 .,'()-]+$")
+CONSTANT_OK = re.compile(r"^[A-Z][A-Z0-9_]*$")
+WIKI_FILE_OK = re.compile(r"^[A-Za-z0-9 .,'()_-]+\.png$", re.IGNORECASE)
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def checked(pattern, value, what):
+    if not pattern.match(value):
+        sys.exit("refusing %s %r - not a shape this tool will write" % (what, value))
+    return value
+
+
 def wiki_image(filename):
     """Downloads a File: page's actual bits, following the wiki's own redirect for it."""
+    checked(WIKI_FILE_OK, filename, "wiki filename")
     info = api(action="query", titles="File:" + filename, prop="imageinfo", iiprop="url")
+    data = None
     for page in info.get("query", {}).get("pages", {}).values():
         for image in page.get("imageinfo", []):
-            return get(image["url"])
-    # Fall back to the predictable upload path, which works for most files.
-    return get(UPLOAD + urllib.parse.quote(filename.replace(" ", "_")))
+            # The URL comes out of the API response, so it is held to the wiki's own host
+            # rather than trusted - urlopen would follow it anywhere, file:// included.
+            url = image["url"]
+            if not url.startswith("https://oldschool.runescape.wiki/"):
+                sys.exit("refusing image URL %r - not the wiki's own host" % url)
+            data = get(url)
+            break
+        if data is not None:
+            break
+    if data is None:
+        # Fall back to the predictable upload path, which works for most files.
+        data = get(UPLOAD + urllib.parse.quote(filename.replace(" ", "_")))
+    if not data.startswith(PNG_MAGIC):
+        sys.exit("refusing %r - fetched bytes are not a PNG" % filename)
+    return data
 
 
 def display_name(title):
@@ -228,8 +262,13 @@ def java_source(farmers):
         "\t{",
     ]
     for farmer in farmers:
-        lines.append('\t\tNAMES.put(NpcID.%s, "%s");'
-                     % (farmer["constant"], display_name(farmer["name"])))
+        # Both halves are checked at the point of emission so the --from-tsv path is held
+        # to the same rule as a fresh fetch: the constant lands in source unquoted and the
+        # name lands inside a string literal, and neither may carry anything that could
+        # read as Java. See NAME_OK.
+        constant = checked(CONSTANT_OK, farmer["constant"], "NpcID constant")
+        name = checked(NAME_OK, display_name(farmer["name"]), "farmer name")
+        lines.append('\t\tNAMES.put(NpcID.%s, "%s");' % (constant, name))
     lines += [
         "\t}",
         "",
@@ -345,9 +384,15 @@ def main():
     with open(TSV_OUT, "w", encoding="utf-8") as handle:
         handle.write("constant\tid\tname\twiki_file\n")
         for farmer in farmers:
+            # The title and filename are wiki-authored; held to the known shape here so a
+            # tab or newline in either cannot smuggle extra columns into the provenance
+            # file that --from-tsv trusts later.
             handle.write("%s\t%d\t%s\t%s\n"
-                         % (farmer["constant"], farmer["id"], farmer["name"],
-                            farmer["file"] or ""))
+                         % (checked(CONSTANT_OK, farmer["constant"], "NpcID constant"),
+                            farmer["id"],
+                            checked(TITLE_OK, farmer["name"], "page title"),
+                            checked(WIKI_FILE_OK, farmer["file"], "wiki filename")
+                            if farmer["file"] else ""))
 
     print("\nwrote %d sprites to %s" % (len(with_art), IMAGE_DIR))
 

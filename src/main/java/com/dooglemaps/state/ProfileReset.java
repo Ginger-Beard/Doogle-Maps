@@ -42,7 +42,7 @@ public class ProfileReset
 	private final BankLocationStore bankLocations;
 
 	@Inject
-	private ProfileReset(PatchStateStore patches, SeedInventoryStore seeds,
+	ProfileReset(PatchStateStore patches, SeedInventoryStore seeds,
 		FarmingBonusStore bonuses, PatchLocationStore patchLocations,
 		BankLocationStore bankLocations)
 	{

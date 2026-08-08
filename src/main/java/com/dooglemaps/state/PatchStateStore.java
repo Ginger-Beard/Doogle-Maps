@@ -56,7 +56,7 @@ public class PatchStateStore
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private PatchStateStore(ConfigManager configManager, Gson gson)
+	PatchStateStore(ConfigManager configManager, Gson gson)
 	{
 		this.configManager = configManager;
 		this.gson = gson;

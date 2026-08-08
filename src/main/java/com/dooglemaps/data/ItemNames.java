@@ -28,7 +28,7 @@ public class ItemNames
 	private final Map<Integer, String> names = new ConcurrentHashMap<>();
 
 	@Inject
-	private ItemNames()
+	ItemNames()
 	{
 	}
 

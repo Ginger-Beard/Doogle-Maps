@@ -29,7 +29,7 @@ public class BankCapture
 	private final net.runelite.client.game.ItemManager itemManager;
 
 	@Inject
-	private BankCapture(Client client, BankLocationStore banks, RunPlanner runPlanner,
+	BankCapture(Client client, BankLocationStore banks, RunPlanner runPlanner,
 		com.dooglemaps.data.ItemNames itemNames,
 		net.runelite.client.game.ItemManager itemManager)
 	{

@@ -78,12 +78,92 @@ public class BankContentsTest
 		assertEquals("and it is no longer \"we have not looked\"", true, bank.hasBeenSeen());
 	}
 
-	@SuppressWarnings("unchecked")
+	/**
+	 * The bank survives a relaunch.
+	 *
+	 * <h2>The bug this pins down</h2>
+	 *
+	 * Nothing here was persisted, so at the start of every session the payments and tools read
+	 * as unknown until a bank was opened — and the protection budget being zero meant a
+	 * protected seed was allocated no patches at all. The withdraw list was empty and the bank
+	 * filter narrowed to a set missing exactly the things the trip was for, both springing to
+	 * life on the first bank open. Reported as "doesn't work on first load".
+	 */
+	@Test
+	public void theBankIsRememberedAcrossSessions() throws Exception
+	{
+		java.util.Map<String, String> stored = new java.util.HashMap<>();
+		BankContents bank = construct(stored);
+
+		ItemContainer container = Mockito.mock(ItemContainer.class);
+		when(container.getItems()).thenReturn(new Item[]{new Item(COCONUT, 24)});
+		bank.record(container);
+
+		// A second instance over the same config is the next session.
+		BankContents nextSession = construct(stored);
+		nextSession.load();
+
+		assertEquals("the coconuts are known before any bank is opened",
+			24, nextSession.getCount(COCONUT));
+		assertEquals("and the bank counts as seen, so nothing reads as unknown",
+			true, nextSession.hasBeenSeen());
+	}
+
+	/** An empty bank is remembered as an answer too, not as never having looked. */
+	@Test
+	public void anEmptySeenBankIsRememberedAsSeen() throws Exception
+	{
+		java.util.Map<String, String> stored = new java.util.HashMap<>();
+		BankContents bank = construct(stored);
+
+		ItemContainer container = Mockito.mock(ItemContainer.class);
+		when(container.getItems()).thenReturn(new Item[0]);
+		bank.record(container);
+
+		BankContents nextSession = construct(stored);
+		nextSession.load();
+
+		assertEquals("you own none - a different answer from \"we have not looked\"",
+			true, nextSession.hasBeenSeen());
+		assertEquals(0, nextSession.getCount(COCONUT));
+	}
+
+	/** A profile that never banked loads to "we have not looked", same as before. */
+	@Test
+	public void aProfileWithNoStoredBankLoadsAsUnseen() throws Exception
+	{
+		BankContents bank = construct(new java.util.HashMap<>());
+		bank.load();
+
+		assertEquals(false, bank.hasBeenSeen());
+	}
+
 	private static BankContents construct() throws Exception
 	{
+		return construct(new java.util.HashMap<>());
+	}
+
+	/** A store over a fake config map, the same fixture shape the store tests all use. */
+	@SuppressWarnings("unchecked")
+	private static BankContents construct(java.util.Map<String, String> stored) throws Exception
+	{
+		net.runelite.client.config.ConfigManager configManager =
+			Mockito.mock(net.runelite.client.config.ConfigManager.class);
+		when(configManager.getRSProfileConfiguration(
+			org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString()))
+			.thenAnswer(i -> stored.get(i.getArgument(0) + "." + i.getArgument(1)));
+		Mockito.doAnswer(i ->
+		{
+			stored.put(i.getArgument(0) + "." + i.getArgument(1),
+				String.valueOf((Object) i.getArgument(2)));
+			return null;
+		}).when(configManager).setRSProfileConfiguration(
+			org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+			org.mockito.ArgumentMatchers.any());
+
 		Constructor<BankContents> constructor =
 			(Constructor<BankContents>) BankContents.class.getDeclaredConstructors()[0];
 		constructor.setAccessible(true);
-		return constructor.newInstance();
+		return constructor.newInstance(configManager, new com.google.gson.Gson());
 	}
 }

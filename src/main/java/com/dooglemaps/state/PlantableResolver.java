@@ -50,7 +50,7 @@ public class PlantableResolver
 	private final SeedInventoryStore seeds;
 
 	@Inject
-	private PlantableResolver(SeedInventoryStore seeds)
+	PlantableResolver(SeedInventoryStore seeds)
 	{
 		this.seeds = seeds;
 	}

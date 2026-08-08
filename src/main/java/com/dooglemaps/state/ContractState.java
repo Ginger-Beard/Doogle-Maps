@@ -101,7 +101,7 @@ public class ContractState
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private ContractState(ConfigManager configManager)
+	ContractState(ConfigManager configManager)
 	{
 		this.configManager = configManager;
 	}

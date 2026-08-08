@@ -30,7 +30,7 @@ public class PatchLocationCapture
 	private final PatchLocationStore locations;
 
 	@Inject
-	private PatchLocationCapture(Client client, PatchLocationStore locations)
+	PatchLocationCapture(Client client, PatchLocationStore locations)
 	{
 		this.client = client;
 		this.locations = locations;

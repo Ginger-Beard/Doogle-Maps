@@ -123,6 +123,12 @@ public class RunPlanner
 	 * real step list, so it is asked instead, and it reports the whole set fresh each tick: nothing
 	 * here can go stale, because nothing here is remembered longer than a tick.
 	 *
+	 * <p>The set covers <i>every</i> stop in the run, not the one being stood in. It has to,
+	 * because {@link #isComplete} is asked of every stop every tick: an exemption that existed
+	 * only while the player was present evaporated the moment they left, the skipped stop read
+	 * as unfinished again, and the run routed them straight back to a patch it had already said
+	 * it was skipping. See {@code GuideTracker.reportIdlePatches}.
+	 *
 	 * <p>The dependency runs guide → planner, which is the direction it already ran.
 	 */
 	private volatile Set<String> nothingToDo = Collections.emptySet();
@@ -187,7 +193,7 @@ public class RunPlanner
 	private final javax.inject.Provider<com.dooglemaps.bank.RunLoadout> loadout;
 
 	@Inject
-	private RunPlanner(AvailabilityProfile availability, PatchLocationStore locations,
+	RunPlanner(AvailabilityProfile availability, PatchLocationStore locations,
 		BankLocationStore banks, SeedSelectionStore selection, SeedInventoryStore seedInventory,
 		PatchStateStore stateStore, GrowthTimer growthTimer, ShortestPathIntegration router,
 		PlayerLocation playerLocation, ToolNeeds tools, ProtectedPatches protectedPatches,
@@ -630,7 +636,7 @@ public class RunPlanner
 	}
 
 	/**
-	 * Told which patches the guide currently has no step for.
+	 * Told which patches, across every stop, the guide currently has no step for.
 	 *
 	 * <p>Replaced wholesale each tick rather than added to, so a patch that becomes doable again —
 	 * you withdraw the seed you were missing, or fetch an axe — starts blocking completion again on

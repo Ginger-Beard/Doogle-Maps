@@ -46,7 +46,7 @@ public class ProtectionCapture
 	private int lastSelectedOption;
 
 	@Inject
-	private ProtectionCapture(Client client, PatchStateStore stateStore)
+	ProtectionCapture(Client client, PatchStateStore stateStore)
 	{
 		this.client = client;
 		this.stateStore = stateStore;

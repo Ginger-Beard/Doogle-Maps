@@ -91,8 +91,9 @@ public class HarvestLogTest
 	/** A fresh log sharing this fixture's stores, with the player on the given tile. */
 	private HarvestLog logWithPlayerAt(net.runelite.api.coords.WorldPoint where) throws Exception
 	{
-		return construct(HarvestLog.class, config, patches, seeds, bonuses, stats, locations,
-			clientAt(where));
+		return construct(HarvestLog.class, config, patches, seeds, bonuses, stats,
+			new HarvestHistory(), locations, clientAt(where),
+			org.mockito.Mockito.mock(net.runelite.client.config.ConfigManager.class));
 	}
 
 	/** A client whose local player is standing on the given tile. */
@@ -217,6 +218,36 @@ public class HarvestLogTest
 
 		assertTrue("picked clean, so the record is finished and written out",
 			log.getOpenHarvests().isEmpty());
+	}
+
+	/**
+	 * Statistics are collected whenever the plugin is enabled, whatever the log setting says.
+	 *
+	 * <p>{@code logHarvests} used to gate every observation here, which meant a setting worded
+	 * as a developer's log toggle silently emptied the whole Stats tab — and cost you months of
+	 * history you did not know you were not keeping. It now governs the client-log commentary
+	 * and nothing else.
+	 */
+	@Test
+	public void statisticsAreRecordedWithVerboseLoggingOff()
+	{
+		when(config.logHarvests()).thenReturn(false);
+
+		FarmPatch patch = ripePotatoPatch(CompostTier.NONE);
+		inventory();
+		inventory(Produce.POTATO.getItemID(), 4);
+
+		assertEquals("the harvest is still being watched", 1, log.getOpenHarvests().size());
+
+		ProduceState ripe = patch.getImplementation().forVarbitValue(10);
+		ProduceState weeds = patch.getImplementation().forVarbitValue(3);
+		assertNotNull(weeds);
+		log.onPatchState(patch, ripe, weeds);
+		// The record is held for a tick so late experience can still reach it.
+		log.onGameTick(new net.runelite.api.events.GameTick());
+
+		assertEquals("and it reached the lifetime totals", 1, stats.getTotalHarvests());
+		assertEquals(4, stats.getTotalItems());
 	}
 
 	/**

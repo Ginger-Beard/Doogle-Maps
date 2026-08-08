@@ -78,6 +78,11 @@ each so a wrong result points somewhere.
   `WorldPoint.fromScene` — which are behavioural rather than cosmetic and want reading properly.
 - **Guided mode: the stop is not sequenced.** Patches at a stop are ordered nearest-first,
   which is arbitrary where a position was never learned and only the region centre is known.
+- **Guided potting steps.** The loadout now asks for the filled plant pots and the watering
+  can when a tree seed has no sapling potted, but the guide does not sequence the potting
+  itself: sow the seed into the pot at the bank, water it, and mind the wait — a seedling
+  takes a few minutes to become the plantable sapling, so the right moment is before setting
+  off, not at the tree patch. Wants a step (and possibly a small timer) in the bank leg.
 - **No arrow or navigation line.** Quest Helper has both, toggleable.
 - **No menu swap for the seed box.** The original spec asked for Empty as left-click. It is also
   the first thing that would modify input rather than describe it, so it wants deciding on rather
@@ -107,6 +112,44 @@ each so a wrong result points somewhere.
   willow carries a second six-wide harvestable block at 192–197 — see `TreeStumpTest`. The other
   twenty-odd patch types are still unexamined, and it is generated, so anything found there is a
   generator fix rather than an edit.
+- **The `RunScope`/`RunSnapshot` refactor** — the one big item left from the August second-pass
+  review (`docs/code-review-2026-08b.md`, Architecture). Two halves, and the order matters:
+  1. **`RunScope`**: extract "which patches are actionable / blocked for this run" into a value
+     computed once per tick and consumed by planner, loadout and guide, so `RunPlanner` stops
+     holding `Provider<RunLoadout>` to dodge the Guice cycle and `setNothingToDo` stops being a
+     back-channel. `GuideTracker.reportIdlePatches` now computes exactly this set every tick, so
+     the computation exists — the refactor is moving its home and inverting the dependency.
+  2. **`RunSnapshot`**: give the planner the published-snapshot pattern `GuideStatus` already
+     uses, so `RunPanel` and `ReadyInfoBox` stop taking the planner's monitor from the EDT.
+     **The catch found on inspection:** `previewStops`/`countActionable` are queries
+     *parameterized by the panel's live tickboxes*, not pure state reads, so a snapshot cannot
+     precompute their answers. The snapshot has to carry per-patch facts (actionable, group,
+     projection summary) and the counting has to move panel-side — a query-layer redesign, not a
+     mechanical extraction. Which is why it is here and not already done.
+- **Finish the `ProfileJsonStore` migration where it fits.** Seven stores share the base now.
+  `PatchStateStore` fits with one addition — an under-monitor `afterLoad()` hook for its
+  Time Tracking backfill, which must run even when the blob is absent — plus deleting its public
+  `save()` (no external callers; verified). `SeedSelectionStore` and `ProtectionSelectionStore`
+  keep two config keys each for stored-data compatibility and genuinely do not fit; leave them.
+- **`GuideTracker.stepsFor(FarmPatch)` is a race waiting for a caller.** Public, documented for
+  a per-patch panel view, currently dead — and it reads the unsynchronized per-tick
+  `allocations` map, so the day a Swing panel is wired to it as its javadoc intends, it races
+  `onGameTick`'s `clear()`. Either delete it with the dead-code sweep or make it read a
+  published snapshot before wiring anything to it. `route/InventoryPlan.java` (188 lines,
+  referenced only by its own test) belongs to the same sweep.
+- **Small items from the second-pass review**, none urgent (details in
+  `docs/code-review-2026-08b.md`): `DataTable.shortNumber` renders 999,500–999,999 as `1000k`;
+  `describeExpectedValue` has no wording for a net loss; `BankHighlightOverlay.withdrawCounts()`
+  should gate on `Need == WITHDRAW` explicitly; the level 1–9 band is labelled `1` against the
+  N-to-N+9 convention; pin `runeLiteVersion` and demote `mavenLocal()`; the two committed
+  `tools/__pycache__/*.pyc` files want `git rm -r --cached tools/__pycache__` (now gitignored,
+  but ignore rules do not untrack); the reflection `construct()` helper is copy-pasted into 18
+  test files and wants one home.
+- **Tests the review found missing**, in value order: `PatchInteractionTracker.isGrowthTick`
+  (pure, branchy, the core of the capture pipeline, zero mocking needed); a `HarvestCsv`
+  round-trip with a reordered and a subset header — the exact regression its own doc comment
+  warns about; `ui/Prices` arithmetic; the `BankFilter` state machine, which has two production
+  bugs on record and no regression coverage.
 
 ## Decisions waiting on you
 
@@ -527,39 +570,55 @@ patch-state derivation to work from.
 
 ## Stats tab — what else the data can answer
 
-The tab shows lifetime totals and a crop / n / got / avg table with a per-compost tooltip. That
-is the validation view: it exists to check the estimates. Everything below is the other reading —
-things a player would actually want to know about their own farming.
+**Status: all four sections are built.** The tab is Lifetime, Luck, Expected and Validation down
+the page; the variance accumulator behind the percentile is in, the plant-out projection iterates
+level-ups through `PlantOutEstimate`, and every Tier 1 item below has shipped. What is left is
+everything in **Tier 2** — which still needs `harvests.csv` read back — **Tier 3**, and the coin
+value / profit work. The rest of this section is kept as written because the reasoning is what
+makes the numbers defensible, with the built parts marked.
+
+Everything below was the other reading of a validation table — things a player would actually
+want to know about their own farming.
+
+**Statistics are collected whenever the plugin is enabled.** They used to sit behind
+`logHarvests`, a setting worded as a developer's CSV toggle — so anyone who turned it off got an
+empty Stats tab, no hint why, and lost months of history they did not know they were not
+keeping. A record you accumulate over months is not a feature you can switch back on. The
+setting now governs the client-log commentary and nothing else.
 
 **What there is to work with**, because it bounds all of this:
 
 - **`HarvestStatsStore`**, in memory and in config. Rolled up per crop *and compost tier*:
-  harvests, items, summed prediction, xp, best and worst single patch, items and xp from patches
-  left standing, first and last harvest time. Bounded at ~50 crops x 4 tiers, so it is free to
-  read as often as you like.
+  harvests, items, summed prediction, **summed prediction variance and the count of patches it
+  covers**, xp, best and worst single patch, items and xp from patches left standing, first and
+  last harvest time. Bounded at ~50 crops x 4 tiers, so it is free to read as often as you like.
 - **`harvests.csv`**, one row per patch: time, patch, crop, level, compost, secateurs, cape,
   attas, lives, predicted, actual, predicted_xp, actual_xp, completed. Richer, unbounded, and not
   currently read back by anything.
 
-### The shape it should take: sections, not one table
+### The shape it should take: sections, not one table — **built**
 
 Asked for outright, so this is the frame the rest of the list hangs off. Four sections down the
 tab, each answering a different question, in this order:
 
-1. **Lifetime** — what you have actually got, per crop, with a total.
+1. **Lifetime** — what you have actually got, per crop, with a total. **Built.**
 2. **Luck** — where you landed against expectation, as a distribution rather than a mean.
-3. **Expected** — what your remaining seeds are worth, level-ups included.
+   **Built**, minus the histogram, which needs the CSV.
+3. **Expected** — what your remaining seeds are worth, level-ups included. **Built.** The only
+   section that reads the bank rather than the history, so it is also the only one that shows
+   anything on a fresh install — which is why the sections are hidden individually rather than
+   as one block.
 4. **Validation** — the existing crop / n / got / avg table, which is the developer's view and
-   belongs at the bottom now rather than being the whole tab.
+   belongs at the bottom now rather than being the whole tab. **Built** — moved, unchanged.
 
 The tab's tooltip is **"Nerd."** and that is the design brief. This is the one place in the
 plugin where the answer being long is the point — everything else is a run you are in the middle
 of; this is the thing you read when you are not farming.
 
-### Section 1 — Lifetime totals, per crop
+### Section 1 — Lifetime totals, per crop — **built**
 
 Everything you have harvested since the plugin was installed, one row per crop, totalled at the
-bottom.
+bottom. Built as specced; nothing below was cut.
 
 - Columns: **crop, patches, items, xp**. Sorted by xp, because that is what the reader is
   scanning for.
@@ -576,15 +635,17 @@ bottom.
   August"* rather than implying it covers an account's whole history. Without that line the
   numbers read as a lifetime total and are not one.
 
-### Section 2 — Luck, as a distribution
+### Section 2 — Luck, as a distribution — **built, minus the histogram**
 
 The nerdy one, and the reason to build the tab at all. Not "you are 47 ahead" — *where you fell*.
 
-- Per crop: **actual against expected, as a percentile**. The store holds `items` and `predicted`
-  summed, so the ratio is free; the interesting version needs the spread, not just the mean.
-- **This needs per-patch rows, so it is Tier 2** — `harvests.csv` has one line per patch with
-  both predicted and actual. From those: a histogram of actual-minus-expected per crop, and a
-  statement like *"your ranarr patches land above expectation 54% of the time"*.
+- Per crop: **actual against expected, as a percentile**. **Built** — the store holds `items` and
+  `predicted` summed, and now the summed variance too, so the percentile falls out of the
+  rolled-up store without reading a file. `CropHarvestStats.getLuckPercentile`.
+- **The histogram needs per-patch rows, so it stays Tier 2** — `harvests.csv` has one line per
+  patch with both predicted and actual. From those: a histogram of actual-minus-expected per
+  crop, and a statement like *"your ranarr patches land above expectation 54% of the time"*. The
+  percentile turned out **not** to need them, which is what the next heading is about.
 #### No aggregate data is needed, and that is the whole point
 
 The obvious assumption is that "luck" needs a population to compare against — how did *other*
@@ -622,7 +683,7 @@ would trade that for very little.
   like `√n` while the total grows like `n`, so the percentile is meaningless at small `n` and
   tightens quickly — which is exactly why a figure over four patches must not be shown at all.
 
-#### Storage: one more accumulator beats a better file format
+#### Storage: one more accumulator beats a better file format — **built**
 
 The instinct is that per-patch analysis needs a queryable store rather than an append-only CSV.
 For the headline number it does not, and the reason is the same property the maths above turns
@@ -632,8 +693,23 @@ on: **variance is additive over independent patches**, exactly as the mean alrea
 running total — `predictedVariance`, summing `r·p/(1-p)²` at the moment each harvest is recorded,
 where the level, compost and gear are all in hand — makes the percentile computable from the
 rolled-up store alone. No file is read, nothing is parsed, and it stays bounded at ~50 crops x 4
-tiers like the rest of it. **Build this first**: it is a few lines, and it delivers the whole of
-"where did I land" without touching the storage question.
+tiers like the rest of it. It was a few lines, and it delivered the whole of "where did I land"
+without touching the storage question.
+
+**Two things it needed that the plan did not anticipate**, both about honesty rather than maths:
+
+- **A fourth running total, `variancePatches`.** The variance and the mean must describe the
+  *same* patches or the z-score is drawn against a total it does not cover, and two things break
+  that. A crop with no modelled spread — limpwurt's level roll, the wiki's measured averages —
+  contributes a prediction and no variance. And **every patch recorded before this shipped** did
+  the same. So the guard is `variancePatches == harvests`, and where it fails the percentile is
+  blank rather than overstated.
+- **There is no migration, and there cannot be one from the store.** The parameters those
+  patches were harvested under were never rolled up, only their prediction. So an existing
+  history shows a cumulative surplus — which needs no spread and is unaffected — and starts
+  earning percentiles from the next harvest on. `harvests.csv` *does* hold enough to backfill
+  (`lives` and `predicted` per row give `p = 1 − lives/predicted`), which is a genuine Tier 2
+  option and not otherwise interesting.
 
 **What genuinely needs the per-patch rows** is anything about *shape* or *sequence*, which no
 running total can reconstruct:
@@ -668,15 +744,58 @@ a text file, but self-describing per row, so schema changes stop being a positio
   patterns.
 - Cheap wins that belong in this section and need no CSV: **cumulative luck** (actual minus
   predicted, summed), **best and worst single patch** per crop, and **patches walked away from**
-  (`partialItems`, real lost yield and the only actionable line on the tab).
+  (`partialItems`, real lost yield and the only actionable line on the tab). **All built** — the
+  first as the section's summary line, the second in each row's tooltip, the third beside it.
 
-### Section 3 — Expected yield from the seeds you hold
+### Section 3 — Expected yield from the seeds you hold — **built, as a path**
 
-What your bank is worth if you plant all of it through this plugin.
+What your bank is worth if you plant all of it through this plugin. `PlantOutEstimate`, beside
+`CropYieldModel` rather than beside `RunEstimate`: it is the same per-patch arithmetic, and the
+two differ only in how many patches are in view.
+
+**It is a simulation, not a sum, and that was a second pass over the first build.** The original
+priced each stack independently from the level you are on, which misses the thing that matters
+most from the bottom: *what you are allowed to plant changes as you plant*. Potatoes take you to
+where guam unlocks, guam to where ranarr does, and each unlock changes what the next cycle should
+be filling patches with. So the whole thing now runs forward — each cycle fills every patch type
+with the best experience per patch it can currently plant, banks it, recomputes the level, and
+goes again. Crops crossing their requirement are surfaced as **unlocks**, which is the path
+itself: *at 32 you unlock ranarr, and you are holding four thousand*.
+
+- **The policy is stated on the tab because it is an assumption**: best experience per patch,
+  first. Patches are the scarce resource, so filling them with the most valuable thing you can
+  plant is what maximises experience and is what someone chasing 99 would do. Every seed goes in
+  eventually — the policy decides the *order*, and best-first is the order that gets the most out
+  of the levelling.
+- **Where 99 falls in the bank is reported as a split**: the seeds that get you there, and what
+  the rest are worth beyond it. On a big stack that second number is the larger one, and it is
+  the answer to "and then what".
+- **Bounded for a panel repaint.** Naively this is one iteration per cycle — a bank of ten
+  thousand seeds through five patches is two thousand of them, per patch type, on the Swing
+  thread. Nothing changes within a stretch except the level and the stock, so a step runs until
+  one of those does: whichever of *cycles to the next level* and *cycles until a stack empties*
+  comes first. That also bounds the whole simulation at 99 steps plus one per crop.
+- **An unlock reports the crop's requirement**, not the level the simulation noticed it at. One
+  cycle low down can carry you several levels, so a crop needing 75 could first be seen at 85 —
+  and reporting 85 would be describing the step size rather than the game.
 
 - Every seed you own, run through `CropYieldModel.expected` against your patch count, compost
   choice and detected gear — the same arithmetic the run projection uses, so the two cannot
   disagree.
+- **Three things the plan did not mention and the build needed:**
+  - **A stack of seeds is not a stack of patches.** `Seed.getSeedsPerPatch` — three to an
+    allotment, four to hops, three for jute. Counting seeds as patches would have overstated
+    every allotment stack threefold, and allotments are exactly where seeds are held in the
+    hundreds.
+  - **Total Farming experience had never been captured**, only the level. Starting the iteration
+    from `getXpForLevel(level)` throws away up to a whole level before the first patch goes in,
+    so `SeedInventoryStore` now caches `farmingXp` beside `farmingLevel`. It falls back to the
+    level's start for accounts predating the change, which errs conservative.
+  - **A seed above your level.** Left out of the total and counted as a gap rather than
+    projected, because folding it in would need the planting order the section deliberately does
+    not assume.
+- **A crop with no available patches is left out entirely**, which is the availability invariant
+  reaching the stats tab — and also what stops the cycle loop from never terminating.
 - **Accounting for level-ups mid-cycle is the actual problem here**, and it is not a detail. A
   full bank of guam planted at level 30 finishes somewhere north of 40, and chance-to-save moves
   with the level, so a single-level calculation understates the total. The honest version
@@ -685,33 +804,68 @@ What your bank is worth if you plant all of it through this plugin.
   a number that is roughly right and one that is right.
 - **Two figures, not one**: the naive "at your current level" and the iterated "planting it all
   out". The gap between them is itself interesting, and showing both makes the assumption
-  visible instead of buried.
+  visible instead of buried. **Shown only where they differ** by more than a percent — at 75
+  with two hundred ranarr they are the same number, and printing it twice is padding.
+- ~~**The total is conservative across crops**~~ — no longer true, and the reason the section was
+  rebuilt as a simulation. The forward run credits every level a crop earns to the crops planted
+  after it, which is what a path from level 1 is almost entirely made of.
 - **What it must not do** is imply a schedule. This is "what these seeds are worth", not "you
   will have this by Tuesday" — growth time is real but so is logging off, and a time estimate
   would be the tab's first dishonest number.
 - Ordering by xp per seed makes it a planting guide as a side effect: it answers *"which of these
   should I actually be planting"* without being asked.
 
-### Tier 1 — from the rolled-up store, no new capture
+### Tier 1 — from the rolled-up store, no new capture — **all built**
 
-- **What compost is actually worth, measured.** The one worth building first. The store already
-  splits every crop by tier, so it can say *"ultracompost gave you 8.4 ranarr a patch against 6.1
-  untreated, over 31 patches"* — the player's own numbers, not the wiki's, answering the only
-  question anyone asks about compost. **Caveat that shapes it:** most players use one tier
-  forever, so for many accounts one column is empty and the comparison cannot be drawn. It has to
-  degrade to "you have only ever used ultracompost" rather than to a misleading half-answer.
+- **What compost is actually worth, measured.** The store already splits every crop by tier, so
+  it says *"ultracompost gave you 8.4 ranarr a patch against 6.1 untreated, over 31 patches"* —
+  the player's own numbers, not the wiki's, answering the only question anyone asks about
+  compost. **Caveat that shaped it:** most players use one tier forever, so for many accounts one
+  column is empty and the comparison cannot be drawn. It degrades to "you have only ever used
+  ultracompost" rather than to a misleading half-answer. Drawn from the crop with the most
+  patches farmed under more than one tier, which is the comparison with the least noise in it.
 - **Luck, cumulative**, **best and worst single patch**, and **patches walked away from** are all
-  stored and unsurfaced, and all belong in Section 2 above. Listed here because they need nothing
-  new — they are the part of that section that can ship before the CSV is ever read.
+  in Section 2 above and all shipped without the CSV being read.
 - **How long you have been at it, and how often.** First and last harvest are stored, so patches
-  per week falls out. Cheap, and it makes the tab feel like a record rather than a table.
+  per week falls out. Shown only once a week has actually passed — below that the rate is one
+  week's farming extrapolated, which for a skill you touch every few days is invented rather
+  than measured.
 
-### Tier 2 — needs reading `harvests.csv` back
+### Tier 2 — needs reading `harvests.csv` back — **built**
 
-- **Runs, reconstructed.** Cluster rows by timestamp gap — anything over ~30 minutes starts a new
-  run — and the tab can show *last run*, *best run* and *average run* in patches, items and xp.
-  Probably the most satisfying thing on this list, and it needs no new data at all.
-- **Yield against farming level**, since every row stores the level it happened at. Shows the
+`HarvestHistory` reads the file **once, at plugin start-up**, folds every row into the summaries
+below and then drops the rows. So the memory held is a few hundred bytes per crop rather than a
+few megabytes per year, and no panel refresh ever touches the file. Harvests recorded while
+playing are folded into the same summaries as they happen, which is what keeps the tab current
+without re-reading.
+
+**The format work turned out to be the load-bearing part**, and it is `HarvestCsv`:
+
+- **Columns are addressed by name.** A file's own header is the authority on its layout, so a
+  log written by an older version keeps working and needs no migration — and inserting a column
+  can no longer silently reinterpret every historic row.
+- **Rows are written in the file's own column order**, read from its header the first time the
+  session appends. That is what makes "no migration" true rather than aspirational.
+- **A `version` column** on new files, for the one change name-addressing cannot survive: a
+  column keeping its name and changing its meaning.
+- **Both timestamp formats read.** Time was an ISO instant before it was an epoch second, and
+  refusing to read existing logs would defeat the point of all of the above.
+- **Rotation at 50,000 rows**, on the *raw lines* rather than on parsed rows. Only a handful of
+  columns are read back, so rewriting from what was parsed would quietly delete the rest.
+  Through a temporary file and an atomic move.
+
+- **Runs, reconstructed.** **Built** — its own section on the tab, showing *last*, *best* and
+  *average* in patches, items and xp. Clustered on a 30-minute gap, which sits in a wide empty
+  space in the real distribution: patches within a sitting are minutes apart and the wait for the
+  next crop is at least forty. Anything between about ten and forty minutes clusters identically,
+  so the exact figure is not load-bearing.
+- **Rates came with it**, and are the reason runs were worth reconstructing: **xp per run** (the
+  unit farming actually has), **xp per day** (the honest throughput for a skill gated by a growth
+  timer, and nobody displays it), and **active xp/hr**, labelled *active* because a rate measured
+  from the first patch of a run to the last is not one you can keep up. Plus **runs to the next
+  level**, which is the cheapest useful line on the tab.
+- **Yield against farming level**. **Built** — banded by ten levels, in the Validation section,
+  since every row stores the level it happened at. Shows the
   curve flattening, which is a real effect most players never see.
 - **Per-location performance.** Cheap to compute and probably worth *not* showing: disease is
   random and thirty patches is not enough to separate a bad location from bad luck. Listing it
@@ -720,20 +874,42 @@ What your bank is worth if you plant all of it through this plugin.
   computable — but only for accounts that have farmed both with and without, which is nearly
   nobody. Likely an empty answer dressed as a feature.
 
-**The cost to weigh first:** the CSV is append-only and unbounded. Reading it on every panel
-refresh is wrong; it wants reading once on load, or capping, or a rolled-up "runs" store written
-alongside the CSV the way `HarvestStatsStore` already is. That decision is the actual work here,
-not the arithmetic.
+~~**The cost to weigh first**~~ — **settled: read once on load, and cap.** Not a rolled-up runs
+store; the derived summaries live in memory and are appended to live, which gets the same result
+without a second thing to keep in sync with the first. The histogram is also built here rather
+than from the rolled-up store, and it deliberately has a *lower* floor than the percentile: a
+percentile is a confident claim about where you sit and needs the normal approximation to hold,
+while a histogram is just the observations with a count beside each bar.
 
-### Tier 3 — needs a small new capture
+### Tier 3 — needs a small new capture — **built**
 
-- **Observed disease and death rate.** The most valuable gap, and the one thing this data
-  genuinely cannot answer: a dead patch produces no harvest, so it never appears in the log at
-  all. Every rate shown today comes from the published constants. `PatchInteractionTracker`
-  already watches the DEAD transition, so counting it per crop and per compost tier is a small
-  change — and it would let the Stats tab validate `DiseaseRisk` the way it already validates
-  yield. It would also settle whether ultracompost's protection is worth its price on the
-  player's own numbers.
+- **Observed disease and death rate.** The most valuable gap, and the one thing the harvest data
+  genuinely could not answer: a dead patch produces no harvest, so it never appears in the log at
+  all. `DiseaseStatsStore` counts it from the patch state instead, per crop and per compost tier,
+  with the predicted survival chance summed beside the outcome the way yield already does — so
+  the Stats tab validates `DiseaseRisk` the same way, and can say whether ultracompost's
+  protection is worth its price on the player's own numbers.
+
+**Four decisions that shaped it**, none of which were obvious from the plan:
+
+- **A cured patch still counts as diseased.** The roll went against you, and the roll is what the
+  published rate describes. Counting the cure as a survival would measure your attentiveness
+  rather than the game's rates.
+- **A patch found dead counts as diseased even though the diseased state was never seen.** That
+  is the *common* case in play — a patch sickens and dies while you are elsewhere and the only
+  evidence is a jump straight to dead. Treating it as "not diseased" would file the worst outcome
+  as a clean run.
+- **A patch that cannot be diseased is left out of the denominator entirely.** Its predicted
+  survival is exactly 1, so it can only ever agree, and counting it drags every rate towards a
+  hundred percent.
+- **Only observed cycles count.** One that began and ended while you were away is missing data,
+  not a survival. The in-flight "caught something this cycle" flag is deliberately *not*
+  persisted for the same reason: a cycle spanning a logout has already lost the transitions in
+  the middle of it.
+
+**The floor is 50 cycles**, higher than anything else on the tab, because disease is a rare
+event: a rate over twenty cycles is one patch either way and rounds to something that reads like
+a finding.
 
 ### Rates, and why farming needs its own unit
 
@@ -759,15 +935,37 @@ The units that actually mean something:
   a field alongside it. *"About 4 more herb runs to 85"* is the most useful single line the tab
   could carry, and it costs almost nothing.
 
-### Coin value — yes, and the interesting version is profit
+### Coin value — **built**, as profit
 
-`ItemManager.getItemPrice(int)` is public, cached in memory, and safe to call from the panel. So
-value is available per item and therefore per patch, per run and lifetime.
+`ItemManager.getItemPrice(int)` is public and value is therefore available per item, and so per
+patch, per run and lifetime.
+
+**It is not safe to call from the panel, and this line used to say it was.** It resolves the
+canonical item through `getItemComposition`, which asserts it is on the client thread — and it
+throws an `AssertionError`, not an exception, so a `catch (RuntimeException)` around the call
+does nothing. Called during a repaint it unwound the panel's entire refresh, leaving the Stats
+tab on "nothing here yet" over a full history rather than merely losing a figure. Prices are read
+on the client thread into `ItemPrices` and the panel reads only that, exactly as `ItemNames`
+already did for item names. `ItemManager.getImage` **is** safe off-thread and is the one the
+sidebar's icons use; the two are easy to assume alike and are not.
 
 The version worth building is not "your harvest was worth 240k" but **net profit**: harvest value
 minus the seed, the compost and the protection payment. That is the number that actually decides
 whether snapdragon beats ranarr this month, and it moves with the market in a way no guide can
 keep up with.
+
+**Where it landed:** `Prices` wraps `ItemManager`, the **Lifetime** section carries what the whole
+history would fetch today, and the **Expected** section carries the plant-out projection priced
+net of seeds and compost. Two things came out differently from the plan:
+
+- **Protection payments are not charged**, and the line says so. `ProtectionPayment` has the item
+  and quantity per crop, so the cost is computable — but nothing has ever recorded whether a
+  *historic* patch was paid for, and `PlantOutEstimate` does not model disease at all. Charging
+  for protection while crediting none of its benefit would be worse than omitting both. Wiring
+  disease survival into the projection would make it worth adding; that is the follow-on.
+- **No price means no figure**, not a figure of zero. The item cache loads asynchronously and a
+  panel can repaint before it is ready, so "worth about 0 gp" would be a claim where the truth is
+  a gap.
 
 Three caveats that belong in the display rather than in a footnote:
 
@@ -784,13 +982,16 @@ Three caveats that belong in the display rather than in a footnote:
 
 ### Decisions before building
 
-- ~~**Coin value: yes or no?**~~ **Yes** — speced above. What still wants deciding is whether the
-  headline is value or *profit*, since profit needs seed and compost costs that an ironman never
-  paid.
+- ~~**Coin value: yes or no?**~~ **Yes**, and **built** — see above. The headline is *profit*
+  where costs are known and the wording carries the ironman caveat rather than picking a side:
+  it names what it charged for rather than claiming either "profit" or "value produced".
 - **Old rows are not trustworthy.** Everything logged before the attribution fixes was collected
   by the broken version, and `docs/TESTING.md` still tells you to clear the history. Any headline stat
   built on it inherits that. Worth considering whether the store should record a "trustworthy
-  from" timestamp rather than relying on someone having cleared it.
+  from" timestamp rather than relying on someone having cleared it. **Partly self-solving now**,
+  and only partly: the `variancePatches` guard means no pre-existing history can produce a
+  percentile at all, so the *most* confident figure on the tab is the one old rows cannot reach.
+  The lifetime totals and the cumulative surplus still inherit whatever those rows got wrong.
 
 ## Backlog
 

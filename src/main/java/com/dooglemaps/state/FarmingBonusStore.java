@@ -50,7 +50,7 @@ public class FarmingBonusStore
 	private final Client client;
 
 	@Inject
-	private FarmingBonusStore(ConfigManager configManager, PatchStateStore patches,
+	FarmingBonusStore(ConfigManager configManager, PatchStateStore patches,
 		ItemManager itemManager, Client client)
 	{
 		this.configManager = configManager;

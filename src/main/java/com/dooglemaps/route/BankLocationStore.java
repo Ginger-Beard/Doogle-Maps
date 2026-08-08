@@ -1,8 +1,6 @@
 package com.dooglemaps.route;
 
-import com.dooglemaps.DoogleMapsConfig;
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
@@ -29,7 +27,7 @@ import net.runelite.client.config.ConfigManager;
  */
 @Slf4j
 @Singleton
-public class BankLocationStore
+public class BankLocationStore extends com.dooglemaps.state.ProfileJsonStore
 {
 	private static final String BANKS_KEY = "banks";
 
@@ -45,17 +43,13 @@ public class BankLocationStore
 	{
 	}.getType();
 
-	private final ConfigManager configManager;
-	private final Gson gson;
-
 	/** Learned banks as {x, y, plane}. */
 	private final List<int[]> learned = new ArrayList<>();
 
 	@Inject
-	private BankLocationStore(ConfigManager configManager, Gson gson)
+	BankLocationStore(ConfigManager configManager, Gson gson)
 	{
-		this.configManager = configManager;
-		this.gson = gson;
+		super(configManager, gson, BANKS_KEY);
 	}
 
 	/**
@@ -119,44 +113,34 @@ public class BankLocationStore
 	public synchronized void clear()
 	{
 		learned.clear();
-		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, BANKS_KEY);
+		unsetStored();
 	}
 
-	public void load()
+	@Override
+	protected void resetForLoad()
 	{
-		synchronized (this)
+		learned.clear();
+	}
+
+	@Override
+	protected void applyJson(String json)
+	{
+		List<int[]> loaded = gson.fromJson(json, LOCATION_LIST_TYPE);
+		if (loaded != null)
 		{
-			learned.clear();
-
-			String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, BANKS_KEY);
-			if (json == null || json.isEmpty())
+			for (int[] point : loaded)
 			{
-				return;
-			}
-
-			try
-			{
-				List<int[]> loaded = gson.fromJson(json, LOCATION_LIST_TYPE);
-				if (loaded != null)
+				if (point != null && point.length == 3)
 				{
-					for (int[] point : loaded)
-					{
-						if (point != null && point.length == 3)
-						{
-							learned.add(point);
-						}
-					}
+					learned.add(point);
 				}
-			}
-			catch (JsonSyntaxException e)
-			{
-				log.warn("Discarding unreadable bank locations", e);
 			}
 		}
 	}
 
-	private synchronized void save()
+	@Override
+	protected Object serialized()
 	{
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, BANKS_KEY, gson.toJson(learned));
+		return learned;
 	}
 }

@@ -53,7 +53,7 @@ public class TimeTrackingState
 	private final ConfigManager configManager;
 
 	@Inject
-	private TimeTrackingState(ConfigManager configManager)
+	TimeTrackingState(ConfigManager configManager)
 	{
 		this.configManager = configManager;
 	}

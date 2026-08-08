@@ -101,7 +101,7 @@ public class ShortestPathIntegration
 	private volatile Set<WorldPoint> currentDestinations = new HashSet<>();
 
 	@Inject
-	private ShortestPathIntegration(EventBus eventBus, ClientThread clientThread)
+	ShortestPathIntegration(EventBus eventBus, ClientThread clientThread)
 	{
 		this.eventBus = eventBus;
 		this.clientThread = clientThread;

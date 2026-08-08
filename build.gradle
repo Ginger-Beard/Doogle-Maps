@@ -59,7 +59,11 @@ task runClient(type: JavaExec) {
 	// -PdebugClient opens a debugger port so an IDE can hot-swap changed classes into the
 	// running client, which saves a relaunch for anything that only changes a method body.
 	// suspend=n so the client still starts on its own if nothing ever attaches.
+	//
+	// Loopback only, and that is load-bearing: JDWP has no authentication, so whoever can
+	// reach the port can run code in a JVM that is logged into the account. `*:5005` would
+	// offer that to the whole LAN.
 	jvmArgs = project.hasProperty('debugClient')
-		? ['-ea', '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=*:5005']
+		? ['-ea', '-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=127.0.0.1:5005']
 		: ['-ea']
 }

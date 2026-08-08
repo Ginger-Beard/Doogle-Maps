@@ -68,7 +68,7 @@ public class ProtectionSelectionStore
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private ProtectionSelectionStore(ConfigManager configManager, Gson gson)
+	ProtectionSelectionStore(ConfigManager configManager, Gson gson)
 	{
 		this.configManager = configManager;
 		this.gson = gson;

@@ -1,6 +1,9 @@
 package com.dooglemaps.ui;
 
 import com.dooglemaps.DoogleMapsConfig;
+import com.dooglemaps.bank.LoadoutItem;
+import com.dooglemaps.bank.RunLoadout;
+import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.timer.Confidence;
 import com.dooglemaps.timer.PatchProjection;
 import java.awt.Color;
@@ -23,15 +26,21 @@ public class ReadyInfoBox extends InfoBox
 
 	private final DoogleMapsPanel panel;
 	private final DoogleMapsConfig config;
+	private final RunLoadout loadout;
+	private final RunPlanner planner;
 
 	private int readyCount;
 	private int problemCount;
+	private int withdrawCount;
 
-	public ReadyInfoBox(BufferedImage image, Plugin plugin, DoogleMapsPanel panel, DoogleMapsConfig config)
+	public ReadyInfoBox(BufferedImage image, Plugin plugin, DoogleMapsPanel panel,
+		DoogleMapsConfig config, RunLoadout loadout, RunPlanner planner)
 	{
 		super(image, plugin);
 		this.panel = panel;
 		this.config = config;
+		this.loadout = loadout;
+		this.planner = planner;
 		setPriority(net.runelite.client.ui.overlay.infobox.InfoBoxPriority.LOW);
 	}
 
@@ -72,14 +81,46 @@ public class ReadyInfoBox extends InfoBox
 			}
 		}
 
+		List<String> withdraw = toWithdraw();
+
 		readyCount = ready.size();
 		problemCount = problems.size();
-		setTooltip(buildTooltip(ready, problems));
+		withdrawCount = withdraw.size();
+		setTooltip(buildTooltip(ready, problems, withdraw));
 	}
 
-	private String buildTooltip(List<String> ready, List<String> problems)
+	/**
+	 * What the run still wants out of the bank, with counts.
+	 *
+	 * <p>Answers the question you have while standing at the bank, which the sidebar could
+	 * already answer and the in-game display could not: not "is anything ready" but <i>how many
+	 * of what do I take</i>. The counts are {@code outstanding} rather than the run's total, so
+	 * the list shortens as you withdraw and comes back if you put something down.
+	 *
+	 * <p>Safe from any thread, which is this class's whole constraint: {@code forRun} reads the
+	 * stores through their own locks and touches the client only for the tick count it caches
+	 * on. Nothing here asserts a thread.
+	 */
+	private List<String> toWithdraw()
 	{
-		if (ready.isEmpty() && problems.isEmpty())
+		List<String> items = new ArrayList<>();
+		for (LoadoutItem item : loadout.forRun(planner.coveredTypes()))
+		{
+			if (item.getNeed() != LoadoutItem.Need.WITHDRAW)
+			{
+				continue;
+			}
+			// A count only where one is a decision. "Bronze axe x1" is worse than "Bronze axe".
+			items.add(item.getOutstanding() > 1
+				? item.getName() + " x" + item.getOutstanding()
+				: item.getName());
+		}
+		return items;
+	}
+
+	private String buildTooltip(List<String> ready, List<String> problems, List<String> withdraw)
+	{
+		if (ready.isEmpty() && problems.isEmpty() && withdraw.isEmpty())
 		{
 			return "Doogle Maps</br>Nothing ready.";
 		}
@@ -95,6 +136,14 @@ public class ReadyInfoBox extends InfoBox
 		{
 			text.append("</br>Needs attention:");
 			appendList(text, problems);
+		}
+		// Last, because it is the only section that is about what to do next rather than about
+		// what the patches are doing - and it is only ever non-empty while a run is being got
+		// ready, so it does not push the other two down the rest of the time.
+		if (!withdraw.isEmpty())
+		{
+			text.append("</br>To withdraw:");
+			appendList(text, withdraw);
 		}
 
 		return text.toString();
@@ -136,6 +185,10 @@ public class ReadyInfoBox extends InfoBox
 		{
 			return false;
 		}
-		return !config.readyInfoboxOnlyWhenReady() || readyCount > 0 || problemCount > 0;
+		// Having something to fetch counts as worth showing. The setting means "do not sit there
+		// at zero all week", and the moment before a run is exactly when nothing is ready and the
+		// box has the most to say - hiding it there would take the list away at the bank.
+		return !config.readyInfoboxOnlyWhenReady()
+			|| readyCount > 0 || problemCount > 0 || withdrawCount > 0;
 	}
 }

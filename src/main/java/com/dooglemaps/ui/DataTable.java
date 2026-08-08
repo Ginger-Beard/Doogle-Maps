@@ -176,12 +176,20 @@ class DataTable extends JPanel
 	/**
 	 * Numbers abbreviated, so a long run or a long history does not widen a column.
 	 *
-	 * <p>Lives here because both tables show experience totals and both are squeezed into the
-	 * same 225px sidebar.
+	 * <p>Lives here because several tables show experience totals and all of them are squeezed
+	 * into the same 225px sidebar.
+	 *
+	 * <p>Millions get their own step. A run's projection never reaches seven figures, but the
+	 * plant-out one does the moment anyone banks a serious number of seeds — and "7279k" is both
+	 * wider than the column and harder to read at a glance than "7.3M".
 	 */
 	static String shortNumber(double value)
 	{
 		long rounded = Math.round(value);
+		if (rounded >= 1_000_000)
+		{
+			return String.format("%.1fM", value / 1_000_000).replace(".0M", "M");
+		}
 		if (rounded >= 100_000)
 		{
 			return Math.round(value / 1000) + "k";

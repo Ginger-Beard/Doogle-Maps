@@ -35,6 +35,8 @@ import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.ui.DoogleMapsPanel;
 import com.dooglemaps.validate.GeomancyProbe;
 import com.dooglemaps.validate.HarvestLog;
+import com.dooglemaps.validate.DiseaseStatsStore;
+import com.dooglemaps.validate.HarvestHistory;
 import com.dooglemaps.validate.HarvestStatsStore;
 import com.dooglemaps.ui.PluginIcon;
 import com.dooglemaps.ui.ReadyInfoBox;
@@ -90,6 +92,13 @@ public class DoogleMapsPlugin extends Plugin
 
 	@Inject
 	private ClientThread clientThread;
+
+	/**
+	 * RuneLite's shared background executor, for file work the client thread must not pay
+	 * for. Single-threaded, so tasks queued here also serialize against each other.
+	 */
+	@Inject
+	private java.util.concurrent.ScheduledExecutorService executor;
 
 	@Inject
 	private ClientToolbar clientToolbar;
@@ -207,6 +216,9 @@ public class DoogleMapsPlugin extends Plugin
 	private RunPlanner runPlanner;
 
 	@Inject
+	private com.dooglemaps.bank.RunLoadout runLoadout;
+
+	@Inject
 	private SeedSelectionStore seedSelection;
 
 	@Inject
@@ -220,6 +232,15 @@ public class DoogleMapsPlugin extends Plugin
 
 	@Inject
 	private HarvestStatsStore harvestStats;
+
+	@Inject
+	private HarvestHistory harvestHistory;
+
+	@Inject
+	private DiseaseStatsStore diseaseStats;
+
+	@Inject
+	private com.dooglemaps.data.ItemPrices itemPrices;
 
 	@Inject
 	private FarmingBonusStore bonusStore;
@@ -303,7 +324,7 @@ public class DoogleMapsPlugin extends Plugin
 			.build();
 		clientToolbar.addNavigation(navigationButton);
 
-		readyInfoBox = new ReadyInfoBox(PluginIcon.create(), this, panel, config);
+		readyInfoBox = new ReadyInfoBox(PluginIcon.create(), this, panel, config, runLoadout, runPlanner);
 		infoBoxManager.addInfoBox(readyInfoBox);
 
 		overlayManager.add(guideOverlay);
@@ -474,6 +495,8 @@ public class DoogleMapsPlugin extends Plugin
 		}
 
 		harvestStats.clear();
+		harvestHistory.clear();
+		diseaseStats.clear();
 		log.info("Doogle Maps harvest history cleared");
 		refresh();
 	}
@@ -526,6 +549,53 @@ public class DoogleMapsPlugin extends Plugin
 				carriedItems.relearnFromClient();
 			}
 		});
+	}
+
+	/**
+	 * Says what the run loadout resolved to, the first time each bank is opened.
+	 *
+	 * <p>Once per opening rather than per tick: the answer only changes when you act on it, and a
+	 * line a frame would be useless. See {@code RunLoadout.logState} for why it is worth saying at
+	 * all — nothing showing in the bank has five causes that look identical from in front of it.
+	 */
+	@Subscribe
+	public void onWidgetLoaded(net.runelite.api.events.WidgetLoaded event)
+	{
+		if (event.getGroupId() == net.runelite.api.gameval.InterfaceID.BANKMAIN)
+		{
+			runLoadout.logState(runPlanner.coveredTypes(), runPlanner.isActive());
+		}
+	}
+
+	/**
+	 * Learns the game's name for whatever lands on the player.
+	 *
+	 * <p>The counterpart of {@code BankCapture.recordNames}, for the same consumer: the
+	 * teleport list matches by name against the bank <i>and the pack</i>, and an item bought
+	 * or withdrawn mid-session has a name the bank read never saw. Client-thread event,
+	 * cached lookups, so an unchanged pack costs a set intersection and nothing more.
+	 */
+	@Subscribe
+	public void onItemContainerChanged(net.runelite.api.events.ItemContainerChanged event)
+	{
+		if (event.getContainerId() != net.runelite.api.gameval.InventoryID.INV
+			&& event.getContainerId() != net.runelite.api.gameval.InventoryID.WORN)
+		{
+			return;
+		}
+
+		java.util.List<Integer> ids = new java.util.ArrayList<>();
+		if (event.getItemContainer() != null)
+		{
+			for (net.runelite.api.Item item : event.getItemContainer().getItems())
+			{
+				if (item != null && item.getId() > 0)
+				{
+					ids.add(item.getId());
+				}
+			}
+		}
+		itemNames.record(itemManager, ids);
 	}
 
 	@Subscribe
@@ -601,6 +671,9 @@ public class DoogleMapsPlugin extends Plugin
 		availability.setFarmingLevel(seedStore::getFarmingLevel);
 		availability.load();
 		seedStore.load();
+		// The remembered bank, so the loadout, the withdraw list and the filter start informed
+		// rather than waiting for the first bank open of the session. See BankContents.
+		bankContents.load();
 		// The Farming level is only otherwise learned from a Farming XP drop, which may not
 		// come for hours. Without it every yield estimate stays hidden, so it is read
 		// outright whenever we load.
@@ -634,6 +707,30 @@ public class DoogleMapsPlugin extends Plugin
 					paymentItems.add(payment.getItemID());
 				}
 				itemNames.record(itemManager, paymentItems);
+
+				// Names for everything the remembered bank holds, for the same reason and on
+				// the same thread. BankCapture does this on every bank open; doing it here is
+				// what lets the teleport list match by name before the first open of the
+				// session, now the bank's contents survive one. Cached, so it is only
+				// expensive the first time.
+				itemNames.record(itemManager,
+					new java.util.ArrayList<>(bankContents.getItemIds()));
+
+				// And for everything on the player, because the teleport list matches the
+				// pack too - a house tab you always carry may exist in the bank only as a
+				// placeholder, which is not contents. After relearnFromClient above, so the
+				// pack has actually been read.
+				itemNames.record(itemManager,
+					new java.util.ArrayList<>(carriedItems.getItemIds()));
+
+				// Prices, for the Stats tab's coin figures. Client thread only: getItemPrice
+				// resolves the canonical item through getItemComposition, which asserts - and it
+				// throws an AssertionError rather than an exception, so calling it from the
+				// panel unwound the whole refresh rather than losing one number.
+				itemPrices.record(itemManager);
+				// Prices land after the panel's first draw, so the coin figures would otherwise
+				// wait for the idle timer to come round.
+				refresh();
 			}
 		});
 		seedSelection.load();
@@ -643,6 +740,21 @@ public class DoogleMapsPlugin extends Plugin
 		patchLocations.load();
 		bankLocations.load();
 		harvestStats.load();
+		diseaseStats.load();
+		// Reads the harvest CSV, once — off the client thread, because it can be fifty
+		// thousand rows and can trigger a whole-file trim, and this method runs from
+		// client-thread event handlers at the exact moment of login. Everything derived from
+		// it is held in memory afterwards, so no panel refresh ever touches the file. The
+		// stats summary and a refresh follow it so the log describes the full picture and
+		// the tab fills in when the read lands.
+		harvestHistory.beginLoad();
+		executor.execute(() ->
+		{
+			harvestHistory.load(
+				com.dooglemaps.validate.HarvestFiles.forProfile(configManager));
+			logStatsState();
+			refresh();
+		});
 		interactionTracker.reset();
 		// Said outright, once, because a contract that never appears has three possible causes —
 		// Time Tracking switched off, nothing assigned, or one already handed in — and from the
@@ -655,6 +767,38 @@ public class DoogleMapsPlugin extends Plugin
 			availability.getAllAvailablePatches().size(),
 			FarmingWorldData.getAllPatches().size(),
 			FarmingWorldData.getRegions().size());
+	}
+
+	/**
+	 * Says what each of the Stats tab's four sources actually holds.
+	 *
+	 * <p>Same reasoning as {@code contracts.logState()} above: an empty Stats tab has several
+	 * quite different causes and every one of them looks identical from the sidebar. It can mean
+	 * no harvest has been recorded, or that the harvest log on disk is empty, or that no seed
+	 * has been seen in the bank, or that no patch is switched on for the projection to plant
+	 * into — and the tab can only say "nothing here yet" to all four.
+	 *
+	 * <p>One line, once per load, so the answer is in {@code client.log} rather than in a
+	 * back-and-forth.
+	 */
+	private void logStatsState()
+	{
+		int seedTypes = 0;
+		for (com.dooglemaps.data.Seed seed : com.dooglemaps.data.Seed.values())
+		{
+			if (seedStore.getOwned(seed) > 0)
+			{
+				seedTypes++;
+			}
+		}
+
+		log.info("Doogle Maps stats: {} patches harvested ({} items), {} runs in the log, "
+				+ "{} disease cycles; bank holds {} seed types, {} patches switched on, "
+				+ "Farming {} ({} xp)",
+			harvestStats.getTotalHarvests(), harvestStats.getTotalItems(),
+			harvestHistory.getRuns().size(), diseaseStats.getTotalCycles(), seedTypes,
+			availability.getAllAvailablePatches().size(), seedStore.getFarmingLevel(),
+			seedStore.getFarmingXp());
 	}
 
 	private void refresh()

@@ -1,12 +1,10 @@
 package com.dooglemaps.state;
 
-import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.PatchRequirements;
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
@@ -37,7 +35,7 @@ import net.runelite.client.config.ConfigManager;
  */
 @Slf4j
 @Singleton
-public class AvailabilityProfile
+public class AvailabilityProfile extends ProfileJsonStore
 {
 	private static final String AVAILABILITY_KEY = "availability";
 
@@ -45,8 +43,6 @@ public class AvailabilityProfile
 	{
 	}.getType();
 
-	private final ConfigManager configManager;
-	private final Gson gson;
 	private final PatchStateStore stateStore;
 
 	/**
@@ -72,10 +68,9 @@ public class AvailabilityProfile
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private AvailabilityProfile(ConfigManager configManager, Gson gson, PatchStateStore stateStore)
+	AvailabilityProfile(ConfigManager configManager, Gson gson, PatchStateStore stateStore)
 	{
-		this.configManager = configManager;
-		this.gson = gson;
+		super(configManager, gson, AVAILABILITY_KEY);
 		this.stateStore = stateStore;
 	}
 
@@ -190,50 +185,43 @@ public class AvailabilityProfile
 		synchronized (this)
 		{
 			toggles.clear();
-			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, AVAILABILITY_KEY);
+			unsetStored();
 		}
 		fireChanged();
 	}
 
-	public void load()
-	{
-		doLoad();
-		fireChanged();
-	}
-
-	private synchronized void doLoad()
+	@Override
+	protected void resetForLoad()
 	{
 		toggles.clear();
+	}
 
-		String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, AVAILABILITY_KEY);
-		if (json == null || json.isEmpty())
+	@Override
+	protected void applyJson(String json)
+	{
+		Map<String, Boolean> loaded = gson.fromJson(json, TOGGLE_MAP_TYPE);
+		if (loaded != null)
 		{
-			return;
-		}
-
-		try
-		{
-			Map<String, Boolean> loaded = gson.fromJson(json, TOGGLE_MAP_TYPE);
-			if (loaded != null)
+			loaded.forEach((key, value) ->
 			{
-				loaded.forEach((key, value) ->
+				if (value != null && FarmingWorldData.getPatch(key) != null)
 				{
-					if (value != null && FarmingWorldData.getPatch(key) != null)
-					{
-						toggles.put(key, value);
-					}
-				});
-			}
-		}
-		catch (JsonSyntaxException e)
-		{
-			log.warn("Discarding unreadable availability profile", e);
+					toggles.put(key, value);
+				}
+			});
 		}
 	}
 
-	private void save()
+	@Override
+	protected Object serialized()
 	{
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, AVAILABILITY_KEY, gson.toJson(toggles));
+		return toggles;
+	}
+
+	@Override
+	protected void loaded()
+	{
+		fireChanged();
 	}
 
 	/**

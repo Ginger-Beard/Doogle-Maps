@@ -1,12 +1,10 @@
 package com.dooglemaps.state;
 
-import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.RunOption;
 import javax.annotation.Nullable;
 import com.google.gson.Gson;
-import com.google.gson.JsonSyntaxException;
 import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
@@ -31,16 +29,13 @@ import net.runelite.client.config.ConfigManager;
  */
 @Slf4j
 @Singleton
-public class RunTypeStore
+public class RunTypeStore extends ProfileJsonStore
 {
 	private static final String TYPES_KEY = "runTypes";
 
 	private static final Type NAME_LIST_TYPE = new TypeToken<ArrayList<String>>()
 	{
 	}.getType();
-
-	private final ConfigManager configManager;
-	private final Gson gson;
 
 	/**
 	 * Selected option keys rather than patch types.
@@ -53,10 +48,9 @@ public class RunTypeStore
 	private final Set<String> selected = new java.util.LinkedHashSet<>();
 
 	@Inject
-	private RunTypeStore(ConfigManager configManager, Gson gson)
+	RunTypeStore(ConfigManager configManager, Gson gson)
 	{
-		this.configManager = configManager;
-		this.gson = gson;
+		super(configManager, gson, TYPES_KEY);
 	}
 
 	/**
@@ -199,45 +193,34 @@ public class RunTypeStore
 		log.debug("Run covers {}", keys);
 	}
 
-	public void load()
+	@Override
+	protected void resetForLoad()
 	{
-		synchronized (this)
+		selected.clear();
+	}
+
+	@Override
+	protected void applyJson(String json)
+	{
+		List<String> names = gson.fromJson(json, NAME_LIST_TYPE);
+		if (names != null)
 		{
-			selected.clear();
-
-			String json = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP, TYPES_KEY);
-			if (json == null || json.isEmpty())
+			for (String name : names)
 			{
-				return;
-			}
-
-			try
-			{
-				List<String> names = gson.fromJson(json, NAME_LIST_TYPE);
-				if (names != null)
+				// Kept whatever it says, provided it still names a type this build knows.
+				// Unrecognised keys are dropped rather than throwing: a selection saved by
+				// a newer build must not stop an older one loading the rest.
+				if (typeOf(name) != null)
 				{
-					for (String name : names)
-					{
-						// Kept whatever it says, provided it still names a type this build knows.
-						// Unrecognised keys are dropped rather than throwing: a selection saved by
-						// a newer build must not stop an older one loading the rest.
-						if (typeOf(name) != null)
-						{
-							selected.add(name);
-						}
-					}
+					selected.add(name);
 				}
-			}
-			catch (JsonSyntaxException e)
-			{
-				log.warn("Discarding unreadable run type selection", e);
 			}
 		}
 	}
 
-	private synchronized void save()
+	@Override
+	protected Object serialized()
 	{
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, TYPES_KEY,
-			gson.toJson(new ArrayList<>(selected)));
+		return new ArrayList<>(selected);
 	}
 }

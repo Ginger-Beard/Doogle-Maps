@@ -171,6 +171,117 @@ public class HarvestStatsStoreTest
 		assertTrue(store.getAll().isEmpty());
 	}
 
+	/**
+	 * The spread is accumulated beside the prediction, patch by patch.
+	 *
+	 * <p>Counted as well as summed, because the count is the only thing that can later say
+	 * whether the running variance covers every patch in the running mean.
+	 */
+	@Test
+	public void theSpreadIsAccumulatedAlongsideThePrediction()
+	{
+		HarvestStatsStore store = newStore();
+
+		double single = harvest(CompostTier.NONE, 4, true).getPredictedVariance();
+		assertTrue("a potato has published constants, so it has a modelled spread", single > 0);
+
+		for (int patch = 0; patch < CropHarvestStats.MIN_PATCHES_FOR_LUCK; patch++)
+		{
+			store.record(harvest(CompostTier.NONE, 4, true));
+		}
+
+		CropHarvestStats stats = onlyEntry(store);
+		assertEquals(CropHarvestStats.MIN_PATCHES_FOR_LUCK, stats.getVariancePatches());
+		assertEquals("variances of independent patches add",
+			single * CropHarvestStats.MIN_PATCHES_FOR_LUCK, stats.getPredictedVariance(), 1e-9);
+		assertTrue("twenty scored patches is the floor, so this one clears it",
+			stats.hasLuckPercentile());
+	}
+
+	/**
+	 * A patch left standing contributes neither a prediction nor a spread.
+	 *
+	 * <p>Same reasoning as the average: it was never a full sample. Letting it add variance
+	 * without adding to the count would also break the equality the percentile guard turns on.
+	 */
+	@Test
+	public void abandonedPatchesAddNoSpread()
+	{
+		HarvestStatsStore store = newStore();
+
+		store.record(harvest(CompostTier.NONE, 4, true));
+		store.record(harvest(CompostTier.NONE, 2, false));
+
+		CropHarvestStats stats = onlyEntry(store);
+		assertEquals(1, stats.getHarvests());
+		assertEquals(1, stats.getVariancePatches());
+	}
+
+	/**
+	 * Four picked potatoes cannot place you in a distribution, and the tab must not pretend so.
+	 *
+	 * <p>The spread grows like the square root of the count while the total grows like the
+	 * count, so a percentile below the floor is noise presented as a finding — which is the one
+	 * way a stats page does real harm.
+	 */
+	@Test
+	public void aHandfulOfPatchesIsNotEnoughForAPercentile()
+	{
+		HarvestStatsStore store = newStore();
+
+		for (int patch = 0; patch < 4; patch++)
+		{
+			store.record(harvest(CompostTier.NONE, 4, true));
+		}
+
+		CropHarvestStats stats = onlyEntry(store);
+		assertTrue("the cumulative figure is still true", stats.getSurplus() != 0);
+		assertTrue("but there is nowhere to place it", !stats.hasLuckPercentile());
+	}
+
+	/**
+	 * A history recorded before the spread was captured gets no percentile, ever.
+	 *
+	 * <p>Those patches added to {@code harvests} and {@code predicted} without adding to the
+	 * variance, so the two totals describe different sets of patches and the z-score drawn from
+	 * them would be overstated rather than merely noisy. The mismatch between the counts is what
+	 * detects it, and there is nothing to migrate: the parameters those patches were harvested
+	 * under were never stored.
+	 */
+	@Test
+	public void anOlderHistoryIsNotScoredAsThoughItHadASpread()
+	{
+		config.put("harvestStats",
+			"{\"Potato|NONE\":{\"crop\":\"Potato\",\"compost\":\"NONE\",\"harvests\":40,"
+				+ "\"items\":360,\"predicted\":300.0,\"xp\":400.0,\"best\":12,\"worst\":5}}");
+
+		HarvestStatsStore store = newStore();
+		store.load();
+
+		CropHarvestStats stats = onlyEntry(store);
+		assertEquals("well past the floor on count alone", 40, stats.getHarvests());
+		assertEquals(0, stats.getVariancePatches());
+		assertTrue("and still not scoreable", !stats.hasLuckPercentile());
+		assertEquals("the cumulative surplus needs no spread and survives", 60.0,
+			stats.getSurplus(), 1e-9);
+	}
+
+	/** Mixing tiers is fine for the spread: they are simply patches with different parameters. */
+	@Test
+	public void theSpreadSumsAcrossCompostTiers()
+	{
+		HarvestStatsStore store = newStore();
+
+		store.record(harvest(CompostTier.NONE, 4, true));
+		store.record(harvest(CompostTier.ULTRACOMPOST, 12, true));
+
+		CropHarvestStats byCrop = store.getByCrop().get(0);
+		assertEquals(2, byCrop.getVariancePatches());
+		assertEquals(harvest(CompostTier.NONE, 4, true).getPredictedVariance()
+				+ harvest(CompostTier.ULTRACOMPOST, 12, true).getPredictedVariance(),
+			byCrop.getPredictedVariance(), 1e-9);
+	}
+
 	// ------------------------------------------------------------------- helpers
 
 	private HarvestStatsStore newStore()

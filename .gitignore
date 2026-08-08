@@ -12,3 +12,8 @@ hs_err_pid*.log
 # the WSL side's; see build.gradle.
 build-*/
 .gradle-*/
+
+__pycache__/
+
+# Machine-local Claude Code permissions; holds the maintainer's email in an allow rule.
+.claude/settings.local.json

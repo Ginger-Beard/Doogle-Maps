@@ -82,16 +82,21 @@ public class GuideTracker
 	/** The game's own chatbox, for the one thing worth saying there. See contractNote. */
 	private final net.runelite.client.chat.ChatMessageManager chat;
 
+	/** The item the current route uses, for the panel's "how you will leave" line. */
+	private final com.dooglemaps.bank.RouteItem routeItem;
+
 	@Inject
-	private GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
+	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
 		CompostSelectionStore compost, CarriedItems carried, PlayerLocation playerLocation,
 		LeprechaunStore leprechaun, BarbarianFarming barbarianFarming, BankContents bank,
 		PlayerHouse house, PlantingGroups groups, ProtectionSelectionStore protection,
 		com.dooglemaps.state.RunTypeStore runTypes, com.dooglemaps.bank.RunLoadout loadout,
 		ContractState contracts, com.dooglemaps.DoogleMapsConfig config,
-		net.runelite.client.chat.ChatMessageManager chat)
+		net.runelite.client.chat.ChatMessageManager chat,
+		com.dooglemaps.bank.RouteItem routeItem)
 	{
+		this.routeItem = routeItem;
 		this.chat = chat;
 		this.contracts = contracts;
 		this.config = config;
@@ -148,6 +153,10 @@ public class GuideTracker
 		allocations.clear();
 		retargetIfMoved();
 
+		// Before anything reads getRemaining(), so completion is judged against this tick's
+		// answer rather than last tick's.
+		reportIdlePatches();
+
 		List<GuideStep> steps = computeStepsHere();
 		List<RunStop> remaining = planner.getRemaining();
 		String destination = destinationName(remaining);
@@ -168,7 +177,8 @@ public class GuideTracker
 			planner.isActive() ? skipped : java.util.Collections.emptyList(),
 			planner.isActive() && planner.isAtBankLeg()
 				? planner.getSupplySources()
-				: java.util.Collections.emptySet());
+				: java.util.Collections.emptySet(),
+			planner.isActive() ? routeItem.currentName() : null);
 	}
 
 	/**
@@ -304,13 +314,14 @@ public class GuideTracker
 
 	private List<GuideStep> computeStepsHere()
 	{
-		// Cleared first, and every tick, because both are statements about the stop you are
-		// standing in. Every early return below is a case where there is no such stop — travelling,
-		// at the bank, not running — and leaving the last stop's answers in place would have the
-		// panel announcing a skipped patch two regions away, and the planner still holding a patch
-		// exempt from blocking a completion check it is no longer part of.
+		// Cleared first, and every tick, because it is a statement about the stop you are
+		// standing in. Every early return below is a case where there is no such stop —
+		// travelling, at the bank, not running — and leaving the last stop's words in place
+		// would have the panel announcing a skipped patch two regions away. The planner's
+		// exemptions are deliberately not cleared with it: those cover every stop and are
+		// rebuilt each tick by reportIdlePatches, so wiping them here would resurrect a stop
+		// that only completed because its patch was unworkable. See that method.
 		skipped = new ArrayList<>();
-		planner.setNothingToDo(java.util.Collections.emptySet());
 
 		List<GuideStep> steps = new ArrayList<>();
 		if (!planner.isActive() || planner.isAtBankLeg())
@@ -368,10 +379,9 @@ public class GuideTracker
 		// statements about the world, and a skip is a statement about the player.
 		steps.removeIf(step -> skippedSteps.contains(keyOf(step)));
 
-		// What this stop has nothing to offer for, told to the planner so it stops waiting on it
-		// and collected for the panel so the player is told rather than left wondering. Both are
-		// rebuilt from scratch here, every tick — see RunPlanner.setNothingToDo.
-		reportNothingToDo(stop, ordered);
+		// What this stop is passing over, in words for the panel. The planner's own exemptions
+		// are handled separately and for every stop — see reportIdlePatches.
+		announceSkips(stop, ordered);
 
 		appendLeprechaunErrands(steps, stop);
 		appendContractErrands(steps, stop);
@@ -410,7 +420,7 @@ public class GuideTracker
 	 * contract has two ways out that do not involve being stuck: switch it off in the settings, or
 	 * press Skip step.
 	 *
-	 * <p>Completion is deliberately not filtered by this. {@link #reportNothingToDo} still sees
+	 * <p>Completion is deliberately not filtered by this. {@link #reportIdlePatches} still sees
 	 * every patch, so a stop cannot be reported finished merely because its work is being withheld.
 	 */
 	private List<FarmPatch> contractComesFirst(RunStop stop, List<FarmPatch> ordered)
@@ -449,24 +459,65 @@ public class GuideTracker
 	}
 
 	/**
-	 * Works out which patches here cannot be acted on, and why.
+	 * Tells the planner which patches, at every stop, the guide has no step for.
 	 *
-	 * <h2>The run skips them, and says so</h2>
+	 * <h2>The run skips them — at every stop, not just this one</h2>
 	 *
 	 * A patch with no seed allocated is genuinely stuck: it wants planting, the run has nothing to
 	 * put in it, and no amount of standing there changes that. Before this the stop simply never
 	 * finished and the run sat with no route and no instruction, which reads as the plugin having
-	 * frozen. Skipping it silently would be barely better — you would reach the end of a run and
-	 * find a patch untouched with no idea why.
+	 * frozen.
 	 *
-	 * <p>So both halves happen: the planner is told to stop waiting, and {@link GuideStatus#skipped}
-	 * carries a line for the on-screen panel. Only the reasons worth reading are worded — a patch
-	 * that is merely growing produces no steps either, and saying "skipping the Catherby herb patch"
-	 * about a crop that is doing exactly what it should would be noise.
+	 * <h2>Why every stop, every tick</h2>
+	 *
+	 * The first version of this ran only for the stop being stood in, and cleared the set the
+	 * moment the player left — on the reasoning that it was a statement about "here". But the
+	 * planner asks {@code isComplete} of <i>every</i> stop, every tick, and a stop that finished
+	 * only because its patch was exempt became unfinished again the instant its exemption was
+	 * wiped. The run would then route the player straight back to a patch it had already announced
+	 * it was skipping, forever, and inflate the stops-remaining count on the way.
+	 *
+	 * <p>The predicate never needed the player to be present: {@link #outstandingFor} is a pure
+	 * function of the patch stores, the allocation and what is carried or banked. So it is simply
+	 * asked of every stop each tick — the same derived-not-stored rule {@code GuidePlan} states
+	 * for itself, and the reason a patch that becomes doable again (the missing seed withdrawn,
+	 * say) starts blocking completion on the very next tick with nothing to invalidate.
 	 */
-	private void reportNothingToDo(RunStop stop, List<FarmPatch> ordered)
+	private void reportIdlePatches()
 	{
+		if (!planner.isActive())
+		{
+			planner.setNothingToDo(java.util.Collections.emptySet());
+			return;
+		}
+
 		java.util.Set<String> idle = new java.util.LinkedHashSet<>();
+		for (RunStop stop : planner.getStops())
+		{
+			for (FarmPatch patch : stop.getPatches())
+			{
+				if (outstandingFor(patch, stop).isEmpty())
+				{
+					idle.add(patch.getKey());
+				}
+			}
+		}
+		planner.setNothingToDo(idle);
+	}
+
+	/**
+	 * Puts the skips worth explaining into words for the on-screen panel.
+	 *
+	 * <p>Skipping silently would be barely better than not skipping — you would reach the end of
+	 * a run and find a patch untouched with no idea why. Only the reasons worth reading are
+	 * worded: a patch that is merely growing produces no steps either, and saying "skipping the
+	 * Catherby herb patch" about a crop doing exactly what it should would be noise.
+	 *
+	 * <p>Scoped to the stop being stood in, unlike {@link #reportIdlePatches} — the words are for
+	 * the player's surroundings; the exemptions are for the whole run.
+	 */
+	private void announceSkips(RunStop stop, List<FarmPatch> ordered)
+	{
 		List<String> reasons = new ArrayList<>();
 
 		for (FarmPatch patch : ordered)
@@ -475,7 +526,6 @@ public class GuideTracker
 			{
 				continue;
 			}
-			idle.add(patch.getKey());
 
 			// Worth a word only when the patch is waiting on something the player does not have.
 			// An empty patch with no seed is the case that strands runs; anything else with no
@@ -489,7 +539,6 @@ public class GuideTracker
 			}
 		}
 
-		planner.setNothingToDo(idle);
 		skipped = reasons;
 	}
 
@@ -1100,7 +1149,8 @@ public class GuideTracker
 			if (payment != null && protection.isProtecting(group, seed))
 			{
 				payments.put(payment.getItemID(),
-					bank.getCount(payment.getItemID()) + carried.getCount(payment.getItemID()));
+					bank.getCount(payment.getItemID())
+						+ carried.getCountIncludingNoted(payment.getItemID()));
 			}
 		}
 

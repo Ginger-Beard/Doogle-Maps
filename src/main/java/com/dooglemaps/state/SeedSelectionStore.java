@@ -79,7 +79,7 @@ public class SeedSelectionStore
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private SeedSelectionStore(ConfigManager configManager, Gson gson, ContractState contracts)
+	SeedSelectionStore(ConfigManager configManager, Gson gson, ContractState contracts)
 	{
 		this.configManager = configManager;
 		this.gson = gson;

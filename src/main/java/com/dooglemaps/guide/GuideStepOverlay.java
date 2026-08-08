@@ -64,7 +64,7 @@ public class GuideStepOverlay extends OverlayPanel
 	private final DoogleMapsConfig config;
 
 	@Inject
-	private GuideStepOverlay(GuideTracker tracker, DoogleMapsConfig config)
+	GuideStepOverlay(GuideTracker tracker, DoogleMapsConfig config)
 	{
 		this.tracker = tracker;
 		this.config = config;
@@ -120,21 +120,21 @@ public class GuideStepOverlay extends OverlayPanel
 	}
 
 	/**
-	 * Where you are, then what this panel is.
+	 * What this panel is, then where you are.
 	 *
-	 * <p>The place first. This title is the only line that persists across every step at a stop,
-	 * so it is the one answering "where am I in this run" — and it used to read
-	 * {@code Farm run (Catherby)}, which puts that answer in a parenthesis at the end. A
-	 * parenthesis is a label; the dash makes it a phrase, and it leads with the half worth reading.
+	 * <p>The panel's name first, by owner request — the title then reads the same at every
+	 * stop with the location varying behind it, rather than appearing to be a different
+	 * panel at each place. (An earlier pass had the place first, and before that
+	 * {@code Farm run (Catherby)}; the constant part leading is the arrangement that stuck.)
 	 *
-	 * <p>Only while at a stop. Between them the location is the destination, which the first line
-	 * already gives — saying it twice would just be noise.
+	 * <p>The location only while at a stop. Between them it is the destination, which the
+	 * first line already gives — saying it twice would just be noise.
 	 */
 	private static String title(GuideStatus status)
 	{
 		return status.getLocation() == null
 			? "Farm run"
-			: status.getLocation() + " - farm run";
+			: "Farm run - " + status.getLocation();
 	}
 
 	/**
@@ -315,16 +315,25 @@ public class GuideStepOverlay extends OverlayPanel
 	{
 		if (status.isAtBankLeg() && !status.getSupplies().isEmpty())
 		{
-			// "Withdraw:" rather than "Collect your supplies." — the list of supplies is the very
-			// next thing on the panel, so the sentence was naming its own object one line early.
-			// A heading over a list reads as what it is, and is three words shorter.
-			line("Withdraw:", java.awt.Color.WHITE);
-			// What to take, which used to be a block of text in the sidebar. It belongs with the
-			// instruction to go and get it rather than on a panel you are not looking at while
-			// standing at a bank.
+			// No heading of this panel's own: the list arrives with its containers as headings —
+			// "From the bank:", "From the seed vault:" — and "Withdraw:" above those was a
+			// heading over headings. What to take belongs with the instruction to go and get it
+			// rather than on a sidebar panel you are not looking at while standing at a bank.
 			for (String supply : status.getSupplies())
 			{
-				line(supply, java.awt.Color.LIGHT_GRAY);
+				// Item rows hang under their container heading; the headings themselves read as
+				// instructions, so they get the instruction colour.
+				line(supply, supply.startsWith("- ")
+					? java.awt.Color.LIGHT_GRAY
+					: java.awt.Color.WHITE);
+			}
+
+			// The router's own pick for leaving, in the same cyan the bank marks it with.
+			// Advice, not a requirement - see bank.RouteItem - which is why it hangs under
+			// the list rather than joining it.
+			if (status.getRouteItem() != null)
+			{
+				line("Route: " + status.getRouteItem(), java.awt.Color.CYAN);
 			}
 		}
 		else if (status.isAtBankLeg())

@@ -150,7 +150,7 @@ public class ProtectedPatches
 	private static final int SLOW_INTERVAL = 100;
 
 	@Inject
-	private ProtectedPatches(ConfigManager configManager)
+	ProtectedPatches(ConfigManager configManager)
 	{
 		this.configManager = configManager;
 	}

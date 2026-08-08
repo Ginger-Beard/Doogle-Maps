@@ -164,6 +164,9 @@ public class PanelRenderTest
 			resolver, seeds, selection, runPlanner, bonuses, runTypes,
 			construct(com.dooglemaps.state.CompostSelectionStore.class, configManager, gson),
 			stockedHarvestStats(configManager, gson),
+			Mockito.mock(com.dooglemaps.validate.HarvestHistory.class),
+			Mockito.mock(com.dooglemaps.validate.DiseaseStatsStore.class),
+			Mockito.mock(com.dooglemaps.data.ItemPrices.class),
 			// A real store over the mocked config, so the render exercises the same
 			// defaults-on-first-read path the client does rather than a stub that always agrees.
 			construct(PanelLayoutStore.class, configManager),
@@ -175,7 +178,7 @@ public class PanelRenderTest
 				availability,
 				construct(com.dooglemaps.state.ContractState.class, configManager)),
 			construct(com.dooglemaps.state.ProtectionSelectionStore.class, configManager, gson),
-			construct(com.dooglemaps.bank.BankContents.class),
+			construct(com.dooglemaps.bank.BankContents.class, configManager, gson),
 			construct(com.dooglemaps.guide.CarriedItems.class, Mockito.mock(net.runelite.api.Client.class)),
 			construct(com.dooglemaps.data.ItemNames.class),
 			construct(com.dooglemaps.state.ContractState.class, configManager),

@@ -2,6 +2,7 @@ package com.dooglemaps.validate;
 
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropXp;
+import com.dooglemaps.data.CropYield;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.timer.CropYieldModel;
 import com.dooglemaps.data.FarmPatch;
@@ -181,6 +182,28 @@ public class HarvestRecord
 	{
 		Seed seed = Seed.forProduce(produce);
 		return seed == null ? 0 : CropYieldModel.expected(seed, farmingLevel, compost, bonuses);
+	}
+
+	/**
+	 * How widely this patch could have scattered around its prediction, as a variance.
+	 *
+	 * <p>Recorded alongside the prediction because the two together are what make a lifetime
+	 * total interpretable: summed over a season's patches they give the mean <i>and</i> the
+	 * spread, and "you are eighteen herbs up" only means something against the second.
+	 *
+	 * <p>Asked of {@link CropYield} rather than {@link CropYieldModel}, and zero where there is
+	 * none. Only the harvest-lives family has a distribution the plugin can name; a limpwurt's
+	 * level roll and the wiki's measured averages have spreads that are respectively unmodelled
+	 * and unknown, and inventing one for them would put a confident percentile on a number that
+	 * cannot support it. The store keeps its own count of the patches this answered for, so a
+	 * crop that cannot be scored simply is not.
+	 */
+	public double getPredictedVariance()
+	{
+		CropYield yield = CropYield.forProduce(produce);
+		return yield == null
+			? 0
+			: YieldEstimate.harvestVariance(yield, farmingLevel, getLives(), bonuses);
 	}
 
 	/**

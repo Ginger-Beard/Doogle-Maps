@@ -1,5 +1,8 @@
 package com.dooglemaps.bank;
 
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
+import java.lang.reflect.Type;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -11,6 +14,7 @@ import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.events.ItemContainerChanged;
 import net.runelite.api.gameval.InventoryID;
+import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.Subscribe;
 
 /**
@@ -20,13 +24,32 @@ import net.runelite.client.eventbus.Subscribe;
  * throws away everything that is not a seed. This keeps the rest — one pass over the same
  * event, no extra work when the bank opens.
  *
- * <p>Not persisted, deliberately. Seed counts are cached across sessions because the panel
- * shows them when you are nowhere near a bank; this only matters while you are standing at
- * one, and a remembered bank is a bank that can be wrong.
+ * <h2>Persisted per profile, which reverses an earlier decision</h2>
+ *
+ * This class used to keep nothing across sessions, on the argument that a remembered bank is a
+ * bank that can be wrong. What that argument missed is who reads it and <b>when</b>: the
+ * loadout, the withdraw list, the slot counts and the bank filter are all consumed at the start
+ * of a session, before any bank has been opened. With nothing remembered, every payment and
+ * tool read as unknown, the protection budget was zero, and a protected seed was allocated
+ * <b>no patches at all</b> — so the run's own yew vanished from the list, "to withdraw" was
+ * empty, and the filter narrowed the bank to a set missing exactly the things the trip was
+ * for. All of it sprang to life the moment a bank was opened, which is the reported shape:
+ * <i>"doesn't work on first load; the list doesn't show up until I open the bank."</i>
+ *
+ * <p>The seed store crossed this same bridge long ago and for the same reason — counts are
+ * shown when you are nowhere near a bank. The staleness risk is the one already accepted
+ * there: a remembered bank is corrected wholesale the moment the real one is read, and
+ * {@code Need.UNKNOWN} still covers an account whose bank has genuinely never been seen.
  */
 @Singleton
-public class BankContents
+public class BankContents extends com.dooglemaps.state.ProfileJsonStore
 {
+	private static final String CONTENTS_KEY = "bankContents";
+
+	private static final Type COUNT_MAP_TYPE = new TypeToken<HashMap<Integer, Integer>>()
+	{
+	}.getType();
+
 	private final Map<Integer, Integer> counts = new HashMap<>();
 	private boolean seen;
 
@@ -45,8 +68,9 @@ public class BankContents
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
-	private BankContents()
+	BankContents(ConfigManager configManager, Gson gson)
 	{
+		super(configManager, gson, CONTENTS_KEY);
 	}
 
 	public void addChangeListener(Runnable listener)
@@ -95,6 +119,13 @@ public class BankContents
 			counts.clear();
 			counts.putAll(incoming);
 			seen = true;
+
+			if (changed)
+			{
+				// On a real change only, like the notification: a bank fires this event for
+				// every deposit, and the write is what makes next session start informed.
+				save();
+			}
 		}
 
 		// Only on a real change. A bank fires this event for every deposit and withdrawal, and a
@@ -133,7 +164,7 @@ public class BankContents
 	}
 
 	/**
-	 * Whether a bank has been read this session.
+	 * Whether this profile's bank has ever been read — this session, or a previous one.
 	 *
 	 * <p>Worth asking before drawing conclusions from an empty one: "your bank has no Ardougne
 	 * cloak" and "we have not looked in your bank" deserve different answers.
@@ -143,6 +174,7 @@ public class BankContents
 		return seen;
 	}
 
+	/** Empties the in-memory side, for a profile switch. The stored copy is load()'s to restore. */
 	public void reset()
 	{
 		synchronized (this)
@@ -150,6 +182,47 @@ public class BankContents
 			counts.clear();
 			seen = false;
 		}
+		for (Runnable listener : changeListeners)
+		{
+			listener.run();
+		}
+	}
+
+	@Override
+	protected void resetForLoad()
+	{
+		counts.clear();
+		seen = false;
+	}
+
+	@Override
+	protected void applyJson(String json)
+	{
+		Map<Integer, Integer> loaded = gson.fromJson(json, COUNT_MAP_TYPE);
+		if (loaded != null)
+		{
+			loaded.forEach((id, quantity) ->
+			{
+				if (id != null && quantity != null && id > 0 && quantity > 0)
+				{
+					counts.put(id, quantity);
+				}
+			});
+		}
+		// A stored blob at all — even an empty bank's "{}" — means a bank was read at some
+		// point, and that fact is half of what this class answers.
+		seen = true;
+	}
+
+	@Override
+	protected Object serialized()
+	{
+		return counts;
+	}
+
+	@Override
+	protected void loaded()
+	{
 		for (Runnable listener : changeListeners)
 		{
 			listener.run();

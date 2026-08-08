@@ -264,6 +264,38 @@ public final class BankLayout
 		return layout;
 	}
 
+	/**
+	 * Puts the route's own item in slot A1, wherever the map had it.
+	 *
+	 * <p>Slot one is the one place every eye passes first, and the route item is the one thing
+	 * the player is about to click on the way out — Shortest Path picked it, so it outranks
+	 * the map's regions for that single slot. Whatever the map had there moves to the route
+	 * item's old slot when it had one, and to the overflow below the grid when it did not:
+	 * a swap, never a shift, so the rest of the map stays exactly where it was drawn.
+	 *
+	 * <p>Skipped when the item is not in the bank ({@code banked} says): a reservation for an
+	 * absent item draws a faded stand-in, and slot one is the worst place for a ghost.
+	 */
+	public static void pinFirst(int[] layout, int itemId, Set<Integer> banked)
+	{
+		if (itemId <= 0 || layout.length == 0 || layout[0] == itemId
+			|| (banked != null && !banked.contains(itemId)))
+		{
+			return;
+		}
+
+		for (int i = 1; i < layout.length; i++)
+		{
+			if (layout[i] == itemId)
+			{
+				layout[i] = layout[0];
+				layout[0] = itemId;
+				return;
+			}
+		}
+		layout[0] = itemId;
+	}
+
 	/** Every slot each letter claims, in reading order. */
 	private static Map<Character, List<Integer>> regionsIn(String map)
 	{

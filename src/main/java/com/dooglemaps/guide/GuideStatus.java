@@ -23,7 +23,7 @@ public class GuideStatus
 	private static final GuideStatus IDLE =
 		new GuideStatus(Collections.emptyList(), false, false, 0, Collections.emptyList(), null,
 			null, null, Collections.emptyList(), null, Collections.emptyList(),
-			Collections.emptySet());
+			Collections.emptySet(), null);
 
 	/** Outstanding steps at the stop you are standing in. Empty while travelling. */
 	List<GuideStep> steps;
@@ -119,6 +119,16 @@ public class GuideStatus
 	 * as long as {@code GuideOverlay.marks} tried to narrow a two-container errand down to one.
 	 */
 	java.util.Set<com.dooglemaps.state.SeedSource> supplySources;
+
+	/**
+	 * The item the route Shortest Path is drawing actually uses, by name, or null.
+	 *
+	 * <p>The router's own recommendation, surfaced and never required — see
+	 * {@code bank.RouteItem}. Named here so the supply leg can say "and this is how you will
+	 * leave" beside the withdraw list, in the same cyan the bank marks it with.
+	 */
+	@javax.annotation.Nullable
+	String routeItem;
 
 	/** Nothing happening: no run, or no client. */
 	public static GuideStatus idle()

@@ -137,11 +137,14 @@ public class DoogleMapsPanel extends PluginPanel
 	private final MaterialTabGroup sectionTabs = new MaterialTabGroup(sectionDisplay);
 
 	@Inject
-	private DoogleMapsPanel(PatchStateStore stateStore, AvailabilityProfile availability,
+	DoogleMapsPanel(PatchStateStore stateStore, AvailabilityProfile availability,
 		GrowthTimer growthTimer, ItemManager itemManager, DoogleMapsConfig config,
 		PlantableResolver resolver, SeedInventoryStore seeds, SeedSelectionStore selection,
 		RunPlanner runPlanner, FarmingBonusStore bonuses, RunTypeStore runTypes,
 		CompostSelectionStore compost, HarvestStatsStore harvestStats,
+		com.dooglemaps.validate.HarvestHistory harvestHistory,
+		com.dooglemaps.validate.DiseaseStatsStore diseaseStats,
+		com.dooglemaps.data.ItemPrices itemPrices,
 		PanelLayoutStore layout, PlantingGroups groups,
 		com.dooglemaps.state.ProtectionSelectionStore protection,
 		com.dooglemaps.bank.BankContents bankContents,
@@ -171,7 +174,8 @@ public class DoogleMapsPanel extends PluginPanel
 		this.contracts = contracts;
 		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems,
 			runPlanner, selection, seeds, runTypes, bonuses, compost, config, guideTracker);
-		this.statsPanel = new HarvestStatsPanel(harvestStats);
+		this.statsPanel = new HarvestStatsPanel(harvestStats, harvestHistory, diseaseStats, seeds,
+			availability, compost, bonuses, itemPrices);
 
 		setLayout(new BorderLayout(0, 4));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);

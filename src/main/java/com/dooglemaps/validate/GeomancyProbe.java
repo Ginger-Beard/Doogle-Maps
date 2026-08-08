@@ -97,7 +97,7 @@ public class GeomancyProbe
 	private int lastFingerprint;
 
 	@Inject
-	private GeomancyProbe(Client client, DoogleMapsConfig config, PatchStateStore patches)
+	GeomancyProbe(Client client, DoogleMapsConfig config, PatchStateStore patches)
 	{
 		this.client = client;
 		this.config = config;
