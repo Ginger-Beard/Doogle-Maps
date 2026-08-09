@@ -227,10 +227,18 @@ class RunPanel extends JPanel
 		skipStep.setText("Skip step");
 		skipStep.setToolTipText(Tooltips.text("Pass over what the guide is currently asking for. "
 			+ "The rest of that patch's work still appears - waving past a payment does not skip "
-			+ "the planting."));
+			+ "the planting. While travelling it skips the destination instead, for the rest of "
+			+ "this run."));
 		skipStep.addActionListener(e ->
 		{
-			guideTracker.skipCurrentStep();
+			if (guideTracker.hasCurrentStep())
+			{
+				guideTracker.skipCurrentStep();
+			}
+			else
+			{
+				guideTracker.skipTravelDestination();
+			}
 			refresh();
 		});
 
@@ -307,7 +315,9 @@ class RunPanel extends JPanel
 	{
 		com.dooglemaps.guide.GuideStep step =
 			planner.isActive() ? guideTracker.getCurrentStep() : null;
-		skipStep.setEnabled(step != null);
+		// Travelling has no step, but it still has something to decline - the journey. The
+		// button stays live and skips the destination for the round; see skipTravelDestination.
+		skipStep.setEnabled(step != null || guideTracker.canSkipTravel());
 
 		// Only while there is one. A "Current step:" label with nothing after it, sitting there for
 		// the whole of a walk between stops, is a line that trains you to stop reading it.

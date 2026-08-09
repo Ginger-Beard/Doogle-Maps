@@ -121,7 +121,8 @@ public class RunLoadoutTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 
 		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
 		bank = construct(BankContents.class, configManager, gson);

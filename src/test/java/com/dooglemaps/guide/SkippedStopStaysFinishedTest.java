@@ -145,7 +145,8 @@ public class SkippedStopStaysFinishedTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			groups,
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			runOptions);
+			runOptions,
+			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 
 		tracker = trackerWith(planner, stateStore, timer, playerLocation, selection, seeds,
 			groups, compost, runOptions, client);

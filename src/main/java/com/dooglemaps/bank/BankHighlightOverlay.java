@@ -227,7 +227,9 @@ public class BankHighlightOverlay extends Overlay
 
 			int crop = composition.getLinkedNoteId();
 			com.dooglemaps.data.Produce produce = com.dooglemaps.data.Produce.getByItemID(crop);
-			if (produce == null || !produce.isNotable() || keep.contains(crop))
+			boolean notable = produce != null && produce.isNotable()
+				|| com.dooglemaps.data.NotableHarvests.isNotable(crop);
+			if (!notable || keep.contains(crop))
 			{
 				continue;
 			}

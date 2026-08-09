@@ -64,6 +64,7 @@ public class RunPlannerTest
 	private net.runelite.api.Client client;
 	private com.dooglemaps.state.PlayerLocation playerLocation;
 	private com.dooglemaps.state.RunTypeStore runOptions;
+	private com.dooglemaps.DoogleMapsConfig pluginConfig;
 
 	/**
 	 * The real store rather than a mock, because {@code SeedSelectionStore} reads it to derive a
@@ -147,7 +148,8 @@ public class RunPlannerTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			groups = Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			runOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+			runOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			pluginConfig = Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 	}
 
 	/**
@@ -800,6 +802,81 @@ public class RunPlannerTest
 
 		assertEquals("ready, empty and dead all want attention", 3, stops.size());
 		assertTrue(planner.isActive());
+	}
+
+	/**
+	 * Skipping a travel destination drops the whole stop, for this round only.
+	 *
+	 * <p>The travel leg's escape hatch: a step can be waved past because it exists as a step,
+	 * but "travel to Harmony" is a route, and there was no way to say no to it — the run kept
+	 * routing there however firmly the player was not going. Reported from play. The next
+	 * round offers the place again, which is why the set clears with the stops.
+	 */
+	@Test
+	public void aSkippedRegionIsLeftOutUntilTheNextRun()
+	{
+		record(CATHERBY_HERB, 3);
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(CATHERBY_HERB), true);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertEquals(2, planner.getRemaining().size());
+
+		int catherby = patch(CATHERBY_HERB).getRegion().getRegionId();
+		planner.skipRegion(catherby);
+
+		assertTrue("the skipped region is off the route",
+			planner.getRemaining().stream()
+				.noneMatch(stop -> stop.getRegion().getRegionId() == catherby));
+		assertTrue("the checklist agrees with the route",
+			planner.getRemainingPatches().stream()
+				.noneMatch(p -> p.getRegion().getRegionId() == catherby));
+		assertTrue("the rest of the run carries on", planner.isActive());
+
+		planner.stop();
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertEquals("the next round offers the place again",
+			2, planner.getRemaining().size());
+	}
+
+	/**
+	 * With the hold-clusters setting on, a shared plot waits for its slowest selected patch.
+	 *
+	 * <p>Falador's plot is the fixture: herb ready, allotment still growing, both types in the
+	 * run — no trip. The scoping is the interesting half, pinned by the second act: with only
+	 * herbs ticked, the growing allotment is not a selected sibling and holds nothing.
+	 */
+	@Test
+	public void aSharedPlotWaitsForItsSlowestSelectedPatch()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+
+		record(FALADOR_HERB, 43);      // ready to harvest
+		record("12083.4771", 7);       // allotment beside it, still growing
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch("12083.4771"), true);
+
+		assertTrue("the flower-first trip is the trip this setting exists to skip",
+			planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.ALLOTMENT))
+				.isEmpty());
+
+		assertEquals("with only herbs ticked, the growing allotment holds nothing",
+			1, planner.start(EnumSet.of(PatchImplementation.HERB)).size());
+	}
+
+	/** The same plot, setting off: the ready herb gets its trip exactly as before. */
+	@Test
+	public void aSharedPlotIsNotHeldByDefault()
+	{
+		record(FALADOR_HERB, 43);
+		record("12083.4771", 7);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch("12083.4771"), true);
+
+		assertEquals(1,
+			planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.ALLOTMENT))
+				.size());
 	}
 
 	@Test

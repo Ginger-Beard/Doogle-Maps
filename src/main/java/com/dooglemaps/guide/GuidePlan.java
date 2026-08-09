@@ -357,8 +357,12 @@ public final class GuidePlan
 			return;
 		}
 
+		// Including noted, which is how payments travel: the farmer takes them noted, the
+		// loadout counts them noted (see RunLoadout), and counting only loose ones here
+		// suppressed the step for the player who had brought exactly what was asked.
 		ProtectionPayment payment = ProtectionPayment.forProduce(projection.getProduce());
-		if (payment == null || carried.getCount(payment.getItemID()) < payment.getQuantity())
+		if (payment == null
+			|| carried.getCountIncludingNoted(payment.getItemID()) < payment.getQuantity())
 		{
 			return;
 		}
@@ -490,7 +494,7 @@ public final class GuidePlan
 	 * closed one when neither is found is harmless: the step is only reached when the seeds are
 	 * known to be in a box, so one of them is there.
 	 */
-	private static int seedBoxCarried(CarriedItems carried)
+	static int seedBoxCarried(CarriedItems carried)
 	{
 		return carried.has(ItemID.SEED_BOX_OPEN) ? ItemID.SEED_BOX_OPEN : ItemID.SEED_BOX;
 	}
@@ -502,7 +506,7 @@ public final class GuidePlan
 	 * cannot tell an acorn from the sapling it became — the run carries the sapling, so tree
 	 * rows are simply left out rather than guessed at.
 	 */
-	private static boolean anyLooseSeeds(SeedInventoryStore seeds)
+	static boolean anyLooseSeeds(SeedInventoryStore seeds)
 	{
 		for (Seed seed : Seed.values())
 		{

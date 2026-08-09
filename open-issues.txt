@@ -1,0 +1,73 @@
+Locations settings isn't getting respected, trying to navigate me to Harmony island which I have toggled off. Also can't skip this step for some reason, when you're on a navigation step like this and the player click skip step, we should skip that location entirely until the next round
+> RESOLVED (both halves).
+> - The Locations toggles were display-only by design (they hid rows but AvailabilityProfile,
+>   which runs are built from, never saw them — and hiding a location also hid the per-patch
+>   switches that routing DID obey, so there was no visible way to stop the trip). The toggle
+>   now feeds AvailabilityProfile as a location filter: a hidden location is excluded from
+>   routing, the loadout and the counts. See Locations.java / AvailabilityProfile.isAvailable.
+> - Travel legs had no step to skip (skip acted on GuideStep, travel is a TravelHint). The
+>   Skip button now stays enabled while travelling and calls skipTravelDestination(), which
+>   drops that whole region from the run via RunPlanner.skipRegion. Cleared on run stop/start,
+>   so the location comes back next round. Tests added.
+
+after planting a tree (contract), I am not prompted to pay for payment even though I have it, the payment NPC is not highlighted at all, and neither are the text line items to accept/pay in the chat dialog (if you can use payment on the npc to pay, idk if you can, but that would be cool too, research that)
+> RESOLVED. Three stacked bugs:
+> 1. The pay step was structurally unreachable: the protection question was asked of the seed
+>    ALLOCATION, which is null for any occupied patch, so protecting=false for every crop in
+>    the ground. Now derived from the crop actually planted (Seed.forProduce), and suppressed
+>    once the farmer has been paid (snapshot.isPatchProtected).
+> 2. The step required UNNOTED payment in the pack (carried.getCount); payments travel noted.
+>    Now getCountIncludingNoted, matching the loadout. Inventory highlight also matches the
+>    noted form now.
+> 3. A just-planted patch stopped being "actionable", so the stop completed under your feet
+>    and the guide walked off before the payment. RunPlanner.isActionable now keeps a growing,
+>    protectable, protection-selected, unpaid patch alive.
+> Plus: the farmer's chat dialogue options ("Pay (north patch)" / patch lines / "Yes") are now
+> outlined while the PAY_FARMER step is current (GuideInventoryOverlay.highlightPayOptions).
+> The NPC outline itself already worked — it just never had a step to fire on.
+> Research: you canNOT use-item the payment on the gardener; the fast path is the right-click
+> "Pay" option on the NPC (wiki: gardeners have Talk-to / Pay / Trade), which the highlighted
+> NPC + dialogue rows now walk you through. Noted payments are accepted.
+
+roots can be noted by the way, from tree dig ups, I don't know if we flag on that today, the tree patch I just harvested only returned 1 root, so our logic might skip it since a noted version takes up the same amount of inventory space when its only 1x
+> RESOLVED. There was no quantity threshold — roots simply weren't modelled at all: Produce
+> (generated from RuneLite core) carries only the logs for tree crops, so Produce.getByItemID
+> returned null for roots and the noting logic never saw them. New hand-written
+> data/NotableHarvests table (oak/willow/maple/yew/magic roots); the note-before-leaving step
+> and the bank deposit highlight now include them. Even a 1x root gets the note step: noted
+> roots stack across the run's later tree patches, loose ones don't.
+> FOLLOW-UP from review: grimy herbs had the same hole — Produce's herb rows carry the CLEAN
+> herb ids, harvests are grimy — so loose grimy herbs (sack full, closed, or not owned) never
+> triggered the note step either. Same table now covers all fifteen grimy farm herbs; no sack
+> check needed, since an open sack swallows herbs before they reach the pack and loose ones
+> already mean the sack can't take them.
+
+can we do menu item swapping on fill/empty on the seedbox so the user only has to left click?
+> RESOLVED. New guide/GuideMenuSwap (born SeedBoxSwap): while the current step is "Fill the seed box" or "Empty
+> your seed box", that option becomes the box's left-click (entries reordered on PostMenuSort,
+> never renamed — SeedCapture matches the option strings for seed accounting). Step-driven, so
+> Fill and Empty each win at the right moment; behind a new "Left-click the seed box step"
+> toggle (on by default). This was parked in docs/TODO.md pending a compliance decision; it's
+> the same side of the line as core's Menu Entry Swapper (reorders, never clicks).
+
+"via Teleport to house via Catherby Portal" - don't have a catherby portal, is that a SP config issue I have? or a bug we have, the nexus should highlight here and the catherby teleport
+> RESOLVED (our half) / SP data-model limitation (the wording).
+> - The string is Shortest Path's own displayInfo, passed through verbatim. SP's POH portal
+>   data (teleportation_portals_poh.tsv) has no per-portal requirements and NO nexus entries
+>   at all — with "POH teleportation portals" on, SP assumes every portal room exists and
+>   words the hop as the portal. Keep the setting on: the route through the house is still
+>   right for a nexus owner, SP just names furniture it imagines.
+> - Our nexus highlight was already correct (furniture matched by what's actually built in
+>   your house + destination, so "Catherby" lights the Portal Nexus and its Catherby row).
+>   The real bug on our side: while you were ALREADY inside the house, the route still
+>   resolved to the house tablet/spell and kept it highlighted, competing with the nexus.
+>   travelHint now suppresses house-teleport hints when house.isInside().
+
+I think I found a bit of a bug in SP, the checkbox POH mounted items assumes you have all of them, I had that checked so digsite pendant would highlight, but now for hosidius its trying to take me via mounted xerics, which I don't have. Probably need to open a PR to fix that one.
+> CONFIRMED upstream, nothing to fix in this repo. Skretzo/shortest-path
+> PathfinderConfig.checkJewelleryBoxTier: one boolean (usePohMountedItems) covers mounted
+> Glory, Xeric's Talisman, Digsite pendant AND Mythical cape together, keyed off objectInfo
+> strings in teleportation_boxes.tsv. A PR would split it into per-item settings (the varbits
+> for which mount is built aren't exposed outside the house, so per-item checkboxes like the
+> jewellery box tier dropdown is the practical shape). Interim workaround: leave it unchecked
+> and accept losing the digsite mount hint, or keep it and ignore the xeric's leg.

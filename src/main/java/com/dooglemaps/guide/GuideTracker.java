@@ -4,6 +4,7 @@ import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.CropState;
+import com.dooglemaps.data.NotableHarvests;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.bank.BankContents;
@@ -219,7 +220,9 @@ public class GuideTracker
 	 * room. When that is true the route continues outside, so the journey's real start is
 	 * the front door, and the router is asked again with exactly that start. When a hop
 	 * <i>does</i> match the furniture — a nexus, a respawn portal that really is built —
-	 * the route is followable from here and the drawn path is left alone.
+	 * the route is followable from here and the drawn path is left alone... unless the
+	 * front door opens into the destination's own neighbourhood, where walking out is the
+	 * journey whatever the furniture offers; see the note at the check itself.
 	 *
 	 * <p>Once per visit, because the reroute changes the transports it is judged by:
 	 * the fresh answer, planned from outside, may name overworld hops that happen to match
@@ -246,23 +249,36 @@ public class GuideTracker
 			return;
 		}
 
+		WorldPoint door = house.frontDoor();
+
 		boolean served = !house.matchingFurniture(name ->
 			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)))
 			.isEmpty();
-		if (served)
+
+		// Serving furniture normally settles it — the route is followable from this room and
+		// the drawn path is left alone. Not when the front door opens into the destination's
+		// own neighbourhood: a Prifddinas house *is* the way to the Prifddinas patches, and the
+		// nexus "serving" the hop — by carrying the same place name in its wiki destination
+		// list — kept the path drawn from a respawn portal the player has not built. Reported
+		// from play, at the same Prifddinas house as the fallback itself. Walking out is the
+		// journey there, so the reroute wins; the fresh walk-only answer also clears the
+		// transports, which is what hands the overlay to the exit portal.
+		RunStop heading = destinationStop(planner.getRemaining());
+		boolean doorIsTheWay = door != null && heading != null
+			&& regionsTouch(door.getRegionID(), heading.getRegion().getRegionId());
+		if (served && !doorIsTheWay)
 		{
 			houseStartPosted = true;
 			return;
 		}
 
-		WorldPoint door = house.frontDoor();
 		if (door == null)
 		{
 			return;
 		}
 
 		houseStartPosted = true;
-		log.info("None of the route's hops {} matched the furniture here - redrawing the "
+		log.info("The route's hops {} continue outside this house - redrawing the "
 			+ "path from the front door at {}", transports, door);
 		planner.retarget(door);
 	}
@@ -326,6 +342,7 @@ public class GuideTracker
 		lastRegion = -1;
 		loggedErrandsAt = null;
 		announcedBlock = null;
+		lastNamedStop = null;
 		skippedSteps.clear();
 	}
 
@@ -376,6 +393,46 @@ public class GuideTracker
 	public boolean hasCurrentStep()
 	{
 		return getCurrentStep() != null;
+	}
+
+	/**
+	 * Whether the skip button has a travel leg to act on instead of a step.
+	 *
+	 * <p>Travelling has no step — the instruction is the route — so the escape hatch used to
+	 * switch off exactly when the thing being asked was a journey the player had reasons not to
+	 * make. Reported from play, at Harmony: the location was being routed to and there was no
+	 * way to say no to it. Only when the destination is unambiguous, the same rule the panel's
+	 * "Travel to X" line follows — skipping a place the plugin cannot name would be a guess.
+	 */
+	public boolean canSkipTravel()
+	{
+		return planner.isActive() && !planner.isAtBankLeg() && getCurrentStep() == null
+			&& destinationStop(planner.getRemaining()) != null;
+	}
+
+	/**
+	 * Drops the stop the drawn route is heading for from the rest of this run.
+	 *
+	 * <p>The whole location, deliberately, where {@link #skipCurrentStep} takes only the step:
+	 * declining a journey means declining everything at the other end of it, and the next run
+	 * offers the place again — the planner clears its skips with the stops.
+	 */
+	public boolean skipTravelDestination()
+	{
+		if (getCurrentStep() != null)
+		{
+			return false;
+		}
+
+		RunStop stop = destinationStop(planner.getRemaining());
+		if (stop == null)
+		{
+			return false;
+		}
+
+		log.debug("Skipped travel to {}", stop.getName());
+		planner.skipRegion(stop.getRegion().getRegionId());
+		return true;
 	}
 
 	/**
@@ -461,6 +518,30 @@ public class GuideTracker
 			}
 		}
 
+		// The contract holds the guild's other patches back so its own ground stays free and
+		// the highlight uncontested — but held back must not mean walked past: a snape grass
+		// ready to pick beside the contract patch was skipped outright, and so was a grown
+		// avantoe. Reported from play. The withheld patches contribute their picking-shaped
+		// work only — a harvest or a health check changes nothing the next contract could
+		// want, where planting is exactly what the hold-back exists to prevent. Appended
+		// after the contract's own steps, so the contract stays the current instruction.
+		if (offered.size() < ordered.size())
+		{
+			for (FarmPatch patch : flowersAfterAllotments(ordered, stop))
+			{
+				if (offered.contains(patch))
+				{
+					continue;
+				}
+				PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+				if (projection != null
+					&& (projection.hasProduceToPick() || projection.needsHealthCheck()))
+				{
+					steps.addAll(stepsFor(patch, patchesWanting(stop, patch), true));
+				}
+			}
+		}
+
 		// Anything waved past, dropped before anyone sees the list. Done here rather than inside
 		// stepsFor so the skip cannot leak into patchesWanting or the allocation — those are
 		// statements about the world, and a skip is a statement about the player.
@@ -472,9 +553,47 @@ public class GuideTracker
 		announceResurrectables(ordered);
 
 		appendLeprechaunErrands(steps, stop);
+		appendFillSeedBoxBeforeLeaving(steps, stop);
 		appendContractErrands(steps, stop);
 		insertPickUpDrops(steps, stop, player);
 		return steps;
+	}
+
+	/**
+	 * Tells you to pocket the loose seeds before leaving a stop.
+	 *
+	 * <p>The travelling shape of the pre-harvest nudge in {@code GuidePlan}: that one fires
+	 * when a harvest is about to outgrow the pack, this one fires when the stop's work is done
+	 * and the loose stacks would otherwise ride to the next stop a slot each. The box's Empty
+	 * step at the next patch is the other half of the loop, and both are left-clicks while
+	 * current — see {@code GuideMenuSwap}. Requested from play.
+	 *
+	 * <p>Appended last, so it becomes current only once everything else here — including the
+	 * planting those seeds might be for — is finished with.
+	 */
+	private void appendFillSeedBoxBeforeLeaving(List<GuideStep> steps, RunStop stop)
+	{
+		// Same gate as the leprechaun errands: a patch still to check has work behind it,
+		// and packing up mid-stop reads as the guide leaving early.
+		if (anythingStillToCheck(stop) || containsAction(steps, GuideAction.FILL_SEED_BOX))
+		{
+			return;
+		}
+		if (!carried.hasAny(ItemID.SEED_BOX, ItemID.SEED_BOX_OPEN)
+			|| !GuidePlan.anyLooseSeeds(seeds))
+		{
+			return;
+		}
+
+		GuideStep fill = GuideStep.withItem(GuideAction.FILL_SEED_BOX, stop.getPatches().get(0),
+			GuidePlan.seedBoxCarried(carried),
+			"Fill the seed box with your loose seeds before moving on.");
+		// The errands are appended after the skip filter runs, so the filter is asked by hand -
+		// waving this step past has to keep it past.
+		if (!skippedSteps.contains(keyOf(fill)))
+		{
+			steps.add(fill);
+		}
 	}
 
 	/**
@@ -1603,6 +1722,16 @@ public class GuideTracker
 
 	private List<GuideStep> stepsFor(FarmPatch patch, int patchesToTreat)
 	{
+		return stepsFor(patch, patchesToTreat, false);
+	}
+
+	/**
+	 * As above, optionally forced to the harvest-shaped subset whatever the group's own run
+	 * option says — for the guild patches the contract holds back, whose picking is offered
+	 * while their planting is not.
+	 */
+	private List<GuideStep> stepsFor(FarmPatch patch, int patchesToTreat, boolean harvestShapedOnly)
+	{
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		if (projection == null)
 		{
@@ -1619,10 +1748,22 @@ public class GuideTracker
 		// "plant magic" at all six trees, because it picked one seed for the whole type. Sharing
 		// the allocation is what makes the guidance and the promise the same thing.
 		Seed chosen = allocationFor(group).seedFor(patch);
+
+		// The allocation only names seeds for patches this trip can still plant, so for a crop
+		// already in the ground `chosen` is null — and the protection question was being asked
+		// of a null seed, which is never protected. That made the payment step unreachable for
+		// exactly the case its own doc names: the tree that has just gone in. Reported from
+		// play, on a contract tree. Ask about the crop actually standing there instead, and
+		// stop asking once the farmer has taken the payment.
+		Seed inGround = chosen != null || projection.getProduce() == null
+			? chosen
+			: Seed.forProduce(projection.getProduce());
+		boolean alreadyPaid = snapshot != null && snapshot.isPatchProtected();
 		return GuidePlan.forPatch(projection,
 			snapshot == null ? null : snapshot.getCompost(),
 			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
-			protection.isProtecting(group, chosen), runTypes.isHarvestOnly(group), patchesToTreat,
+			!alreadyPaid && protection.isProtecting(group, inGround),
+			harvestShapedOnly || runTypes.isHarvestOnly(group), patchesToTreat,
 			expectedYield(projection, snapshot));
 	}
 
@@ -1733,7 +1874,8 @@ public class GuideTracker
 
 	private void appendNoteBeforeLeaving(List<GuideStep> steps, RunStop stop)
 	{
-		Produce carrying = null;
+		int noteItem = 0;
+		String noteName = null;
 		int most = 0;
 
 		for (Produce produce : Produce.values())
@@ -1750,19 +1892,37 @@ public class GuideTracker
 			if (held > most)
 			{
 				most = held;
-				carrying = produce;
+				noteItem = produce.getItemID();
+				noteName = produce.getName().toLowerCase();
 			}
 		}
 
-		if (carrying == null)
+		// The harvests Produce cannot name — tree roots, and grimy herbs, which the enum
+		// records clean. Even a single one is worth noting: none of them stack unnoted, so
+		// the root dug here and the one dug two stops later are two slots, where the noted
+		// pair is one. Loose grimy herbs also mean the herb sack is full, closed or absent —
+		// an open sack swallows them before they reach the pack — so no sack check is needed.
+		for (int itemId : NotableHarvests.ids())
+		{
+			int held = carried.getInventoryCount(itemId);
+			if (held > most)
+			{
+				most = held;
+				noteItem = itemId;
+				noteName = NotableHarvests.nameOf(itemId);
+			}
+		}
+
+		if (noteName == null)
 		{
 			return;
 		}
 
+		// No trailing "why" on this one - "unnoted crops cost a slot each" rode along for a
+		// while and read as noise to the person seeing it every stop. Removed by request.
 		steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN,
-			stop.getPatches().get(0), carrying.getItemID(), null,
-			"Note your " + carrying.getName().toLowerCase()
-				+ " with the leprechaun before moving on - unnoted crops cost a slot each."));
+			stop.getPatches().get(0), noteItem, null,
+			"Note your " + noteName + " with the leprechaun before moving on."));
 	}
 
 	/**
@@ -1780,6 +1940,17 @@ public class GuideTracker
 	{
 		int empties = carried.getInventoryCount(ItemID.BUCKET_EMPTY);
 		if (empties == 0)
+		{
+			return;
+		}
+
+		// Dropping instead, by setting — and dropping is not a step at all. A step earns its
+		// place by needing a moment chosen for it; a bucket can be dropped the instant it
+		// empties, anywhere, so the guide stays quiet and the bucket itself carries the whole
+		// instruction: always highlighted during a run, Drop always its left-click. Reported
+		// from play against the first version, which put it in the step list. See
+		// GuideMenuSwap and GuideInventoryOverlay.
+		if (config.dropEmptyBuckets())
 		{
 			return;
 		}
@@ -1842,8 +2013,17 @@ public class GuideTracker
 			return null;
 		}
 
+		// The route's own pick can be a house teleport you have already taken: Shortest Path
+		// words a hop like "Teleport to house via Catherby Portal", which resolves to the
+		// tablet — and keeps resolving to it while you stand in the house it brought you to.
+		// The tablet stayed lit in the pack, competing with the nexus the overlay was
+		// outlining as the actual next click. Reported from play. Same rule as the universal
+		// fallback below, but narrowed to house teleports: a carried Xeric's talisman is a
+		// perfectly good hint from inside the house.
+		boolean inHouse = house.isInside();
+
 		TeleportSpell spell = routeItem.currentSpell();
-		if (spell != null)
+		if (spell != null && !(inHouse && spell == TeleportSpell.TELEPORT_TO_HOUSE))
 		{
 			return TravelHint.bySpell(spell.getSpellName(), destination, spell.getComponent());
 		}
@@ -1851,9 +2031,12 @@ public class GuideTracker
 		// Only when carried: a route item still in the bank is a detour, and the table below
 		// already words banked teleports in the way the panel expects.
 		int routed = routeItem.currentItemId();
-		if (routed != -1 && carried.has(routed))
+		String routedName = routeItem.currentName();
+		boolean routedHouseTeleport = routedName != null
+			&& routedName.toLowerCase(java.util.Locale.ROOT).startsWith("teleport to house");
+		if (routed != -1 && carried.has(routed) && !(inHouse && routedHouseTeleport))
 		{
-			return new TravelHint(routed, routeItem.currentName(), destination,
+			return new TravelHint(routed, routedName, destination,
 				TravelHint.Where.CARRIED);
 		}
 
@@ -1931,22 +2114,80 @@ public class GuideTracker
 	@Nullable
 	private String destinationName(List<RunStop> remaining)
 	{
-		RunStop found = null;
+		RunStop found = destinationStop(remaining);
+		return found == null ? null : found.getName();
+	}
+
+	/** The stop the route last unambiguously named, for the stretches the router says nothing. */
+	@Nullable
+	private RunStop lastNamedStop;
+
+	/**
+	 * The stop behind {@link #destinationName}, for the travel skip to act on. Same rule: only
+	 * when unambiguous.
+	 *
+	 * <h2>The points are per-hop arrivals, not the journey's end</h2>
+	 *
+	 * Shortest Path's {@code destination} payload is one point per <b>transport</b> — where
+	 * each hop lands, read straight from its path (verified in its source). A teleport usually
+	 * lands inside the stop's own region, which is why matching regions exactly names most
+	 * legs. A route through the player-owned house does not: its last transport lands wherever
+	 * the house exit drops you, a region away from the patches, and the leg went entirely
+	 * unnamed — no place name, no spell highlight, no furniture outline, all of which hang off
+	 * this answer. Reported from play, at a Prifddinas house. So a second pass accepts a stop
+	 * whose region merely <i>touches</i> a reported point's region, still requiring a unique
+	 * stop — near two stops at once stays quiet, exactly as an ambiguous exact match does, and
+	 * an exact match always outranks a touching one.
+	 */
+	@Nullable
+	private RunStop destinationStop(List<RunStop> remaining)
+	{
+		RunStop exact = null;
+		RunStop near = null;
+		boolean exactClash = false;
+		boolean nearClash = false;
 		for (WorldPoint destination : planner.getCurrentDestinations())
 		{
 			for (RunStop stop : remaining)
 			{
 				if (stop.getRegion().getRegionId() == destination.getRegionID())
 				{
-					if (found != null && !found.getName().equals(stop.getName()))
-					{
-						return null;
-					}
-					found = stop;
+					exactClash |= exact != null && !exact.getName().equals(stop.getName());
+					exact = stop;
+				}
+				else if (regionsTouch(stop.getRegion().getRegionId(), destination.getRegionID()))
+				{
+					nearClash |= near != null && !near.getName().equals(stop.getName());
+					near = stop;
 				}
 			}
 		}
-		return found == null ? null : found.getName();
+
+		RunStop found = exact != null
+			? (exactClash ? null : exact)
+			: (nearClash ? null : near);
+		if (found != null)
+		{
+			lastNamedStop = found;
+			return found;
+		}
+
+		// Inside the house the router often has nothing to say at all: the reroute from the
+		// front door produces a pure walk, whose answer carries no transports and so no points.
+		// The journey has not changed — only the wording went quiet — so the last name stands
+		// while its stop is still outstanding. Only in the house, deliberately: an overworld
+		// walking leg with no transports genuinely might be heading somewhere new.
+		if (house.isInside() && lastNamedStop != null && remaining.contains(lastNamedStop))
+		{
+			return lastNamedStop;
+		}
+		return null;
+	}
+
+	/** Whether two region ids sit within one region of each other on the map grid. */
+	private static boolean regionsTouch(int a, int b)
+	{
+		return Math.abs((a >> 8) - (b >> 8)) <= 1 && Math.abs((a & 0xFF) - (b & 0xFF)) <= 1;
 	}
 
 	/** The run stop the player is standing in, or null if they are between stops. */

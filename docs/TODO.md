@@ -111,9 +111,11 @@ each so a wrong result points somewhere.
   takes a few minutes to become the plantable sapling, so the right moment is before setting
   off, not at the tree patch. Wants a step (and possibly a small timer) in the bank leg.
 - **No arrow or navigation line.** Quest Helper has both, toggleable.
-- **No menu swap for the seed box.** The original spec asked for Empty as left-click. It is also
-  the first thing that would modify input rather than describe it, so it wants deciding on rather
-  than assuming — see `docs/design-principles.md` on the compliance line.
+- ~~**No menu swap for the seed box.**~~ Done, decided by request from play: `GuideMenuSwap` makes
+  Fill or Empty the left-click only while the current step asks for it, reordering entries and
+  never renaming them (SeedCapture matches the option strings). Behind the `seedBoxLeftClick`
+  toggle. Same side of the compliance line as core's Menu Entry Swapper: it shapes what a click
+  means and clicks nothing itself.
 - **Four classes past readable size**, and the gap is widening: `RunPlanner` 1,613 ·
   `GuideTracker` 1,517 · `RunLoadout` 1,258 · `DoogleMapsConfig` 1,213. `RunLoadout` is the one
   that splits cleanly — eight `addX` builders that barely interact, each taking the run's types

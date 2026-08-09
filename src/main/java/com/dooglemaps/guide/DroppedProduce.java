@@ -72,6 +72,19 @@ public class DroppedProduce
 	/** Client-thread working list; {@link #published} is the copy other threads read. */
 	private final List<Drop> drops = new ArrayList<>();
 
+	/**
+	 * Spawns that passed every test except the full pack, held until the tick ends.
+	 *
+	 * <p>The full-pack test and the spawn race: the ground item and the inventory update that
+	 * filled the last slot arrive in the same server tick, and the spawn can be processed
+	 * first — at which point {@code CarriedItems} still shows the free slot the harvest is
+	 * about to take, and genuine overflow was being rejected for it. Reported from play as
+	 * the pick-up highlight simply not appearing. So a spawn with free slots showing is not
+	 * refused, only parked; when the tick finishes the inventory has caught up, and the pack
+	 * being full then is the confirmation. Not full then means it really was not overflow.
+	 */
+	private final List<Drop> pending = new ArrayList<>();
+
 	private volatile List<Drop> published = Collections.emptyList();
 
 	@Inject
@@ -97,11 +110,6 @@ public class DroppedProduce
 			return;
 		}
 
-		if (carried.getFreeSlots() > 0)
-		{
-			return;
-		}
-
 		Player player = client.getLocalPlayer();
 		if (player == null)
 		{
@@ -113,8 +121,34 @@ public class DroppedProduce
 			return;
 		}
 
+		if (carried.getFreeSlots() > 0)
+		{
+			// Maybe overflow the inventory has not caught up with, maybe not - the end of
+			// the tick can tell the two apart, so the decision waits. See pending.
+			pending.add(new Drop(item, location, produce));
+			return;
+		}
+
 		drops.add(new Drop(item, location, produce));
 		published = new ArrayList<>(drops);
+	}
+
+	@Subscribe
+	public void onGameTick(net.runelite.api.events.GameTick event)
+	{
+		if (pending.isEmpty())
+		{
+			return;
+		}
+
+		// By now every container update of the tick has landed, so the free-slot count is the
+		// truth the spawn-time check could only guess at.
+		if (carried.getFreeSlots() == 0)
+		{
+			drops.addAll(pending);
+			published = new ArrayList<>(drops);
+		}
+		pending.clear();
 	}
 
 	@Subscribe
@@ -122,6 +156,7 @@ public class DroppedProduce
 	{
 		// By identity: the despawn carries the same TileItem the spawn did. Matching on id and
 		// tile instead would remove a second stack of the same crop dropped on the same square.
+		pending.removeIf(drop -> drop.getItem() == event.getItem());
 		if (drops.removeIf(drop -> drop.getItem() == event.getItem()))
 		{
 			published = new ArrayList<>(drops);
@@ -165,6 +200,7 @@ public class DroppedProduce
 	public void reset()
 	{
 		drops.clear();
+		pending.clear();
 		published = Collections.emptyList();
 	}
 }

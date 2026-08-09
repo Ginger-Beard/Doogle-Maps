@@ -13,32 +13,33 @@ import java.util.Set;
 import net.runelite.client.config.ConfigItem;
 
 /**
- * Which places show their patches.
+ * Which places show their patches — and, through {@code AvailabilityProfile}, which places a
+ * run is built from.
  *
  * <p>A coarser cut than the per-patch switch on each row. Those say "I do not farm <i>this</i>
  * patch"; this says "I do not farm <i>there</i>", which is the more common thing to want and was
  * previously twenty separate clicks spread across as many tabs.
  *
- * <h2>Display only, deliberately</h2>
+ * <h2>One toggle, one meaning</h2>
  *
- * This hides rows. It does not touch {@code AvailabilityProfile}, which is what runs are built
- * from, and the two are answering different questions: availability is about the account — a
- * patch you cannot reach — while this is about how much you want to look at. Hiding a place you
- * still farm would silently drop it from your runs, and the setting that did that would be one
- * you had forgotten about by then.
- *
- * <p>The consequence worth knowing: a hidden location's patches are still routed if they are
- * switched on. Switching a patch off is the row click, and that is the one that changes runs.
+ * This was display-only at first: it hid rows and left routing to the per-patch switches, on the
+ * reasoning that hiding a place you still farm should not silently change your runs. What that
+ * missed is that hiding a location also hides its rows' per-patch switches — so the only control
+ * that <i>did</i> change runs became unreachable, and the run kept navigating to a place the
+ * player had switched off whole. Reported from play, at Harmony. A hidden location is now also
+ * unavailable: {@code DoogleMapsPlugin} hands {@link #isEnabled(DoogleMapsConfig, FarmPatch)} to
+ * {@code AvailabilityProfile} as its location filter, so hiding a place removes it from runs the
+ * way the toggle reads.
  */
 @lombok.extern.slf4j.Slf4j
-final class Locations
+public final class Locations
 {
 	private Locations()
 	{
 	}
 
 	/** Whether this patch's region is on show. */
-	static boolean isEnabled(DoogleMapsConfig config, FarmPatch patch)
+	public static boolean isEnabled(DoogleMapsConfig config, FarmPatch patch)
 	{
 		return patch == null || isEnabled(config, patch.getRegion().getName());
 	}

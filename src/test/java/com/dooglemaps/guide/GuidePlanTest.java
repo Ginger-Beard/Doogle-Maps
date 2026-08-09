@@ -835,6 +835,38 @@ public class GuidePlanTest
 				/* protecting */ false, /* harvestOnly */ true, 1, 0).isEmpty());
 	}
 
+	/**
+	 * A growing crop the player asked to protect says to pay the farmer.
+	 *
+	 * <p>This is the case {@code addProtectionStep}'s own doc names — the tree that has just
+	 * gone in, nothing else about it wanting doing — and it was structurally unreachable:
+	 * the tracker asked the protection question of the <i>allocation's</i> seed, which is null
+	 * for any patch already occupied, so {@code protecting} arrived false for every crop in
+	 * the ground. Reported from play, on a contract tree: sapling planted, payment in the
+	 * pack, and neither the gardener nor the step anywhere in sight.
+	 */
+	@Test
+	public void aGrowingProtectedCropAsksForThePayment()
+	{
+		FarmPatch patch = growingIn(PatchImplementation.TREE);
+		assertNotNull("no tree patch has a growing fixture", patch);
+
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		assertNotNull(projection);
+		com.dooglemaps.data.ProtectionPayment payment =
+			com.dooglemaps.data.ProtectionPayment.forProduce(projection.getProduce());
+		assertNotNull("a tree crop has a protection payment", payment);
+		carrying(payment.getItemID(), payment.getQuantity());
+
+		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
+			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			/* protecting */ true, /* harvestOnly */ false, 1, 0);
+		assertFalse("the payment is the one thing this patch still wants", steps.isEmpty());
+		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
+		assertEquals("the gardener is what gets highlighted",
+			patch.getFarmer(), steps.get(0).getNpcId());
+	}
+
 	/** The first instruction for this patch once its varbit reads the given value. */
 	private GuideStep firstStepAt(FarmPatch patch, int varbitValue)
 	{

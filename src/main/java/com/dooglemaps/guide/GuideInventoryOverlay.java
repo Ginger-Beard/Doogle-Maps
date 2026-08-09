@@ -103,6 +103,15 @@ public class GuideInventoryOverlay extends Overlay
 
 		Color colour = config.guideHighlightColour();
 
+		// With "drop empty buckets" on, the buckets are ambient work rather than a step:
+		// always lit while a run is under way, Drop always their left-click (GuideMenuSwap),
+		// and no place in the step list. Drawn before the step handling so a bucket stays
+		// marked whatever else the guide is saying.
+		if (config.dropEmptyBuckets() && tracker.getStatus().isRunning())
+		{
+			highlightInInventory(graphics, net.runelite.api.gameval.ItemID.BUCKET_EMPTY, colour);
+		}
+
 		GuideStep step = tracker.getCurrentStep();
 		if (step == null)
 		{
@@ -111,6 +120,15 @@ public class GuideInventoryOverlay extends Overlay
 			// might, so it is highlighted the same way rather than by a parallel mechanism.
 			highlightTravelItem(graphics, colour);
 			return null;
+		}
+
+		// A payment's dialogue is part of the step. The farmer asks which patch and then for a
+		// yes, and neither line was marked anywhere — the gardener was outlined, the fruit was
+		// outlined, and the two clicks between them were unlit. Reported from play, on a
+		// contract tree. Drawn alongside the item highlight below, not instead of it.
+		if (step.getAction() == GuideAction.PAY_FARMER)
+		{
+			highlightPayOptions(graphics, colour);
 		}
 
 		if (!step.hasItem())
@@ -139,7 +157,8 @@ public class GuideInventoryOverlay extends Overlay
 		}
 		else
 		{
-			highlightInInventory(graphics, step.getItemId(), colour);
+			highlightInInventory(graphics, step.getItemId(), colour,
+				step.getAction() == GuideAction.PAY_FARMER);
 		}
 		return null;
 	}
@@ -588,12 +607,30 @@ public class GuideInventoryOverlay extends Overlay
 	 */
 	private void highlightInInventory(Graphics2D graphics, int itemId, Color colour)
 	{
+		highlightInInventory(graphics, itemId, colour, false);
+	}
+
+	/**
+	 * As above, optionally counting the item's bank-note form as the item.
+	 *
+	 * <p>Opt-in per step, because the two callers mean opposite things by a note. Protection
+	 * payments travel noted — the farmer takes them noted, the loadout counts them noted — so
+	 * the pay step names an item whose only presence in the pack may be its note, and the note
+	 * is the thing to click. A noting step is the reverse: the loose pile is what gets handed
+	 * to the leprechaun, and lighting an already-noted stack of the same crop beside it said
+	 * "note these again". Reported from play.
+	 */
+	private void highlightInInventory(Graphics2D graphics, int itemId, Color colour,
+		boolean includeNoted)
+	{
 		Widget inventory = client.getWidget(InterfaceID.Inventory.ITEMS);
 		if (inventory != null && !inventory.isHidden() && inventory.getDynamicChildren() != null)
 		{
 			for (Widget item : inventory.getDynamicChildren())
 			{
-				if (item != null && item.getItemId() == itemId)
+				if (item != null
+					&& (item.getItemId() == itemId
+						|| includeNoted && isNotedFormOf(item.getItemId(), itemId)))
 				{
 					drawItemHighlight(graphics, item.getBounds(), itemId,
 						item.getItemQuantity(), colour);
@@ -602,6 +639,54 @@ public class GuideInventoryOverlay extends Overlay
 		}
 
 		highlightWorn(graphics, itemId, colour);
+	}
+
+	/** Whether the carried item is the bank-note form of the wanted one. */
+	private boolean isNotedFormOf(int carriedId, int wantedId)
+	{
+		if (carriedId <= 0)
+		{
+			return false;
+		}
+		net.runelite.api.ItemComposition composition = itemManager.getItemComposition(carriedId);
+		return composition.getNote() != -1 && composition.getLinkedNoteId() == wantedId;
+	}
+
+	/**
+	 * Marks the farmer's payment dialogue: the "Pay (north)"-style line that picks a patch, the
+	 * patch-name lines a multi-patch farmer offers instead, and the "Yes" that confirms.
+	 *
+	 * <p>Matched the same way {@code ProtectionCapture} recognises the selection afterwards, so
+	 * what is lit and what is recorded cannot drift apart. Only ever drawn while the current
+	 * step is {@code PAY_FARMER}, so a "Yes" in some unrelated dialogue is not at risk — there
+	 * is no payment conversation it could belong to.
+	 */
+	private void highlightPayOptions(Graphics2D graphics, Color colour)
+	{
+		Widget list = client.getWidget(InterfaceID.Chatmenu.OPTIONS);
+		if (list == null || list.isHidden() || list.getDynamicChildren() == null)
+		{
+			return;
+		}
+
+		for (Widget row : list.getDynamicChildren())
+		{
+			if (row == null || row.getText() == null)
+			{
+				continue;
+			}
+
+			String text = net.runelite.client.util.Text.removeTags(row.getText()).trim();
+			if (text.startsWith("Pay") || text.startsWith("Yes")
+				|| text.contains("Patch") || text.contains("allotment"))
+			{
+				Rectangle bounds = textBounds(row).intersection(list.getBounds());
+				if (!bounds.isEmpty())
+				{
+					outline(graphics, bounds, colour);
+				}
+			}
+		}
 	}
 
 	/** Marks a worn item in whichever equipment view is open. */

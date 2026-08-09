@@ -403,10 +403,13 @@ which one to go and look at.
 
 - **Pass**: turning off somewhere you never farm removes its patches from **every** tab at once,
   and from the heading counts.
-- **Display only, and worth being clear about**: this hides rows. It does not change what a run
-  does — that is the per-patch switch on the row. A location you hide while its patches are still
-  switched on is still routed to. The two answer different questions: whether you can reach a
-  patch, and how much of the sidebar you want it taking.
+- **It changes runs too, and that is a deliberate reversal**: this was display-only at first, and
+  hiding a location also hid the per-patch switches that routing did obey — so a run kept
+  navigating to a place the player had switched off whole, with no visible way to stop it.
+  Reported from play, at Harmony. A hidden location is now also unavailable: the toggle feeds
+  `AvailabilityProfile` as a location filter, so hiding a place removes it from runs, the loadout
+  and the counts alike. **Pass**: hide a location whose patch is switched on, start a run, and it
+  is neither routed to nor counted.
 - **Fail signature**: a place with no setting. `LocationsTest` fails the build if the generated
   region list and the hand-written settings ever drift, which they will the next time Jagex adds a
   farming area.
@@ -1362,9 +1365,31 @@ rather than wherever it guessed.
 - **Pass**: teleport inside a house with no respawn portal built while routed to patches near
   the house (a Prifddinas house before the Prifddinas allotments is the reported case) → the
   exit portal is outlined, and the map path starts at the exterior house portal.
-- **Pass, unchanged**: a route genuinely served by furniture — a nexus hop, a jewellery box
-  hop, a respawn portal that really is built — still outlines that furniture, and the drawn
-  path is left alone.
+- **Pass**: same house, same route, but with a **nexus in the room** — second report from the
+  same Prifddinas house. The nexus "serves" the hop by place name, which used to suppress the
+  reroute while the destination went unnamed and everything stayed dark. Two fixes: the
+  destination now resolves when a hop lands in a region merely *touching* the stop's (Shortest
+  Path's `destination` payload is per-hop arrival points, and a house exit lands a region away
+  from the patches), and when the front door opens into the destination's own neighbourhood
+  the front-door reroute wins over serving furniture. Expected: "Travel to Prifddinas", the
+  Teleport to House spell highlighted in the spellbook before the teleport, and once inside,
+  the exit portal outlined with the path drawn from the west house portal.
+- **Pass, unchanged**: a route genuinely served by furniture whose front door is *not* in the
+  destination's neighbourhood — a nexus hop toward Catherby from a Rimmington house, a
+  jewellery box hop, a respawn portal that really is built — still outlines that furniture,
+  and the drawn path is left alone.
+- **Pass, third report from the same house**: no in-and-out loop. Shortest Path's cost model
+  kept preferring "Teleport to House → Respawn Portal" over the walk *even when the path was
+  pinned to the front door*, so following the guide bounced the player in and out of their
+  own house, and the drawn line kept starting at the respawn point. Once the player has
+  stood in their house and the scan found **no portal-room portal**, every path request now
+  carries `useTeleportationPortalsPoh=false`, so those imagined edges stop existing for our
+  routes. The front-door transit (general portal data), the jewellery box and the mounted
+  items are all still modelled — they are real. Expected: after one visit to a portal-less
+  house, routes near it become plain walks from the door; a house with real portals is
+  untouched. The knowledge is per-session and read only while demonstrably inside a house
+  (nexus/jewellery box/digsite in the room), so a friend's portal-lined house can only
+  weaken it toward "has portals".
 - **Fail signature**: exit portal lit *and* a nexus lit → `furnitureServesHop` matched one
   hop and the fallback fired anyway; the fallback must only run when nothing matched.
   Nothing lit at all → check `client.log` for "None of Shortest Path's hops ..." (overlay)
@@ -1870,3 +1895,43 @@ and the axe and payments in the bank.
     nothing fails silently by design. Settings entries are matched against our own labels as well as
     the game's now, which also fixes *"Skills necklace"* against `Skills necklace(6)` and
     *"Rune pouch"* against `Divine rune pouch`. Locked (trouver) pouches are in the table too.
+
+### 1a-li. The contract holds the guild back, but not its harvests — new
+
+Reported from play: a limpwurt contract took the run to the guild, and the snape grass and
+avantoe standing ready beside it were skipped outright. `contractComesFirst` withholds every
+non-contract guild patch while contract business is outstanding — deliberately, so the next
+contract's ground stays free and the highlight uncontested — but "held back" had turned into
+"walked past". The withheld patches now contribute their **picking-shaped work only**
+(harvest and health check, via the harvest-only plan), appended after the contract's own
+steps so the contract stays the current instruction. Planting stays withheld — that is what
+the hold-back exists to prevent.
+
+- **Pass**: contract at the guild + another guild patch ready to harvest → the contract's
+  steps lead, and the ready harvest appears in the checklist below, becoming current once
+  the contract goes quiet. No planting steps for the withheld patches while contract
+  business is open.
+- **Fail signature**: a withheld patch offered its planting → the harvest-only flag is not
+  reaching `GuidePlan.forPatch` for the appended steps.
+
+### 1a-lii. Empty buckets can be dropped instead of returned — new
+
+A setting ("Drop empty buckets", off by default). When on, dropping is a **standing
+arrangement rather than a step** — the first version put it in the step list, and it was
+reported straight back out: a bucket can be dropped the moment it empties, anywhere, so
+there is no moment for a step to choose. For the whole run, empty buckets stay highlighted
+in the pack and **Drop is their left-click**, on the empty bucket item alone. The swap lives
+in `GuideMenuSwap` (grown out of `SeedBoxSwap`) and reorders entries without renaming them.
+
+The left-click detail that bit, twice: the game marks Drop as a low-priority op, and a
+low-priority entry on top makes a left click open the menu instead of acting — reported as
+"left click became right click". Clearing the deprioritized flag was not enough; for an
+inventory item the priority lives in the entry's **type** (`CC_OP_LOW_PRIORITY` vs
+`CC_OP`), which is what core's Menu Entry Swapper raises too. Promotion now does all three:
+moves the entry, clears the flag, raises the type.
+
+- **Pass**: setting on, run under way → every empty bucket lit, left-click drops it, no
+  step in the list, other items' menus untouched. Between runs the bucket goes back to
+  normal. Setting off → the leprechaun return step, unchanged.
+- **Fail signature**: left-clicking a lit bucket opens the menu instead of dropping → the
+  entry's type is not being raised from `CC_OP_LOW_PRIORITY` on promotion.

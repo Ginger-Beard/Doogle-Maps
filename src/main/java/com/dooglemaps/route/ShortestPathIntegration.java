@@ -66,9 +66,23 @@ public class ShortestPathIntegration
 
 	private static final String CONFIG_POST_TRANSPORTS = "postTransports";
 	private static final String CONFIG_INCLUDE_BANK_PATH = "includeBankPath";
+	private static final String CONFIG_POH_PORTALS = "useTeleportationPortalsPoh";
 
 	private final EventBus eventBus;
 	private final ClientThread clientThread;
+
+	/**
+	 * Whether the player's house has portal-room portals, or null while no house has been
+	 * seen. Handed in as a supplier the same way the stores share single facts — the state
+	 * lives in {@code PlayerHouse}, and this class only needs the answer at posting time.
+	 */
+	private java.util.function.Supplier<Boolean> housePortals = () -> null;
+
+	/** Told where to read the house's portal answer from; see {@code PlayerHouse}. */
+	public void setHousePortalKnowledge(java.util.function.Supplier<Boolean> housePortals)
+	{
+		this.housePortals = housePortals;
+	}
 
 	/**
 	 * Transports the current path uses, <b>in path order</b>, as reported back by Shortest Path.
@@ -171,6 +185,20 @@ public class ShortestPathIntegration
 		Map<String, Object> configOverride = new HashMap<>();
 		// Ask for the transport list back so the panel can say what the route uses.
 		configOverride.put(CONFIG_POST_TRANSPORTS, true);
+
+		// Shortest Path's POH data assumes every house has its portal-room portals built —
+		// the Prifddinas respawn-portal edge is not even varbit-gated — so a portal-less
+		// house is routed through furniture that is not there. Worse than a wrong line: from
+		// anywhere near the destination its cost model kept preferring "teleport home, leave
+		// through the respawn portal", so following the guide walked the player in and out of
+		// their own front door forever. Reported from play. When the house has actually been
+		// looked at and holds no portal-room portal, those edges are switched off for our
+		// requests; the front-door transit lives in the general portal data and survives, as
+		// do the jewellery box and mounted items, which are modelled separately and real.
+		if (Boolean.FALSE.equals(housePortals.get()))
+		{
+			configOverride.put(CONFIG_POH_PORTALS, false);
+		}
 
 		// Only on the supply leg. Shortest Path models banking itself — its pathfinder tracks
 		// whether a path has been through a bank, and BankPickupRequirements works out what to

@@ -92,9 +92,58 @@ public class PlayerHouse
 		if (client.getGameState() != GameState.LOGGED_IN)
 		{
 			teleports = Collections.emptyList();
+			inside = false;
 			return;
 		}
 		teleports = scan();
+		// Before the portal record below, which reads it through isInside().
+		inside = computeInside();
+		recordPortalRoomPortals();
+	}
+
+	/**
+	 * Whether the last look inside a house found any portal-room portal. Null until a house
+	 * has been seen this session; kept after leaving, because the question is asked precisely
+	 * when the player is <i>not</i> standing in the house.
+	 *
+	 * <p>Exists for Shortest Path, whose POH data assumes every house has its portal-room
+	 * portals built — the Prifddinas respawn-portal edge is not even varbit-gated. For a house
+	 * that holds none, that assumption routed the player in and out of their own front door
+	 * forever; see {@code ShortestPathIntegration}, which reads this to switch those portals
+	 * off in its requests.
+	 */
+	@Nullable
+	private volatile Boolean portalRoomPortals;
+
+	/** See {@link #portalRoomPortals}. */
+	@Nullable
+	public Boolean hasPortalRoomPortals()
+	{
+		return portalRoomPortals;
+	}
+
+	/**
+	 * Only while demonstrably inside, so the sticky answer is about the player's house rather
+	 * than the scenery — and a friend's portal-lined house can only weaken the answer toward
+	 * "has portals", which merely declines the override. The safe direction.
+	 */
+	private void recordPortalRoomPortals()
+	{
+		if (!isInside())
+		{
+			return;
+		}
+		portalRoomPortals = !matchingFurniture(PlayerHouse::isPortalRoomPortal).isEmpty();
+	}
+
+	/**
+	 * A portal-room portal by name: "Varrock Portal", "Respawn Portal" — the trailing space
+	 * excludes the bare exit "Portal", and the nexus is its own kind of furniture.
+	 */
+	private static boolean isPortalRoomPortal(String name)
+	{
+		String lower = name.toLowerCase();
+		return lower.endsWith(" portal") && !lower.contains("nexus");
 	}
 
 	/**
@@ -107,8 +156,23 @@ public class PlayerHouse
 	 *
 	 * <p>A house with neither a nexus nor a jewellery box reads as "not in a house", which is
 	 * harmless: there is nothing to point at and nothing to suppress.
+	 *
+	 * <p>Answered from the last tick's computation rather than worked out on demand, because
+	 * resolving an object's name goes through {@code client.getObjectDefinition}, which
+	 * asserts the client thread — and this question is asked from Swing too. Reported as a
+	 * crash: the sidebar's skip button asked on the EDT, straight into the assertion. One
+	 * tick of staleness was already the deal, since the scan itself runs once a tick.
 	 */
 	public boolean isInside()
+	{
+		return inside;
+	}
+
+	/** The last tick's answer to {@link #isInside}; volatile so any thread may read it. */
+	private volatile boolean inside;
+
+	/** The real computation. Client thread only — it resolves names. */
+	private boolean computeInside()
 	{
 		for (TileObject object : teleports)
 		{

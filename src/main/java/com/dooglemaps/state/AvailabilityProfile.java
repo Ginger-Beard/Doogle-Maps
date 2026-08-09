@@ -62,6 +62,19 @@ public class AvailabilityProfile extends ProfileJsonStore
 		this.farmingLevel = farmingLevel;
 	}
 
+	/**
+	 * The Locations section's answer, handed in the same way the Farming level is and for the
+	 * same reason: the toggles live in the config, which this store must not depend on. Defaults
+	 * to "everywhere", so nothing changes for a caller that never wires it — tests included.
+	 */
+	private java.util.function.Predicate<FarmPatch> locationFilter = patch -> true;
+
+	/** Told which locations the player has switched off, once the config exists to ask. */
+	public void setLocationFilter(java.util.function.Predicate<FarmPatch> locationFilter)
+	{
+		this.locationFilter = locationFilter;
+	}
+
 	/** Explicit player choices only; absent means "fall back to whether we've seen it". */
 	private final Map<String, Boolean> toggles = new HashMap<>();
 
@@ -102,6 +115,16 @@ public class AvailabilityProfile extends ProfileJsonStore
 		// (holding PatchStateStore, wanting this through a ConfigChanged subscriber). Only
 		// the toggle read needs the monitor; see ProfileJsonStore.save for the whole story.
 		if (!PatchRequirements.isReachable(patch, farmingLevel.getAsInt()))
+		{
+			return false;
+		}
+
+		// The Locations section used to be a display filter that routing ignored — and hiding a
+		// location also hid the per-patch switches that routing *did* obey, so a run kept
+		// navigating to a place the player had switched off whole, with no visible way to stop
+		// it. Reported from play, at Harmony. A hidden location wins over everything below,
+		// including an explicit per-patch "on": the coarse toggle is the later, plainer statement.
+		if (!locationFilter.test(patch))
 		{
 			return false;
 		}

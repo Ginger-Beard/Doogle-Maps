@@ -111,7 +111,13 @@ public enum GuideAction
 	 */
 	PAY_FARMER("Pay the farmer"),
 
-	/** Hand the empty buckets back before leaving, so they stop costing slots. */
+	/**
+	 * Hand the empty buckets back before leaving, so they stop costing slots.
+	 *
+	 * <p>Only when the "drop empty buckets" setting is off. Dropping has no action of its
+	 * own on purpose: it is not a step but a standing arrangement — the bucket stays
+	 * highlighted with Drop as its left-click for the whole run. See {@code GuideMenuSwap}.
+	 */
 	RETURN_BUCKETS("Return empty buckets"),
 
 	/**

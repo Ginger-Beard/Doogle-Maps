@@ -94,6 +94,7 @@ public class RunPlanner
 	/** The player's ticked run options, for the harvest-only filter. Named apart from the
 	 * planner's own {@code runTypes} field, which is the live run's patch types. */
 	private final RunTypeStore runOptions;
+	private final com.dooglemaps.DoogleMapsConfig config;
 
 	/** Stops still to do, keyed by region id so a patch can be found quickly. */
 	private final Map<Integer, RunStop> stops = new LinkedHashMap<>();
@@ -106,6 +107,21 @@ public class RunPlanner
 	 * subsequent change. Cleared with the run. See {@link #onPatchChanged}.
 	 */
 	private final Set<Integer> announced = new java.util.HashSet<>();
+
+	/**
+	 * Regions the player has waved past for the rest of this run.
+	 *
+	 * <p>The travel leg's version of skipping a step. A step can be skipped because it exists as
+	 * a step; "travel to Harmony" is not a step but a route, so it needed its own escape hatch —
+	 * without one, the only way past a destination you are not going to was to stand somewhere
+	 * until you had done it. See {@code GuideTracker.skipTravelDestination}.
+	 *
+	 * <p>Whole regions rather than patch keys because that is what the player is declining: the
+	 * journey. Filtered in {@link #getRemaining} rather than removed from {@link #stops}, since
+	 * {@link #reviewContract} and {@link #getStopFor} index that map by region and a skipped
+	 * stop's patches are still real. Cleared with the run, so "until the next round" comes free.
+	 */
+	private final Set<Integer> skippedRegions = new java.util.HashSet<>();
 
 	/**
 	 * Patch keys the guide has nothing to offer for, so the run stops waiting on them.
@@ -199,8 +215,10 @@ public class RunPlanner
 		BankLocationStore banks, SeedSelectionStore selection, SeedInventoryStore seedInventory,
 		PatchStateStore stateStore, GrowthTimer growthTimer, ShortestPathIntegration router,
 		PlayerLocation playerLocation, ToolNeeds tools, ProtectedPatches protectedPatches,
-		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions)
+		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions,
+		com.dooglemaps.DoogleMapsConfig config)
 	{
+		this.config = config;
 		this.runOptions = runOptions;
 		this.protection = protection;
 		this.groups = groups;
@@ -247,6 +265,7 @@ public class RunPlanner
 		{
 			stops.clear();
 			announced.clear();
+			skippedRegions.clear();
 			stops.putAll(planStops(types));
 			runTypes.clear();
 			runTypes.addAll(types);
@@ -325,7 +344,7 @@ public class RunPlanner
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (!inTheRun(patch) || !isActionable(patch))
+				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types))
 				{
 					continue;
 				}
@@ -408,10 +427,10 @@ public class RunPlanner
 			int actionable = 0;
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				// Same pair of questions planStops asks, and for the same reason: this prices the
+				// Same questions planStops asks, and for the same reason: this prices the
 				// run the panel offers, so counting patches the run will not visit would quote a
-				// trip nobody asked for. See inTheRun.
-				if (inTheRun(patch) && isActionable(patch))
+				// trip nobody asked for. See inTheRun and clusterHeld.
+				if (inTheRun(patch) && isActionable(patch) && !clusterHeld(patch, types))
 				{
 					actionable++;
 				}
@@ -455,7 +474,7 @@ public class RunPlanner
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (!inTheRun(patch) || !isActionable(patch))
+				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types))
 				{
 					continue;
 				}
@@ -778,6 +797,18 @@ public class RunPlanner
 			return true;
 		}
 
+		// A growing crop the player asked to protect, whose farmer has not been paid, still
+		// wants one thing: the payment. Without this, planting flipped the patch to "nothing
+		// doing", the stop completed under the player's feet, and the guide walked off in the
+		// middle of the transaction — the sapling in the ground and the gardener unpaid beside
+		// it. Whether the payment can actually be made is the guide's question (the pack must
+		// hold it); when it cannot, the guide's idle report unblocks the stop through
+		// nothingToDo, so this cannot strand a run. See GuidePlan.addProtectionStep.
+		if (wantsProtectionPayment(patch, projection))
+		{
+			return true;
+		}
+
 		switch (projection.getCropState())
 		{
 			case HARVESTABLE:
@@ -789,6 +820,80 @@ public class RunPlanner
 				// Weeds mean an empty patch, whatever the crop state says.
 				return projection.isEmpty();
 		}
+	}
+
+	/** The patch types that share a plot at the classic locations, and so ripen as a group. */
+	private static final Set<PatchImplementation> CLUSTER_TYPES = EnumSet.of(
+		PatchImplementation.ALLOTMENT, PatchImplementation.FLOWER, PatchImplementation.HERB);
+
+	/**
+	 * Whether this patch's trip should wait for the rest of its plot.
+	 *
+	 * <p>The classic locations put an allotment pair, a flower and (except Prifddinas) a herb
+	 * patch on the same ground, and they grow at different speeds — a marigold is done in
+	 * twenty minutes, a ranarr in eighty. Left alone the run happily made the trip for
+	 * whichever finished first, which is two trips where one was wanted. With the setting on,
+	 * a cluster patch is held out of the plan while any <b>selected</b> sibling on the same
+	 * plot is still healthily growing. Requested from play.
+	 *
+	 * <p>Only siblings of the types ticked for this run count, which is the whole point of the
+	 * scoping: with just flower and herb ticked, a growing allotment holds nothing. A diseased
+	 * sibling never holds the trip back — waiting on a crop that is dying is how it dies — and
+	 * neither does one still owed its protection payment, for the same reason the payment
+	 * keeps a patch actionable at all.
+	 *
+	 * <p>Planning-time only, deliberately: this filter runs in {@link #planStops} and the
+	 * counts that price it, never in {@link #isComplete}. Mid-run, a freshly replanted flower
+	 * starts growing while the herb beside it is still being picked — a completion filter
+	 * would read the herb as "not worth visiting" and finish the stop under the player.
+	 */
+	private boolean clusterHeld(FarmPatch patch, Set<PatchImplementation> types)
+	{
+		if (!config.holdClustersUntilReady()
+			|| !CLUSTER_TYPES.contains(patch.getImplementation()))
+		{
+			return false;
+		}
+
+		for (FarmPatch sibling : patch.getRegion().getPatches())
+		{
+			if (!CLUSTER_TYPES.contains(sibling.getImplementation())
+				|| !types.contains(sibling.getImplementation())
+				|| !inTheRun(sibling)
+				|| !availability.isAvailable(sibling))
+			{
+				continue;
+			}
+
+			PatchProjection projection = growthTimer.project(sibling, stateStore.get(sibling));
+			if (projection != null && !projection.isEmpty()
+				&& projection.getCropState() == CropState.GROWING
+				&& !projection.isReady()
+				&& !wantsProtectionPayment(sibling, projection))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Whether a growing crop is protectable, asked to be protected, and not yet paid for. */
+	private boolean wantsProtectionPayment(FarmPatch patch, PatchProjection projection)
+	{
+		if (projection.isEmpty() || projection.getCropState() != CropState.GROWING
+			|| !DiseaseRisk.isProtectable(patch))
+		{
+			return false;
+		}
+
+		com.dooglemaps.state.PatchSnapshot snapshot = stateStore.get(patch);
+		if (snapshot != null && snapshot.isPatchProtected())
+		{
+			return false;
+		}
+
+		Seed growing = Seed.forProduce(projection.getProduce());
+		return growing != null && protection.isProtecting(groups.groupFor(patch), growing);
 	}
 
 	/**
@@ -1365,6 +1470,7 @@ public class RunPlanner
 		{
 			stops.clear();
 			announced.clear();
+			skippedRegions.clear();
 			runTypes.clear();
 			active = false;
 			atBankLeg = false;
@@ -1380,18 +1486,36 @@ public class RunPlanner
 		return Collections.unmodifiableList(new ArrayList<>(stops.values()));
 	}
 
-	/** Stops with anything left to do. */
+	/** Stops with anything left to do that the player has not waved past. */
 	public synchronized List<RunStop> getRemaining()
 	{
 		List<RunStop> remaining = new ArrayList<>();
 		for (RunStop stop : stops.values())
 		{
-			if (!isComplete(stop))
+			if (!skippedRegions.contains(stop.getRegion().getRegionId()) && !isComplete(stop))
 			{
 				remaining.add(stop);
 			}
 		}
 		return remaining;
+	}
+
+	/**
+	 * Drops a region from the rest of this run and routes to what is left.
+	 *
+	 * <p>The next run starts fresh: the set is cleared with the stops, in {@link #start} and
+	 * {@link #stop}, which is the same lifecycle the per-step skips follow.
+	 */
+	public void skipRegion(int regionId)
+	{
+		synchronized (this)
+		{
+			skippedRegions.add(regionId);
+		}
+		log.info("Skipped region {} for the rest of this run", regionId);
+		// Outside the lock, the same as every other retarget: it posts into another plugin's
+		// event bus, which delivers synchronously.
+		retarget();
 	}
 
 	/**
@@ -1735,6 +1859,12 @@ public class RunPlanner
 		List<FarmPatch> patches = new ArrayList<>();
 		for (RunStop stop : stops.values())
 		{
+			// A skipped region's patches are off the checklist too: a list that keeps naming
+			// the place you waved past reads as the run disagreeing with the skip.
+			if (skippedRegions.contains(stop.getRegion().getRegionId()))
+			{
+				continue;
+			}
 			for (FarmPatch patch : stop.getPatches())
 			{
 				if (!stop.getServiced().contains(patch.getKey()))

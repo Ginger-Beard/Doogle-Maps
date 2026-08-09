@@ -84,7 +84,8 @@ public class SupplyRoutingTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 	}
 
 	private void stock(SeedSource source, Seed seed, int quantity)

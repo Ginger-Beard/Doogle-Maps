@@ -135,6 +135,9 @@ public class DoogleMapsPlugin extends Plugin
 	private DroppedProduce droppedProduce;
 
 	@Inject
+	private com.dooglemaps.guide.GuideMenuSwap guideMenuSwap;
+
+	@Inject
 	private ProtectedPatches protectedPatches;
 
 	@Inject
@@ -305,6 +308,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(leprechaunStore);
 		eventBus.register(playerHouse);
 		eventBus.register(droppedProduce);
+		eventBus.register(guideMenuSwap);
 		eventBus.register(bankFilter);
 		bankFilter.startUp();
 
@@ -364,6 +368,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(leprechaunStore);
 		eventBus.unregister(playerHouse);
 		eventBus.unregister(droppedProduce);
+		eventBus.unregister(guideMenuSwap);
 		eventBus.unregister(bankFilter);
 		bankFilter.shutDown();
 
@@ -682,6 +687,11 @@ public class DoogleMapsPlugin extends Plugin
 		// Wired before the load, so the very first availability question already knows the level.
 		// The Farming Guild's tiers are doors rather than preferences; see PatchRequirements.
 		availability.setFarmingLevel(seedStore::getFarmingLevel);
+		// Locations the player switched off are unavailable, not merely hidden — see Locations.
+		availability.setLocationFilter(patch ->
+			com.dooglemaps.ui.Locations.isEnabled(config, patch));
+		// What the house actually holds, so the router stops imagining portals - see PlayerHouse.
+		router.setHousePortalKnowledge(playerHouse::hasPortalRoomPortals);
 		availability.load();
 		seedStore.load();
 		// The remembered bank, so the loadout, the withdraw list and the filter start informed

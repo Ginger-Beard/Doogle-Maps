@@ -201,6 +201,66 @@ public interface DoogleMapsConfig extends Config
 	 * A toggle because it is advice about a spell, not a step in the run — some players will
 	 * never swap books for a seed and should not be told about it twice a night.
 	 */
+	/**
+	 * The classic plots put an allotment pair, a flower and (except Prifddinas) a herb patch
+	 * on the same ground, growing at different speeds. Left alone, the run happily makes a
+	 * trip for whichever finishes first; with this on, the trip waits for the slowest — of
+	 * the types actually ticked for the run, so an unticked type never holds anything.
+	 */
+	@ConfigItem(
+		keyName = "holdClustersUntilReady",
+		name = "Hold shared plots until all are ready",
+		description = "Where allotment, flower and herb patches share a location, leave it out "
+			+ "of a run until every one of them you have selected is ready to harvest or "
+			+ "clear. Only the types ticked for the run count - with just flower and herb "
+			+ "ticked, a growing allotment holds nothing. A diseased or unpaid-protection "
+			+ "crop still gets its trip.",
+		position = 39,
+		section = guideSection
+	)
+	default boolean holdClustersUntilReady()
+	{
+		return false;
+	}
+
+	/**
+	 * Buckets are the one errand with two right answers — the leprechaun stores them, the
+	 * floor is closer — so which one the guide asks for is the player's call. When this is
+	 * on, the drop step highlights the bucket and makes Drop its left-click; see
+	 * {@code GuideMenuSwap}.
+	 */
+	@ConfigItem(
+		keyName = "dropEmptyBuckets",
+		name = "Drop empty buckets",
+		description = "Skip the leprechaun hand-back: for the whole run, empty buckets stay "
+			+ "highlighted and Drop is their left-click - just that item, nothing else. "
+			+ "No step appears; drop them whenever you like.",
+		position = 38,
+		section = guideSection
+	)
+	default boolean dropEmptyBuckets()
+	{
+		return false;
+	}
+
+	/**
+	 * The first place the plugin shaped input rather than describing it, so it has its own
+	 * switch. See {@code GuideMenuSwap} for why it is safe and why it is step-driven.
+	 */
+	@ConfigItem(
+		keyName = "seedBoxLeftClick",
+		name = "Left-click the seed box step",
+		description = "While a step is asking you to fill or empty the seed box, make that the "
+			+ "box's left-click option. Only reorders the menu, and only for that moment - "
+			+ "the box goes back to normal as soon as the step is done.",
+		position = 37,
+		section = guideSection
+	)
+	default boolean seedBoxLeftClick()
+	{
+		return true;
+	}
+
 	@ConfigItem(
 		keyName = "resurrectCropsReminder",
 		name = "Resurrect Crops reminder",

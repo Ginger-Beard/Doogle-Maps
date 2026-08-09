@@ -114,6 +114,60 @@ public class DroppedProduceTest
 			drops.near(FEET, 20).isEmpty());
 	}
 
+	/**
+	 * Overflow whose spawn beats the inventory update is still recorded.
+	 *
+	 * <p>The ground item and the container update that filled the last slot arrive in the same
+	 * server tick, and the spawn can be processed first — so at spawn time the pack still shows
+	 * the free slot the harvest is about to take. Reported from play as the pick-up highlight
+	 * simply never appearing. The decision now waits for the end of the tick, when the
+	 * inventory has caught up.
+	 */
+	@Test
+	public void aSpawnRacingTheInventoryUpdateIsStillOverflow()
+	{
+		CarriedItems carried = Mockito.mock(CarriedItems.class);
+		when(carried.getFreeSlots()).thenReturn(1);
+		DroppedProduce drops = withPlayerAt(FEET, carried);
+
+		drops.onItemSpawned(spawn(ItemID.LIMPWURT_ROOT, TileItem.OWNERSHIP_SELF, FEET));
+		assertTrue("the decision waits for the tick to finish", drops.near(FEET, 20).isEmpty());
+
+		when(carried.getFreeSlots()).thenReturn(0);
+		drops.onGameTick(new net.runelite.api.events.GameTick());
+
+		assertEquals("a full pack at the tick's end is the confirmation",
+			1, drops.near(FEET, 20).size());
+	}
+
+	/** The parked spawn is a one-tick question: room at the tick's end means it was not overflow. */
+	@Test
+	public void aParkedSpawnWithRoomAtTheTicksEndIsDiscarded()
+	{
+		CarriedItems carried = Mockito.mock(CarriedItems.class);
+		when(carried.getFreeSlots()).thenReturn(1);
+		DroppedProduce drops = withPlayerAt(FEET, carried);
+
+		drops.onItemSpawned(spawn(ItemID.LIMPWURT_ROOT, TileItem.OWNERSHIP_SELF, FEET));
+		drops.onGameTick(new net.runelite.api.events.GameTick());
+
+		when(carried.getFreeSlots()).thenReturn(0);
+		drops.onGameTick(new net.runelite.api.events.GameTick());
+
+		assertTrue("the question was answered when the spawn's own tick ended",
+			drops.near(FEET, 20).isEmpty());
+	}
+
+	private static DroppedProduce withPlayerAt(WorldPoint point, CarriedItems carried)
+	{
+		Player player = Mockito.mock(Player.class);
+		when(player.getWorldLocation()).thenReturn(point);
+		Client client = Mockito.mock(Client.class);
+		when(client.getLocalPlayer()).thenReturn(player);
+
+		return construct(DroppedProduce.class, client, carried);
+	}
+
 	private static DroppedProduce withPlayerAt(WorldPoint point, int freeSlots)
 	{
 		Player player = Mockito.mock(Player.class);

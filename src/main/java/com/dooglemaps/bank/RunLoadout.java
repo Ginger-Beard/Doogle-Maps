@@ -72,6 +72,22 @@ public class RunLoadout
 	/** Both forms of the seed box, closed and open. */
 	private static final int[] SEED_BOX = {ItemID.SEED_BOX, ItemID.SEED_BOX_OPEN};
 
+	/**
+	 * The forestry basket first: it <i>is</i> a log basket (combined with the forestry kit),
+	 * so an account that owns one is offered it alone rather than being told to bring two
+	 * containers for the same logs.
+	 */
+	private static final int[] FORESTRY_BASKET = {
+		ItemID.FORESTRY_BASKET_CLOSED,
+		ItemID.FORESTRY_BASKET_OPEN,
+	};
+
+	/** Both forms of the log basket, closed and open. */
+	private static final int[] LOG_BASKET = {
+		ItemID.LOG_BASKET_CLOSED,
+		ItemID.LOG_BASKET_OPEN,
+	};
+
 	private final RunPlanner planner;
 	private final SeedSelectionStore selection;
 	private final SeedInventoryStore seeds;
@@ -1095,22 +1111,38 @@ public class RunLoadout
 		// type, where a basket holds five of one fruit. They matter only as protection
 		// payment, which ProtectionPayment already handles with the full ids.
 		offerStorage(items, SEED_BOX, "Seed box", "Keeps your seeds out of your inventory");
+
+		// Log baskets earn the place the fruit basket is denied, because the timing is
+		// different: logs arrive one per chop while the tree comes down, so the pack fills in
+		// the middle of the work, before the leprechaun can note anything. The basket swallows
+		// them as they land. Requested from play.
+		if (types.contains(PatchImplementation.TREE)
+			|| types.contains(PatchImplementation.HARDWOOD_TREE)
+			|| types.contains(PatchImplementation.REDWOOD))
+		{
+			if (!offerStorage(items, FORESTRY_BASKET, "Forestry basket",
+				"Holds 28 logs from the trees you fell"))
+			{
+				offerStorage(items, LOG_BASKET, "Log basket",
+					"Holds 28 logs from the trees you fell");
+			}
+		}
 	}
 
 	/**
-	 * Suggests a storage item only if it exists somewhere we can see.
+	 * Suggests a storage item only if it exists somewhere we can see, and says whether it did.
 	 *
 	 * <p>Several of these are locked behind things not every account has — the herb sack wants
 	 * 58 Herblore and 750 Slayer points. Telling someone to bring one they cannot own is the
 	 * failure mode this avoids.
 	 */
-	private void offerStorage(List<LoadoutItem> items, int[] itemIds, String name, String reason)
+	private boolean offerStorage(List<LoadoutItem> items, int[] itemIds, String name, String reason)
 	{
 		if (carried.hasAny(itemIds))
 		{
 			items.add(new LoadoutItem(itemIds[0], name, LoadoutItem.Category.STORAGE,
 				LoadoutItem.Need.HAVE, 0, reason));
-			return;
+			return true;
 		}
 
 		for (int itemId : itemIds)
@@ -1120,9 +1152,10 @@ public class RunLoadout
 				// The id that is actually there, so the bank highlight lands on the right slot.
 				items.add(new LoadoutItem(itemId, name, LoadoutItem.Category.STORAGE,
 					LoadoutItem.Need.WITHDRAW, 0, reason));
-				return;
+				return true;
 			}
 		}
+		return false;
 	}
 
 	/**
