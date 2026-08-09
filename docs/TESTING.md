@@ -1095,6 +1095,321 @@ From `docs/farming-mechanics-audit-2026-08.md`:
   never for grapes or Hespori, and never at all with the `Resurrect Crops reminder` setting
   off or below the level. The clear step itself is unchanged.
 
+### 1a-xxxvi. The RunScope/RunSnapshot refactor — new, structural
+
+No behaviour should change; that is the point, and it is what to verify.
+
+- **Pass**: a run opens at a bank exactly when it used to — no seed picked, a tool only in
+  the bank, payments short — and the supply leg still ends the same tick the last withdrawal
+  happens (the flag is refreshed ahead of `leaveBank` at both call sites).
+- **Pass**: the projection table, destinations list and reward figures read the same as
+  before, and update within a tick of a checkbox change (the one-tick live fallback covers
+  the click itself).
+- **Feel**: sidebar refreshes while a run is active should be at worst unchanged and likely
+  smoother near the guild — the panel no longer takes the planner's monitor at all in steady
+  state.
+- **Fail signatures**: a run that opens at a bank when it should not (or vice versa) → the
+  start-time flag from `GuideTracker.withdrawListOutstanding`; a supply leg that ends one
+  withdrawal late → the refresh-before-`leaveBank` in the plugin tick or `BankCapture`;
+  pricing that sticks after a checkbox change → the snapshot type-match in
+  `RunPanel.snapshotFor`.
+
+### 1a-xxxvii. Placeholder counts (again) and the spirit tree cap — new
+
+- **Pass**: no cyan count on any placeholder in the filtered bank — including the faded
+  layout stand-ins, whose widgets report `Integer.MAX_VALUE` quantity per Bank Tags' own
+  source. This was the "still" from 1a-xxxiii; the guard now rejects both placeholder shapes.
+- **Pass**: with a spirit tree already growing and Farming under 88, a spirit run allocates
+  no second sapling — the bank list asks for none, the estimate prices none, and the guide
+  reports the extra patch skipped rather than instructing a plant the game refuses. At 88+
+  the second slot opens. (The run may still route past an over-cap patch it happens to pass;
+  it self-heals through the skip, by design.)
+- **Fail signature**: a second sapling on the withdraw list under the cap → the trim in
+  `actionableByGroup` or the guide's `allocationFor` — the two go through `SpiritTrees`
+  together, so divergence means one stopped calling it.
+
+### 1a-xxxviii. The open-issues batch (2026-08-08) — new
+
+The seven reports from the 2026-08-08 play session, and what to check:
+
+- **Harvest → compost → plant, uninterrupted.** At any patch (the reported ones: Troll
+  Stronghold herb, the protected herbs), harvesting must be followed by the compost step and
+  the plant step at that same patch — not by "travel to the next stop", not by leprechaun
+  errands alone, and a compost withdrawal must never come back as "deposit it". Root cause
+  was the guide treating "varbit changed once" as "patch finished"; it now derives doneness
+  from state, pinned by `HarvestedPatchStillGuidedTest`.
+- **Bucket return highlights the empties.** ~~Standing at the lep with the store closed and a
+  bucket-return step current: the empty buckets in the pack are highlighted.~~ Superseded by
+  1a-xl: the pack fallback read as "click this in your inventory", so store-side steps now
+  highlight only inside his interface — the lep's own outline is the "click him first" cue.
+- **Gear and teleport lists are complete from the first bank open.** Items already carried
+  or worn (ectophial, rune pouch) get their laid-out slot — rendered as the bank's own
+  placeholder or a faded stand-in — instead of three items showing and the rest surfacing
+  haphazardly as withdrawals shuffle the view. The new "Bank layout:" log line says what got
+  placed and which loadout rows got no slot; quote it if the lists still look short.
+- **House furniture is picked by Shortest Path's route, read through wiki destination
+  lists.** Each hop the router reports is matched against every teleport furniture in the
+  room — the nexus's attunements, everything a jewellery box holds, the mounted digsite
+  pendant / glory / xeric's, the garden's spirit tree and fairy ring, and portals by their
+  own names ("Varrock Portal") — and the furniture whose destinations cover a hop gets the
+  outline (`HouseTeleports.furnitureServesHop`, pinned by `PlaceNameMatchTest`). No
+  Shortest Path means no route, so nothing is outlined: the guide says where to go, not
+  how. In client: teleport to the house mid-run and check the outlined furniture is the
+  one the route actually uses — Trollheim/Weiss/Catherby/Harmony hops light the nexus,
+  a Farming Guild hop lights the box, Fossil Island the mounted pendant, and a Prifddinas
+  leg lights nothing (teleport crystal is an item — pack highlight covers it). If hops
+  are reported but nothing lights, quote the "None of Shortest Path's hops ... mapped to
+  the furniture here" log line — it records the router's exact wording so the matching
+  can learn it. Inside a box menu the category buttons cover glory/wealth/combat/skills/
+  games now, not just skills. Nexus row outlines stay inside the interface frame — no
+  spill past the window edge — and since the 2026-08-08 follow-up they hug the destination
+  name itself: the box ends ~3px past the last letter (row's own font, tags stripped,
+  widget's own alignment), falling back to the full row only when there is no font to
+  measure with or the text is wider than the row. Pinned by `NexusRowOutlineTest`.
+- **Dead-crop resurrect notice is red** in the chatbox.
+- **Client crash on house teleport**: not ours — the log shows a native JVM death with no
+  Java trace (our code cannot hard-kill the client; EventBus catches plugin exceptions). If
+  it recurs, suspect the GPU/117HD plugin on POH load and look for an `hs_err_pid*.log`.
+
+### 1a-xxxix. Seed priority numbers — new
+
+- **Pass**: picking two or more seeds on one tab shows a yellow digit in each picked icon's
+  top-right — 1, 2, 3 in click order; a lone pick shows no digit. Deselecting and
+  reselecting a seed sends it to the back and renumbers the rest. The run plants in that
+  order: seed 1 fills patches until it runs out, then seed 2 spills in — check the estimate
+  table's rows and the actual plant steps agree with the digits.
+- **Fail signature**: digits fine but planting ignores them → something re-sorted after
+  `bestFirst`; digits missing after a restart → selection order lost a round-trip through
+  the save file, which `SeedSelectionStore`'s ordered list should preserve.
+
+### 1a-xl. Compost is never "noted", and the bucket return points only at his interface — new
+
+The Prifddinas treadmill (2026-08-08): withdraw ultracompost → "Note your ultracompost with
+the leprechaun" → noting hands it into his store → withdraw again, forever. The compost tiers
+are `Produce` rows for the compost bin's sake, and the notable-crop scan was picking them up;
+`Produce.isNotable()` now excludes them, pinned by `withdrawnCompostIsNotOfferedForNoting` in
+`LeprechaunErrandOrderTest`.
+
+- **Pass**: at Prif (or any stop wanting compost), the withdraw step stays current — same
+  text, same count — until you hold one bucket per patch to treat, then moves on to applying
+  it. No "note your ultracompost" appears at any point, with any amount of compost carried.
+- **Pass**: with a bucket-return step current and his store closed, nothing is highlighted in
+  the pack — only the leprechaun himself is outlined. Opening his store lights the bucket
+  slot on **your** side pane, and nothing else.
+- **Fail signature**: a note step naming any compost tier (or rotten tomatoes) → something
+  scanning `Produce` for crops without going through `isNotable()`. The withdraw step
+  vanishing after one bucket of several → the errand insertion is preempting it again;
+  check what `appendLeprechaunErrands` put in front of the withdrawal in the "bundling" log
+  line.
+
+### 1a-xli. The plant step never names seeds that are not on you — new
+
+The other half of the 2026-08-08 Prif session: "Plant 3 snape grass seeds" stood at the top of
+the list while the seeds sat in the bank, and restarting the run or reselecting the seed
+changed nothing. The allocation counts every place seeds are kept — deliberately, since it
+also feeds the loadout — so `GuidePlan` now checks the pack and the seed box before offering
+the planting phase at all (`GuidePlan.seedAtHand`, pinned by
+`seedsInTheBankProduceNoStepsAtThePatch`).
+
+- **Pass**: with the selected seed left in the bank, the patch produces no plant step and no
+  compost step — the panel says "Skipping <patch> - the <seed> seeds are in your bank" (or
+  "in the seed vault" / "not in your pack"). Once the stop's remaining work is done it
+  completes, and a deferred supply trip routes to a bank rather than stranding the run.
+  Withdrawing the seeds brings the patch's steps back by itself, no restart needed.
+- **Pass**: seeds in the seed box still guide normally — "Empty your seed box" then plant.
+- **Fail signature**: a plant instruction for seeds the pack and box cannot cover → a caller
+  bypassed `seedAtHand`; a patch skipped while the seeds *are* in the pack → the seed
+  inventory store's cache for the inventory container is stale.
+
+### 1a-xlii. The travel highlight follows the route — spells, tab stones and all — new
+
+The guide now points at whatever Shortest Path's drawn route actually uses, rather than the
+teleport table's own pick, and it points in two steps when the click is behind a closed tab.
+`RouteItem` resolves spell-shaped hops through the new `TeleportSpell` table (pinned by
+`TeleportSpellTest` and the spell cases in `RouteItemTest`); the travel hint prefers the
+route's resolved click and falls back to the teleport table when nothing resolves.
+
+- **Pass, spell route**: with a spell hop first on the route (e.g. "Camelot Teleport"), the
+  panel says "Cast Camelot Teleport." and the **magic tab stone** is outlined; opening the
+  spellbook moves the outline onto the spell itself. On the wrong spellbook the stone stays
+  lit — there is nothing better to point at.
+- **Pass, carried item**: with the route using a carried teleport and its panel closed, the
+  **inventory tab stone** is outlined (worn-equipment stone for something worn, e.g. a
+  Camelot-bound necklace equipped); opening the tab moves the outline onto the item, as
+  before. Works in all three layouts — fixed, resizable classic, resizable modern.
+- **Pass, fallback**: with Shortest Path off or the hop unmatched, the old behaviour stands:
+  the teleport table's carried pick is highlighted and the nexus/jewellery matching is
+  untouched.
+- **Fail signature**: panel names a spell but nothing lights → the hop's wording matched no
+  `TeleportSpell` row (matching is best-effort by design; note the exact "via ..." wording
+  and add an alias). Stone lit but the wrong tab → the STONE3/4/6 mapping drifted from the
+  legacy ComponentID tab constants it was verified against.
+- **Follow-up from play** ("via Teleport to House via Weiss Portal" lit nothing): two causes,
+  both fixed. The "via ..." tail is now cut before spell matching, and a hop that matches an
+  item **in the bank only** no longer blocks the spell reading — the resolution order is
+  carried item, then spell, then banked item, which is the click-cost order from where the
+  player stands. Pinned by `aBankedTabletDoesNotBlockTheSpell` and `theViaTailIsCutBeforeMatching`.
+  In client: with house tablets banked and a "Teleport to House via ..." hop, the magic tab
+  stone lights, then the spell once the book is open.
+
+### 1a-xliii. The supply leg ends when the list does, and deposits get pointed at — new
+
+Two from the Camelot detour (2026-08-08). The stuck half: after withdrawing the seeds, the
+booths stayed outlined and the panel said "Open the bank - nothing is picked for this run
+yet." — with everything picked and collected. `getSupplySources` walked the **raw** seed
+selection, so a priority-2 backup seed sitting in the bank (which the allocation gives no
+patches to, and the withdraw list therefore never asks for) held `suppliesOutstanding` true
+forever. It now walks the same `SeedAllocation` the loadout, estimate and guide share
+(`seedsWantedThisRun`, pinned by `aBackupSeedTheRunWillNotPlantDoesNotHoldTheSupplyLeg`).
+
+- **Pass**: mid-run seed detour with a backup seed picked — withdraw what the list names,
+  close the bank: booth outlines drop, the panel goes back to "Travel to ...", and the run
+  resumes. Same at the opening bank leg.
+- **Pass**: the vault-vs-bank routing is untouched — vault seeds still route to the guild,
+  a partial bank stack still does not beat the vault (all pinned in `SupplyRoutingTest`).
+- **Fail signature**: booths lit with an empty withdraw list → compare
+  `getSupplySources()` against the loadout's rows; they now derive from one allocation and
+  disagreement means one stopped going through it.
+
+The deposit half: any bank open during a run now marks the **noted crops** in the pack in
+amber — the deposit errand, distinct from the withdraw colour and the route's cyan — with a
+"Finished crops - deposit them" tooltip. Never marked: the run's own protection payments
+(from the loadout's payment rows, so only payments this run is making) and the contract's
+crop, assigned or awaiting hand-in. Unnoted items are never marked.
+
+- **Pass**: arrive at a mid-run bank with noted melons from earlier stops → amber marks;
+  noted payment crops for a protected group on this run → unmarked; the contract crop →
+  unmarked.
+
+### 1a-xliv. A full pack notes before the bucket goes back — new
+
+The one-watermelon treadmill (2026-08-08): supercompost a patch (empty bucket in the pack),
+harvest the allotment next to it until full — the guide's next step was "give the leprechaun
+your empty bucket". Depositing it freed exactly one slot, the pack stopped being full, the
+note step vanished, and the guide sent you back for a single watermelon before asking again.
+The errand insertion treated the full-pack note like a withdrawal ("hand over before taking
+out") and cut in front of it; errands now go behind any noting already at the visit. Pinned
+by `LeprechaunErrandOrderTest.aBucketReturnGoesBehindAnExistingNoteStep`.
+
+- **Pass**: full pack mid-harvest with an empty bucket carried → steps read note, then
+  return buckets, then the harvest resumes — one leprechaun visit, no bounce back to the
+  patch between them.
+- **Fail signature**: "give the leprechaun your empty bucket" while the pack is full → the
+  errand insertion is cutting ahead of a note step again.
+
+### 1a-xlv. The teleport freeze was ours: a store deadlock, now structurally closed — new
+
+The Explorer's ring freeze (2026-08-09). The client survived, so `jstack` on the live JVM
+was the diagnosis — it reported "Found 1 deadlock", both sides ours. Client thread: a
+teleport-landing varbit write held `PatchStateStore`'s monitor through `save()`, whose
+ConfigManager write fires `ConfigChanged` synchronously into our own subscriber, which
+wanted `AvailabilityProfile`. Swing thread: a panel refresh held `AvailabilityProfile`
+through `isAvailable → stateStore.hasSeen`, wanting `PatchStateStore`. ABBA.
+
+The fix is a rule, not a patch: **no store calls out with its monitor held** — RunPlanner's
+own long-standing rule, now applied to the whole `ProfileJsonStore` family. `save()`
+serialises under the monitor and writes outside it; every mutator in `PatchStateStore`,
+`AvailabilityProfile`, `CompostSelectionStore` and `RunTypeStore` mutates inside
+`synchronized` and saves/notifies after; `AvailabilityProfile` no longer holds its lock
+across the state store or the level supplier.
+
+- **Pass**: repeated Explorer's ring (and other) teleports with the sidebar visible and
+  refreshing — no freeze. Toggling patches/compost/run types mid-run — no freeze, settings
+  still persist across a restart (the save path moved; the data must not).
+- **Diagnosing the next "crash"**: `~/.runelite/logs/client.log` names any plugin that
+  threw. Log stops + process alive = freeze → `jstack <pid>` with the Windows JDK and look
+  for "Found one Java-level deadlock". Process dead + no Java trace = native crash (see #2,
+  1a-xxxviii) → `hs_err_pid*.log` / `jvm_crash_*.log` in `~/.runelite/logs`.
+
+### 1a-xlvi. The step panel is a checklist, and the dead herb is just "herb" — new
+
+- **Pass**: standing at a stop with several steps outstanding, the panel shows the current
+  step in white and the rest as "- " rows in grey — one per step, up to ten rows like the
+  withdraw list, "+ N more here" past that. No more "then x / (indent) y" prose.
+- **Pass**: a dead herb patch says "Clear the dead herb." (and the resurrect notice "Your
+  dead herb could be revived..."), not "any herb" — the ANYHERB filler's display name is
+  now plain "Herb". Contracts still say "Any herb", which is Jane's own wording.
+
+### 1a-xlvii. Loose seeds are boxed before a harvest that will not fit — new
+
+Standing at a harvestable patch whose expected yield beats the free inventory space, with a
+seed box carried and seeds sitting loose: the guide now says "Fill the seed box with your
+loose seeds - this harvest is bigger than your free slots." ahead of the harvest, with the
+box highlighted in the pack. The slots freed are what make the noting trips fewer.
+
+- **Pass**: box + loose seeds + big harvest (watermelons into a half-full pack) → the box
+  step leads, then the harvest; use the box's Fill option and the step vanishes next tick.
+- **Pass**: no box, or nothing loose, or a yield that fits → straight to "Harvest", no
+  shuffling. A pack already full still says "note with the leprechaun" first — the box step
+  never displaces it.
+- **Fail signature**: the step nagging when the yield clearly fits → the expected-yield
+  figure (CropYieldModel, no bonuses) disagrees with the free-slot count; log both.
+
+### 1a-xlviii. The way out of the house is pointed at, and the path starts at the front door — new
+
+Two fixes from the Prifddinas house report. The route said "via Teleport to House via
+Respawn Portal (Prifddinas)", nothing in the house was outlined, and the drawn path began at
+the respawn point in the middle of the city. Shortest Path models a way out of every house
+through a portal-room Respawn Portal it assumes is built; when it is not, no furniture
+matched any hop and the guide went dark.
+
+Now: when you are standing in your house and **no furniture serves the route's hops**, the
+**exit portal** is outlined — leaving on foot is the instruction — and the route is re-posted
+to Shortest Path with its start pinned to the **exterior house portal** (by house location
+varbit, the same table Shortest Path uses), so the drawn path begins at your front door
+rather than wherever it guessed.
+
+- **Pass**: teleport inside a house with no respawn portal built while routed to patches near
+  the house (a Prifddinas house before the Prifddinas allotments is the reported case) → the
+  exit portal is outlined, and the map path starts at the exterior house portal.
+- **Pass, unchanged**: a route genuinely served by furniture — a nexus hop, a jewellery box
+  hop, a respawn portal that really is built — still outlines that furniture, and the drawn
+  path is left alone.
+- **Fail signature**: exit portal lit *and* a nexus lit → `furnitureServesHop` matched one
+  hop and the fallback fired anyway; the fallback must only run when nothing matched.
+  Nothing lit at all → check `client.log` for "None of Shortest Path's hops ..." (overlay)
+  and "redrawing the path from the front door" (tracker); if the second never fired,
+  `PlayerHouse.isInside()` may be false — it needs a nexus, jewellery box or digsite
+  pendant in the room to prove the house.
+
+### 1a-xlix. Crops that overflowed onto the ground are pointed back at — new
+
+Bulk harvests (limpwurts for sure, flowers generally) hand over several items per pick;
+with a full pack the change drops at your feet, and after noting the guide walked on while
+the roots despawned. `DroppedProduce` now records **our own** overflow — ownership must be
+the local player's (`OWNERSHIP_SELF`/`GROUP`), the item must be a notable crop, the pack
+must be full at the spawn, and it must land within three tiles of the player — and a
+"Pick up the ..." step appears once there is room, with the drop tiles filled and outlined
+in the world. Placement is pinned by `DroppedPickupStepTest`: with room it leads the stop
+(despawn clock); with a full pack it waits directly behind the note step.
+
+- **Pass**: harvest limpwurts into a full pack → roots drop; the note step leads as before,
+  and directly behind it "Pick up the limpwurt roots your full pack dropped on the ground.";
+  note with the leprechaun → the pick-up becomes current with the drop tiles lit; pick them
+  up → step and highlight go the moment the last stack is lifted.
+- **Pass, the filters**: another player's drops on the same tiles are ignored; so is
+  anything you drop by hand while slots are free. Skip step waves it off for good.
+- **Fail signature**: step present but no tiles lit → the drop record and the overlay
+  disagree; both read `DroppedProduce.near`, so look for a scene reload between drop and
+  pick-up (a reload clears the record by design — stale TileItem handles cannot be trusted).
+
+### 1a-l. The jewellery box lights the line, not the section — new
+
+The box's "J: Farming Guild" rows live as dynamic children inside the box's own section
+layers (group 590) — **not** in the lettered option menu the widget scan assumed, so the row
+scan found nothing, fell back, and outlined the whole Skills necklace block. The six section
+layers are now scanned as destination lists, which also buys the rows the text-hugging
+outline the nexus rows get.
+
+- **Pass**: routed to the Farming Guild, open an ornate jewellery box → only the
+  "J: Farming Guild" line is outlined, the box ends just past the text, and the rest of the
+  Skills section stays dark.
+- **Pass**: a destination the box reaches through another section (Edgeville via glory,
+  Burthorpe via games necklace) outlines that line alone, same as above.
+- **Fail signature**: whole section lit again → the row scan found nothing; check
+  `client.log` for "Nothing on this teleport menu matched" with the rows it saw — the
+  wording may need an alias rather than the scan being wrong.
+
 ### 1b. The order is right
 
 Work one patch through its whole cycle and check each instruction appears in turn:

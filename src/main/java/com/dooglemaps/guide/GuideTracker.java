@@ -89,6 +89,9 @@ public class GuideTracker
 	/** For the Magic level and the spellbook, which decide the Resurrect Crops reminder. */
 	private final net.runelite.api.Client client;
 
+	/** The crops a full-pack harvest spilled onto the ground, for the pick-up step. */
+	private final DroppedProduce droppedProduce;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -98,8 +101,10 @@ public class GuideTracker
 		com.dooglemaps.state.RunTypeStore runTypes, com.dooglemaps.bank.RunLoadout loadout,
 		ContractState contracts, com.dooglemaps.DoogleMapsConfig config,
 		net.runelite.client.chat.ChatMessageManager chat,
-		com.dooglemaps.bank.RouteItem routeItem, net.runelite.api.Client client)
+		com.dooglemaps.bank.RouteItem routeItem, net.runelite.api.Client client,
+		DroppedProduce droppedProduce)
 	{
+		this.droppedProduce = droppedProduce;
 		this.client = client;
 		this.routeItem = routeItem;
 		this.chat = chat;
@@ -163,6 +168,11 @@ public class GuideTracker
 		// answer rather than last tick's.
 		reportIdlePatches();
 
+		// The sidebar's answers for the current tickboxes, gathered here because this thread
+		// already owns the planner's monitor. The panel reads the published copy lock-free;
+		// see RunSnapshot for what this removes.
+		planner.publishSnapshot(planner.snapshotFor(runTypes.getSelected()));
+
 		List<GuideStep> steps = computeStepsHere();
 		List<RunStop> remaining = planner.getRemaining();
 		String destination = destinationName(remaining);
@@ -185,6 +195,76 @@ public class GuideTracker
 				? planner.getSupplySources()
 				: java.util.Collections.emptySet(),
 			planner.isActive() ? routeItem.currentName() : null);
+
+		routeFromTheFrontDoor();
+	}
+
+	/** Whether the front-door reroute below has already been asked for on this house visit. */
+	private boolean houseStartPosted;
+
+	/**
+	 * Redraws the route from the house's exterior portal when the way out is on foot.
+	 *
+	 * <h2>The Prifddinas respawn point, and why the path started there</h2>
+	 *
+	 * A house is an instance, so the router cannot place the player standing in one — and
+	 * Shortest Path's model of the way out is furniture this player may not have. Reported
+	 * from play at a Prifddinas house: the route's one hop out was "Respawn Portal
+	 * (Prifddinas)" — a portal-room portal Shortest Path assumes every house has — so the
+	 * drawn path began at the respawn point in the middle of the city, while the player's
+	 * actual next click was the exit portal, whose far side is the house portal across town.
+	 *
+	 * <p>The test is the same one the overlay uses to fall back to outlining the exit
+	 * portal: hops were reported and none of them is served by furniture standing in this
+	 * room. When that is true the route continues outside, so the journey's real start is
+	 * the front door, and the router is asked again with exactly that start. When a hop
+	 * <i>does</i> match the furniture — a nexus, a respawn portal that really is built —
+	 * the route is followable from here and the drawn path is left alone.
+	 *
+	 * <p>Once per visit, because the reroute changes the transports it is judged by:
+	 * the fresh answer, planned from outside, may name overworld hops that happen to match
+	 * garden furniture, and judging it again would ping-pong. Leaving the house arms it
+	 * again.
+	 */
+	private void routeFromTheFrontDoor()
+	{
+		if (!planner.isActive() || !house.isInside())
+		{
+			houseStartPosted = false;
+			return;
+		}
+		if (houseStartPosted || !status.getSteps().isEmpty())
+		{
+			return;
+		}
+
+		List<String> transports = status.getTransports();
+		if (transports.isEmpty())
+		{
+			// The router has not answered yet - or is not installed, in which case there is
+			// no drawn path to correct.
+			return;
+		}
+
+		boolean served = !house.matchingFurniture(name ->
+			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)))
+			.isEmpty();
+		if (served)
+		{
+			houseStartPosted = true;
+			return;
+		}
+
+		WorldPoint door = house.frontDoor();
+		if (door == null)
+		{
+			return;
+		}
+
+		houseStartPosted = true;
+		log.info("None of the route's hops {} matched the furniture here - redrawing the "
+			+ "path from the front door at {}", transports, door);
+		planner.retarget(door);
 	}
 
 	/**
@@ -393,7 +473,72 @@ public class GuideTracker
 
 		appendLeprechaunErrands(steps, stop);
 		appendContractErrands(steps, stop);
+		insertPickUpDrops(steps, stop, player);
 		return steps;
+	}
+
+	/**
+	 * How far from the player dropped crops still count as this stop's, in tiles.
+	 *
+	 * <p>Wide enough to cover walking from the patch to the leprechaun and back — Falador's
+	 * flower patch to its leprechaun is well inside this — and narrow enough that overflow
+	 * left at one stop cannot raise a step at the next.
+	 */
+	private static final int PICKUP_RADIUS = 20;
+
+	/**
+	 * Points back at the crops a full pack spilled onto the ground.
+	 *
+	 * <p>Bulk harvests — limpwurts are the reported case — hand over more items per pick than
+	 * the pack has room for, and the game drops the change at your feet. The guide's own flow
+	 * then walks you to the leprechaun to note, which frees the slots; without this step it
+	 * walked straight on and the crops despawned behind it.
+	 *
+	 * <p>Placement follows the slots. With room in the pack the pick-up goes first — the
+	 * despawn clock makes it the most urgent thing at the stop, and crops in the ground can
+	 * wait where crops on the ground cannot. With no room it goes behind the first note step,
+	 * because picking up into a full pack is not an instruction anyone can follow; if nothing
+	 * here frees a slot, no step is raised and the record waits for one that does.
+	 */
+	private void insertPickUpDrops(List<GuideStep> steps, RunStop stop, WorldPoint player)
+	{
+		List<DroppedProduce.Drop> drops = droppedProduce.near(player, PICKUP_RADIUS);
+		if (drops.isEmpty())
+		{
+			return;
+		}
+
+		GuideStep pickup = GuideStep.of(GuideAction.PICK_UP_DROPS, stop.getPatches().get(0),
+			"Pick up the " + drops.get(0).getProduce().getContractName().toLowerCase()
+				+ " your full pack dropped on the ground.");
+
+		// Skippable like any other step: waving it past is the player saying the crops are
+		// abandoned, and it must not come back every tick until they despawn. The stop-wide
+		// removeIf runs before the errands are appended, so it is checked by hand here.
+		if (skippedSteps.contains(keyOf(pickup)))
+		{
+			return;
+		}
+
+		if (carried.getFreeSlots() > 0)
+		{
+			steps.add(0, pickup);
+			return;
+		}
+
+		int note = -1;
+		for (int i = 0; i < steps.size(); i++)
+		{
+			if (steps.get(i).getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+			{
+				note = i;
+				break;
+			}
+		}
+		if (note >= 0)
+		{
+			steps.add(note + 1, pickup);
+		}
 	}
 
 	/**
@@ -534,6 +679,7 @@ public class GuideTracker
 		if (!planner.isActive())
 		{
 			planner.setNothingToDo(java.util.Collections.emptySet());
+			planner.setWithdrawOutstanding(false);
 			// Cleared with the run, like the contract announcements: the next run's dead
 			// crops are new news.
 			announcedResurrect.clear();
@@ -552,6 +698,22 @@ public class GuideTracker
 			}
 		}
 		planner.setNothingToDo(idle);
+		// The other half of the scope: the withdraw list's answer, pushed beside the blocked
+		// set so the planner never has to ask the loadout — which is what removed the
+		// construction cycle between the two.
+		planner.setWithdrawOutstanding(loadout.anythingLeftToWithdraw(planner.coveredTypes()));
+	}
+
+	/**
+	 * The withdraw list's answer for a run over these types, for the moment before it starts.
+	 *
+	 * <p>{@code RunPanel}'s start button needs the answer the planner used to compute for
+	 * itself, and this tracker is the coordinator that holds both ends — the panel asks here,
+	 * this asks the loadout, and the planner is handed the result. One question, one owner.
+	 */
+	public boolean withdrawListOutstanding(java.util.Set<PatchImplementation> types)
+	{
+		return loadout.anythingLeftToWithdraw(types);
 	}
 
 	/** Resurrect Crops wants 78 Magic; the varbit value that means the Arceuus book is 3. */
@@ -603,17 +765,19 @@ public class GuideTracker
 			boolean onArceuus =
 				client.getVarbitValue(net.runelite.api.gameval.VarbitID.SPELLBOOK)
 					== ARCEUUS_SPELLBOOK;
+			// Red, the whole line - a death notice, and the owner wants it read as one rather
+			// than blending into the ordinary game chatter. An explicit colour tag instead of
+			// ChatColorType.HIGHLIGHT, whose colour is whatever the user's chat settings say.
 			chat.queue(net.runelite.client.chat.QueuedMessage.builder()
 				.type(net.runelite.api.ChatMessageType.GAMEMESSAGE)
 				.runeLiteFormattedMessage(new net.runelite.client.chat.ChatMessageBuilder()
-					.append(net.runelite.client.chat.ChatColorType.HIGHLIGHT)
-					.append("Your dead " + projection.getProduce().getName().toLowerCase())
-					.append(net.runelite.client.chat.ChatColorType.NORMAL)
-					.append(onArceuus
-						? " could be revived with Resurrect Crops - one attempt, "
-							+ "before you clear it."
-						: " could be revived with Resurrect Crops if you switch to the "
-							+ "Arceuus spellbook - one attempt, before you clear it.")
+					.append(java.awt.Color.RED,
+						"Your dead " + projection.getProduce().getName().toLowerCase()
+						+ (onArceuus
+							? " could be revived with Resurrect Crops - one attempt, "
+								+ "before you clear it."
+							: " could be revived with Resurrect Crops if you switch to the "
+								+ "Arceuus spellbook - one attempt, before you clear it."))
 					.build())
 				.build());
 		}
@@ -646,14 +810,44 @@ public class GuideTracker
 			// steps is simply finished or growing, and needs no explanation.
 			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 			PlantingGroup group = groups.groupFor(patch);
-			if (projection != null && projection.isEmpty() && !runTypes.isHarvestOnly(group)
-				&& allocationFor(group).seedFor(patch) == null)
+			if (projection == null || !projection.isEmpty() || runTypes.isHarvestOnly(group))
+			{
+				continue;
+			}
+
+			Seed chosen = allocationFor(group).seedFor(patch);
+			if (chosen == null)
 			{
 				reasons.add("Skipping " + patch.getDisplayName().toLowerCase() + " - no seed.");
+			}
+			else if (!GuidePlan.seedAtHand(chosen, seeds))
+			{
+				// The run owns the seeds — the allocation checked — they are just not on this
+				// trip. Saying where they are is what turns "the plugin skipped my patch" into
+				// "I forgot to withdraw them". Reported from play, at Prifddinas, as a plant
+				// instruction for seeds sitting in the bank.
+				reasons.add("Skipping " + patch.getDisplayName().toLowerCase() + " - the "
+					+ chosen.getName().toLowerCase()
+					+ (chosen.isSapling() ? " sapling is " : " seeds are ")
+					+ whereSeedsAre(chosen) + ".");
 			}
 		}
 
 		skipped = reasons;
+	}
+
+	/** Where the seeds the pack lacks actually are, for the skip wording above. */
+	private String whereSeedsAre(Seed seed)
+	{
+		if (seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.BANK) > 0)
+		{
+			return "in your bank";
+		}
+		if (seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.SEED_VAULT) > 0)
+		{
+			return "in the seed vault";
+		}
+		return "not in your pack";
 	}
 
 	/** Patches this stop is passing over, in words. Rebuilt each tick with the step list. */
@@ -893,7 +1087,7 @@ public class GuideTracker
 		for (FarmPatch patch : groups.patchesIn(
 			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
 		{
-			if (here.getPatches().contains(patch) && !here.getServiced().contains(patch.getKey()))
+			if (here.getPatches().contains(patch) && !outstandingFor(patch, here).isEmpty())
 			{
 				// This trip can still deal with it, so the steps will say so themselves.
 				return null;
@@ -1092,6 +1286,19 @@ public class GuideTracker
 			// inventory slots and withdrawing compost *fills* them, so doing them the other way
 			// round can leave you taking four buckets into a pack still holding four limpwurts.
 			// Handing things over before taking things out is the order that always fits.
+			//
+			// ...unless the step that brought you here is itself a note. Then it outranks the
+			// errands: noting frees a whole stack of slots where the bucket frees one, and
+			// putting the bucket return in front of a full-pack note meant depositing the
+			// bucket un-filled the pack by one slot, the note step vanished, and the guide
+			// bounced you back to harvest a single watermelon before asking again. Reported
+			// from play. So the errands go behind whatever noting is already at the visit —
+			// same trip, right order.
+			while (visit < steps.size()
+				&& steps.get(visit).getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+			{
+				visit++;
+			}
 			steps.addAll(visit, errands);
 		}
 		else
@@ -1151,7 +1358,9 @@ public class GuideTracker
 		List<String> held = new ArrayList<>();
 		for (Produce produce : Produce.values())
 		{
-			if (!produce.isCrop())
+			// The same filter the noting decision uses, so this line records that decision's
+			// actual inputs — compost buckets in the pack are not crops he would note.
+			if (!produce.isNotable())
 			{
 				continue;
 			}
@@ -1355,6 +1564,10 @@ public class GuideTracker
 				plantable.add(patch);
 			}
 		}
+		// The spirit tree cap, applied here and in the loadout's copy through the same
+		// class, so the two allocations keep agreeing - see SpiritTrees.
+		plantable = com.dooglemaps.state.SpiritTrees.trimToCap(patches,
+			seeds.getFarmingLevel(), group, plantable);
 
 		Map<Seed, Integer> owned = new java.util.HashMap<>();
 		Map<Integer, Integer> payments = new java.util.HashMap<>();
@@ -1409,7 +1622,32 @@ public class GuideTracker
 		return GuidePlan.forPatch(projection,
 			snapshot == null ? null : snapshot.getCompost(),
 			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
-			protection.isProtecting(group, chosen), runTypes.isHarvestOnly(group), patchesToTreat);
+			protection.isProtecting(group, chosen), runTypes.isHarvestOnly(group), patchesToTreat,
+			expectedYield(projection, snapshot));
+	}
+
+	/**
+	 * What one full pick of this patch is expected to yield, for the seed-box nudge.
+	 *
+	 * <p>The same model the estimate prices runs with and the harvest log validates against,
+	 * asked with {@code FarmingBonuses.NONE} deliberately: bonuses only raise the figure, so
+	 * leaving them out under-counts — the nudge fires a little less often, which is the right
+	 * way for advice to be wrong. Zero when there is nothing to pick or the crop maps to no
+	 * seed, and zero disables the nudge in {@code GuidePlan}.
+	 */
+	private double expectedYield(PatchProjection projection, @Nullable PatchSnapshot snapshot)
+	{
+		if (!projection.hasProduceToPick())
+		{
+			return 0;
+		}
+
+		Seed growing = Seed.forProduce(projection.getProduce());
+		CompostTier applied = snapshot == null || snapshot.getCompost() == null
+			? CompostTier.NONE
+			: snapshot.getCompost();
+		return com.dooglemaps.timer.CropYieldModel.expected(growing, seeds.getFarmingLevel(),
+			applied, com.dooglemaps.timer.FarmingBonuses.NONE);
 	}
 
 	/**
@@ -1446,8 +1684,7 @@ public class GuideTracker
 		int count = 0;
 		for (FarmPatch other : stop.getPatches())
 		{
-			if (compost.get(groups.groupFor(other)) != tier
-				|| stop.getServiced().contains(other.getKey()))
+			if (compost.get(groups.groupFor(other)) != tier)
 			{
 				continue;
 			}
@@ -1485,10 +1722,6 @@ public class GuideTracker
 	{
 		for (FarmPatch patch : stop.getPatches())
 		{
-			if (stop.getServiced().contains(patch.getKey()))
-			{
-				continue;
-			}
 			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 			if (projection != null && projection.needsHealthCheck())
 			{
@@ -1505,7 +1738,11 @@ public class GuideTracker
 
 		for (Produce produce : Produce.values())
 		{
-			if (!produce.isCrop())
+			// Notable, not merely a crop: the compost tiers are Produce too, for the bin's
+			// sake, and scanning for isCrop() here told a player at Prifddinas to "note" the
+			// ultracompost they had just withdrawn — which hands it back to him, which raised
+			// the withdrawal again, forever.
+			if (!produce.isNotable())
 			{
 				continue;
 			}
@@ -1582,16 +1819,20 @@ public class GuideTracker
 	/**
 	 * The best way of getting to the current destination, and where that thing is.
 	 *
-	 * <p>Built from {@link TeleportItems}, not from Shortest Path's transport strings. Those
-	 * strings are for reading, not for matching — they are another plugin's display text and
-	 * would have to be parsed, which breaks the moment it rewords one. The teleport table is
-	 * already the plugin's own answer to "what reaches this region", it is a table of facts about
-	 * items rather than advice, and it is what the bank loadout is built on, so using it here
-	 * keeps the two agreeing.
+	 * <p><b>Shortest Path's own pick first</b>, when it resolves to something clickable on the
+	 * player. This method used to be built from {@link TeleportItems} alone, on the reasoning
+	 * that the router's strings are for reading, not matching — but {@code RouteItem} has since
+	 * learned to resolve them best-effort (items and now spells), and the route on screen is
+	 * the best travel advice in the client: it planned the whole journey with the player's own
+	 * transport settings. Highlighting our table's pick while the drawn line uses something
+	 * else was the guide arguing with the map. Reported from play: "Route: Camelot teleport"
+	 * with the spell nowhere highlighted.
 	 *
-	 * <p>Carried beats banked beats neither, which is the order of how much work each costs.
-	 * "Neither" is still worth returning: the portal nexus and the jewellery box get you places
-	 * without owning any item, so a destination alone is enough to highlight something.
+	 * <p>When nothing of the route's resolves, the {@link TeleportItems} table takes over as
+	 * before — carried beats banked beats neither, which is the order of how much work each
+	 * costs. "Neither" is still worth returning: the portal nexus and the jewellery box get
+	 * you places without owning any item, so a destination alone is enough to highlight
+	 * something.
 	 */
 	@Nullable
 	private TravelHint travelHint(@Nullable String destination)
@@ -1599,6 +1840,21 @@ public class GuideTracker
 		if (destination == null)
 		{
 			return null;
+		}
+
+		TeleportSpell spell = routeItem.currentSpell();
+		if (spell != null)
+		{
+			return TravelHint.bySpell(spell.getSpellName(), destination, spell.getComponent());
+		}
+
+		// Only when carried: a route item still in the bank is a detour, and the table below
+		// already words banked teleports in the way the panel expects.
+		int routed = routeItem.currentItemId();
+		if (routed != -1 && carried.has(routed))
+		{
+			return new TravelHint(routed, routeItem.currentName(), destination,
+				TravelHint.Where.CARRIED);
 		}
 
 		TeleportItems.Teleport banked = null;
@@ -1721,8 +1977,15 @@ public class GuideTracker
 	 */
 	private List<FarmPatch> sortedByDistance(RunStop stop, WorldPoint player)
 	{
+		// Every patch at the stop, deliberately including ones already touched this run. This
+		// used to drop the stop's serviced set, which was safe while "serviced" meant "planted"
+		// — but the capture layer now reports every varbit change, so the first harvest marked
+		// the patch serviced and the guide crossed it off with the compost and replant still
+		// undone: the step went straight from harvesting to travel, and the leprechaun errands
+		// were the only voice left. Reported from play, at Troll Stronghold and the protected
+		// herbs both. A patch with nothing left produces no steps anyway — outstandingFor is
+		// derived from state — so there is nothing here for a finished patch to break.
 		List<FarmPatch> ordered = new ArrayList<>(stop.getPatches());
-		ordered.removeIf(patch -> stop.getServiced().contains(patch.getKey()));
 		ordered.sort((a, b) -> Integer.compare(distance(player, a), distance(player, b)));
 		contractFirst(ordered);
 		return ordered;

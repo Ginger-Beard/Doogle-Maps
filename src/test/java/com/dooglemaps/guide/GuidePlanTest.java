@@ -104,6 +104,107 @@ public class GuidePlanTest
 	}
 
 	/**
+	 * A harvest bigger than the free space pockets the loose seeds first.
+	 *
+	 * <p>Seeds stack, but each loose type still holds a slot, and in front of a yield that
+	 * will not fit those slots are the difference between one noting trip and two. Requested
+	 * from play: the seed box was being carried anyway, and the guide let the slots go to
+	 * waste.
+	 */
+	@Test
+	public void anOverflowingHarvestPocketsLooseSeedsFirst()
+	{
+		FarmPatch patch = statePatch(10);      // potatoes, harvestable
+		stockInventory(Seed.POTATO, 9);        // loose in the pack
+		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
+
+		List<GuideStep> steps = GuidePlan.forPatch(
+			growthTimer.project(patch, patches.get(patch)),
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 1, 40);
+
+		assertEquals(GuideAction.FILL_SEED_BOX, steps.get(0).getAction());
+		assertEquals("the box is the thing to click",
+			net.runelite.api.gameval.ItemID.SEED_BOX, steps.get(0).getItemId());
+		assertEquals(GuideAction.HARVEST, steps.get(1).getAction());
+	}
+
+	/** A yield that fits leaves the seeds where they are. */
+	@Test
+	public void aHarvestThatFitsLeavesTheSeedsAlone()
+	{
+		FarmPatch patch = statePatch(10);
+		stockInventory(Seed.POTATO, 9);
+		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
+
+		List<GuideStep> steps = GuidePlan.forPatch(
+			growthTimer.project(patch, patches.get(patch)),
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 1, 5);
+
+		assertEquals("five potatoes fit in twenty-seven slots",
+			GuideAction.HARVEST, steps.get(0).getAction());
+	}
+
+	/** No box carried means nothing to suggest — the advice needs the box to exist. */
+	@Test
+	public void noSeedBoxMeansNoPocketingStep()
+	{
+		FarmPatch patch = statePatch(10);
+		stockInventory(Seed.POTATO, 9);
+		carrying();
+
+		List<GuideStep> steps = GuidePlan.forPatch(
+			growthTimer.project(patch, patches.get(patch)),
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 1, 40);
+
+		assertEquals(GuideAction.HARVEST, steps.get(0).getAction());
+	}
+
+	/** Nothing loose in the pack means nothing to pocket. */
+	@Test
+	public void noLooseSeedsMeansNoPocketingStep()
+	{
+		FarmPatch patch = statePatch(10);
+		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
+
+		List<GuideStep> steps = GuidePlan.forPatch(
+			growthTimer.project(patch, patches.get(patch)),
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 1, 40);
+
+		assertEquals(GuideAction.HARVEST, steps.get(0).getAction());
+	}
+
+	/** Once the pack is actually full, noting is the fix and the box step stays out of the way. */
+	@Test
+	public void aFullPackNotesRatherThanShufflesSeeds()
+	{
+		FarmPatch patch = statePatch(10);
+		stockInventory(Seed.POTATO, 9);
+
+		int[] items = new int[28 * 2];
+		for (int i = 0; i < 27; i++)
+		{
+			items[i * 2] = 1000 + i;
+			items[i * 2 + 1] = 1;
+		}
+		items[54] = net.runelite.api.gameval.ItemID.SEED_BOX;
+		items[55] = 1;
+		carrying(items);
+
+		List<GuideStep> steps = GuidePlan.forPatch(
+			growthTimer.project(patch, patches.get(patch)),
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 1, 40);
+
+		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
+		assertTrue("no seed-box step anywhere in the list",
+			steps.stream().noneMatch(step -> step.getAction() == GuideAction.FILL_SEED_BOX));
+	}
+
+	/**
 	 * A full inventory changes the instruction, not just adds to it.
 	 *
 	 * <p>Telling someone to keep harvesting into a pack with no room is the sort of guidance
@@ -318,6 +419,7 @@ public class GuidePlanTest
 		FarmPatch patch = statePatch(3);    // raked, empty
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
 		carrying(CompostTier.ULTRACOMPOST.getItemID(), 1);
+		stockInventory(Seed.POTATO, 10);
 
 		GuideStep step = firstStep(patch, Seed.POTATO);
 		assertEquals(GuideAction.APPLY_COMPOST, step.getAction());
@@ -331,6 +433,7 @@ public class GuidePlanTest
 		FarmPatch patch = statePatch(3);
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
 		carrying();
+		stockInventory(Seed.POTATO, 10);
 
 		GuideStep step = firstStep(patch, Seed.POTATO);
 		assertEquals(GuideAction.WITHDRAW_COMPOST, step.getAction());
@@ -348,6 +451,7 @@ public class GuidePlanTest
 	{
 		FarmPatch patch = statePatch(3);
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
+		stockInventory(Seed.POTATO, 10);
 
 		carrying();
 		GuideStep withdraw = firstStep(patch, Seed.POTATO);
@@ -377,6 +481,7 @@ public class GuidePlanTest
 	{
 		FarmPatch patch = statePatch(3);
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
+		stockInventory(Seed.POTATO, 10);
 
 		carrying(net.runelite.api.gameval.ItemID.BOTTOMLESS_COMPOST_BUCKET, 1);
 		assertEquals("the empty bucket still counts as owning one",
@@ -400,11 +505,12 @@ public class GuidePlanTest
 		FarmPatch patch = statePatch(3);
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
 		carrying(CompostTier.ULTRACOMPOST.getItemID(), 1);
+		stockInventory(Seed.POTATO, 10);
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, 0);
 
 		assertEquals(GuideAction.WITHDRAW_COMPOST, steps.get(0).getAction());
 		assertTrue("and it should ask for the three still missing, not all four: "
@@ -418,11 +524,12 @@ public class GuidePlanTest
 		FarmPatch patch = statePatch(3);
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
 		carrying(CompostTier.ULTRACOMPOST.getItemID(), 4);
+		stockInventory(Seed.POTATO, 10);
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, 0);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
 	}
@@ -454,11 +561,12 @@ public class GuidePlanTest
 		FarmPatch patch = statePatch(3);
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
 		carrying();
+		stockInventory(Seed.POTATO, 10);
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, 0);
 
 		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("4"));
 	}
@@ -478,6 +586,28 @@ public class GuidePlanTest
 		assertEquals(Seed.POTATO.getItemID(), step.getItemId());
 		assertTrue("three per allotment should be said, not assumed",
 			step.getText().contains("3"));
+	}
+
+	/**
+	 * Seeds in the bank are not seeds on the trip, and the patch asks for nothing at all.
+	 *
+	 * <p>Reported from play at Prifddinas: "Plant 3 snape grass seeds" stood at the top of the
+	 * list, unperformable, while the seeds sat in the bank — restarting the run and reselecting
+	 * the seed changed nothing, because the allocation counts every place seeds are kept. It
+	 * does so on purpose (it also feeds the loadout, where "go and get them" is the point), so
+	 * the this-trip test lives at the patch. No compost step either: treating a patch that
+	 * cannot be planted is preparation for nothing.
+	 */
+	@Test
+	public void seedsInTheBankProduceNoStepsAtThePatch()
+	{
+		FarmPatch patch = statePatch(3);   // raked, empty
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
+		carrying(CompostTier.ULTRACOMPOST.getItemID(), 4);
+		stock(SeedSource.BANK, Seed.POTATO, 20);
+
+		assertTrue("an instruction that cannot be followed is worse than none",
+			steps(patch, Seed.POTATO).isEmpty());
 	}
 
 	/**
@@ -702,7 +832,7 @@ public class GuidePlanTest
 		assertTrue("a harvest-only run is finished with this patch",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch), null,
 				seeds, compost, carried, leprechaun, barbarian,
-				/* protecting */ false, /* harvestOnly */ true, 1).isEmpty());
+				/* protecting */ false, /* harvestOnly */ true, 1, 0).isEmpty());
 	}
 
 	/** The first instruction for this patch once its varbit reads the given value. */
@@ -884,7 +1014,7 @@ public class GuidePlanTest
 		assertTrue("nothing to do here on a harvest-only visit",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch),
 				null, seeds, compost, carried, leprechaun, barbarian,
-				false, /* harvestOnly */ true, 1).isEmpty());
+				false, /* harvestOnly */ true, 1, 0).isEmpty());
 	}
 
 	/**
@@ -922,6 +1052,7 @@ public class GuidePlanTest
 	public void aGrapePatchAsksForSaltpetreBeforeTheSeed()
 	{
 		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.GRAPES).get(0);
+		stockInventory(Seed.GRAPE, 10);
 
 		recordValue(patch, 0);
 		GuideStep treat = firstStep(patch, Seed.GRAPE);
@@ -945,7 +1076,7 @@ public class GuidePlanTest
 		assertNotNull("fixture patch has no projection", projection);
 		return GuidePlan.forPatch(projection,
 			patches.get(patch) == null ? null : patches.get(patch).getCompost(),
-			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1);
+			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1, 0);
 	}
 
 	private GuideStep firstStep(FarmPatch patch, Seed chosen)

@@ -44,7 +44,7 @@ public class TravelHint
 	/** The teleport item, or -1 when nothing owned reaches this stop. */
 	int itemId;
 
-	/** What it is called, for the panel. Null when there is no item. */
+	/** What it is called — the item's name, or the spell's. Null when there is neither. */
 	@Nullable
 	String itemName;
 
@@ -53,8 +53,46 @@ public class TravelHint
 
 	Where where;
 
+	/**
+	 * The spellbook component to outline when the route travels by spell, or -1.
+	 *
+	 * <p>A third kind of thing to point at, alongside the item and the destination. A spell
+	 * is always "carried" — it is on the player or nowhere — so {@code where} says nothing
+	 * useful about it; what the overlay needs is the widget, and the magic tab stone when
+	 * that widget is not on screen.
+	 */
+	int spellComponent;
+
+	// Written out because Lombok stops generating the all-args constructor the moment an
+	// explicit one exists, and the convenience form below needs to delegate to it.
+	private TravelHint(int itemId, @Nullable String itemName, String destination, Where where,
+		int spellComponent)
+	{
+		this.itemId = itemId;
+		this.itemName = itemName;
+		this.destination = destination;
+		this.where = where;
+		this.spellComponent = spellComponent;
+	}
+
+	TravelHint(int itemId, @Nullable String itemName, String destination, Where where)
+	{
+		this(itemId, itemName, destination, where, -1);
+	}
+
+	/** A hint that travels by spell: nothing in the pack to mark, everything in the book. */
+	static TravelHint bySpell(String spellName, String destination, int spellComponent)
+	{
+		return new TravelHint(-1, spellName, destination, Where.CARRIED, spellComponent);
+	}
+
 	public boolean hasItem()
 	{
 		return itemId != -1;
+	}
+
+	public boolean isSpell()
+	{
+		return spellComponent != -1;
 	}
 }

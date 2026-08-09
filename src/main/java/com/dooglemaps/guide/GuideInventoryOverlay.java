@@ -77,15 +77,17 @@ public class GuideInventoryOverlay extends Overlay
 	private final GuideTracker tracker;
 	private final DoogleMapsConfig config;
 	private final ItemManager itemManager;
+	private final CarriedItems carried;
 
 	@Inject
 	GuideInventoryOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
-		ItemManager itemManager)
+		ItemManager itemManager, CarriedItems carried)
 	{
 		this.client = client;
 		this.tracker = tracker;
 		this.config = config;
 		this.itemManager = itemManager;
+		this.carried = carried;
 
 		setPosition(OverlayPosition.DYNAMIC);
 		setLayer(OverlayLayer.ABOVE_WIDGETS);
@@ -126,6 +128,12 @@ public class GuideInventoryOverlay extends Overlay
 		// after the withdrawal was done.
 		if (step.itemIsInStore())
 		{
+			// Until his interface is open there is no slot to mark, and nothing else is marked
+			// in its place. This used to fall back to lighting the item in the pack so a bucket
+			// return showed *something* before the store opened — but a lit bucket in the
+			// inventory reads as "click this here", which is exactly the wrong instruction when
+			// the click is on him. Reported from play, at Prifddinas. The leprechaun himself is
+			// outlined by GuideOverlay, and that is the whole of the "click him first" cue.
 			highlightInLeprechaunStore(graphics, step.getItemId(), colour,
 				step.itemIsOnYourSideOfTheStore());
 		}
@@ -167,12 +175,123 @@ public class GuideInventoryOverlay extends Overlay
 			highlightJewelleryCategory(graphics, hint.getDestination(), colour);
 		}
 
+		// The route travels by spell: the click is in the spellbook, or on the magic tab
+		// stone that opens it. Nothing in the pack to mark either way.
+		if (hint.isSpell())
+		{
+			highlightSpell(graphics, hint.getSpellComponent(), colour);
+			return;
+		}
+
 		// In the bank it is a withdrawal, marked there in the withdraw colour by
 		// BankHighlightOverlay rather than here — this would draw a second, differently coloured
 		// marker on the same slot.
 		if (hint.hasItem() && hint.getWhere() == TravelHint.Where.CARRIED)
 		{
 			highlightInInventory(graphics, hint.getItemId(), colour);
+			highlightTabStoneFor(graphics, hint.getItemId(), colour);
+		}
+	}
+
+	/**
+	 * The side-stone tabs that reveal each place a travel click can live, across the three
+	 * interface layouts. Only one layout's widgets exist at a time, so all three are listed
+	 * and the hidden ones cost nothing.
+	 *
+	 * <p>STONE3/4/6 are inventory, worn equipment and magic — verified against the legacy
+	 * {@code ComponentID} tab constants, whose values these are.
+	 */
+	private static final int[] INVENTORY_STONES = {
+		InterfaceID.Toplevel.STONE3,
+		InterfaceID.ToplevelOsrsStretch.STONE3,
+		InterfaceID.ToplevelPreEoc.STONE3,
+	};
+	private static final int[] EQUIPMENT_STONES = {
+		InterfaceID.Toplevel.STONE4,
+		InterfaceID.ToplevelOsrsStretch.STONE4,
+		InterfaceID.ToplevelPreEoc.STONE4,
+	};
+	private static final int[] MAGIC_STONES = {
+		InterfaceID.Toplevel.STONE6,
+		InterfaceID.ToplevelOsrsStretch.STONE6,
+		InterfaceID.ToplevelPreEoc.STONE6,
+	};
+
+	/**
+	 * Marks a teleport spell: the spell itself when it is on screen, the magic tab when not.
+	 *
+	 * <p>Two steps for the price of one visibility test. Every spell is a child of the one
+	 * spellbook interface and the game hides the books that are not current, so the spell's
+	 * widget is visible exactly when it can be clicked — and when it is not, the magic stone
+	 * is the click that gets there. (On the wrong spellbook the stone stays lit with the tab
+	 * already open; there is genuinely nothing better to point at, since swapping books is a
+	 * trip this overlay cannot make for anyone.)
+	 */
+	private void highlightSpell(Graphics2D graphics, int component, Color colour)
+	{
+		Widget spell = client.getWidget(component);
+		if (spell != null && !spell.isHidden())
+		{
+			outline(graphics, spell.getBounds(), colour);
+			return;
+		}
+		outlineStones(graphics, MAGIC_STONES, colour);
+	}
+
+	/**
+	 * Marks the tab stone that reveals a carried travel item, when its panel is closed.
+	 *
+	 * <p>The item highlight only lands on a visible widget, so with the inventory covered or
+	 * another tab open the instruction used to vanish entirely — the panel named the teleport
+	 * and nothing on screen showed the way to it. The stone is the missing first click:
+	 * inventory stone for something in the pack, worn-equipment stone for something being
+	 * worn, and nothing at all once the right panel is already open, because then the item
+	 * itself is lit.
+	 */
+	private void highlightTabStoneFor(Graphics2D graphics, int itemId, Color colour)
+	{
+		if (carried.getInventoryCount(itemId) > 0)
+		{
+			Widget inventory = client.getWidget(InterfaceID.Inventory.ITEMS);
+			if (inventory == null || inventory.isHidden())
+			{
+				outlineStones(graphics, INVENTORY_STONES, colour);
+			}
+			return;
+		}
+
+		// Not in the pack but carried — worn, then. Equipped teleports are clicked on the
+		// equipment tab, so that stone is the way to them.
+		if (carried.has(itemId) && !wornViewOpen())
+		{
+			outlineStones(graphics, EQUIPMENT_STONES, colour);
+		}
+	}
+
+	/** Whether either worn-equipment view is on screen. */
+	private boolean wornViewOpen()
+	{
+		for (int slot : WORN_SLOTS)
+		{
+			Widget widget = client.getWidget(slot);
+			if (widget != null && !widget.isHidden())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** Outlines whichever layout's copy of a tab stone is actually on screen. */
+	private void outlineStones(Graphics2D graphics, int[] stones, Color colour)
+	{
+		for (int stone : stones)
+		{
+			Widget widget = client.getWidget(stone);
+			if (widget != null && !widget.isHidden())
+			{
+				outline(graphics, widget.getBounds(), colour);
+			}
 		}
 	}
 
@@ -190,9 +309,9 @@ public class GuideInventoryOverlay extends Overlay
 	 */
 	private void highlightDestinationRow(Graphics2D graphics, String destination, Color colour)
 	{
-		for (Widget row : matchingRows(destination))
+		for (Rectangle row : matchingRows(destination))
 		{
-			outline(graphics, row.getBounds(), colour);
+			outline(graphics, row, colour);
 		}
 	}
 
@@ -209,7 +328,7 @@ public class GuideInventoryOverlay extends Overlay
 	 * default mistake in an overlay, because render is where the drawing goes and the searching
 	 * ends up there with it.
 	 */
-	private java.util.List<Widget> matchingRows(String destination)
+	private java.util.List<Rectangle> matchingRows(String destination)
 	{
 		int tick = client.getTickCount();
 		if (tick == scannedRowTick && destination.equals(scannedRowFor))
@@ -219,8 +338,14 @@ public class GuideInventoryOverlay extends Overlay
 
 		scannedRowTick = tick;
 		scannedRowFor = destination;
-		scannedRows = new java.util.ArrayList<>();
 
+		// Clipped to the list each row was found in, because a scrolling list draws only a
+		// window of itself while the rows keep their full laid-out bounds — so the outline for
+		// a row near the edge spilled past the nexus's frame onto the interface around it.
+		// Reported from play, as cosmetic, which is exactly what an unclipped rectangle looks
+		// like. A row reachable from two scanned containers — the nexus universe and its rows
+		// layer overlap by construction — keeps the tightest rectangle it got.
+		Map<Widget, Rectangle> found = new HashMap<>();
 		java.util.List<String> seen = new java.util.ArrayList<>();
 		for (int listId : HouseTeleports.DESTINATION_LISTS)
 		{
@@ -241,21 +366,81 @@ public class GuideInventoryOverlay extends Overlay
 				seen.add(text);
 				if (HouseTeleports.namesTheSamePlace(text, destination))
 				{
-					scannedRows.add(row);
+					Rectangle clipped = textBounds(row).intersection(list.getBounds());
+					Rectangle already = found.get(row);
+					found.put(row, already == null
+						? clipped
+						: already.intersection(clipped));
 				}
 			}
 		}
 
-		if (!seen.isEmpty() && scannedRows.isEmpty())
+		scannedRows = new java.util.ArrayList<>();
+		for (Rectangle bounds : found.values())
+		{
+			if (!bounds.isEmpty())
+			{
+				scannedRows.add(bounds);
+			}
+		}
+
+		if (!seen.isEmpty() && found.isEmpty())
 		{
 			noteUnmatched(destination, seen);
 		}
 		return scannedRows;
 	}
 
-	private java.util.List<Widget> scannedRows = new java.util.ArrayList<>();
+	private java.util.List<Rectangle> scannedRows = new java.util.ArrayList<>();
 	private String scannedRowFor = "";
 	private int scannedRowTick = -1;
+
+	/** Room past the last letter, so the box does not sit against the glyphs. */
+	private static final int ROW_TEXT_PADDING = 3;
+
+	/**
+	 * A row's outline, no wider than its words.
+	 *
+	 * <p>A destination row's widget is as wide as the list lays it out — often the full
+	 * interface — so outlining its bounds drew a box sailing far past "Weiss" into empty
+	 * panel. Reported from play as the highlight pushing past the interface. The text is
+	 * what the player is looking for, so the box now ends just after the last letter,
+	 * measured with the row's own game font and placed the way the widget aligns its text.
+	 *
+	 * <p>Falls back to the full bounds when there is nothing to measure with — a missing
+	 * font, or text wider than the row, where clamping would cut letters off.
+	 */
+	static Rectangle textBounds(Widget row)
+	{
+		Rectangle bounds = row.getBounds();
+		net.runelite.api.FontTypeFace font = row.getFont();
+		String text = net.runelite.client.util.Text.removeTags(row.getText());
+		if (font == null || text == null || text.isEmpty())
+		{
+			return bounds;
+		}
+
+		int width = font.getTextWidth(text) + ROW_TEXT_PADDING * 2;
+		if (width >= bounds.width)
+		{
+			return bounds;
+		}
+
+		int x;
+		switch (row.getXTextAlignment())
+		{
+			case net.runelite.api.widgets.WidgetTextAlignment.CENTER:
+				x = bounds.x + (bounds.width - width) / 2;
+				break;
+			case net.runelite.api.widgets.WidgetTextAlignment.RIGHT:
+				x = bounds.x + bounds.width - width;
+				break;
+			default:
+				x = bounds.x;
+				break;
+		}
+		return new Rectangle(x, bounds.y, width, bounds.height);
+	}
 
 	/** The destination a miss was last reported for, so it is said once rather than every frame. */
 	private String loggedUnmatchedFor;
@@ -461,7 +646,7 @@ public class GuideInventoryOverlay extends Overlay
 	 * <p>Without it, telling someone to withdraw ultracompost lit up the leprechaun and then
 	 * left them to find it among a dozen identical-looking buckets.
 	 */
-	private void highlightInLeprechaunStore(Graphics2D graphics, int itemId, Color colour,
+	private boolean highlightInLeprechaunStore(Graphics2D graphics, int itemId, Color colour,
 		boolean yourSide)
 	{
 		// Whose column to point at, not which layout happens to be up.
@@ -483,7 +668,7 @@ public class GuideInventoryOverlay extends Overlay
 
 		if (widget == null || widget.isHidden())
 		{
-			return;
+			return false;
 		}
 
 		// The slot is outlined, not filled with an item sprite. These are panels — a label, a
@@ -497,6 +682,7 @@ public class GuideInventoryOverlay extends Overlay
 		graphics.setColor(colour);
 		graphics.setStroke(new BasicStroke(2f));
 		graphics.draw(bounds);
+		return true;
 	}
 
 	private void drawItemHighlight(Graphics2D graphics, Rectangle bounds, int itemId,

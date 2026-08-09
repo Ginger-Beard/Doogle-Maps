@@ -82,6 +82,84 @@ public class RouteItemTest
 		assertEquals(-1, route.currentItemId());
 	}
 
+	/**
+	 * A spell-shaped hop resolves to the spell, so the guide has something to point at.
+	 *
+	 * <p>The reported gap: "Route: Camelot teleport" named the router's pick while nothing on
+	 * screen showed where to click, because a spell matches no owned item and fell through.
+	 */
+	@Test
+	public void aSpellShapedTransportResolvesToTheSpell() throws Exception
+	{
+		RouteItem route = routeWith(
+			Arrays.asList("Fairy ring BIQ", "Camelot Teleport"),
+			names(NECKLACE, "Games necklace(8)"),
+			NECKLACE);
+
+		assertEquals(com.dooglemaps.guide.TeleportSpell.CAMELOT, route.currentSpell());
+		assertEquals("Camelot Teleport", route.currentName());
+		assertEquals("a spell is not an item", -1, route.currentItemId());
+	}
+
+	/** A carried tablet with the spell's name wins: one click where the spell is two. */
+	@Test
+	public void anOwnedTabletBeatsTheSpellReadingOfTheSameWords() throws Exception
+	{
+		RouteItem route = routeWith(
+			Collections.singletonList("Camelot Teleport"),
+			names(HOUSE_TAB, "Camelot teleport"),
+			HOUSE_TAB);
+
+		assertEquals(HOUSE_TAB, route.currentItemId());
+		assertNull(route.currentSpell());
+	}
+
+	/**
+	 * A tablet in the <b>bank</b> must not block the spell reading of the same words.
+	 *
+	 * <p>The reported gap: "Teleport to House via Weiss Portal" resolved to house tablets
+	 * sitting in the bank, the spell was never considered, and the travel hint — rightly
+	 * refusing to point at something not carried — showed nothing at all. The spell is
+	 * castable from where the player is standing; the tablets are a detour.
+	 */
+	@Test
+	public void aBankedTabletDoesNotBlockTheSpell() throws Exception
+	{
+		RouteItem route = routeWithBanked(
+			Collections.singletonList("Teleport to House via Weiss Portal"),
+			names(HOUSE_TAB, "Teleport to house"),
+			HOUSE_TAB);
+
+		assertEquals(com.dooglemaps.guide.TeleportSpell.TELEPORT_TO_HOUSE, route.currentSpell());
+		assertEquals(-1, route.currentItemId());
+	}
+
+	/** With no spell reading at all, a banked item still resolves - the bank marks it. */
+	@Test
+	public void aBankedItemWithNoSpellReadingStillResolves() throws Exception
+	{
+		RouteItem route = routeWithBanked(
+			Collections.singletonList("Games necklace (Barbarian Outpost)"),
+			names(NECKLACE, "Games necklace(8)"),
+			NECKLACE);
+
+		assertEquals(NECKLACE, route.currentItemId());
+		assertNull(route.currentSpell());
+	}
+
+	/** Path order still rules: an item hop before a spell hop is the next actual click. */
+	@Test
+	public void anEarlierItemHopBeatsALaterSpellHop() throws Exception
+	{
+		RouteItem route = routeWith(
+			Arrays.asList("Games necklace (Barbarian Outpost)", "Camelot Teleport"),
+			names(NECKLACE, "Games necklace(8)"),
+			NECKLACE);
+
+		assertEquals(NECKLACE, route.currentItemId());
+		assertNull(route.currentSpell());
+	}
+
 	// ------------------------------------------------------------------- helpers
 
 	private static Map<Integer, String> names(Object... idThenName)
@@ -114,11 +192,41 @@ public class RouteItemTest
 			ids.add(id);
 		}
 		when(carried.getItemIds()).thenReturn(ids);
+		when(carried.has(Mockito.anyInt()))
+			.thenAnswer(i -> ids.contains(i.<Integer>getArgument(0)));
 
 		Client client = Mockito.mock(Client.class);
 
 		Constructor<?> constructor = RouteItem.class.getDeclaredConstructors()[0];
 		constructor.setAccessible(true);
 		return (RouteItem) constructor.newInstance(router, itemNames, bank, carried, client);
+	}
+
+	/** The same, but the items are in the bank rather than on the player. */
+	private static RouteItem routeWithBanked(java.util.List<String> transports,
+		Map<Integer, String> names, int... bankedIds) throws Exception
+	{
+		ShortestPathIntegration router = Mockito.mock(ShortestPathIntegration.class);
+		when(router.getCurrentTransports()).thenReturn(transports);
+
+		ItemNames itemNames = Mockito.mock(ItemNames.class);
+		when(itemNames.get(anyInt(), any())).thenAnswer(i ->
+			names.getOrDefault(i.<Integer>getArgument(0), i.getArgument(1)));
+
+		BankContents bank = Mockito.mock(BankContents.class);
+		java.util.LinkedHashSet<Integer> ids = new java.util.LinkedHashSet<>();
+		for (int id : bankedIds)
+		{
+			ids.add(id);
+		}
+		when(bank.getItemIds()).thenReturn(ids);
+
+		CarriedItems carried = Mockito.mock(CarriedItems.class);
+		when(carried.getItemIds()).thenReturn(new java.util.LinkedHashSet<>());
+
+		Constructor<?> constructor = RouteItem.class.getDeclaredConstructors()[0];
+		constructor.setAccessible(true);
+		return (RouteItem) constructor.newInstance(router, itemNames, bank, carried,
+			Mockito.mock(Client.class));
 	}
 }

@@ -93,18 +93,22 @@ public class CompostSelectionStore extends ProfileJsonStore
 		synchronized (this)
 		{
 			byGroup.put(group.getKey(), tier);
-			// The type-wide choice tracks the unsplit group, so anything still asking by type —
-			// and turning the split back off — sees the answer the player last gave for "all of
-			// them" rather than one they gave for a subset. A contract is a subset for the same
-			// reason a protected split is: ultra on the one patch that pays a seed pack does not
-			// mean ultra on every herb patch you own.
-			if (!group.isProtectedOnly() && !group.isContract())
-			{
-				set(group.getType(), tier);
-				return;
-			}
-			save();
 		}
+
+		// The type-wide choice tracks the unsplit group, so anything still asking by type —
+		// and turning the split back off — sees the answer the player last gave for "all of
+		// them" rather than one they gave for a subset. A contract is a subset for the same
+		// reason a protected split is: ultra on the one patch that pays a seed pack does not
+		// mean ultra on every herb patch you own.
+		//
+		// Outside the monitor, like the save below it — set(type) saves, and a save fires
+		// ConfigChanged into arbitrary subscribers. See ProfileJsonStore.save.
+		if (!group.isProtectedOnly() && !group.isContract())
+		{
+			set(group.getType(), tier);
+			return;
+		}
+		save();
 
 		log.debug("{} will be treated with {}", group.getKey(), tier);
 		for (Runnable listener : changeListeners)
@@ -153,8 +157,8 @@ public class CompostSelectionStore extends ProfileJsonStore
 				return;
 			}
 			chosen.put(type, tier);
-			save();
 		}
+		save();
 
 		log.debug("{} will be treated with {}", type, tier);
 		for (Runnable listener : changeListeners)

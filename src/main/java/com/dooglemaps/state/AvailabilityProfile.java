@@ -92,14 +92,25 @@ public class AvailabilityProfile extends ProfileJsonStore
 	 * visit the redwood patch however firmly it ticks the box, and letting it try would route
 	 * someone to a wall. See {@link PatchRequirements}.
 	 */
-	public synchronized boolean isAvailable(FarmPatch patch)
+	public boolean isAvailable(FarmPatch patch)
 	{
+		// The level supplier and the state store are both consulted with this store's
+		// monitor released, deliberately. This method used to be synchronized whole, which
+		// held this profile's lock across stateStore.hasSeen — one half of the lock cycle
+		// that froze the client on an Explorer's ring teleport: Swing sat here (holding
+		// this, wanting PatchStateStore) while the client thread sat in a varbit save
+		// (holding PatchStateStore, wanting this through a ConfigChanged subscriber). Only
+		// the toggle read needs the monitor; see ProfileJsonStore.save for the whole story.
 		if (!PatchRequirements.isReachable(patch, farmingLevel.getAsInt()))
 		{
 			return false;
 		}
 
-		Boolean explicit = toggles.get(patch.getKey());
+		Boolean explicit;
+		synchronized (this)
+		{
+			explicit = toggles.get(patch.getKey());
+		}
 		if (explicit != null)
 		{
 			return explicit;
@@ -120,8 +131,10 @@ public class AvailabilityProfile extends ProfileJsonStore
 		synchronized (this)
 		{
 			toggles.put(patch.getKey(), available);
-			save();
 		}
+		// Outside the monitor, like every save in the stores now is — the write fires
+		// ConfigChanged into arbitrary subscribers. See ProfileJsonStore.save.
+		save();
 		fireChanged();
 	}
 
@@ -134,8 +147,8 @@ public class AvailabilityProfile extends ProfileJsonStore
 			{
 				toggles.put(patch.getKey(), available);
 			}
-			save();
 		}
+		save();
 		fireChanged();
 	}
 
@@ -147,13 +160,19 @@ public class AvailabilityProfile extends ProfileJsonStore
 			{
 				toggles.put(patch.getKey(), available);
 			}
-			save();
 		}
+		save();
 		fireChanged();
 	}
 
-	/** The patches of one type this account uses, in world order. */
-	public synchronized List<FarmPatch> getAvailablePatches(PatchImplementation type)
+	/**
+	 * The patches of one type this account uses, in world order.
+	 *
+	 * <p>Not synchronized: {@link #isAvailable} takes the monitor for exactly the toggle
+	 * read, and holding it across the whole loop would put stateStore calls back under this
+	 * store's lock — the nesting the teleport deadlock was made of.
+	 */
+	public List<FarmPatch> getAvailablePatches(PatchImplementation type)
 	{
 		List<FarmPatch> result = new ArrayList<>();
 		for (FarmPatch patch : FarmingWorldData.getPatches(type))
@@ -166,7 +185,7 @@ public class AvailabilityProfile extends ProfileJsonStore
 		return result;
 	}
 
-	public synchronized List<FarmPatch> getAllAvailablePatches()
+	public List<FarmPatch> getAllAvailablePatches()
 	{
 		List<FarmPatch> result = new ArrayList<>();
 		for (FarmPatch patch : FarmingWorldData.getAllPatches())
@@ -185,8 +204,8 @@ public class AvailabilityProfile extends ProfileJsonStore
 		synchronized (this)
 		{
 			toggles.clear();
-			unsetStored();
 		}
+		unsetStored();
 		fireChanged();
 	}
 

@@ -12,6 +12,7 @@ import com.dooglemaps.bank.BankFilter;
 import com.dooglemaps.bank.BankHighlightOverlay;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.guide.CarriedItems;
+import com.dooglemaps.guide.DroppedProduce;
 import com.dooglemaps.guide.GuideInventoryOverlay;
 import com.dooglemaps.guide.GuideOverlay;
 import com.dooglemaps.guide.GuideStepOverlay;
@@ -129,6 +130,9 @@ public class DoogleMapsPlugin extends Plugin
 
 	@Inject
 	private PlayerHouse playerHouse;
+
+	@Inject
+	private DroppedProduce droppedProduce;
 
 	@Inject
 	private ProtectedPatches protectedPatches;
@@ -300,6 +304,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(bankContents);
 		eventBus.register(leprechaunStore);
 		eventBus.register(playerHouse);
+		eventBus.register(droppedProduce);
 		eventBus.register(bankFilter);
 		bankFilter.startUp();
 
@@ -358,6 +363,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(bankContents);
 		eventBus.unregister(leprechaunStore);
 		eventBus.unregister(playerHouse);
+		eventBus.unregister(droppedProduce);
 		eventBus.unregister(bankFilter);
 		bankFilter.shutDown();
 
@@ -392,6 +398,7 @@ public class DoogleMapsPlugin extends Plugin
 		bankContents.reset();
 		leprechaunStore.reset();
 		playerHouse.reset();
+		droppedProduce.reset();
 		protectedPatches.reset();
 		runPlanner.stop();
 	}
@@ -611,7 +618,13 @@ public class DoogleMapsPlugin extends Plugin
 
 		// The supply leg ends when there is nothing left to collect, and that can become true
 		// without a bank event: withdrawing the last seed from the *vault* fires nothing the bank
-		// capture listens for. Cheap — a flag check unless a supply leg is actually in progress.
+		// capture listens for. The flag is refreshed first so the answer is this tick's, not the
+		// guide's last push; cheap either way — the loadout build is cached per tick.
+		if (runPlanner.isActive())
+		{
+			runPlanner.setWithdrawOutstanding(
+				runLoadout.anythingLeftToWithdraw(runPlanner.coveredTypes()));
+		}
 		runPlanner.leaveBank();
 
 		// And a stop can finish without a varbit transition to announce it — a patch never seen

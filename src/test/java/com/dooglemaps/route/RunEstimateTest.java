@@ -95,20 +95,39 @@ public class RunEstimateTest
 
 	/** Ranarr is worth more than guam, so it must be the one that gets planted first. */
 	@Test
-	public void theBetterSeedGoesInFirst()
+	public void theFirstPickedSeedGoesInFirst()
 	{
+		// Ranarr picked first, guam second. The click order is the priority — the yellow
+		// numbers on the seed selector — so the single ranarr takes the first patch and the
+		// guams spill into the rest. This replaced an expected-XP ranking; whichever seed the
+		// model thinks is "better" no longer has a say.
 		RunEstimate estimate = RunEstimate.forRun(
 			patches(PatchImplementation.HERB, 3),
-			seeds(Seed.GUAM, Seed.RANARR),
+			seeds(Seed.RANARR, Seed.GUAM),
 			owned(Seed.GUAM, 100, Seed.RANARR, 1),
 			99, FarmingBonuses.NONE);
 
 		Map<Seed, Integer> filled = new EnumMap<>(Seed.class);
 		estimate.getLines().forEach(l -> filled.merge(l.getSeed(), l.getPatches(), Integer::sum));
 
-		assertEquals("the single ranarr should be used, not skipped",
+		assertEquals("the first pick fills as far as its one seed goes",
 			Integer.valueOf(1), filled.get(Seed.RANARR));
 		assertEquals(Integer.valueOf(2), filled.get(Seed.GUAM));
+
+		// Same seeds picked the other way round: plenty of guam, so it takes every patch and
+		// the ranarr — second in the queue — never comes up. That is the player's stated
+		// order doing exactly what it says, not a seed being "skipped".
+		RunEstimate reversed = RunEstimate.forRun(
+			patches(PatchImplementation.HERB, 3),
+			seeds(Seed.GUAM, Seed.RANARR),
+			owned(Seed.GUAM, 100, Seed.RANARR, 1),
+			99, FarmingBonuses.NONE);
+
+		Map<Seed, Integer> refilled = new EnumMap<>(Seed.class);
+		reversed.getLines().forEach(l -> refilled.merge(l.getSeed(), l.getPatches(), Integer::sum));
+
+		assertEquals("guam first and a hundred deep leaves no patch for the ranarr",
+			Integer.valueOf(3), refilled.get(Seed.GUAM));
 	}
 
 	/** Patches with nothing to put in them are reported rather than silently dropped. */

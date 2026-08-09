@@ -88,6 +88,35 @@ public class PlaceNameMatchTest
 			matches("2: Falador", "Catherby"));
 	}
 
+	/**
+	 * Shortest Path's hop text picks the furniture, through each kind's wiki destination list.
+	 *
+	 * <p>The route already chose how to travel; this matching only reads its choice back. The
+	 * spot checks are the shapes that have burned before: Troll Stronghold once went to the
+	 * jewellery box via "games necklace reaches Burthorpe" — a climb, not an arrival — and a
+	 * bare house-exit "Portal" would match half the hops in the game if it were allowed to.
+	 */
+	@Test
+	public void routeHopsPickTheFurnitureThroughItsDestinations()
+	{
+		assertTrue("Trollheim is on the nexus's attunement list",
+			HouseTeleports.furnitureServesHop("Portal Nexus", "Trollheim Teleport"));
+		assertFalse("and on no jewellery, so the box must not claim the hop",
+			HouseTeleports.furnitureServesHop("Jewellery Box", "Trollheim Teleport"));
+		assertTrue("the skills necklace's Farming Guild is the box's",
+			HouseTeleports.furnitureServesHop("Jewellery Box", "Farming Guild"));
+		assertTrue("Fossil Island belongs to the mounted digsite pendant",
+			HouseTeleports.furnitureServesHop("Digsite Pendant", "Fossil Island"));
+		assertTrue("a single-destination portal carries its destination in its name",
+			HouseTeleports.furnitureServesHop("Varrock Portal", "Varrock Teleport"));
+		assertTrue("the garden's spirit tree covers the spirit tree network",
+			HouseTeleports.furnitureServesHop("Spirit tree", "Etceteria"));
+		assertFalse("no house furniture reaches Prifddinas - the teleport crystal is an item",
+			HouseTeleports.furnitureServesHop("Portal Nexus", "Prifddinas"));
+		assertFalse("a bare exit Portal matches nothing, however the hop is worded",
+			HouseTeleports.furnitureServesHop("Portal", "Varrock Portal"));
+	}
+
 	private static boolean matches(String a, String b) throws Exception
 	{
 		Method method = HouseTeleports.class

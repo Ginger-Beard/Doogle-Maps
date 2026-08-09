@@ -42,6 +42,7 @@ public class SupplyRoutingTest
 	private SeedInventoryStore seeds;
 	private SeedSelectionStore selection;
 	private RunPlanner planner;
+	private com.dooglemaps.state.AvailabilityProfile availability;
 
 	@Before
 	public void setUp() throws Exception
@@ -68,9 +69,10 @@ public class SupplyRoutingTest
 		com.dooglemaps.state.PlayerLocation playerLocation =
 			construct(com.dooglemaps.state.PlayerLocation.class,
 				Mockito.mock(net.runelite.api.Client.class));
+		availability = construct(com.dooglemaps.state.AvailabilityProfile.class, configManager,
+			gson, construct(com.dooglemaps.state.PatchStateStore.class, configManager, gson));
 		planner = construct(RunPlanner.class,
-			construct(com.dooglemaps.state.AvailabilityProfile.class, configManager, gson,
-				construct(com.dooglemaps.state.PatchStateStore.class, configManager, gson)),
+			availability,
 			construct(PatchLocationStore.class, configManager, gson),
 			construct(BankLocationStore.class, configManager, gson),
 			selection,
@@ -82,11 +84,7 @@ public class SupplyRoutingTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
-			// Nothing outstanding on the withdraw list, so these tests keep measuring the seed
-			// routing they were written for rather than the loadout's other errands.
-			(javax.inject.Provider<com.dooglemaps.bank.RunLoadout>)
-				() -> Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
 	}
 
 	private void stock(SeedSource source, Seed seed, int quantity)
@@ -179,6 +177,42 @@ public class SupplyRoutingTest
 		assertFalse("a bank run should not be sent to the Farming Guild specifically",
 			supplyTargets().equals(Set.of(BankLocations.SEED_VAULT)));
 		assertTrue(supplyTargets().size() > 1);
+	}
+
+	/**
+	 * A backup seed the run will not plant must not hold the supply leg open.
+	 *
+	 * <h2>The Camelot detour that never ended</h2>
+	 *
+	 * With seed priorities, picking a spill-over seed is normal: snape grass first, watermelons
+	 * behind it. The allocation gives the watermelons nothing when the snape grass covers every
+	 * patch — so the withdraw list empties once the snape grass is out — but the sources
+	 * question walked the <b>raw</b> selection and demanded a patch's worth of every picked
+	 * seed. The watermelons sitting in the bank held {@code suppliesOutstanding} true forever:
+	 * booths outlined, and the panel reduced to "nothing is picked for this run yet", which was
+	 * wrong twice. Reported from play.
+	 */
+	@Test
+	public void aBackupSeedTheRunWillNotPlantDoesNotHoldTheSupplyLeg()
+	{
+		selection.toggle(Seed.SNAPE_GRASS);          // priority 1: covers every patch
+		selection.toggle(Seed.WATERMELON);           // priority 2: the spill-over, banked
+		stock(SeedSource.INVENTORY, Seed.SNAPE_GRASS, 30);
+		stock(SeedSource.BANK, Seed.WATERMELON, 100);
+
+		for (com.dooglemaps.data.FarmPatch patch : com.dooglemaps.data.FarmingWorldData
+			.getPatches(com.dooglemaps.data.PatchImplementation.ALLOTMENT).subList(0, 2))
+		{
+			availability.setAvailable(patch, true);
+		}
+
+		assertFalse("the run needs patches for this test to mean anything",
+			planner.start(java.util.EnumSet.of(
+				com.dooglemaps.data.PatchImplementation.ALLOTMENT), false).isEmpty());
+
+		assertTrue("snape grass covers the whole run from the pack - banked watermelons are "
+				+ "not an errand, and treating them as one held the bank leg open forever",
+			planner.getSupplySources().isEmpty());
 	}
 
 	@SuppressWarnings("unchecked")

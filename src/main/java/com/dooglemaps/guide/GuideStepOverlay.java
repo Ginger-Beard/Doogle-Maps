@@ -55,10 +55,13 @@ public class GuideStepOverlay extends OverlayPanel
 	/**
 	 * Follow-up steps listed under the current one.
 	 *
-	 * <p>Three, which is enough to see the shape of the stop — note, buckets back, move on —
-	 * without turning the panel into the full checklist it is meant to replace.
+	 * <p>Was three, when the tail read as prose and the panel was trying not to become a
+	 * checklist. A checklist is what the owner asked for — the remaining work at a stop in
+	 * the same shape as the withdraw list, one row per step — so the budget now mirrors the
+	 * bank list's ten rows, which fits the biggest stops, with the overflow line catching
+	 * the rest.
 	 */
-	private static final int MAX_FOLLOWING = 3;
+	private static final int MAX_FOLLOWING = 9;
 
 	private final GuideTracker tracker;
 	private final DoogleMapsConfig config;
@@ -245,10 +248,11 @@ public class GuideStepOverlay extends OverlayPanel
 	/**
 	 * The instruction for the patch in front of you, and what else is left here.
 	 *
-	 * <p>"then" on the first follow-up only. It joins two clauses, which is what it is for; put in
-	 * front of every line it stops being a word and becomes a bullet, and four consecutive lines
-	 * reading "then rake / then compost / then plant" are harder to scan than the bare list they
-	 * are pretending not to be.
+	 * <p>The current step in white, then the rest of the stop as a checklist: one "- " row
+	 * per step, the same shape the withdraw list draws its items in. It used to be prose —
+	 * "then rake / (indent) compost" — which read fine at three follow-ups and stopped
+	 * scanning as the list grew; rows are what it actually is, and matching the bank list
+	 * means the panel has one list style rather than two. (Owner request.)
 	 */
 	private void appendSteps(List<GuideStep> steps)
 	{
@@ -256,8 +260,7 @@ public class GuideStepOverlay extends OverlayPanel
 
 		for (int i = 1; i <= shown(steps.size() - 1); i++)
 		{
-			String text = uncapitalise(steps.get(i).getText());
-			line(i == 1 ? "then " + text : "     " + text, java.awt.Color.LIGHT_GRAY);
+			line("- " + steps.get(i).getText(), java.awt.Color.LIGHT_GRAY);
 		}
 
 		appendOverflow(steps.size() - 1, "more here");
@@ -383,7 +386,20 @@ public class GuideStepOverlay extends OverlayPanel
 	 */
 	private void appendTravelItem(TravelHint hint)
 	{
-		if (hint == null || !hint.hasItem())
+		if (hint == null)
+		{
+			return;
+		}
+
+		// A spell is cast, not used, and it is named in the route's own words — the same ones
+		// the overlay is matching in the spellbook.
+		if (hint.isSpell())
+		{
+			line("Cast " + hint.getItemName() + ".", config.guideHighlightColour());
+			return;
+		}
+
+		if (!hint.hasItem())
 		{
 			return;
 		}
@@ -396,13 +412,4 @@ public class GuideStepOverlay extends OverlayPanel
 				: config.guideHighlightColour());
 	}
 
-	/** Lower-cases a leading capital so "then" can continue a sentence rather than restart it. */
-	private static String uncapitalise(String text)
-	{
-		if (text.length() < 2 || Character.isUpperCase(text.charAt(1)))
-		{
-			return text;
-		}
-		return Character.toLowerCase(text.charAt(0)) + text.substring(1);
-	}
 }

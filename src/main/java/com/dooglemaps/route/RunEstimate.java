@@ -327,11 +327,12 @@ public class RunEstimate
 				usable.add(seed);
 			}
 		}
-		// Ranked without boosts on purpose: which seed is worth most does not change with
-		// compost or secateurs, and re-ranking per tier would make the table's rows disagree
-		// about what got planted where.
-		usable.sort(Comparator.comparingDouble((Seed seed) ->
-			xpFor(seed, yieldFor(seed, level, FarmingBonuses.NONE, CompostTier.NONE))).reversed());
+		// The order they were picked in, which the set already carries: SeedSelectionStore
+		// keeps insertion order end to end, including through its save file. Settled with the
+		// owner — the player's click order is the priority, shown as the yellow numbers on the
+		// seed selector, and it replaces the expected-XP ranking that used to be here. The
+		// player who wants a different order deselects and reselects; no configuration, and
+		// nothing for this method to compute.
 		return usable;
 	}
 

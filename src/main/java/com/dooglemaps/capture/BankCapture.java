@@ -28,11 +28,16 @@ public class BankCapture
 	private final com.dooglemaps.data.ItemNames itemNames;
 	private final net.runelite.client.game.ItemManager itemManager;
 
+	/** For the withdraw list's answer, refreshed ahead of {@code leaveBank}. */
+	private final com.dooglemaps.bank.RunLoadout loadout;
+
 	@Inject
 	BankCapture(Client client, BankLocationStore banks, RunPlanner runPlanner,
 		com.dooglemaps.data.ItemNames itemNames,
-		net.runelite.client.game.ItemManager itemManager)
+		net.runelite.client.game.ItemManager itemManager,
+		com.dooglemaps.bank.RunLoadout loadout)
 	{
+		this.loadout = loadout;
 		this.itemNames = itemNames;
 		this.itemManager = itemManager;
 		this.client = client;
@@ -54,7 +59,13 @@ public class BankCapture
 		// Offered, not asserted. leaveBank ends the leg only once nothing is left to collect —
 		// opening a bank used to be enough on its own, which finished the shopping before any of
 		// it had been done. Called from here as well as from the tick so a withdrawal is acted on
-		// in the same tick it happens.
+		// in the same tick it happens — which is why the flag is refreshed first rather than
+		// trusting the guide's last per-tick push.
+		if (runPlanner.isActive())
+		{
+			runPlanner.setWithdrawOutstanding(
+				loadout.anythingLeftToWithdraw(runPlanner.coveredTypes()));
+		}
 		runPlanner.leaveBank();
 	}
 

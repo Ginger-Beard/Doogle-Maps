@@ -65,6 +65,7 @@ public class BankFilterTest
 	private ClientThread clientThread;
 	private BankContents bank;
 	private RouteItem routeItem;
+	private com.dooglemaps.guide.CarriedItems carried;
 
 	private RecordingBankTags bankTags;
 	private BankFilter filter;
@@ -80,13 +81,15 @@ public class BankFilterTest
 		clientThread = Mockito.mock(ClientThread.class);
 		bank = Mockito.mock(BankContents.class);
 		routeItem = Mockito.mock(RouteItem.class);
+		carried = Mockito.mock(com.dooglemaps.guide.CarriedItems.class);
+		when(carried.getItemIds()).thenReturn(Collections.emptySet());
 
 		bankTags = new RecordingBankTags();
 		when(pluginManager.getPlugins())
 			.thenReturn(Collections.<Plugin>singletonList(bankTags));
 
 		filter = new BankFilter(client, planner, pluginManager, loadout, config,
-			clientThread, bank, routeItem);
+			clientThread, bank, routeItem, carried);
 	}
 
 	@Test

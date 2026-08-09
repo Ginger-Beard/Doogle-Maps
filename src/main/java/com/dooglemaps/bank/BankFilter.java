@@ -1,8 +1,11 @@
 package com.dooglemaps.bank;
 
 import com.dooglemaps.DoogleMapsConfig;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
+import javax.annotation.Nullable;
 import javax.inject.Inject;
 import javax.inject.Singleton;
 import lombok.extern.slf4j.Slf4j;
@@ -146,11 +149,14 @@ public class BankFilter
 	/** The item the current route uses, offered softly - see {@link RouteItem}. */
 	private final RouteItem routeItem;
 
+	/** What is on the player, so the layout can reserve slots for gear already carried. */
+	private final com.dooglemaps.guide.CarriedItems carried;
+
 	@Inject
 	BankFilter(Client client, com.dooglemaps.route.RunPlanner planner,
 		PluginManager pluginManager, RunLoadout loadout,
 		DoogleMapsConfig config, ClientThread clientThread, BankContents bank,
-		RouteItem routeItem)
+		RouteItem routeItem, com.dooglemaps.guide.CarriedItems carried)
 	{
 		this.routeItem = routeItem;
 		this.bank = bank;
@@ -160,6 +166,7 @@ public class BankFilter
 		this.pluginManager = pluginManager;
 		this.loadout = loadout;
 		this.config = config;
+		this.carried = carried;
 	}
 
 	public void startUp()
@@ -284,11 +291,25 @@ public class BankFilter
 			//
 			// Placing everything is the safe direction. A slot reserved for something absent draws
 			// a faded stand-in, which is untidy; a layout with nothing in it is simply broken.
-			Set<Integer> banked = bank.hasBeenSeen() ? bank.getItemIds() : null;
+			//
+			// Carried and worn items count as placeable alongside the bank's contents. The gear
+			// and teleport regions are lists of what the run uses, and most of it is already on
+			// the player — an ectophial in the pack, a rune pouch worn — so gating on the bank
+			// alone laid out three items of a twenty-item loadout, and the rest surfaced
+			// haphazardly as Bank Tags appended their placeholders after the grid. Reported from
+			// play. A carried item's slot renders as the bank's own placeholder for it, or a
+			// faded stand-in, either of which honestly reads "you have this one already" — and
+			// the list is complete and stable from the first open.
+			Set<Integer> banked = bank.hasBeenSeen() ? new HashSet<>(bank.getItemIds()) : null;
+			if (banked != null)
+			{
+				banked.addAll(carried.getItemIds());
+			}
 			laidOutFor = banked;
 			laidOutWanted = wanted;
 
 			int[] slots = BankLayout.build(loadout.forRun(planner.coveredTypes()), map, banked);
+			noteLayout(slots, banked);
 			// The route's own item in slot one - Shortest Path picked it, so it is the next
 			// thing to be clicked and outranks the map for that single slot.
 			BankLayout.pinFirst(slots, routeItem.currentItemId(), banked);
@@ -446,7 +467,11 @@ public class BankFilter
 			return;
 		}
 
-		Set<Integer> now = bank.getItemIds();
+		// The same union saveLayout builds from, or the comparison never settles: the layout
+		// was written from bank-plus-carried, so comparing the bank alone would see a
+		// difference on every tick and rebuild forever.
+		Set<Integer> now = new HashSet<>(bank.getItemIds());
+		now.addAll(carried.getItemIds());
 		if (now.equals(laidOutFor) && wanted.equals(laidOutWanted))
 		{
 			return;
@@ -552,6 +577,57 @@ public class BankFilter
 			log.info("{}", message);
 		}
 	}
+
+	/**
+	 * Says what the layout decided, once per distinct answer.
+	 *
+	 * <p>Added because "only 3 items showed in my gear list" is not diagnosable after the fact:
+	 * the layout is derived from the loadout, the bank and the pack at one instant, and by the
+	 * time it is reported all three have moved on. Same reasoning as the guide's errand-bundle
+	 * line. Names the loadout rows that got no slot — the interesting ones — rather than the
+	 * ids that did.
+	 */
+	private void noteLayout(int[] slots, @Nullable Set<Integer> banked)
+	{
+		int placed = 0;
+		for (int slot : slots)
+		{
+			if (slot != BankLayout.NO_ITEM)
+			{
+				placed++;
+			}
+		}
+
+		List<String> unplaced = new ArrayList<>();
+		if (banked != null)
+		{
+			for (LoadoutItem item : loadout.forRun(planner.coveredTypes()))
+			{
+				boolean found = false;
+				for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+				{
+					found |= banked.contains(form);
+				}
+				if (!found)
+				{
+					unplaced.add(item.getName());
+				}
+			}
+		}
+
+		String message = "Bank layout: " + placed + " slots placed"
+			+ (banked == null ? " (bank not read yet, placed everything)" : "")
+			+ (unplaced.isEmpty() ? "" : "; no slot for " + unplaced
+				+ " - no form of them is in the bank or on you");
+		if (!message.equals(lastLayoutNote))
+		{
+			lastLayoutNote = message;
+			log.info("{}", message);
+		}
+	}
+
+	@Nullable
+	private String lastLayoutNote;
 
 	private void open()
 	{

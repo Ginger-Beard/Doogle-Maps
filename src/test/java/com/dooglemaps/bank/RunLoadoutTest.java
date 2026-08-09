@@ -121,11 +121,7 @@ public class RunLoadoutTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
-			// The planner asks the loadout whether anything is still to be withdrawn, and the
-			// loadout is built from the planner. Guice breaks that cycle with a Provider; here the
-			// same job is done by a holder filled in once both exist, a few lines below.
-			(javax.inject.Provider<RunLoadout>) () -> loadoutUnderTest[0]);
+			Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
 
 		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
 		bank = construct(BankContents.class, configManager, gson);
@@ -168,17 +164,7 @@ public class RunLoadoutTest
 		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
 			toolNeeds, leprechaun, protection, itemNames, config, tickingClient(), runTypes,
 			contracts);
-		loadoutUnderTest[0] = loadout;
 	}
-
-	/**
-	 * The loadout, reachable from the planner that was built before it.
-	 *
-	 * <p>An array rather than a field because the Provider handed to the planner is created during
-	 * setup and has to see an assignment made after it — the same deferral Guice does for the real
-	 * cycle, done by hand. See the Provider argument in {@code setUp}.
-	 */
-	private final RunLoadout[] loadoutUnderTest = new RunLoadout[1];
 
 	/**
 	 * Compost he is holding is not a withdrawal, whatever the bank has.

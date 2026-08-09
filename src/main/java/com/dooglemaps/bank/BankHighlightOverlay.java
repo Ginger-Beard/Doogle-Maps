@@ -96,11 +96,16 @@ public class BankHighlightOverlay extends Overlay
 	/** The route's own item, marked in cyan wherever it sits. See {@link RouteItem}. */
 	private final RouteItem routeItem;
 
+	/** The contract's crop, which is the one noted stack that must never be deposited. */
+	private final com.dooglemaps.state.ContractState contracts;
+
 	@Inject
 	BankHighlightOverlay(Client client, DoogleMapsConfig config, RunLoadout loadout,
 		ItemManager itemManager, TooltipManager tooltips,
-		com.dooglemaps.route.RunPlanner planner, BankFilter bankFilter, RouteItem routeItem)
+		com.dooglemaps.route.RunPlanner planner, BankFilter bankFilter, RouteItem routeItem,
+		com.dooglemaps.state.ContractState contracts)
 	{
+		this.contracts = contracts;
 		this.routeItem = routeItem;
 		this.bankFilter = bankFilter;
 		this.planner = planner;
@@ -167,7 +172,103 @@ public class BankHighlightOverlay extends Overlay
 		// The vault regardless. Nothing filters it — it is the game's own interface, and Bank Tags
 		// does not reach it — so marking is the only thing pointing at the seeds in it.
 		highlightVault(graphics, mouse);
+
+		// And the other direction: what should go *into* the bank while it is open anyway.
+		highlightDeposits(graphics, mouse);
 		return null;
+	}
+
+	/**
+	 * Amber, deliberately neither the withdraw highlight nor the route's cyan: this is the
+	 * opposite errand — things leaving the pack — and colouring it like a withdrawal would
+	 * read as "take more of these".
+	 */
+	private static final Color DEPOSIT_COLOUR = new Color(0xE6, 0x9A, 0x28);
+
+	/**
+	 * Marks the noted crops in the pack that this bank visit should absorb.
+	 *
+	 * <p>A mid-run bank detour — seeds forgotten, an axe for a dead tree — arrives with the
+	 * noted harvests of every stop so far, each costing a slot for the rest of the run. The
+	 * bank is open, depositing them is close to free, and nothing pointed at them; requested
+	 * from play alongside the Camelot seed detour.
+	 *
+	 * <p><b>Noted stacks only.</b> A noted crop in the pack has already been finished with —
+	 * that is what the noting was for — so it is safely a deposit. Loose items are the
+	 * player's business: an unnoted watermelon might be lunch.
+	 *
+	 * <p><b>What is never marked:</b> the run's own protection payments, whether or not they
+	 * are noted — the farmer takes them noted, and depositing them un-plans the run — and the
+	 * contract's crop in either direction (assigned or awaiting hand-in), because depositing
+	 * that is how a finished contract gets left unclaimed for a growth cycle.
+	 */
+	private void highlightDeposits(Graphics2D graphics, net.runelite.api.Point mouse)
+	{
+		Widget inventory = client.getWidget(InterfaceID.Bankside.ITEMS);
+		if (inventory == null || inventory.isHidden() || inventory.getDynamicChildren() == null)
+		{
+			return;
+		}
+
+		java.util.Set<Integer> keep = keepInPack();
+		for (Widget item : inventory.getDynamicChildren())
+		{
+			if (item == null || item.isSelfHidden() || item.getItemId() <= 0)
+			{
+				continue;
+			}
+
+			net.runelite.api.ItemComposition composition =
+				itemManager.getItemComposition(item.getItemId());
+			if (composition.getNote() == -1)
+			{
+				continue;
+			}
+
+			int crop = composition.getLinkedNoteId();
+			com.dooglemaps.data.Produce produce = com.dooglemaps.data.Produce.getByItemID(crop);
+			if (produce == null || !produce.isNotable() || keep.contains(crop))
+			{
+				continue;
+			}
+
+			highlight(graphics, item, DEPOSIT_COLOUR);
+			if (mouse != null && item.getBounds().contains(mouse.getX(), mouse.getY()))
+			{
+				tooltips.add(new Tooltip("Finished crops - deposit them"));
+			}
+		}
+	}
+
+	/**
+	 * The crops a bank visit must leave in the pack, unnoted ids.
+	 *
+	 * <p>From the loadout's own payment rows rather than the whole payment table, so only the
+	 * payments <i>this run</i> is actually making are protected — noted jangerberries from an
+	 * unprotected run are still a deposit.
+	 */
+	private java.util.Set<Integer> keepInPack()
+	{
+		java.util.Set<Integer> keep = new java.util.HashSet<>();
+		for (LoadoutItem item : loadoutThisTick())
+		{
+			if (item.getCategory() == LoadoutItem.Category.PAYMENT)
+			{
+				keep.add(item.getItemId());
+			}
+		}
+
+		com.dooglemaps.data.Produce assigned = contracts.getContract();
+		if (assigned != null)
+		{
+			keep.add(assigned.getItemID());
+		}
+		com.dooglemaps.data.Produce awaiting = contracts.getAwaitingHandIn();
+		if (awaiting != null)
+		{
+			keep.add(awaiting.getItemID());
+		}
+		return keep;
 	}
 
 	/**
@@ -388,7 +489,14 @@ public class BankHighlightOverlay extends Overlay
 		// Not on a placeholder. An empty slot has nothing to withdraw, so a count over it is
 		// an instruction that cannot be followed - reported as "1"s over placeholder
 		// teleports in the filtered bank.
-		if (item.getItemQuantity() <= 0)
+		//
+		// Two shapes of placeholder, provable from Bank Tags' own source: a Jagex placeholder
+		// renders with the bank's count, which is zero, and a *layout* placeholder - the faded
+		// stand-in for a laid-out item the bank does not hold - is set to Integer.MAX_VALUE
+		// with quantity drawing suppressed. The first guard caught only the first shape,
+		// which is why the report said "still".
+		int quantity = item.getItemQuantity();
+		if (quantity <= 0 || quantity == Integer.MAX_VALUE)
 		{
 			return;
 		}

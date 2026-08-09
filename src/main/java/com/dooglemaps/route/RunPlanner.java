@@ -177,30 +177,30 @@ public class RunPlanner
 	private Set<SeedSource> postedSources;
 
 	/**
-	 * The withdraw list, for deciding when the supply leg is finished.
+	 * The withdraw list's answer — anything still to collect — pushed in rather than asked for.
 	 *
-	 * <h2>Why a Provider</h2>
+	 * <h2>What this replaces: a {@code Provider<RunLoadout>} and the cycle it papered over</h2>
 	 *
 	 * {@code RunLoadout} is built from this planner — it asks {@link #actionableByGroup} which
-	 * patches the run will service — so injecting it directly here is a cycle Guice will not
-	 * construct. A {@code Provider} breaks it by deferring the lookup to first use, by which time
-	 * both objects exist.
-	 *
-	 * <p>Only ever dereferenced with this planner's lock released. The loadout calls back into the
-	 * synchronised methods above, and the standing rule here is that nothing outside this class is
-	 * called while holding the monitor.
+	 * patches the run will service — and this planner used to ask the loadout back, which is a
+	 * cycle Guice would not construct and a {@code Provider} only postponed. The dependency now
+	 * runs one way: the loadout reads the planner, and the planner is <b>told</b> the withdraw
+	 * list's answer — every tick by {@code GuideTracker.reportIdlePatches}, the same push that
+	 * carries the blocked-patch set, and refreshed at the moments that matter mid-tick
+	 * (the plugin's and {@code BankCapture}'s calls ahead of {@link #leaveBank()}, and
+	 * {@link #start} seeding it from its caller). The rule the Provider's note used to state —
+	 * never dereferenced under this monitor — is now structural: there is nothing left to
+	 * dereference.
 	 */
-	private final javax.inject.Provider<com.dooglemaps.bank.RunLoadout> loadout;
+	private volatile boolean withdrawOutstanding;
 
 	@Inject
 	RunPlanner(AvailabilityProfile availability, PatchLocationStore locations,
 		BankLocationStore banks, SeedSelectionStore selection, SeedInventoryStore seedInventory,
 		PatchStateStore stateStore, GrowthTimer growthTimer, ShortestPathIntegration router,
 		PlayerLocation playerLocation, ToolNeeds tools, ProtectedPatches protectedPatches,
-		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions,
-		javax.inject.Provider<com.dooglemaps.bank.RunLoadout> loadout)
+		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions)
 	{
-		this.loadout = loadout;
 		this.runOptions = runOptions;
 		this.protection = protection;
 		this.groups = groups;
@@ -227,6 +227,22 @@ public class RunPlanner
 	 */
 	public List<RunStop> start(Set<PatchImplementation> types)
 	{
+		// The flagless form exists for fixtures, where the withdraw list is empty by
+		// construction. Production goes through the two-argument form: RunPanel asks the
+		// guide, which asks the loadout, before this planner is ever involved.
+		return start(types, false);
+	}
+
+	/**
+	 * Starts a run covering the given patch types.
+	 *
+	 * @param withdrawOutstanding the withdraw list's answer for these types, computed by the
+	 *                            caller — the planner no longer asks the loadout itself, which
+	 *                            is what removed the construction cycle between the two
+	 */
+	public List<RunStop> start(Set<PatchImplementation> types, boolean withdrawOutstanding)
+	{
+		this.withdrawOutstanding = withdrawOutstanding;
 		synchronized (this)
 		{
 			stops.clear();
@@ -453,6 +469,13 @@ public class RunPlanner
 					k -> new ArrayList<>()).add(patch);
 			}
 		}
+
+		// The spirit tree cap, applied where every consumer inherits it at once - the
+		// loadout's seed counts, the payments, the panel's pricing and the snapshot all
+		// derive from this map. The guide's own plantable list is built separately and
+		// trims through the same class, so the two keep agreeing. See SpiritTrees.
+		byGroup.replaceAll((group, patches) -> com.dooglemaps.state.SpiritTrees.trimToCap(
+			stateStore, seedInventory.getFarmingLevel(), group, patches));
 		return byGroup;
 	}
 
@@ -640,6 +663,61 @@ public class RunPlanner
 	}
 
 	/**
+	 * The panel's answers for the current tickbox selection, republished once a tick.
+	 *
+	 * <p>Volatile and immutable, like {@code GuideStatus}: the EDT reads it lock-free, and the
+	 * client thread replaces it whole. Null until the first tick of a session, which is why
+	 * the panel keeps a live-query fallback — see {@code RunPanel.snapshotFor}.
+	 */
+	@Nullable
+	private volatile RunSnapshot snapshot;
+
+	/**
+	 * Builds the panel's snapshot for one selection. Client thread, by design — every query
+	 * here takes this planner's monitor, and gathering them where the monitor already lives
+	 * is the whole point of publishing a snapshot instead.
+	 */
+	public RunSnapshot snapshotFor(Set<PatchImplementation> types)
+	{
+		Map<PlantingGroup, Integer> byGroup = countActionableByGroup(types);
+		Map<PlantingGroup, Map<Produce, Integer>> ripe = new LinkedHashMap<>();
+		Map<PlantingGroup, RunEstimate.Survival> survival = new LinkedHashMap<>();
+		for (PlantingGroup group : byGroup.keySet())
+		{
+			ripe.put(group, ripeProduceIn(group));
+			survival.put(group, survivalIn(group));
+		}
+		return new RunSnapshot(
+			types.isEmpty()
+				? EnumSet.noneOf(PatchImplementation.class)
+				: EnumSet.copyOf(types),
+			previewStops(types), countActionable(types), byGroup, ripe, survival);
+	}
+
+	public void publishSnapshot(RunSnapshot snapshot)
+	{
+		this.snapshot = snapshot;
+	}
+
+	@Nullable
+	public RunSnapshot getSnapshot()
+	{
+		return snapshot;
+	}
+
+	/**
+	 * Told the withdraw list's current answer — the other half of the guide's per-tick push.
+	 *
+	 * <p>Also called just before {@link #leaveBank()} by the plugin's tick and by
+	 * {@code BankCapture}'s container event, so a withdrawal is acted on in the same tick it
+	 * happens rather than one push later.
+	 */
+	public void setWithdrawOutstanding(boolean outstanding)
+	{
+		withdrawOutstanding = outstanding;
+	}
+
+	/**
 	 * Told which patches, across every stop, the guide currently has no step for.
 	 *
 	 * <p>Replaced wholesale each tick rather than added to, so a patch that becomes doable again —
@@ -749,7 +827,8 @@ public class RunPlanner
 		// for those is the same decision as staying at one until they are collected, and asking
 		// the same question at both ends is what keeps the two from disagreeing — see
 		// suppliesOutstanding. This is the clause that sends a tree contract back for its axe.
-		return loadout.get().anythingLeftToWithdraw(coveredTypes());
+		// Read from the pushed flag, which start() seeds from its caller for exactly this moment.
+		return withdrawOutstanding;
 	}
 
 	/**
@@ -797,8 +876,9 @@ public class RunPlanner
 		{
 			return true;
 		}
-		// Outside the lock, like everything else on this path: it calls back into actionableByGroup.
-		return loadout.get().anythingLeftToWithdraw(coveredTypes());
+		// The pushed answer - see withdrawOutstanding. Refreshed every tick by the guide and
+		// at the call sites that need it mid-tick, so reading it here is reading the list.
+		return withdrawOutstanding;
 	}
 
 	/** Each tool the run wants and where it is, for the {@code Run planned:} line. */
@@ -913,6 +993,63 @@ public class RunPlanner
 				continue;
 			}
 			wanted.addAll(selection.getSelectedFor(entry.getKey()));
+		}
+		return wanted;
+	}
+
+	/**
+	 * The seeds the run will actually put in the ground, which is a smaller set than the
+	 * seeds picked.
+	 *
+	 * <h2>Why the difference held a supply leg open forever</h2>
+	 *
+	 * With seed priorities, picking a backup seed is normal: snape grass first, watermelons
+	 * as the spill-over. The allocation gives the backup nothing when the first seed covers
+	 * every patch — so the loadout, correctly, asks for no watermelons and the withdraw list
+	 * empties once the snape grass is out. But {@link #getSupplySources} walked the <i>raw</i>
+	 * selection and demanded a patch's worth of every picked seed, so the watermelons sitting
+	 * in the bank held {@code suppliesOutstanding} true with nothing left on the list: the
+	 * booths stayed outlined and the panel fell into its "nothing is picked" line, which was
+	 * wrong twice over. Reported from play, at Camelot, on a mid-run seed detour.
+	 *
+	 * <p>So the sources question now walks the allocation's answer, the same
+	 * {@link SeedAllocation} the loadout, the estimate and the guide share. Deliberately
+	 * <b>without</b> the protection budget: this asks what to collect, and the payments that
+	 * cap the budget may themselves be part of what is still to collect — capping by them
+	 * here would drop a seed's container the moment its payments were missing, which is
+	 * backwards. An uncapped allocation still applies the ranking and the stock limits,
+	 * which is all the scoping this question needs.
+	 *
+	 * <p>Outside a run this falls back to the raw selection, like
+	 * {@link #selectedForThisRun} and for the same reason.
+	 */
+	private Set<Seed> seedsWantedThisRun()
+	{
+		Set<PatchImplementation> types = runTypesSnapshot();
+
+		if (types.isEmpty())
+		{
+			return selection.getSelected();
+		}
+
+		Set<Seed> wanted = new LinkedHashSet<>();
+		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionableByGroup(types).entrySet())
+		{
+			if (entry.getValue().isEmpty() || plantsNothing(entry.getKey()))
+			{
+				continue;
+			}
+
+			Set<Seed> picked = selection.getSelectedFor(entry.getKey());
+			Map<Seed, Integer> owned = new java.util.HashMap<>();
+			for (Seed seed : picked)
+			{
+				owned.put(seed, seedInventory.getOwned(seed));
+			}
+
+			wanted.addAll(SeedAllocation.forPatches(entry.getValue(), picked, owned,
+				seedInventory.getFarmingLevel(), ProtectionBudget.NONE)
+				.counts().keySet());
 		}
 		return wanted;
 	}
@@ -1033,7 +1170,7 @@ public class RunPlanner
 	{
 		Set<SeedSource> needed = EnumSet.noneOf(SeedSource.class);
 
-		for (Seed seed : selectedForThisRun())
+		for (Seed seed : seedsWantedThisRun())
 		{
 			int required = seed.getSeedsPerPatch();
 			int carried = seedInventory.getCount(seed, SeedSource.INVENTORY)
@@ -1530,6 +1667,19 @@ public class RunPlanner
 	 */
 	public void retarget()
 	{
+		retarget(null);
+	}
+
+	/**
+	 * As {@link #retarget()}, but telling the router where the journey really begins.
+	 *
+	 * <p>Exists for one situation: standing in the player-owned house, whose tiles are an
+	 * instance the router cannot place, about to leave through the exit portal. The tracker
+	 * hands the exterior portal's tile here so the drawn path starts at the front door
+	 * rather than wherever the router guessed — see {@code GuideTracker.routeFromTheFrontDoor}.
+	 */
+	public void retarget(@Nullable WorldPoint start)
+	{
 		if (isAtBankLeg())
 		{
 			// Recorded as it is posted, so the leg can tell later whether the answer has moved on
@@ -1541,7 +1691,7 @@ public class RunPlanner
 			}
 
 			// Bank detours allowed here, and only here: the point of this leg is to collect.
-			router.setTargets(supplyTargetsFor(sources), true);
+			router.setTargets(supplyTargetsFor(sources), true, start);
 			return;
 		}
 
@@ -1576,7 +1726,7 @@ public class RunPlanner
 		{
 			targets.add(stop.getLocation(locations));
 		}
-		router.setTargets(targets);
+		router.setTargets(targets, false, start);
 	}
 
 	/** Everything the run has left, for the panel's checklist. */

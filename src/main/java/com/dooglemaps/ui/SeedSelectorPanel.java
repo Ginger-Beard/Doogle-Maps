@@ -54,6 +54,60 @@ class SeedSelectorPanel extends JPanel
 	private static final Color SELECTED_BACKGROUND = new Color(0x2F, 0x4A, 0x2A);
 	private static final Color SELECTED_BORDER = new Color(0x7F, 0xB2, 0x4A);
 
+	/** The game's own stack-number yellow, for the priority digit on a picked seed. */
+	private static final Color PRIORITY_NUMBER = new Color(0xFF, 0xFF, 0x00);
+
+	/**
+	 * A seed slot that can wear its priority.
+	 *
+	 * <h2>The number is the allocation order, and the click order is the number</h2>
+	 *
+	 * When more than one seed is picked for a group, the run plants them in the order they
+	 * were picked and spills to the next when one runs out — {@code RunEstimate.bestFirst}
+	 * reads the selection's own insertion order, settled with the owner over any ranking the
+	 * plugin might invent. This digit is that order made visible: 1 fills patches first.
+	 * Reordering is deselect and reselect, which sends a seed to the back of the queue.
+	 *
+	 * <p>Drawn top-right because the game's own stack count is baked into the sprite's
+	 * top-left — the same split the bank highlight uses for its withdraw counts. Shadowed
+	 * black-then-yellow like every number the game draws. Hidden when the seed is alone in
+	 * its group: a queue of one needs no queue number.
+	 */
+	private static final class SeedIcon extends JLabel
+	{
+		private int priority;
+
+		void setPriority(int priority)
+		{
+			if (this.priority != priority)
+			{
+				this.priority = priority;
+				repaint();
+			}
+		}
+
+		@Override
+		protected void paintComponent(java.awt.Graphics graphics)
+		{
+			super.paintComponent(graphics);
+			if (priority <= 0)
+			{
+				return;
+			}
+
+			// The game's own small font, the one its stack numbers are drawn in - a Swing
+			// bold digit next to a game-rendered sprite read as two different programs.
+			String digits = String.valueOf(priority);
+			graphics.setFont(net.runelite.client.ui.FontManager.getRunescapeSmallFont());
+			int x = getWidth() - graphics.getFontMetrics().stringWidth(digits) - 3;
+			int y = graphics.getFontMetrics().getAscent() + 1;
+			graphics.setColor(Color.BLACK);
+			graphics.drawString(digits, x + 1, y + 1);
+			graphics.setColor(PRIORITY_NUMBER);
+			graphics.drawString(digits, x, y);
+		}
+	}
+
 	private final PatchImplementation type;
 	private final PlantableResolver resolver;
 
@@ -527,7 +581,7 @@ class SeedSelectorPanel extends JPanel
 	{
 		Seed seed = plantable.getSeed();
 
-		JLabel icon = new JLabel();
+		SeedIcon icon = new SeedIcon();
 		icon.setPreferredSize(new Dimension(SLOT_WIDTH, SLOT_HEIGHT));
 		icon.setHorizontalAlignment(SwingConstants.CENTER);
 		icon.setToolTipText(buildTooltip(plantable));
@@ -546,6 +600,7 @@ class SeedSelectorPanel extends JPanel
 		icon.setEnabled(usable);
 
 		applySelectionStyling(icon, selection.isSelected(group, seed));
+		icon.setPriority(priorityOf(seed));
 
 		// A contract seed renders as picked because it *is* picked — the group's type narrows the
 		// list to that patch's seeds and the contract narrows it to one. It simply must not be
@@ -567,6 +622,33 @@ class SeedSelectorPanel extends JPanel
 		}
 
 		return icon;
+	}
+
+	/**
+	 * This seed's place in the group's planting queue, or 0 for no number.
+	 *
+	 * <p>Zero for the unselected, and zero when the seed is the group's only pick — the digit
+	 * exists to show an order, and one seed has none. The selection set's iteration order is
+	 * the click order, which the store keeps end to end; see {@link SeedIcon}.
+	 */
+	private int priorityOf(Seed seed)
+	{
+		java.util.Set<Seed> picked = selection.getSelectedFor(group);
+		if (picked.size() < 2)
+		{
+			return 0;
+		}
+
+		int position = 1;
+		for (Seed candidate : picked)
+		{
+			if (candidate == seed)
+			{
+				return position;
+			}
+			position++;
+		}
+		return 0;
 	}
 
 	/** Marks a seed as part of the run, or clears the mark. */

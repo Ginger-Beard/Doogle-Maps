@@ -182,6 +182,11 @@ public class PatchStateStore extends ProfileJsonStore
 		boolean changed = applyVarbit(patch, varbitValue, decoded);
 		if (changed)
 		{
+			// Outside applyVarbit's monitor, deliberately, like fireChanged always was. The
+			// save posts ConfigChanged through the EventBus, and posting into arbitrary
+			// subscriber code with this store's monitor held deadlocked the client against a
+			// Swing panel refresh holding AvailabilityProfile — see ProfileJsonStore.save.
+			save();
 			fireChanged();
 		}
 		return changed;
@@ -234,10 +239,6 @@ public class PatchStateStore extends ProfileJsonStore
 			snapshot.setPatchProtected(false);
 		}
 
-		if (changed)
-		{
-			save();
-		}
 		return changed;
 	}
 
@@ -245,6 +246,8 @@ public class PatchStateStore extends ProfileJsonStore
 	{
 		if (applyCompost(patch, tier))
 		{
+			// Same shape as recordVarbit, same reason: never save under the monitor.
+			save();
 			fireChanged();
 		}
 	}
@@ -260,7 +263,6 @@ public class PatchStateStore extends ProfileJsonStore
 		log.debug("Compost {} recorded for {}", tier, patch);
 		snapshot.setCompost(tier);
 		snapshot.setLastSeen(Instant.now().getEpochSecond());
-		save();
 		return true;
 	}
 
@@ -307,14 +309,11 @@ public class PatchStateStore extends ProfileJsonStore
 				}
 			}
 
-			if (filled > 0)
-			{
-				save();
-			}
 		}
 
 		if (filled > 0)
 		{
+			save();
 			log.info("Filled in {} compost and protection facts from Time Tracking", filled);
 			fireChanged();
 		}
@@ -324,6 +323,7 @@ public class PatchStateStore extends ProfileJsonStore
 	{
 		if (applyProtected(patch, isProtected))
 		{
+			save();
 			fireChanged();
 		}
 	}
@@ -339,7 +339,6 @@ public class PatchStateStore extends ProfileJsonStore
 		log.debug("Protection {} recorded for {}", isProtected, patch);
 		snapshot.setPatchProtected(isProtected);
 		snapshot.setLastSeen(Instant.now().getEpochSecond());
-		save();
 		return true;
 	}
 
@@ -495,13 +494,11 @@ public class PatchStateStore extends ProfileJsonStore
 
 	public void clear()
 	{
-		doClear();
-		fireChanged();
-	}
-
-	private synchronized void doClear()
-	{
-		snapshots.clear();
+		synchronized (this)
+		{
+			snapshots.clear();
+		}
 		unsetStored();
+		fireChanged();
 	}
 }

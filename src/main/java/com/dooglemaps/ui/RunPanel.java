@@ -620,7 +620,7 @@ class RunPanel extends JPanel
 	{
 		destinationList.removeAll();
 
-		List<RunStop> stops = planner.previewStops(types);
+		List<RunStop> stops = new ArrayList<>(snapshotFor(types).getPreviewStops());
 		if (stops.isEmpty())
 		{
 			destinations.setVisible(false);
@@ -674,6 +674,26 @@ class RunPanel extends JPanel
 	 * <p>Several options can share a type, so this is a projection rather than the selection
 	 * itself — the planner works in types plus filters, and the filters live in the store.
 	 */
+	/**
+	 * The panel's answers for these types: the published snapshot when it matches, the live
+	 * queries when it does not.
+	 *
+	 * <p>The snapshot is rebuilt once a tick on the client thread for whatever the tickboxes
+	 * said then, so the steady state — every refresh the panel storms through — reads it
+	 * lock-free. The live path survives for exactly two moments: before the first tick of a
+	 * session, and the one tick between a checkbox changing and the next rebuild. Both are
+	 * click-shaped and rare, which is the old cost at the only frequency it was acceptable.
+	 */
+	private com.dooglemaps.route.RunSnapshot snapshotFor(Set<PatchImplementation> types)
+	{
+		com.dooglemaps.route.RunSnapshot snapshot = planner.getSnapshot();
+		if (snapshot != null && snapshot.getTypes().equals(types))
+		{
+			return snapshot;
+		}
+		return planner.snapshotFor(types);
+	}
+
 	private Set<PatchImplementation> getSelectedTypes()
 	{
 		Set<PatchImplementation> selected = EnumSet.noneOf(PatchImplementation.class);
@@ -695,7 +715,10 @@ class RunPanel extends JPanel
 		}
 		else
 		{
-			planner.start(getSelectedTypes());
+			java.util.Set<com.dooglemaps.data.PatchImplementation> types = getSelectedTypes();
+			// The withdraw list's answer rides along, asked of the guide - the coordinator
+			// that owns both ends - so the planner never has to ask the loadout itself.
+			planner.start(types, guideTracker.withdrawListOutstanding(types));
 		}
 		refresh();
 	}
@@ -889,7 +912,7 @@ class RunPanel extends JPanel
 	 */
 	private void rebuildRewardTable(Set<PatchImplementation> types)
 	{
-		Map<PatchImplementation, Integer> actionable = planner.countActionable(types);
+		Map<PatchImplementation, Integer> actionable = snapshotFor(types).getActionable();
 		Set<Seed> chosen = selection.getSelected();
 		Map<Seed, Integer> owned = ownedSeeds();
 		int level = seeds.getFarmingLevel();
@@ -925,7 +948,8 @@ class RunPanel extends JPanel
 	private RunEstimate estimateFor(Set<PatchImplementation> types, Map<Seed, Integer> owned,
 		int level)
 	{
-		Map<PlantingGroup, Integer> byGroup = planner.countActionableByGroup(types);
+		com.dooglemaps.route.RunSnapshot snapshot = snapshotFor(types);
+		Map<PlantingGroup, Integer> byGroup = snapshot.getActionableByGroup();
 		List<RunEstimate> parts = new ArrayList<>();
 
 		for (Map.Entry<PlantingGroup, Integer> entry : byGroup.entrySet())
@@ -936,7 +960,7 @@ class RunPanel extends JPanel
 			// in a harvest-only trip and asking for one is what made these read as zero.
 			if (runTypes.isHarvestOnly(group))
 			{
-				parts.add(RunEstimate.forHarvest(planner.ripeProduceIn(group), level,
+				parts.add(RunEstimate.forHarvest(snapshot.getRipeProduce().get(group), level,
 					bonuses.current()));
 				continue;
 			}
@@ -950,7 +974,7 @@ class RunPanel extends JPanel
 			// cannot be diseased and the ordinary ones can, so one blended figure was wrong for
 			// both of them.
 			parts.add(RunEstimate.forRun(one, selection.getSelectedFor(group), owned, level,
-				bonuses.current(), tier, planner.survivalIn(group), budget(group)));
+				bonuses.current(), tier, snapshot.getSurvival().get(group), budget(group)));
 		}
 
 		return RunEstimate.merge(parts);

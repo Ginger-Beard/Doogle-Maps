@@ -73,15 +73,45 @@ public abstract class ProfileJsonStore
 		loaded();
 	}
 
-	/** Writes the current state. Reentrant, so a synchronized caller costs nothing extra. */
-	protected final synchronized void save()
+	/**
+	 * Writes the current state.
+	 *
+	 * <p>Serialisation happens under the store's monitor, so the picture written is always
+	 * consistent — but the ConfigManager write happens <b>outside</b> it, and that split is
+	 * load-bearing. ConfigManager fires {@code ConfigChanged} synchronously into every
+	 * subscriber, which is arbitrary plugin code reaching into other stores; posting that
+	 * with a store monitor held is how the client froze solid on an Explorer's ring
+	 * teleport. The thread dump read: Client held {@code PatchStateStore} (a varbit write
+	 * mid-save), the ConfigChanged subscriber wanted {@code AvailabilityProfile}; Swing held
+	 * {@code AvailabilityProfile} (a panel refresh) and wanted {@code PatchStateStore}.
+	 * Deadlock, found by the JVM itself.
+	 *
+	 * <p>The same reasoning binds callers: do not invoke this while holding the store's
+	 * monitor, or the write happens under your lock and the hole is back. Mutate inside
+	 * {@code synchronized}, return whether anything changed, and save from outside — see
+	 * {@code PatchStateStore.recordVarbit} for the shape. This is {@code RunPlanner}'s rule
+	 * ("nothing outside this class is ever called with the lock held") applied to the
+	 * stores.
+	 */
+	protected final void save()
 	{
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, key,
-			gson.toJson(serialized()));
+		String json;
+		synchronized (this)
+		{
+			json = gson.toJson(serialized());
+		}
+		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, key, json);
 	}
 
-	/** Removes the stored blob outright, for the resets that also empty the memory side. */
-	protected final synchronized void unsetStored()
+	/**
+	 * Removes the stored blob outright, for the resets that also empty the memory side.
+	 *
+	 * <p>No monitor of its own: it reads no store state, and the unset fires ConfigChanged
+	 * exactly like a write does — see {@link #save()} for why that must not happen under a
+	 * store's lock. Callers empty their state inside {@code synchronized} and call this
+	 * after.
+	 */
+	protected final void unsetStored()
 	{
 		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, key);
 	}

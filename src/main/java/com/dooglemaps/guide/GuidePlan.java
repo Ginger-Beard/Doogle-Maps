@@ -68,7 +68,7 @@ public final class GuidePlan
 		PlantingGroup group, Seed chosen, SeedInventoryStore seeds,
 		CompostSelectionStore compostChoice,
 		CarriedItems carried, LeprechaunStore leprechaun, BarbarianFarming barbarianFarming,
-		boolean protecting, boolean harvestOnly, int patchesToTreat)
+		boolean protecting, boolean harvestOnly, int patchesToTreat, double expectedYield)
 	{
 		List<GuideStep> steps = new ArrayList<>();
 		if (projection == null)
@@ -196,6 +196,21 @@ public final class GuidePlan
 						+ projection.getProduce().getName().toLowerCase()
 						+ " with the tool leprechaun."));
 			}
+			// Before a harvest that will outgrow the pack, pocket the loose seeds. Seeds
+			// stack, but each loose type still holds a slot, and in front of a yield already
+			// bigger than the free space those slots are the difference between one noting
+			// trip and two. Only when the box is actually carried and only when there is
+			// something loose to put in it — and never once the pack is full, where the note
+			// step above is the fix and this would just be in its way. Requested from play.
+			else if (expectedYield > carried.getFreeSlots()
+				&& carried.hasAny(ItemID.SEED_BOX, ItemID.SEED_BOX_OPEN)
+				&& anyLooseSeeds(seeds))
+			{
+				steps.add(GuideStep.withItem(GuideAction.FILL_SEED_BOX, patch,
+					seedBoxCarried(carried),
+					"Fill the seed box with your loose seeds - this harvest is bigger than "
+						+ "your free slots."));
+			}
 			steps.add(GuideStep.of(GuideAction.HARVEST, patch, harvestText(projection)));
 			return steps;
 		}
@@ -268,6 +283,19 @@ public final class GuidePlan
 			return steps;
 		}
 
+		// The allocation counts everywhere seeds are kept — the bank included — because the
+		// loadout it also feeds is the list of what to go and get. Standing at the patch, the
+		// pack and the seed box are all there is, and "plant 3 snape grass seeds" about seeds
+		// sitting in a bank is an instruction that cannot be followed; it sat at the top of
+		// the list unperformable. Reported from play, at Prifddinas. Same treatment as no
+		// seed at all — no steps, including the compost, which would be preparation for a
+		// planting this trip cannot make. The tracker words the skip, the stop can complete,
+		// and a deferred supply trip or the next run picks the patch up; the moment the seeds
+		// are withdrawn it starts asking for its steps again by itself.
+		if (!seedAtHand(chosen, seeds))
+		{
+			return steps;
+		}
 
 		// 3. Compost, then the seed. Preferred in that order because it is one fewer thing to
 		//    remember once a crop is in the ground — but not required: see the just-planted
@@ -442,6 +470,20 @@ public final class GuidePlan
 	}
 
 	/**
+	 * Whether this seed can go in the ground on <b>this trip</b> — in the pack or the seed
+	 * box, as opposed to merely owned somewhere.
+	 *
+	 * <p>Plantable counts, not raw counts, so a pocketed acorn does not pass for the sapling
+	 * a tree patch actually takes. Also the tracker's test for wording the skip, so the two
+	 * cannot drift: the guide goes silent about a patch exactly when the panel explains why.
+	 */
+	static boolean seedAtHand(Seed seed, SeedInventoryStore seeds)
+	{
+		return seeds.getPlantable(seed, SeedSource.INVENTORY)
+			+ seeds.getPlantable(seed, SeedSource.SEED_BOX) >= seed.getSeedsPerPatch();
+	}
+
+	/**
 	 * Whichever form of the seed box the player is carrying.
 	 *
 	 * <p>Two ids for one item, and the difference is only whether it is open. Defaulting to the
@@ -451,6 +493,25 @@ public final class GuidePlan
 	private static int seedBoxCarried(CarriedItems carried)
 	{
 		return carried.has(ItemID.SEED_BOX_OPEN) ? ItemID.SEED_BOX_OPEN : ItemID.SEED_BOX;
+	}
+
+	/**
+	 * Whether any seed the box could hold is sitting loose in the pack.
+	 *
+	 * <p>Non-sapling seeds only: a sapling cannot go in the box, and for tree crops the count
+	 * cannot tell an acorn from the sapling it became — the run carries the sapling, so tree
+	 * rows are simply left out rather than guessed at.
+	 */
+	private static boolean anyLooseSeeds(SeedInventoryStore seeds)
+	{
+		for (Seed seed : Seed.values())
+		{
+			if (!seed.isSapling() && seeds.getCount(seed, SeedSource.INVENTORY) > 0)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

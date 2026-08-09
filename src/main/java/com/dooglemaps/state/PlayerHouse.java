@@ -15,7 +15,9 @@ import net.runelite.api.ObjectComposition;
 import net.runelite.api.Scene;
 import net.runelite.api.Tile;
 import net.runelite.api.TileObject;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.GameTick;
+import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.eventbus.Subscribe;
 
 /**
@@ -49,8 +51,30 @@ public class PlayerHouse
 		37501,   // Fancy
 		37520)); // Ornate
 
-	/** Words identifying teleport furniture, whatever tier it was built at. */
-	private static final String[] NAMES = {"nexus", "jewellery box"};
+	/**
+	 * Words identifying teleport furniture, whatever tier it was built at.
+	 *
+	 * <p>Everything a house can teleport you with: the nexus, the jewellery box, the mounted
+	 * digsite pendant ("Digsite Pendant", in the nexus room's amulet space), the mounted glory
+	 * and xeric's talisman, the superior garden's spirit tree and fairy ring, and the portal
+	 * room's single-destination portals — "portal" also covers the nexus and the exits, which
+	 * is harmless: a bare "Portal" can never match a route hop, see
+	 * {@code HouseTeleports.furnitureServesHop}.
+	 *
+	 * <p>Some of these words also name things in the open world — every fairy ring, every
+	 * spirit tree — which is why {@link #isInside()} does not trust this list; it wants
+	 * {@link #HOUSE_MARKERS}.
+	 */
+	private static final String[] NAMES = {"nexus", "jewellery box", "digsite", "portal",
+		"spirit tree", "fairy ring", "amulet of glory", "xeric"};
+
+	/**
+	 * Names that only ever belong to house furniture, for {@link #isInside()}.
+	 *
+	 * <p>A spirit tree or a fairy ring in the scene proves a garden <i>or</i> Zanaris; a
+	 * Portal Nexus or a jewellery box proves a house.
+	 */
+	private static final String[] HOUSE_MARKERS = {"nexus", "jewellery box", "digsite"};
 
 	private final Client client;
 
@@ -86,38 +110,55 @@ public class PlayerHouse
 	 */
 	public boolean isInside()
 	{
-		return !teleports.isEmpty();
-	}
-
-	/** The teleport furniture in the current scene, for the overlay to outline. */
-	public List<TileObject> getTeleports()
-	{
-		return teleports;
+		for (TileObject object : teleports)
+		{
+			if (JEWELLERY_BOX_IDS.contains(object.getId()))
+			{
+				return true;
+			}
+			ObjectComposition definition = resolve(object.getId());
+			if (definition == null || definition.getName() == null)
+			{
+				continue;
+			}
+			String name = definition.getName().toLowerCase();
+			for (String marker : HOUSE_MARKERS)
+			{
+				if (name.contains(marker))
+				{
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	/**
-	 * Just the jewellery boxes, or just the nexuses.
+	 * The teleport furniture whose resolved name the given test accepts.
 	 *
-	 * <p>Split because a house can hold both, and outlining both says "one of these two, you work
-	 * out which" — which is the question the player was asking. Reported from play: heading for
-	 * the Farming Guild by jewellery box, the nexus lit up as well.
+	 * <p>The caller brings the question — in practice "does any hop on Shortest Path's route
+	 * go somewhere this furniture goes", asked through {@code HouseTeleports} — and this
+	 * class only supplies the scene objects and their names, which is the part that needs the
+	 * client. The jewellery box answers by its known ids when its name will not resolve — the
+	 * impostor problem {@link #JEWELLERY_BOX_IDS} exists for.
 	 */
-	public List<TileObject> getJewelleryBoxes()
-	{
-		return filter(true);
-	}
-
-	public List<TileObject> getNexuses()
-	{
-		return filter(false);
-	}
-
-	private List<TileObject> filter(boolean wantBoxes)
+	public List<TileObject> matchingFurniture(java.util.function.Predicate<String> nameTest)
 	{
 		List<TileObject> found = new ArrayList<>();
 		for (TileObject object : teleports)
 		{
-			if (isJewelleryBox(object.getId()) == wantBoxes)
+			String name;
+			if (JEWELLERY_BOX_IDS.contains(object.getId()))
+			{
+				name = "jewellery box";
+			}
+			else
+			{
+				ObjectComposition definition = resolve(object.getId());
+				name = definition == null ? null : definition.getName();
+			}
+
+			if (name != null && nameTest.test(name))
 			{
 				found.add(object);
 			}
@@ -125,17 +166,57 @@ public class PlayerHouse
 		return found;
 	}
 
-	/** Whether an object is a jewellery box rather than a nexus. */
-	private boolean isJewelleryBox(int objectId)
-	{
-		if (JEWELLERY_BOX_IDS.contains(objectId))
-		{
-			return true;
-		}
+	/**
+	 * Where each house location's exterior portal stands, keyed by the game's own record of
+	 * where the player's house is.
+	 *
+	 * <p>The tile you appear on after walking out the exit portal, which makes it the true
+	 * start of any journey that leaves the house on foot. Varbit values and tiles are the
+	 * ones Shortest Path itself uses for its "Teleport to House (Outside)" transports,
+	 * cross-checked against the wiki's house portal article, August 2026.
+	 */
+	private static final java.util.Map<Integer, WorldPoint> FRONT_DOORS = new java.util.HashMap<>();
 
-		ObjectComposition definition = resolve(objectId);
-		return definition != null && definition.getName() != null
-			&& definition.getName().toLowerCase().contains("jewellery box");
+	static
+	{
+		FRONT_DOORS.put(1, new WorldPoint(2953, 3224, 0)); // Rimmington
+		FRONT_DOORS.put(2, new WorldPoint(2893, 3465, 0)); // Taverley
+		FRONT_DOORS.put(3, new WorldPoint(3340, 3003, 0)); // Pollnivneach
+		FRONT_DOORS.put(4, new WorldPoint(2670, 3631, 0)); // Rellekka
+		FRONT_DOORS.put(5, new WorldPoint(2757, 3178, 0)); // Brimhaven
+		FRONT_DOORS.put(6, new WorldPoint(2544, 3096, 0)); // Yanille
+		FRONT_DOORS.put(7, new WorldPoint(3239, 6076, 0)); // Prifddinas
+		FRONT_DOORS.put(8, new WorldPoint(1743, 3517, 0)); // Hosidius
+		FRONT_DOORS.put(9, new WorldPoint(1422, 2963, 0)); // Aldarin
+	}
+
+	/**
+	 * The tile outside this player's own house portal, or null when the game has not said
+	 * where the house is.
+	 *
+	 * <p>Client-thread only, like everything else that reads a varbit.
+	 */
+	@Nullable
+	public WorldPoint frontDoor()
+	{
+		return FRONT_DOORS.get(client.getVarbitValue(VarbitID.POH_HOUSE_LOCATION));
+	}
+
+	/**
+	 * The house's exit portals — the objects named exactly "Portal".
+	 *
+	 * <p>Every house exit shares the bare name, which is why {@code furnitureServesHop}
+	 * refuses to match it against route hops: any hop mentioning a portal would light every
+	 * exit. Leaving the house is still a real instruction, though — the route often continues
+	 * from the front door — so the exits are reachable by asking for them outright rather
+	 * than through the hop matching.
+	 *
+	 * <p>An exact match, not containment: "Portal Nexus" and every single-destination
+	 * "Varrock Portal" contain the word, and none of them takes you outside.
+	 */
+	public List<TileObject> exitPortals()
+	{
+		return matchingFurniture(name -> name.trim().equalsIgnoreCase("portal"));
 	}
 
 	public void reset()

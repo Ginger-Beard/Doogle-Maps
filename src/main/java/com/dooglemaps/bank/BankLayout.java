@@ -93,7 +93,7 @@ public final class BankLayout
 
 	/** An empty slot, in the map and in the array Bank Tags wants. */
 	private static final char EMPTY = '.';
-	private static final int NO_ITEM = -1;
+	static final int NO_ITEM = -1;
 
 	/**
 	 * What each letter claims, and the order groups are filled in.

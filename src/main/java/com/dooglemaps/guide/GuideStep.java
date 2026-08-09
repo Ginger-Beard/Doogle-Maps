@@ -59,7 +59,12 @@ public class GuideStep
 		// The contract steps carry a patch only because every step does — it is what places them
 		// at the right stop. The click is on Guildmaster Jane, who stands nowhere near the patch,
 		// so lighting it would point at the wrong side of the guild.
-		return !isAtLeprechaun() && !isAtGuildmaster() && action != GuideAction.PAY_FARMER;
+		//
+		// The pick-up step's target is the crops on the ground, drawn from DroppedProduce's
+		// record — same one-click-one-target rule.
+		return !isAtLeprechaun() && !isAtGuildmaster()
+			&& action != GuideAction.PAY_FARMER
+			&& action != GuideAction.PICK_UP_DROPS;
 	}
 
 	/** Whether this step happens in front of Guildmaster Jane rather than at a patch. */

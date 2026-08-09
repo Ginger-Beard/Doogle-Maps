@@ -87,6 +87,11 @@ public class RunPlannerTest
 			.thenAnswer(i -> stored.get(key(i)));
 		when(configManager.getRSProfileConfiguration(anyString(), anyString(), eq(int.class)))
 			.thenAnswer(i -> null);
+		// A Farming level, because the supply-sources question now goes through the same
+		// allocation as the loadout, and an allocation at level 0 plants nothing — which is
+		// never the state a run is in: the level is recorded the moment the client has it.
+		when(configManager.getRSProfileConfiguration(anyString(), eq("farmingLevel"),
+			eq(int.class))).thenReturn(99);
 		doAnswer(i ->
 		{
 			Object value = i.getArgument(2);
@@ -142,8 +147,7 @@ public class RunPlannerTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			groups = Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			runOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
-			(javax.inject.Provider<com.dooglemaps.bank.RunLoadout>) () -> loadout);
+			runOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class));
 	}
 
 	/**

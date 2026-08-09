@@ -59,6 +59,16 @@ public enum GuideAction
 	/** Trade the crop to the leprechaun so it comes back noted and stops filling the pack. */
 	NOTE_AT_LEPRECHAUN("Note with the leprechaun"),
 
+	/**
+	 * Pick your overflowed crops back up off the ground.
+	 *
+	 * <p>A bulk harvest into a full pack drops the excess at your feet — limpwurts hand over
+	 * several roots per pick and the game keeps the change on the floor. Raised once there is
+	 * room again, which in practice means straight after the noting that made it; the crops
+	 * despawn on a clock, so it goes in front of everything else at the stop.
+	 */
+	PICK_UP_DROPS("Pick up your crops"),
+
 	/** Clear a dead crop, the weeds, or a felled stump, so the patch can be planted. */
 	CLEAR("Clear the patch"),
 
@@ -76,6 +86,16 @@ public enum GuideAction
 
 	/** Take seeds out of the seed box. */
 	WITHDRAW_SEEDS("Empty the seed box"),
+
+	/**
+	 * Put loose seeds back into the seed box, ahead of a harvest that will outgrow the pack.
+	 *
+	 * <p>Seeds stack, but every loose type still costs a slot — and in front of a patch whose
+	 * expected yield is already bigger than the free space, those slots are the difference
+	 * between one noting trip to the leprechaun and two. Requested from play: the box was
+	 * being carried anyway, and the guide let the slots go to waste.
+	 */
+	FILL_SEED_BOX("Fill the seed box"),
 
 	/** Treat the patch. Before the seed, always — compost on a planted patch is wasted. */
 	APPLY_COMPOST("Apply compost"),

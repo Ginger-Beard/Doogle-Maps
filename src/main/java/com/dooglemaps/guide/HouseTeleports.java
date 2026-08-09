@@ -34,27 +34,61 @@ public final class HouseTeleports
 		InterfaceID.TelenexusTeleport.UNIVERSE,
 		InterfaceID.TelenexusTeleport.ROWS1,
 		InterfaceID.TelenexusTeleport.ROWS2,
-		// The lettered option menu, which is what a jewellery box opens: "J: Farming Guild".
+		// The jewellery box's own interface, one section layer per jewellery type, each holding
+		// its "J: Farming Guild" lines as children. These were missing on the belief that the box
+		// opened the lettered option menu below — it does not; the lines live in the box's own
+		// sections, so the row scan found nothing and the fallback outlined the whole section.
+		// Reported from play as the entire Skills necklace block lighting up.
+		InterfaceID.PohJewelleryBox.DUELING,
+		InterfaceID.PohJewelleryBox.GAMING,
+		InterfaceID.PohJewelleryBox.COMBAT,
+		InterfaceID.PohJewelleryBox.SKILLS,
+		InterfaceID.PohJewelleryBox.WEALTH,
+		InterfaceID.PohJewelleryBox.GLORY,
+		// The lettered option menu, for the teleports that genuinely open one.
 		InterfaceID.Menu.LJ_LAYER1,
 		InterfaceID.Menu.LJ_LAYER2,
 		InterfaceID.Chatmenu.OPTIONS,
 	};
 
 	/**
-	 * Which jewellery-box category reaches which farming stop.
+	 * Which jewellery-box category reaches which farming stop, for lighting the right button
+	 * once the player is inside the box's menu.
 	 *
-	 * <p>Short and deliberately so, on the same rule as {@link com.dooglemaps.bank.TeleportItems}:
-	 * a missing entry costs a highlight, a wrong one points at the wrong panel.
+	 * <p>Wiki-checked against each jewellery piece's own teleport list, August 2026. Reaching
+	 * includes "gets you meaningfully closer" — a player standing in the box's menu wants the
+	 * least-bad button, not a judgement about whether they should have used the nexus. That
+	 * stricter question is {@link #furnitureFor}'s, from its own table.
+	 *
+	 * <p>The ring of dueling is deliberately absent: its one farming-adjacent destination,
+	 * the Fortis Colosseum, is locked behind the Colosseum's Hero title and lands across the
+	 * city from the Civitas patches anyway.
 	 */
 	enum JewelleryCategory
 	{
-		/** Skills necklace: the Farming Guild, which is the one that matters on a herb run. */
+		/** Skills necklace: the Farming Guild, a teleport into the guild itself. */
 		SKILLS(InterfaceID.PohJewelleryBox.SKILLS, "farming guild"),
 
-		/** Amulet of glory: Draynor, Al Kharid, Karamja, Edgeville. */
-		GLORY(InterfaceID.PohJewelleryBox.GLORY, "draynor", "al kharid", "karamja", "edgeville"),
+		/**
+		 * Amulet of glory: Draynor Village, Al Kharid, Karamja, Edgeville. Karamja is Musa
+		 * Point, which is also the least-bad button for Brimhaven's fruit tree and Tai Bwo
+		 * Wannai's calquat — a walk or a cart, but the right island.
+		 */
+		GLORY(InterfaceID.PohJewelleryBox.GLORY, "draynor", "al kharid", "karamja",
+			"edgeville", "brimhaven", "tai bwo wannai"),
 
-		/** Games necklace: Burthorpe, which puts you next to the Troll Stronghold patch. */
+		/**
+		 * Ring of wealth: Falador Park is the tree patch's own lawn, Miscellania is the
+		 * bridge to Etceteria's spirit tree, and the Grand Exchange is a short walk from
+		 * Varrock castle's tree patch.
+		 */
+		WEALTH(InterfaceID.PohJewelleryBox.WEALTH, "falador", "etceteria", "miscellania",
+			"varrock"),
+
+		/** Combat bracelet: the Champions' Guild is the Varrock bush patch's front door. */
+		COMBAT(InterfaceID.PohJewelleryBox.COMBAT, "champions' guild"),
+
+		/** Games necklace: Burthorpe, the foot of the climb up to the Troll Stronghold patch. */
 		GAMING(InterfaceID.PohJewelleryBox.GAMING, "troll stronghold", "burthorpe");
 
 		private final int widgetId;
@@ -85,19 +119,117 @@ public final class HouseTeleports
 	}
 
 	/**
-	 * Whether a jewellery box is known to reach this stop.
+	 * What each kind of house teleport furniture can reach, keyed by a word from the
+	 * furniture's own object name.
 	 *
-	 * <p>Used to decide which piece of furniture to outline. A house can hold both a box and a
-	 * nexus, and lighting up both says "one of these two, you work out which" — which is the
-	 * question the player wanted answered.
+	 * <h2>Furniture to destinations, so the router's words pick the furniture</h2>
+	 *
+	 * Shortest Path plans the leg and reports its hops as display text, and those hops name
+	 * <i>places and teleports</i>, not furniture. So the map runs the useful direction: for
+	 * each piece of furniture standing in the room, does any hop name somewhere that
+	 * furniture goes? The furniture the route uses is the one whose destination list the
+	 * route mentions — no per-stop opinion of this plugin's anywhere in it.
+	 *
+	 * <p>Destination lists are the wiki's own, August 2026: the Portal Nexus's attunable
+	 * destinations, every jewellery piece a box can hold (dueling, games, combat, skills,
+	 * glory, wealth across the tiers), the mounted digsite pendant, the mounted glory and
+	 * xeric's talisman, and the spirit tree network. Single-destination portals need no
+	 * entry: a "Varrock Portal" carries its destination in its own name, which
+	 * {@link #furnitureServesHop} handles by stripping the word "portal".
+	 *
+	 * <p>Prifddinas is deliberately nowhere in this map — no house furniture goes there, the
+	 * teleport crystal in the pack does, and items are the travel-item highlight's job. A
+	 * hop for it simply matches no furniture.
 	 */
-	public static boolean reachableByJewelleryBox(String destination)
+	private static final Map<String, String[]> FURNITURE_DESTINATIONS = new HashMap<>();
+
+	static
 	{
-		for (JewelleryCategory category : JewelleryCategory.values())
+		FURNITURE_DESTINATIONS.put("nexus", new String[]{
+			"varrock", "grand exchange", "lumbridge", "falador", "camelot", "seers",
+			"ardougne", "catherby", "trollheim", "troll stronghold", "weiss",
+			"civitas illa fortis", "kourend", "harmony", "draynor manor", "battlefront",
+			"mind altar", "salve graveyard", "fenkenstrain", "edgeville", "yanille",
+			"watchtower", "senntisten", "digsite", "ape atoll", "marim", "lunar isle",
+			"moonclan", "forgotten cemetery", "ourania", "waterbirth", "lassar",
+			"ice mountain", "barbarian outpost", "khazard", "barrows", "fishing guild",
+			"ice plateau", "annakarl", "carrallanger", "dareeyak", "ghorrock",
+			"arceuus library",
+		});
+		FURNITURE_DESTINATIONS.put("jewellery box", new String[]{
+			"emir's arena", "duel arena", "castle wars", "ferox enclave",
+			"fortis colosseum", "burthorpe", "barbarian outpost", "corporeal beast",
+			"tears of guthix", "wintertodt", "warriors' guild", "champions' guild",
+			"monastery", "ranging guild", "fishing guild", "mining guild",
+			"crafting guild", "cooking guild", "woodcutting guild", "farming guild",
+			"edgeville", "karamja", "draynor village", "al kharid", "miscellania",
+			"grand exchange", "falador park", "dondakan",
+		});
+		FURNITURE_DESTINATIONS.put("digsite", new String[]{
+			"digsite", "fossil island", "house on the hill", "lithkren",
+		});
+		FURNITURE_DESTINATIONS.put("glory", new String[]{
+			"edgeville", "karamja", "draynor village", "al kharid",
+		});
+		FURNITURE_DESTINATIONS.put("xeric", new String[]{
+			"xeric's glade", "xeric's lookout", "xeric's inferno", "xeric's heart",
+			"xeric's honour", "hosidius",
+		});
+		FURNITURE_DESTINATIONS.put("spirit tree", new String[]{
+			"tree gnome village", "gnome stronghold", "battlefield of khazard",
+			"grand exchange", "feldip hills", "port sarim", "etceteria", "brimhaven",
+			"hosidius", "farming guild",
+		});
+	}
+
+	/**
+	 * Whether a hop on Shortest Path's route is served by furniture with this name.
+	 *
+	 * <p>Three ways to say yes, tried cheapest first:
+	 *
+	 * <ul>
+	 *   <li>the hop names the furniture itself ("Portal Nexus" in the text) — except for the
+	 *       bare name "Portal", which every house exit shares and which would match any hop
+	 *       that mentions a portal;</li>
+	 *   <li>the furniture's name carries its destination, as single-destination portals do —
+	 *       "Varrock Portal" serves a "Varrock Teleport" hop once the word "portal" is
+	 *       stripped;</li>
+	 *   <li>the furniture's kind has a destination list here and the hop names one of them.</li>
+	 * </ul>
+	 */
+	public static boolean furnitureServesHop(String furnitureName, String hop)
+	{
+		if (furnitureName == null || hop == null)
 		{
-			if (category.reaches(destination))
+			return false;
+		}
+
+		String name = furnitureName.toLowerCase().trim();
+		String said = hop.toLowerCase();
+
+		if (!name.equals("portal") && !name.isEmpty() && said.contains(name))
+		{
+			return true;
+		}
+
+		String place = name.replace("portal", "").trim();
+		if (!place.isEmpty() && !place.equals(name) && namesTheSamePlace(place, hop))
+		{
+			return true;
+		}
+
+		for (Map.Entry<String, String[]> kind : FURNITURE_DESTINATIONS.entrySet())
+		{
+			if (!name.contains(kind.getKey()))
 			{
-				return true;
+				continue;
+			}
+			for (String destination : kind.getValue())
+			{
+				if (namesTheSamePlace(destination, hop))
+				{
+					return true;
+				}
 			}
 		}
 		return false;

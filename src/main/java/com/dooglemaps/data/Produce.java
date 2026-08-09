@@ -74,7 +74,11 @@ public enum Produce
 	DWARF_WEED("Dwarf weed", "Dwarf weed", PatchImplementation.HERB, ItemID.DWARF_WEED, 20, 5, 0, 3),
 	TORSTOL("Torstol", "Torstol", PatchImplementation.HERB, ItemID.TORSTOL, 20, 5, 0, 3),
 	GOUTWEED("Goutweed", "Goutweed", PatchImplementation.HERB, ItemID.EADGAR_GOUTWEED_HERB, 20, 5, 0, 2),
-	ANYHERB("Any herb", "Any herb", PatchImplementation.HERB, ItemID.GUAM_LEAF, 20, 5, 0, 3),
+	// Displayed as plain "Herb": this produce only ever surfaces where the game cannot say
+	// which herb it was — a dead patch decodes to it — and every sentence it appears in
+	// speaks it mid-phrase, where "Clear the dead any herb" read as a bug in itself.
+	// Reported from play. The contract name keeps the "Any herb" wording, which is Jane's.
+	ANYHERB("Herb", "Any herb", PatchImplementation.HERB, ItemID.GUAM_LEAF, 20, 5, 0, 3),
 	OAK("Oak", "Oak tree", PatchImplementation.TREE, ItemID.OAK_LOGS, 40, 5, 0, 1),
 	WILLOW("Willow", "Willow tree", PatchImplementation.TREE, ItemID.WILLOW_LOGS, 40, 7, 0, 1),
 	MAPLE("Maple", "Maple tree", PatchImplementation.TREE, ItemID.MAPLE_LOGS, 40, 9, 0, 1),
@@ -140,6 +144,25 @@ public enum Produce
 	public boolean isCrop()
 	{
 		return this != WEEDS && this != SCARECROW;
+	}
+
+	/**
+	 * Whether the leprechaun turns this into a bank note — a harvested crop, as opposed to the
+	 * compost rows above, which are in this enum because a bin's contents decode through the
+	 * same varbit machinery as a crop's growth.
+	 *
+	 * <p>Separate from {@link #isCrop()} because the two questions part company exactly at
+	 * those rows: for patch state, compost maturing in a bin is as much a crop as a guam, but
+	 * telling someone to note the ultracompost in their pack put them in a loop — the
+	 * leprechaun <i>stores</i> compost rather than noting it, so the buckets they had just
+	 * withdrawn went straight back into his store and the withdrawal step came round again.
+	 * Reported from play, at Prifddinas.
+	 */
+	public boolean isNotable()
+	{
+		return isCrop()
+			&& patchImplementation != PatchImplementation.COMPOST
+			&& patchImplementation != PatchImplementation.BIG_COMPOST;
 	}
 
 	/** Minimum minutes from planting to fully grown, ignoring disease setbacks. */

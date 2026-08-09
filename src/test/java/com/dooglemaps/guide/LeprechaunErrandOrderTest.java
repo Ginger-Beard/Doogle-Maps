@@ -87,6 +87,39 @@ public class LeprechaunErrandOrderTest
 	}
 
 	/**
+	 * Compost in the pack is never something to note.
+	 *
+	 * <h2>The Prifddinas loop</h2>
+	 *
+	 * The compost tiers are {@code Produce} entries — the compost <i>bin</i> needs them to be —
+	 * so the notable-crop scan used to find them in the pack. At a stop wanting ultracompost
+	 * that built a treadmill: withdraw a bucket, be told to "note your ultracompost", hand it
+	 * back into his store, and meet the withdrawal step again. Reported from play, at
+	 * Prifddinas, where composting is most of what the two allotments ask for.
+	 */
+	@Test
+	public void withdrawnCompostIsNotOfferedForNoting() throws Exception
+	{
+		carrying(ItemID.BUCKET_ULTRACOMPOST, 2, ItemID.BUCKET_EMPTY, 2);
+
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+			ItemID.BUCKET_ULTRACOMPOST, null, "Withdraw ultracompost."));
+
+		bundle(steps);
+
+		long notes = steps.stream()
+			.filter(step -> step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+			.count();
+		assertEquals("compost is stored with him, not noted - a note step here loops forever",
+			0, notes);
+		assertEquals("the empties still go back", GuideAction.RETURN_BUCKETS,
+			steps.get(0).getAction());
+		assertEquals("and the withdrawal is still the step after",
+			GuideAction.WITHDRAW_COMPOST, steps.get(1).getAction());
+	}
+
+	/**
 	 * A leprechaun visit further down the list still bundles the errands.
 	 *
 	 * <p>The reported bug. Mid-harvest with a compost withdrawal a couple of steps away, the visit
@@ -137,6 +170,39 @@ public class LeprechaunErrandOrderTest
 		assertEquals("harvesting comes first", GuideAction.HARVEST, steps.get(0).getAction());
 		assertEquals("noting waits until the patch work is done",
 			GuideAction.NOTE_AT_LEPRECHAUN, steps.get(1).getAction());
+	}
+
+	/**
+	 * The bucket return goes <b>behind</b> a note step already in the list, never in front.
+	 *
+	 * <h2>The one-watermelon treadmill</h2>
+	 *
+	 * Composting leaves an empty bucket; a full pack raises its own note step. The errand
+	 * insertion put everything "in front of the step that brought you here", which is right
+	 * for a withdrawal — hand over before taking out — and wrong for a note: depositing the
+	 * bucket first un-filled the pack by exactly one slot, the full-pack note step vanished,
+	 * and the guide sent you back to harvest a single watermelon before raising it again.
+	 * Reported from play. Noting frees twenty slots; the bucket frees one; the note wins.
+	 */
+	@Test
+	public void aBucketReturnGoesBehindAnExistingNoteStep() throws Exception
+	{
+		carrying(Produce.WATERMELON.getItemID(), 25, ItemID.BUCKET_EMPTY, 1);
+
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN, somePatch(),
+			Produce.WATERMELON.getItemID(), null,
+			"Your inventory is full - note the watermelon."));
+		steps.add(GuideStep.of(GuideAction.HARVEST, somePatch(), "Harvest the watermelon."));
+
+		bundle(steps);
+
+		assertEquals("the note stays first - it is what actually empties the pack",
+			GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
+		assertEquals("the empties go back on the same visit, right after",
+			GuideAction.RETURN_BUCKETS, steps.get(1).getAction());
+		assertEquals("and the harvest resumes with a genuinely empty pack",
+			GuideAction.HARVEST, steps.get(2).getAction());
 	}
 
 	/** A full pack already raises its own note step; bundling must not add a second. */

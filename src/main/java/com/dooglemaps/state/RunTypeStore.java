@@ -188,8 +188,10 @@ public class RunTypeStore extends ProfileJsonStore
 			}
 			selected.clear();
 			selected.addAll(keys);
-			save();
 		}
+		// Outside the monitor: the save fires ConfigChanged into arbitrary subscribers.
+		// See ProfileJsonStore.save.
+		save();
 		log.debug("Run covers {}", keys);
 	}
 

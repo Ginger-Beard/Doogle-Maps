@@ -63,12 +63,19 @@ each so a wrong result points somewhere.
   rather than before one.
 - **Dead code sweep**, deliberately deferred until the features above are verified — several
   of the unused-looking methods are scaffolding for things half-built. See the list in
-  `docs/NOTES.md`. The two unused *imports* can go any time.
+  `docs/NOTES.md`. The two unused *imports* can go any time. New candidates from the
+  2026-08-08 fixes: the run's `serviced` set is now write-only apart from ordering
+  (`RunPlanner.getRemainingPatches` has no callers and its serviced-based filtering is stale;
+  `RunStop.isFullyServiced` is referenced only by a comment) — the guide derives per-patch
+  doneness from state since the harvest-abandonment fix, so the whole hint may be removable
+  once verified in client.
 - ~~The deprecated-API note on every build.~~ **Done**: all five files (the four listed plus
   `ProtectedPatches`) are on `gameval` now, every constant migrated by value with the mapping
   table in the session log, and `CompostCapture`'s three behavioural deprecations rewritten
   through `getTopLevelWorldView()`.
-- **Bottomless compost bucket: the filled bucket satisfies any tier.** The item id cannot say
+- **Bottomless compost bucket: the filled bucket satisfies any tier.** *Blocked on a drop:
+  the owner does not own one (Hespori), so the Var Inspector check below waits until it
+  lands.* The item id cannot say
   what is inside, but the game can: varbits `FARMING_TOOLS_BOTTOMLESS_BUCKET_TYPE` (7915) and
   `_QUANTITY` (7916) exist in gameval. RuneLite core reads neither, so the type-value-to-tier
   mapping is unverified — sixty seconds with the Var Inspector while switching the bucket's
@@ -76,12 +83,9 @@ each so a wrong result points somewhere.
   `LeprechaunStore` is already the varbit reader, and `RunLoadout.addCompost`'s bottomless
   check gains a tier match. Do not guess the mapping: wrongly denying a working bucket is
   worse than the current blind spot.
-- **Cyan counts still draw over teleport placeholders in the filtered bank.** Cosmetic, and
-  it survived the obvious fix: `drawWithdrawCount` already skips widgets with
-  `getItemQuantity() <= 0`, so a placeholder slot in a bank tag layout is apparently
-  reporting a quantity above zero (or the placeholder's widget carries the real item id with
-  the layout's quantity). Wants the Widget Inspector on a placeholder slot in the filtered
-  view to see what id and quantity it actually reports before another blind guard is added.
+- ~~Cyan counts over teleport placeholders.~~ **Done, proved from Bank Tags' own source**: a
+  *layout* placeholder widget carries `Integer.MAX_VALUE` quantity (drawing suppressed), which
+  sailed past the `<= 0` guard; Jagex placeholders carry 0. The guard now rejects both shapes.
 - ~~Guided mode: the stop is not sequenced.~~ **Settled the other way** — nearest-first with
   a sticky working patch is the design, locked in `docs/design-principles.md` #9: the step
   must not move while the player weaves between close patches (Ardougne, to and from the
@@ -122,34 +126,16 @@ each so a wrong result points somewhere.
   willow carries a second six-wide harvestable block at 192–197 — see `TreeStumpTest`. The other
   twenty-odd patch types are still unexamined, and it is generated, so anything found there is a
   generator fix rather than an edit.
-- **The `RunScope`/`RunSnapshot` refactor** — the one big item left from the August second-pass
-  review (`docs/code-review-2026-08b.md`, Architecture). Two halves; the first now has an
-  executable plan, worked out in full and deliberately not half-landed at the end of a long
-  session:
-  1. **`RunScope` (kill the Provider cycle)** — the steps, in order:
-     a. Move the supply-trip decision to the loadout: `RunLoadout.needsSupplyTrip(types)`,
-        built from `tools.anyOnlyInBank`, the selection being empty, `planner.getSupplySources()`
-        (loadout→planner is the kept direction) and its own `anythingLeftToWithdraw`.
-     b. `RunPlanner.start(types)` becomes `start(types, boolean wantsSupplies)`; the caller
-        (`RunPanel`'s start button) computes it via the loadout. The planner's own
-        `needsSupplyTrip()` and both `loadout.get()` call sites are deleted with the
-        `Provider<RunLoadout>` constructor parameter.
-     c. `setNothingToDo(Set)` widens to `updateScope(Set blocked, boolean suppliesOutstanding)`
-        — `GuideTracker.reportIdlePatches` already pushes the set every tick; it adds the one
-        extra boolean. `leaveBank()` reads the stored flag instead of calling the loadout.
-     d. `BankCapture` keeps the same-tick nicety by refreshing the flag before its
-        `leaveBank()` call: it gains a `RunLoadout` dependency (capture→loadout, no cycle) and
-        calls `planner.updateSupplies(loadout.anythingLeftToWithdraw(planner.coveredTypes()))`
-        first.
-     e. Test surgery: `RunPlannerTest` (~30 `start(...)` sites plus the Provider in the
-        fixture), `SkippedStopStaysFinishedTest`, `RunLoadoutTest`'s planner construction.
-  2. **`RunSnapshot`**: give the planner the published-snapshot pattern `GuideStatus` already
-     uses, so `RunPanel` and `ReadyInfoBox` stop taking the planner's monitor from the EDT.
-     **The catch found on inspection:** `previewStops`/`countActionable` are queries
-     *parameterized by the panel's live tickboxes*, not pure state reads — but the parameter
-     space is really just the currently-ticked set, so a per-tick snapshot keyed on
-     `RunTypeStore`'s selection covers it with at most one tick of lag after a checkbox
-     change. The snapshot carries per-patch facts; counting moves panel-side.
+- ~~The `RunScope`/`RunSnapshot` refactor~~ **Done, both halves.** The `Provider<RunLoadout>`
+  is deleted — the dependency runs one way, the withdraw list's answer is pushed per tick by
+  the guide (refreshed same-tick ahead of `leaveBank`, seeded at `start` by the panel asking
+  the guide), and the sidebar prices runs from an immutable per-tick `RunSnapshot` published
+  on the planner, read lock-free from the EDT, with a live fallback only before the first
+  tick and in the single tick after a checkbox change. The spirit-tree cap rode in right after:
+  `SpiritTrees` caps the allocation (1@83 through unlimited@99, occupied slots counted from
+  patch state), applied inside `actionableByGroup` so pricing, loadout and snapshot inherit
+  it at once, and in the guide's own plantable list through the same class so the two cannot
+  disagree.
 - ~~Finish the `ProfileJsonStore` migration where it fits.~~ **Done**: `PatchStateStore` is on
   the base via the `afterLoad()` hook (backfill runs blob or no blob), eight stores share it
   now. `SeedSelectionStore` and `ProtectionSelectionStore` keep two config keys each for
@@ -169,10 +155,6 @@ each so a wrong result points somewhere.
   bugs on record and no regression coverage.
 
 ## Decisions waiting on you
-
-- **The rename apostrophe** — *Farmers Almanac*, *Farmer's Almanac* or *Farmers' Almanac*. It
-  lands in the descriptor, the repo name and the Hub listing, and both real-world publications
-  disagree, so there is no convention to inherit. Blocks the whole rename. Details below.
 
 ## Per-feature toggles for a run — wants thinking about, not just adding
 
@@ -348,6 +330,20 @@ slightly wrong**, because the whole point of the run panel is to tick two boxes 
 
 So the design rule for this: **no new configuration.** If it cannot be derived, it does not get
 built.
+
+### Decided and built: selection order is the priority, worn as a yellow number
+
+The spill-order question (XP vs GE value vs resources) is closed. **The order the seeds were
+clicked is the order they plant**: `RunEstimate.bestFirst` reads the selection's own
+insertion order — which `SeedSelectionStore` keeps end to end, through the save file — and
+the seed selector draws each pick's queue position as a yellow digit in the icon's top-right
+(the game's stack count owns the top-left), hidden when a group has only one pick. Reorder
+by deselecting and reselecting, which sends a seed to the back. This is configuration the
+player already performed by clicking, so the no-new-configuration rule stands; it makes the
+ranking visible where it is set; and it covers the ironman resource motive no derivation
+could. The expected-XP ranking is gone, and `RunEstimateTest.theFirstPickedSeedGoesInFirst`
+pins both directions of the new contract. There is no default to choose "underneath" it:
+one pick has no order, and two picks were made in one.
 
 ### Decided: a settings toggle, herbs and Kourend
 
@@ -1088,43 +1084,10 @@ its own lock. `RunPlanner.survivalAcross` returns a lambda that is invoked later
 and takes Availability then State — consistent with that order, but it is the kind of thing to
 re-check rather than assume.
 
-## Rename: Farmers Almanac, with Doogle Maps as the run section
+## Rename — dropped
 
-The plugin becomes **Farmers Almanac**. "Doogle Maps" survives as the heading of the run
-section, which is where it always fitted best — it is the routing half, and the joke is a
-mapping joke.
-
-- **Spelling to confirm before anything is renamed**: "Farmers Almanac", "Farmer's Almanac" or
-  "Farmers' Almanac". Worth settling first because it ends up in the descriptor, the repo name
-  and the Hub listing, and changing it afterwards is far more annoying than choosing now.
-  There is no convention to inherit either: the real-world publications are *Farmers' Almanac*
-  and *The Old Farmer's Almanac*, so both apostrophe placements have a precedent and neither
-  is the obvious one.
-- ~~The **Start run** section becomes **collapsible**, headed "Doogle Maps".~~ **Superseded and
-  done better** — it is a top-level tab now, so the heading is the tab and the overview gets
-  the whole panel back rather than just most of it. See the section above.
-- Sitta mango's credit still stands and does not move — the name is still in use, just for the
-  section rather than the whole plugin. `ATTRIBUTION.md` and the README both need rewording
-  rather than removing.
-
-**What the rename actually touches**, in rough order of risk:
-
-1. `DoogleMapsConfig.GROUP = "dooglemaps"`. **Leave it alone**, or every stored patch state,
-   seed cache, availability toggle and harvest statistic is orphaned. It is an internal key
-   nobody ever sees; renaming it buys nothing and costs a migration. If it ever must change, it
-   needs a one-off copy-across on first run, not a rename.
-   - The **harvest statistics** are the part that makes this more than an inconvenience.
-     Patch states, seed counts and learned locations all come back by playing — that is the
-     whole basis of the profile reset. Nothing rebuilds the harvest history, so orphaning it
-     is the one genuinely irreversible thing a rename could do.
-2. `@PluginDescriptor` name, description and tags — the only part users actually read, and the
-   only part that has to change for the rename to be real.
-3. The `com.dooglemaps` package and the class prefixes. Cosmetic, wide, and best done in one
-   mechanical pass rather than drifting half-renamed.
-4. The repo directory, which is referenced by `run-client.sh` and the WSL/Windows symlink, so
-   renaming it means re-pointing both.
-
-Doing 1 and 2 gets the rename; 3 and 4 are tidying and can wait.
+Settled with the owner, August 2026: the plugin stays **Doogle Maps**. The Farmers Almanac
+rename, its apostrophe question and the descriptor work are all off the board.
 
 ## ~~Fetching the new contract's seed mid-stop~~ — **done, wants your eyes in-client**
 

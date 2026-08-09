@@ -1496,10 +1496,19 @@ highlight entirely — the teleport tab stopped being outlined at all. Everythin
 marked: when a menu really is open it covers the inventory anyway, so the redundant highlight is
 invisible, and the version that cannot fail silently beats the tidy one.
 
-**Highlighting the panel instead of the line.** Inside a jewellery box the whole category panel
-was outlined rather than the "J: Farming Guild" row. The box opens a <b>lettered option menu</b>,
-a different interface from the category buttons, so marking the category was marking the previous
-screen. Both are marked now, each at the point it is in front of you.
+**Highlighting the panel instead of the line — twice, because the first fix believed a wrong
+map.** Inside a jewellery box the whole category panel was outlined rather than the
+"J: Farming Guild" row. The first fix reasoned that the box opens a <b>lettered option menu</b>
+— a different interface from the category buttons — and added that menu's containers to the row
+scan. The premise was wrong: the box's lettered lines are dynamic children <i>inside its own
+section layers</i> (interface 590, one layer per jewellery type), which the scan never visited.
+So the rows were never found, the miss was silent — the unmatched-row logger only speaks when it
+saw <i>some</i> text — and the category fallback outlined the whole Skills block, which is
+exactly how the bug re-presented from play. The six section layers are now scanned as
+destination lists themselves, which also buys those rows the text-hugging outline the nexus rows
+get. The lesson is the impostor one again, third time in this file: verify which interface the
+text actually lives in before matching against it, because a scan of the wrong container fails
+exactly like a scan that works.
 
 **Both teleports lit up at once.** A house can hold a nexus and a jewellery box, and outlining
 both says "one of these two, you work out which" — which is the question the player arrived with.
@@ -1536,7 +1545,53 @@ Worth recording as a pattern rather than a one-off — it is the same shape as t
 documented as "newest first" when it was in path order. A comment describing behaviour is a claim,
 and an unchecked claim in a comment is worse than none, because the next reader believes it.
 
-## Barbarian Farming got a setting as well as a detector
+## The way out of the house is furniture too
+
+Reported from a Prifddinas house: the route read "via Teleport to House via Respawn Portal
+(Prifddinas)", nothing in the room was outlined, and the drawn path began at the respawn point in
+the middle of the city rather than at the house portal across town.
+
+Both halves come from the same place: Shortest Path's model of a house's exits. Its POH data
+gives every house a portal-room <b>Respawn Portal</b> — the Prifddinas edge is not even gated by
+a varbit — so for a player who has not built one, the route out is furniture that is not there.
+No hop matched anything in the room, and the highlighter's own design ("outline the furniture
+the route uses, read back rather than guessed") had nothing to point at. Meanwhile the drawn
+path started where that imaginary portal lands.
+
+The exit portal had been deliberately unmatchable all along — its name is the bare word
+"Portal", which every house exit shares and which would match any hop mentioning a portal — and
+that exclusion is still right. What was missing is that <i>leaving on foot is also an
+instruction</i>. So when you are standing in your house and no furniture serves any hop, the
+exit portals are outlined by asking for them outright (`PlayerHouse.exitPortals`, an exact-name
+match that "Portal Nexus" and "Varrock Portal" cannot leak into), and the route is re-posted
+with its start pinned to the exterior house portal — read from the house-location varbit, the
+same table Shortest Path itself uses for "Teleport to House (Outside)". Once per visit, because
+the reroute changes the transports it was judged by, and judging the fresh answer again would
+ping-pong.
+
+The condition doing all the work is "no furniture serves the route". A respawn portal that
+really is built matches its hop by name and everything stays as it was; the fallback exists for
+the gap between Shortest Path's model of a house and the house.
+
+## Crops on the ground are part of the harvest
+
+Limpwurts hand over several roots per pick, and with a full pack the game keeps the change on
+the floor. The guide's own flow makes that worse than it sounds: it walks you to the leprechaun
+to note — correct — and then, slots freed, walks you onward while your roots despawn behind you.
+
+Ground items were previously nowhere in the plugin, and most of the design is about what
+<i>not</i> to record. A patch is a public place, so `DroppedProduce` stacks four refusals:
+ownership must be the local player's (the game marks whose drop is whose), the item must be a
+notable crop, the pack must be full at the moment of the spawn — overflow only exists because
+nothing more fits — and it must land at the player's feet. Another player's roots, and your own
+hand-dropped ones while slots are free, fail those tests.
+
+The step's position follows the slots, pinned by `DroppedPickupStepTest`: with room in the pack
+the pick-up leads the stop, because the despawn clock makes it the one urgent thing there; with
+a full pack it sits directly behind the note step that will make it possible; with a full pack
+and nothing that frees a slot, no step at all — an instruction nobody can follow is noise. A
+scene reload clears the record rather than trusting stale `TileItem` handles: a highlight that
+cannot point at a vanished item beats one that lingers.
 
 The observation is right but it only pays out once a planting has been watched, and "still asking
 me for a dibber" came back from play before that had happened. Waiting to be observed is fine in

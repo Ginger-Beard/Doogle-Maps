@@ -139,6 +139,22 @@ public class ShortestPathIntegration
 	 */
 	public void setTargets(Collection<WorldPoint> targets, boolean mayVisitBank)
 	{
+		setTargets(targets, mayVisitBank, null);
+	}
+
+	/**
+	 * Routes to whichever of these is cheapest to reach, from somewhere the player is not.
+	 *
+	 * @param targets      where the player could usefully go next; an empty set clears the path
+	 * @param mayVisitBank whether the route is allowed to detour through a bank on the way
+	 * @param start        where the path should begin, or null for the player's position.
+	 *                     Exists for the player-owned house: the position inside is an
+	 *                     instance tile, and when the route leaves on foot the true start is
+	 *                     the exterior portal — see {@code GuideTracker.routeFromTheFrontDoor}
+	 */
+	public void setTargets(Collection<WorldPoint> targets, boolean mayVisitBank,
+		@javax.annotation.Nullable WorldPoint start)
+	{
 		if (targets == null || targets.isEmpty())
 		{
 			clear();
@@ -147,6 +163,10 @@ public class ShortestPathIntegration
 
 		Map<String, Object> data = new HashMap<>();
 		data.put(KEY_TARGET, new HashSet<>(targets));
+		if (start != null)
+		{
+			data.put(KEY_START, start);
+		}
 
 		Map<String, Object> configOverride = new HashMap<>();
 		// Ask for the transport list back so the panel can say what the route uses.

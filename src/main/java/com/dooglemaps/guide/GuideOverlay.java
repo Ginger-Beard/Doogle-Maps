@@ -23,6 +23,7 @@ import net.runelite.api.GameObject;
 import net.runelite.api.NPC;
 import net.runelite.api.ObjectComposition;
 import net.runelite.api.Perspective;
+import net.runelite.api.Player;
 import net.runelite.api.coords.LocalPoint;
 import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.Scene;
@@ -67,11 +68,14 @@ public class GuideOverlay extends Overlay
 	private final ModelOutlineRenderer outlineRenderer;
 	private final PatchLocationStore locations;
 	private final PlayerHouse house;
+	private final DroppedProduce droppedProduce;
 
 	@Inject
 	GuideOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
-		ModelOutlineRenderer outlineRenderer, PatchLocationStore locations, PlayerHouse house)
+		ModelOutlineRenderer outlineRenderer, PatchLocationStore locations, PlayerHouse house,
+		DroppedProduce droppedProduce)
 	{
+		this.droppedProduce = droppedProduce;
 		this.house = house;
 		this.locations = locations;
 		this.client = client;
@@ -135,7 +139,46 @@ public class GuideOverlay extends Overlay
 		{
 			highlightLeprechaun(graphics, colour);
 		}
+		else if (step.getAction() == GuideAction.PICK_UP_DROPS)
+		{
+			highlightDroppedProduce(graphics, colour);
+		}
 		return null;
+	}
+
+	/**
+	 * Marks the tiles holding the crops a full pack dropped.
+	 *
+	 * <p>Tiles rather than item models: a ground item is a handful of pixels with no
+	 * silhouette worth tracing, and the tile is what gets clicked. The record is
+	 * {@code DroppedProduce}'s — the step exists exactly while it has entries, so there is
+	 * nothing to re-derive here. Merged into one shape for the same reason the patch tiles
+	 * are: two stacks on adjacent squares should read as one place to go, not a grid.
+	 */
+	private void highlightDroppedProduce(Graphics2D graphics, Color colour)
+	{
+		Player player = client.getLocalPlayer();
+		if (player == null)
+		{
+			return;
+		}
+
+		Area tiles = new Area();
+		for (DroppedProduce.Drop drop : droppedProduce.near(player.getWorldLocation(), 32))
+		{
+			LocalPoint local = LocalPoint.fromWorld(client.getTopLevelWorldView(),
+				drop.getLocation());
+			if (local == null)
+			{
+				continue;
+			}
+			Polygon tile = Perspective.getCanvasTilePoly(client, local);
+			if (tile != null)
+			{
+				tiles.add(new Area(tile));
+			}
+		}
+		fillAndOutline(graphics, tiles, colour);
 	}
 
 	/**
@@ -573,6 +616,32 @@ public class GuideOverlay extends Overlay
 	 * noticing it needs to be. It also means this cannot claim a house has a nexus when it does
 	 * not — an object that is not there cannot be found.
 	 */
+	/** The destination a transport-vocabulary miss was last said for, once rather than per frame. */
+	@Nullable
+	private String loggedTransportMissFor;
+
+	/**
+	 * Says when Shortest Path's hops matched none of the furniture in the room.
+	 *
+	 * <p>The router's wording for house furniture is the one thing the name matching depends
+	 * on and the one thing that cannot be checked from here — same spirit as the nexus-row
+	 * logger in {@code GuideInventoryOverlay}: make the game announce the vocabulary rather
+	 * than guessing at it.
+	 */
+	private void noteUnmatchedTransports(String destination, List<String> transports)
+	{
+		if (transports.isEmpty() || destination.equals(loggedTransportMissFor))
+		{
+			return;
+		}
+		loggedTransportMissFor = destination;
+
+		log.info("None of Shortest Path's hops for \"{}\" mapped to the furniture here - "
+			+ "hops: {}. Nothing is outlined; if one of those hops should have picked a piece "
+			+ "of furniture, its wording or the furniture's destination list needs matching.",
+			destination, transports);
+	}
+
 	private void highlightHouseTeleports(Graphics2D graphics, Color colour)
 	{
 		TravelHint hint = tracker.getStatus().getTravelHint();
@@ -581,23 +650,38 @@ public class GuideOverlay extends Overlay
 			return;
 		}
 
-		// The one that reaches where you are going, not everything in the room. A house can hold
-		// both a nexus and a jewellery box, and outlining both says "one of these two, you work
-		// out which" — which is the question the player came here with.
+		// The one the route uses, not everything in the room. A house can hold a nexus, a
+		// jewellery box and half a dozen portals, and outlining them all says "one of these,
+		// you work out which" — which is the question the player came here with.
 		//
-		// The box is preferred when it is known to reach the stop, because that is a fact from our
-		// own table. The nexus otherwise: what it is attuned to is per-account and unknowable from
-		// outside, so it is the honest default rather than a claim.
-		List<TileObject> furniture =
-			HouseTeleports.reachableByJewelleryBox(hint.getDestination())
-				? house.getJewelleryBoxes()
-				: house.getNexuses();
+		// Shortest Path decides, because it already did: it planned this leg with the player's
+		// own transport settings, and its hop descriptions name places. A piece of furniture
+		// whose wiki destination list covers a named hop — or whose own name carries it, as a
+		// Varrock Portal does — is the route's choice, read back rather than guessed. Settled
+		// with the owner: no per-stop table of this plugin's own, and without Shortest Path
+		// there is no route, so nothing is outlined — the guide says where to go, not how.
+		List<String> transports = tracker.getStatus().getTransports();
+		List<TileObject> furniture = house.matchingFurniture(name ->
+			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)));
 
-		// A house with only the other kind still gets its furniture marked: pointing at the one
-		// teleport in the room beats pointing at nothing.
+		if (furniture.isEmpty() && house.isInside())
+		{
+			// Nothing in the house serves the route, and you are standing in the house — so the
+			// route continues outside it, and the way out is the exit portal. The common case is
+			// a house whose front door is the destination's neighbourhood: teleport to house,
+			// walk out, walk to the patches. The bare name "Portal" is deliberately unmatchable
+			// as a route hop (see HouseTeleports.furnitureServesHop), so the exits could never be
+			// chosen above; here they are the answer precisely because nothing else was.
+			// Reported from play at a Prifddinas house: teleported in, and the guide lit nothing.
+			furniture = house.exitPortals();
+		}
+
 		if (furniture.isEmpty())
 		{
-			furniture = house.getTeleports();
+			// Hops were reported but none mapped to the furniture here - the one seam in this
+			// design, so it announces itself with the router's exact words.
+			noteUnmatchedTransports(hint.getDestination(), transports);
+			return;
 		}
 
 		for (TileObject object : furniture)

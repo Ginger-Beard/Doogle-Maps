@@ -14,7 +14,9 @@ import com.google.gson.Gson;
 import java.lang.reflect.Constructor;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.client.config.ConfigManager;
 import net.runelite.client.eventbus.EventBus;
 import org.junit.Before;
@@ -22,7 +24,7 @@ import org.junit.Test;
 import org.mockito.Mockito;
 
 import static com.dooglemaps.Construct.construct;
-import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -32,42 +34,39 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.when;
 
 /**
- * A stop the run skipped stays finished after the player walks away from it.
+ * A patch whose varbit has changed once this run is still guided through the rest of its work.
  *
  * <h2>The bug this pins down</h2>
  *
- * The guide's "nothing can be done here" report used to be a statement about the stop being
- * stood in: cleared every tick, populated only for the patches around the player. But the
- * planner asks {@code isComplete} of <i>every</i> stop, every tick — so a stop that finished
- * only because its patch was exempt became unfinished again the instant the player left, and
- * the run routed them straight back to a patch it had already announced it was skipping.
- * Forever, because arriving re-exempted it and leaving resurrected it.
+ * {@code RunStop.markServiced} once meant "planted": the capture layer reported a varbit change
+ * only when it decoded to a growing crop. When it was widened to report <i>every</i> change — so
+ * harvest-only stops could complete — the guide's step builder kept filtering serviced patches
+ * out, and the first harvest crossed the patch off with the compost and replant still undone.
+ * The step went straight from harvesting to travel; the leprechaun errands were the only voice
+ * left; a compost withdrawal came back as "deposit it". Reported from play, at Troll Stronghold
+ * and the protected herb patches both.
  *
- * <p>The report is a pure function of the patch stores and the allocation — nothing about it
- * needs the player nearby — so it is now computed for every stop, every tick. These tests are
- * the two halves of that contract: exemptions hold at any distance, and a patch that becomes
- * workable again starts blocking completion on the very next tick.
- *
- * <p>The planner's own half — an exempted patch not holding its stop open — is pinned
- * separately by {@code RunPlannerTest.aPatchTheGuideCannotActOnDoesNotHoldTheRunUp}.
+ * <p>The guide derives per-patch doneness from state — {@code outstandingFor} — and the serviced
+ * set is an ordering hint only. This test walks the exact reported shape: empty patch (the
+ * moment after a harvest), the change already reported to the planner, and the guide must still
+ * ask for the planting.
  */
-public class SkippedStopStaysFinishedTest
+public class HarvestedPatchStillGuidedTest
 {
-	/** Two herb patches in two different regions, so the run has two stops. */
 	private static final String FALADOR_HERB = "12083.4774";
-	private static final String CATHERBY_HERB = "11062.4774";
 
-	/** Varbit 3 is a raked, empty herb patch: actionable until something is planted in it. */
+	/** Varbit 3 is a raked, empty herb patch: what a herb patch looks like just after digging. */
 	private static final int RAKED_AND_EMPTY = 3;
+
+	/** A tile inside Falador's region (12083), so the guide is standing at the stop. */
+	private static final WorldPoint AT_FALADOR = new WorldPoint(3010, 3266, 0);
 
 	private Map<String, String> stored;
 	private PatchStateStore stateStore;
 	private AvailabilityProfile availability;
 	private RunPlanner planner;
 	private GuideTracker tracker;
-	private com.dooglemaps.state.SeedSelectionStore selection;
-	private com.dooglemaps.state.SeedInventoryStore seeds;
-	private com.dooglemaps.state.PlantingGroups groups;
+	private PlayerLocation playerLocation;
 
 	@Before
 	public void setUp() throws Exception
@@ -112,29 +111,39 @@ public class SkippedStopStaysFinishedTest
 		banks.load();
 
 		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
-		PlayerLocation playerLocation = construct(PlayerLocation.class, client);
+		net.runelite.api.Player player = Mockito.mock(net.runelite.api.Player.class);
+		when(client.getLocalPlayer()).thenReturn(player);
+		when(player.getWorldLocation()).thenReturn(AT_FALADOR);
+		playerLocation = construct(PlayerLocation.class, client);
 
-		// Nothing selected and nothing owned, until a test says otherwise: the stuck-patch case
-		// is precisely "empty patch, no seed to put in it".
-		selection = Mockito.mock(com.dooglemaps.state.SeedSelectionStore.class);
-		seeds = Mockito.mock(com.dooglemaps.state.SeedInventoryStore.class);
+		// A guam seed is selected, owned and plantable, so the empty patch has work behind it.
+		com.dooglemaps.state.SeedSelectionStore selection =
+			Mockito.mock(com.dooglemaps.state.SeedSelectionStore.class);
+		com.dooglemaps.state.SeedInventoryStore seeds =
+			Mockito.mock(com.dooglemaps.state.SeedInventoryStore.class);
+		when(selection.getSelectedFor(any(com.dooglemaps.data.PlantingGroup.class)))
+			.thenReturn(java.util.Collections.singleton(Seed.GUAM));
+		when(seeds.getOwnedPlantable(Seed.GUAM)).thenReturn(10);
+		// In the pack, not merely owned: the guide only offers a plant step for seeds that
+		// are actually on the trip.
+		when(seeds.getPlantable(Seed.GUAM, com.dooglemaps.state.SeedSource.INVENTORY))
+			.thenReturn(10);
+		when(seeds.getFarmingLevel()).thenReturn(99);
 
-		groups = Mockito.mock(com.dooglemaps.state.PlantingGroups.class);
+		com.dooglemaps.state.PlantingGroups groups =
+			Mockito.mock(com.dooglemaps.state.PlantingGroups.class);
 		com.dooglemaps.data.PlantingGroup herbs =
 			Mockito.mock(com.dooglemaps.data.PlantingGroup.class);
 		when(herbs.getKey()).thenReturn("herb");
 		when(groups.groupFor(any())).thenReturn(herbs);
+		when(groups.patchesIn(any()))
+			.thenReturn(java.util.Collections.singletonList(patch(FALADOR_HERB)));
 
 		com.dooglemaps.state.CompostSelectionStore compost =
 			Mockito.mock(com.dooglemaps.state.CompostSelectionStore.class);
 		when(compost.get(any(com.dooglemaps.data.PlantingGroup.class)))
 			.thenReturn(com.dooglemaps.data.CompostTier.NONE);
 
-		com.dooglemaps.bank.RunLoadout loadout =
-			Mockito.mock(com.dooglemaps.bank.RunLoadout.class);
-
-		// The herb group is ticked for the full run; harvest-only stays false, so the empty
-		// patch is one the run genuinely wants to plant.
 		com.dooglemaps.state.RunTypeStore runOptions =
 			Mockito.mock(com.dooglemaps.state.RunTypeStore.class);
 		when(runOptions.isSelected(any())).thenReturn(true);
@@ -151,66 +160,29 @@ public class SkippedStopStaysFinishedTest
 			groups, compost, runOptions, client);
 	}
 
-	/**
-	 * The reported shape: every patch in the run is unworkable, the player is nowhere near any
-	 * of them, and the run still finishes — and stays finished on the next tick, which is the
-	 * half that used to fail.
-	 */
 	@Test
-	public void aStopSkippedForWantOfASeedStaysFinishedFromAnyDistance()
+	public void aPatchReportedChangedStillGetsItsPlantingStep()
 	{
-		startTwoStopRun();
+		record(FALADOR_HERB, RAKED_AND_EMPTY);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		playerLocation.onGameTick(null);
 
-		assertEquals("two empty patches are two stops worth visiting",
-			2, planner.getRemaining().size());
-
-		tracker.onGameTick(null);
-		assertTrue("no seed anywhere, so nothing is worth waiting on",
-			planner.getRemaining().isEmpty());
-
-		// The tick after is the regression: the exemption used to be cleared the moment the
-		// player was not standing at the stop, resurrecting it.
-		tracker.onGameTick(null);
-		assertTrue("and it stays that way on the next tick, wherever the player is",
-			planner.getRemaining().isEmpty());
-	}
-
-	/** The other half of the contract: a patch that becomes workable blocks again at once. */
-	@Test
-	public void aPatchThatBecomesWorkableStartsBlockingAgain()
-	{
-		startTwoStopRun();
+		// The harvest's varbit change, as the capture layer reports it: the patch is marked
+		// serviced on the stop. It is a hint, not a completion.
+		planner.onPatchChanged(patch(FALADOR_HERB));
 
 		tracker.onGameTick(null);
-		assertTrue("unworkable, so skipped", planner.getRemaining().isEmpty());
 
-		// Guam seeds turn up: selected for the group, owned, and plantable at this level.
-		when(selection.getSelectedFor(any(com.dooglemaps.data.PlantingGroup.class)))
-			.thenReturn(java.util.Collections.singleton(Seed.GUAM));
-		when(seeds.getOwnedPlantable(Seed.GUAM)).thenReturn(10);
-		// In the pack, not merely owned - seeds still in the bank do not make a patch
-		// workable on this trip.
-		when(seeds.getPlantable(Seed.GUAM, com.dooglemaps.state.SeedSource.INVENTORY))
-			.thenReturn(10);
-		when(seeds.getFarmingLevel()).thenReturn(99);
-		when(groups.patchesIn(any())).thenReturn(java.util.Arrays.asList(
-			patch(FALADOR_HERB), patch(CATHERBY_HERB)));
-
-		tracker.onGameTick(null);
-		assertEquals("a seed to plant makes both patches worth the trip again",
-			2, planner.getRemaining().size());
+		List<GuideStep> steps = tracker.stepsHere();
+		assertFalse("an empty patch with a seed to plant is still work, "
+			+ "whatever the serviced hint says", steps.isEmpty());
+		assertTrue("and the work named is at the patch the harvest just emptied",
+			steps.stream().anyMatch(step ->
+				FALADOR_HERB.equals(step.getPatch().getKey())));
 	}
 
 	// ------------------------------------------------------------------- helpers
-
-	private void startTwoStopRun()
-	{
-		record(FALADOR_HERB, RAKED_AND_EMPTY);
-		record(CATHERBY_HERB, RAKED_AND_EMPTY);
-		availability.setAvailable(patch(FALADOR_HERB), true);
-		availability.setAvailable(patch(CATHERBY_HERB), true);
-		planner.start(EnumSet.of(PatchImplementation.HERB));
-	}
 
 	private void record(String key, int varbitValue)
 	{
