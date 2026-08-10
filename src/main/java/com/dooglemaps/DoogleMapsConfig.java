@@ -212,9 +212,9 @@ public interface DoogleMapsConfig extends Config
 		name = "Hold shared plots until all are ready",
 		description = "Where allotment, flower and herb patches share a location, leave it out "
 			+ "of a run until every one of them you have selected is ready to harvest or "
-			+ "clear. Only the types ticked for the run count - with just flower and herb "
-			+ "ticked, a growing allotment holds nothing. A diseased or unpaid-protection "
-			+ "crop still gets its trip.",
+			+ "clear - it saves the teleport. Only the types ticked for the run count, a "
+			+ "diseased or unpaid-protection crop still gets its trip, and the place you are "
+			+ "standing is never held - that teleport is already spent.",
 		position = 39,
 		section = guideSection
 	)
@@ -245,18 +245,34 @@ public interface DoogleMapsConfig extends Config
 
 	/**
 	 * The first place the plugin shaped input rather than describing it, so it has its own
-	 * switch. See {@code GuideMenuSwap} for why it is safe and why it is step-driven.
+	 * switch. See {@code GuideMenuSwap} for why it is safe and how the option is chosen.
 	 */
 	@ConfigItem(
 		keyName = "seedBoxLeftClick",
-		name = "Left-click the seed box step",
-		description = "While a step is asking you to fill or empty the seed box, make that the "
-			+ "box's left-click option. Only reorders the menu, and only for that moment - "
-			+ "the box goes back to normal as soon as the step is done.",
+		name = "Left-click Fill/Empty on the seed box",
+		description = "While a run is under way, put Fill or Empty under the seed box's left "
+			+ "click - Empty once the box is holding seeds and nothing loose in your pack "
+			+ "would fit in it, Fill otherwise. Only reorders the menu; the other option is "
+			+ "still a right-click away.",
 		position = 37,
 		section = guideSection
 	)
 	default boolean seedBoxLeftClick()
+	{
+		return true;
+	}
+
+	/** The same arrangement as the seed box swap, for Guildmaster Jane. */
+	@ConfigItem(
+		keyName = "contractLeftClick",
+		name = "Left-click Jane's Contract option",
+		description = "While a step is asking you to take or hand in a farming contract, make "
+			+ "Contract Guildmaster Jane's left-click option. Only reorders the menu, and only "
+			+ "for that moment - she goes back to normal as soon as the step is done.",
+		position = 40,
+		section = guideSection
+	)
+	default boolean contractLeftClick()
 	{
 		return true;
 	}

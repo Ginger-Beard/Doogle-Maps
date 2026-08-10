@@ -53,7 +53,14 @@ public class BankCapture
 			return;
 		}
 
-		banks.record(client.getLocalPlayer().getWorldLocation());
+		// Never from inside an instance. getWorldLocation() there returns the instance
+		// TEMPLATE tile - a real map coordinate in unreachable void - and the store is
+		// deliberately permanent, so one chest banked inside an instance would hand
+		// Shortest Path a phantom bank target on every supply leg forever after.
+		if (!client.getTopLevelWorldView().isInstance())
+		{
+			banks.record(client.getLocalPlayer().getWorldLocation());
+		}
 		recordNames(event.getItemContainer());
 
 		// Offered, not asserted. leaveBank ends the leg only once nothing is left to collect —

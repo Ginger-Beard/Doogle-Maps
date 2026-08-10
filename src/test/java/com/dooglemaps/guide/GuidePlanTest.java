@@ -104,15 +104,15 @@ public class GuidePlanTest
 	}
 
 	/**
-	 * A harvest bigger than the free space pockets the loose seeds first.
+	 * A harvest is never interrupted by the seed box.
 	 *
-	 * <p>Seeds stack, but each loose type still holds a slot, and in front of a yield that
-	 * will not fit those slots are the difference between one noting trip and two. Requested
-	 * from play: the seed box was being carried anyway, and the guide let the slots go to
-	 * waste.
+	 * <p>Two box steps lived here over time — a pre-harvest "fill the box" gated on the expected
+	 * yield, then a plain fill-before-leaving — and both are gone by request. The box is not
+	 * something the guide talks about at all now; it is handled entirely by the left-click swap
+	 * in {@code GuideMenuSwap}, which reads the box rather than the current step.
 	 */
 	@Test
-	public void anOverflowingHarvestPocketsLooseSeedsFirst()
+	public void aHarvestLeadsEvenWithTheBoxAndLooseSeeds()
 	{
 		FarmPatch patch = statePatch(10);      // potatoes, harvestable
 		stockInventory(Seed.POTATO, 9);        // loose in the pack
@@ -121,63 +121,14 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, 40);
-
-		assertEquals(GuideAction.FILL_SEED_BOX, steps.get(0).getAction());
-		assertEquals("the box is the thing to click",
-			net.runelite.api.gameval.ItemID.SEED_BOX, steps.get(0).getItemId());
-		assertEquals(GuideAction.HARVEST, steps.get(1).getAction());
-	}
-
-	/** A yield that fits leaves the seeds where they are. */
-	@Test
-	public void aHarvestThatFitsLeavesTheSeedsAlone()
-	{
-		FarmPatch patch = statePatch(10);
-		stockInventory(Seed.POTATO, 9);
-		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
-
-		List<GuideStep> steps = GuidePlan.forPatch(
-			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, 5);
-
-		assertEquals("five potatoes fit in twenty-seven slots",
-			GuideAction.HARVEST, steps.get(0).getAction());
-	}
-
-	/** No box carried means nothing to suggest — the advice needs the box to exist. */
-	@Test
-	public void noSeedBoxMeansNoPocketingStep()
-	{
-		FarmPatch patch = statePatch(10);
-		stockInventory(Seed.POTATO, 9);
-		carrying();
-
-		List<GuideStep> steps = GuidePlan.forPatch(
-			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, 40);
+			leprechaun, barbarian, false, false, 1);
 
 		assertEquals(GuideAction.HARVEST, steps.get(0).getAction());
+		assertTrue("no box step anywhere before the pick", steps.stream().noneMatch(
+			step -> step.getItemId() == net.runelite.api.gameval.ItemID.SEED_BOX));
 	}
 
-	/** Nothing loose in the pack means nothing to pocket. */
-	@Test
-	public void noLooseSeedsMeansNoPocketingStep()
-	{
-		FarmPatch patch = statePatch(10);
-		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
-
-		List<GuideStep> steps = GuidePlan.forPatch(
-			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, 40);
-
-		assertEquals(GuideAction.HARVEST, steps.get(0).getAction());
-	}
-
-	/** Once the pack is actually full, noting is the fix and the box step stays out of the way. */
+	/** Once the pack is actually full, noting is the fix and the box is not mentioned. */
 	@Test
 	public void aFullPackNotesRatherThanShufflesSeeds()
 	{
@@ -197,11 +148,11 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, 40);
+			leprechaun, barbarian, false, false, 1);
 
 		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
-		assertTrue("no seed-box step anywhere in the list",
-			steps.stream().noneMatch(step -> step.getAction() == GuideAction.FILL_SEED_BOX));
+		assertTrue("no seed-box step anywhere in the list", steps.stream().noneMatch(
+			step -> step.getItemId() == net.runelite.api.gameval.ItemID.SEED_BOX));
 	}
 
 	/**
@@ -350,41 +301,6 @@ public class GuidePlanTest
 	}
 
 	/**
-	 * The seed box is what gets clicked, not the seed inside it.
-	 *
-	 * <p>Reported from play as "seedbox is not highlighted", and the cause is the step naming the
-	 * seed. The whole reason this step exists is that the seed is <i>in the box</i> and so not in
-	 * the inventory — meaning there was nothing on screen for the outline to find, and it drew
-	 * nothing at all rather than failing loudly.
-	 */
-	@Test
-	public void theSeedBoxStepHighlightsTheBox()
-	{
-		FarmPatch patch = statePatch(3);   // raked, empty
-		compost.set(PatchImplementation.ALLOTMENT, CompostTier.NONE);
-		stock(SeedSource.SEED_BOX, Seed.POTATO, 20);
-		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
-
-		GuideStep step = firstStep(patch, Seed.POTATO);
-		assertEquals(GuideAction.WITHDRAW_SEEDS, step.getAction());
-		assertEquals("the box is the thing you click, and the only one on screen",
-			net.runelite.api.gameval.ItemID.SEED_BOX, step.getItemId());
-	}
-
-	/** An open box is a different item id, and it is the one that would be on screen. */
-	@Test
-	public void anOpenSeedBoxIsMatchedToo()
-	{
-		FarmPatch patch = statePatch(3);
-		compost.set(PatchImplementation.ALLOTMENT, CompostTier.NONE);
-		stock(SeedSource.SEED_BOX, Seed.POTATO, 20);
-		carrying(net.runelite.api.gameval.ItemID.SEED_BOX_OPEN, 1);
-
-		assertEquals(net.runelite.api.gameval.ItemID.SEED_BOX_OPEN,
-			firstStep(patch, Seed.POTATO).getItemId());
-	}
-
-	/**
 	 * One free slot is not full, and must not send you to the leprechaun.
 	 *
 	 * <p>Reported from play at 27 of 28: there was still room for another herb, and being told
@@ -510,7 +426,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, 0);
+			leprechaun, barbarian, false, false, 4);
 
 		assertEquals(GuideAction.WITHDRAW_COMPOST, steps.get(0).getAction());
 		assertTrue("and it should ask for the three still missing, not all four: "
@@ -529,7 +445,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, 0);
+			leprechaun, barbarian, false, false, 4);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
 	}
@@ -566,7 +482,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, 0);
+			leprechaun, barbarian, false, false, 4);
 
 		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("4"));
 	}
@@ -611,22 +527,26 @@ public class GuidePlanTest
 	}
 
 	/**
-	 * Seeds in the box rather than the pack get their own step.
+	 * Seeds in the box plant like any other seeds: the guide says nothing about the box.
 	 *
-	 * <p>Worth calling out because Empty is not the seed box's left-click option, so someone
-	 * following along would otherwise be told to plant a seed they cannot reach.
+	 * <p>An empty-before-planting step used to come first, and it was removed by request along
+	 * with its fill-before-leaving twin — the box is a container you touch twice a stop, and
+	 * both steps were noise around the clicks that matter. It also hung on a patch, which is
+	 * what lit an unrelated allotment while it was current. Emptying the box is a left-click
+	 * away instead; see {@code GuideMenuSwap}.
 	 */
 	@Test
-	public void seedsInTheBoxAreWithdrawnBeforePlanting()
+	public void boxedSeedsPlantWithNoWordAboutTheBox()
 	{
 		FarmPatch patch = statePatch(3);
 		compost.set(PatchImplementation.ALLOTMENT, CompostTier.NONE);
 		stock(SeedSource.SEED_BOX, Seed.POTATO, 20);
-		carrying();
+		carrying(net.runelite.api.gameval.ItemID.SEED_BOX, 1);
 
-		GuideStep step = firstStep(patch, Seed.POTATO);
-		assertEquals(GuideAction.WITHDRAW_SEEDS, step.getAction());
-		assertTrue(step.getText(), step.getText().contains("seed box"));
+		List<GuideStep> steps = steps(patch, Seed.POTATO);
+		assertEquals(GuideAction.PLANT, steps.get(steps.size() - 1).getAction());
+		assertTrue("nothing points at the box", steps.stream().noneMatch(
+			step -> step.getItemId() == net.runelite.api.gameval.ItemID.SEED_BOX));
 	}
 
 	/** A growing crop wants leaving alone, and guided mode should say nothing at all. */
@@ -832,7 +752,7 @@ public class GuidePlanTest
 		assertTrue("a harvest-only run is finished with this patch",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch), null,
 				seeds, compost, carried, leprechaun, barbarian,
-				/* protecting */ false, /* harvestOnly */ true, 1, 0).isEmpty());
+				/* protecting */ false, /* harvestOnly */ true, 1).isEmpty());
 	}
 
 	/**
@@ -860,7 +780,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ true, /* harvestOnly */ false, 1, 0);
+			/* protecting */ true, /* harvestOnly */ false, 1);
 		assertFalse("the payment is the one thing this patch still wants", steps.isEmpty());
 		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
 		assertEquals("the gardener is what gets highlighted",
@@ -1046,7 +966,7 @@ public class GuidePlanTest
 		assertTrue("nothing to do here on a harvest-only visit",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch),
 				null, seeds, compost, carried, leprechaun, barbarian,
-				false, /* harvestOnly */ true, 1, 0).isEmpty());
+				false, /* harvestOnly */ true, 1).isEmpty());
 	}
 
 	/**
@@ -1108,7 +1028,7 @@ public class GuidePlanTest
 		assertNotNull("fixture patch has no projection", projection);
 		return GuidePlan.forPatch(projection,
 			patches.get(patch) == null ? null : patches.get(patch).getCompost(),
-			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1, 0);
+			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1);
 	}
 
 	private GuideStep firstStep(FarmPatch patch, Seed chosen)

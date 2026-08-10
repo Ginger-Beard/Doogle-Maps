@@ -90,9 +90,7 @@ flowchart TD
     Seed -- yes --> Compost{"Compost wanted<br/>and not applied?"}
 
     Compost -- yes --> DoCompost["Withdraw compost from leprechaun<br/>(enough for every patch here)<br/>→ <b>Treat the patch</b>"] --> P
-    Compost -- no --> Box{"Seeds in the<br/>seed box?"}
-    Box -- yes --> Empty["<b>Empty the seed box</b>"] --> Dibber
-    Box -- no --> Dibber{"Needs a dibber?"}
+    Compost -- no --> Dibber{"Needs a dibber?"}
     Dibber -- "yes, and not carried" --> GetDibber["Get dibber from leprechaun"] --> Plant
     Dibber -- no --> Plant["<b>Plant</b> → patch becomes GROWING<br/>→ no longer actionable"]
 

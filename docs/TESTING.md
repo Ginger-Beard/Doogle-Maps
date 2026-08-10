@@ -294,14 +294,10 @@ open menu wins over the inventory behind it, because that is what you are lookin
     extra" — a prompt that was never generated and one that was generated and missed look
     identical from the outside otherwise.
 
-### 1a-xiii. The seed box highlights
+### 1a-xiii. The seed box highlights — removed, see 1a-liii
 
-- **Do**: with seeds in your seed box and none in your pack, reach the planting step.
-- **Pass**: the **seed box** is outlined in your inventory alongside "Empty your seed box…".
-- **Was**: nothing was outlined. The step named the *seed*, which is inside the box and so not in
-  the inventory at all — there was nothing on screen for the outline to find, and it drew nothing
-  rather than failing loudly. Same root cause as the watermelon-noting bug.
-- Works for both the open and closed box, which are different item ids.
+Both seed box steps are gone, so nothing is highlighted for the box at all now. What is left
+is the left-click swap; see **1a-liii**.
 
 ### 1a-xiv. Protected herb patches as their own tab
 
@@ -1219,7 +1215,8 @@ the planting phase at all (`GuidePlan.seedAtHand`, pinned by
   "in the seed vault" / "not in your pack"). Once the stop's remaining work is done it
   completes, and a deferred supply trip routes to a bank rather than stranding the run.
   Withdrawing the seeds brings the patch's steps back by itself, no restart needed.
-- **Pass**: seeds in the seed box still guide normally — "Empty your seed box" then plant.
+- **Pass**: seeds in the seed box still guide normally — the plant step stands, and the box
+  is emptied with its left-click swap rather than a step of its own (1a-liii).
 - **Fail signature**: a plant instruction for seeds the pack and box cannot cover → a caller
   bypassed `seedAtHand`; a patch skipped while the seeds *are* in the pack → the seed
   inventory store's cache for the inventory container is stale.
@@ -1333,20 +1330,16 @@ across the state store or the level supplier.
   dead herb could be revived..."), not "any herb" — the ANYHERB filler's display name is
   now plain "Herb". Contracts still say "Any herb", which is Jane's own wording.
 
-### 1a-xlvii. Loose seeds are boxed before a harvest that will not fit — new
+### 1a-xlvii. The seed box has a plain rhythm: empty before planting, fill before leaving — removed
 
-Standing at a harvestable patch whose expected yield beats the free inventory space, with a
-seed box carried and seeds sitting loose: the guide now says "Fill the seed box with your
-loose seeds - this harvest is bigger than your free slots." ahead of the harvest, with the
-box highlighted in the pack. The slots freed are what make the noting trips fewer.
-
-- **Pass**: box + loose seeds + big harvest (watermelons into a half-full pack) → the box
-  step leads, then the harvest; use the box's Fill option and the step vanishes next tick.
-- **Pass**: no box, or nothing loose, or a yield that fits → straight to "Harvest", no
-  shuffling. A pack already full still says "note with the leprechaun" first — the box step
-  never displaces it.
-- **Fail signature**: the step nagging when the yield clearly fits → the expected-yield
-  figure (CropYieldModel, no bonuses) disagrees with the free-slot count; log both.
+Two goes at box steps, both removed. First a pre-harvest "fill the box" gated on the expected
+yield, plus an Empty that only fired when the chosen seed was short; then the plain ritual —
+empty on arrival, fill before leaving. The second was reported back the same way as the first:
+the box is a container you touch twice a stop, and being told to touch it is noise around the
+clicks that matter. The steps also hung on a patch (the stop's first, for the fill), which is
+how a stage-one snape grass allotment came to be outlined by a seed box instruction —
+`GuideStep.highlightsPatch` was true for them. All of it is gone; see **1a-liii** for what
+replaced it.
 
 ### 1a-xlviii. The way out of the house is pointed at, and the path starts at the front door — new
 
@@ -1446,7 +1439,7 @@ Work one patch through its whole cycle and check each instruction appears in tur
 | dead | Clear the dead crop |
 | growing | *nothing at all* |
 | empty, compost not applied | Withdraw compost (if you lack it) → Apply compost |
-| empty, treated, seeds in box | Empty your seed box |
+| empty, treated, seeds in box | Plant (the box has no step; its left-click is Empty) |
 | empty, treated, seeds in hand | Plant |
 
 - **Pass**: each step disappears within a tick or two of doing it, and the next appears.
@@ -1935,3 +1928,37 @@ moves the entry, clears the flag, raises the type.
   normal. Setting off → the leprechaun return step, unchanged.
 - **Fail signature**: left-clicking a lit bucket opens the menu instead of dropping → the
   entry's type is not being raised from `CC_OP_LOW_PRIORITY` on promotion.
+
+### 1a-liii. The seed box is a left-click, not an instruction — new
+
+Reported from play at Prifddinas: "Fill the seedbox with your loose seeds before moving on"
+was correctly lighting and swapping the box — and also outlining the **north allotment**,
+which held a stage-one snape grass and had nothing to do with it. The outline came and went
+with the box's contents. Cause: the fill step hung on `stop.getPatches().get(0)` so that it
+would sit at the right stop, and `GuideStep.highlightsPatch()` was true for it, so the patch
+it was hung on got lit.
+
+Both box steps were removed by request rather than patched — the fill *and* the
+empty-before-planting. What is left is the swap, and it no longer asks the guide what you are
+doing; it reads the box (`GuideMenuSwap.wantedBoxOption`, `GuideMenuSwapTest`):
+
+| Box | Loose seeds that fit | Left-click |
+|---|---|---|
+| empty | — | **Fill** |
+| holding seeds | yes | **Fill** |
+| holding seeds | no | **Empty** |
+| full (six kinds) | none of them fit | **Empty** |
+
+"Fit" is the sharp question, not "are there any": the box holds six kinds, one stack each, so
+a seventh kind cannot go in however much room the stacks have — but more of a kind already
+boxed always can. Saplings never count; the box will not take one.
+
+- **Pass**: the plant step stands on its own with seeds in the box — no box step, and no
+  patch lit by one. Left-click the box: it empties. Plant. Left-click it again at the end of
+  the stop: it fills.
+- **Pass**: setting off ("Left-click Fill/Empty on the seed box") → the box's own left-click
+  (Open) is back, both options still on the right-click menu.
+- **Pass**: the swap holds for the whole run, including the bank leg, and stops between runs.
+- **Fail signature**: a left-click that fills an already-full box → the box's contents are
+  stale in `SeedInventoryStore` (it is derived from deltas, not read; see `docs/NOTES.md`),
+  not a fault in the rule. Check the box's tab in the panel against what it actually holds.

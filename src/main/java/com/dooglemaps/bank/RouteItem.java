@@ -61,6 +61,7 @@ public class RouteItem
 	private String resolvedName;
 	private TeleportSpell resolvedSpell;
 	private int resolvedTick = -1;
+	private int resolvedGeneration = -1;
 
 	@Inject
 	RouteItem(ShortestPathIntegration router, ItemNames itemNames, BankContents bank,
@@ -99,11 +100,16 @@ public class RouteItem
 	private void resolve()
 	{
 		int tick = client.getTickCount();
-		if (tick == resolvedTick)
+		// The route generation as well as the tick: retargets and the router's answers land
+		// mid-tick, and a tick-only key kept serving the previous leg's item for the rest of
+		// the tick - the bank's first slot pinned to the teleport you had just finished with.
+		int generation = router.getRouteGeneration();
+		if (tick == resolvedTick && generation == resolvedGeneration)
 		{
 			return;
 		}
 		resolvedTick = tick;
+		resolvedGeneration = generation;
 		resolvedId = -1;
 		resolvedName = null;
 		resolvedSpell = null;

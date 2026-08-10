@@ -97,8 +97,35 @@ public class PlayerHouse
 		}
 		teleports = scan();
 		// Before the portal record below, which reads it through isInside().
+		boolean was = inside;
 		inside = computeInside();
+		if (inside && !was)
+		{
+			enteredTick = client.getTickCount();
+		}
 		recordPortalRoomPortals();
+	}
+
+	/** The tick {@link #isInside} first became true on this visit. See {@link #justEntered}. */
+	private volatile int enteredTick = -1;
+
+	/**
+	 * Whether the player arrived in the house on the current tick.
+	 *
+	 * <p>The one tick where "inside" and the rest of the plugin disagree. The event bus runs
+	 * same-priority GameTick subscribers in class-name order, which puts {@code GuideTracker}
+	 * before this class — so on the arrival tick the tracker has already taken its snapshot
+	 * against the <i>previous</i> tile, still carrying the pre-teleport route, before this
+	 * class notices the house. Anything that combines a live {@code isInside()} with that
+	 * snapshot — the exit-portal fallback was the reported case, flashing lit for the arrival
+	 * tick — should stand down while this is true; by the next tick the tracker has retargeted
+	 * and the disagreement is over.
+	 *
+	 * <p>Client thread only: it reads the tick counter.
+	 */
+	public boolean justEntered()
+	{
+		return inside && client.getTickCount() == enteredTick;
 	}
 
 	/**
@@ -286,6 +313,14 @@ public class PlayerHouse
 	public void reset()
 	{
 		teleports = Collections.emptyList();
+		inside = false;
+		enteredTick = -1;
+		// The portal answer is deliberately sticky across *this account's* comings and goings
+		// — the question is asked when the player is not in the house — but it must not
+		// survive into a different account's session: A's "no portal room" was suppressing
+		// house-portal routes for B. reset() is called at the login screen and on profile
+		// change, which is exactly the boundary the stickiness must not cross.
+		portalRoomPortals = null;
 	}
 
 	/**

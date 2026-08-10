@@ -281,6 +281,9 @@ public class RunPlanner
 		synchronized (this)
 		{
 			supplyOwed = wantsSupplies;
+			bankLegWaived = false;
+			runCompletePending = false;
+			postedSources = null;
 			// Standing on work beats going shopping. The supplies are still owed and the run
 			// picks them up once this stop is done, but nothing justifies teleporting away from
 			// ripe crops you are already stood next to.
@@ -748,7 +751,28 @@ public class RunPlanner
 		nothingToDo = patchKeys == null || patchKeys.isEmpty()
 			? Collections.emptySet()
 			: Collections.unmodifiableSet(new LinkedHashSet<>(patchKeys));
+		synchronized (this)
+		{
+			// A generation stamp for the run-complete confirmation; see retarget().
+			exemptionPushes++;
+		}
 	}
+
+	/**
+	 * How many times the exemption set has been pushed, for run-complete confirmation.
+	 *
+	 * <p>Completion is judged against {@code nothingToDo}, a set pushed from outside once a
+	 * tick — and a single over-broad push (the loadout blind for a tick, an exception freezing
+	 * the producer) made every stop read complete for one tick, at which point {@code
+	 * retarget()} ended the run outright. Deactivation now needs the emptiness confirmed
+	 * against a <b>later</b> push than the one that first produced it, so a one-tick lie
+	 * cannot kill a run.
+	 */
+	private int exemptionPushes;
+
+	/** Set when retarget() first sees nothing remaining; see {@link #exemptionPushes}. */
+	private boolean runCompletePending;
+	private int runCompleteGeneration = -1;
 
 	private boolean isActionable(FarmPatch patch)
 	{
@@ -840,7 +864,8 @@ public class RunPlanner
 	 * scoping: with just flower and herb ticked, a growing allotment holds nothing. A diseased
 	 * sibling never holds the trip back — waiting on a crop that is dying is how it dies — and
 	 * neither does one still owed its protection payment, for the same reason the payment
-	 * keeps a patch actionable at all.
+	 * keeps a patch actionable at all. Nor is the plot the player is standing on ever held:
+	 * the whole point is saving the teleport, and that one is already spent.
 	 *
 	 * <p>Planning-time only, deliberately: this filter runs in {@link #planStops} and the
 	 * counts that price it, never in {@link #isComplete}. Mid-run, a freshly replanted flower
@@ -851,6 +876,14 @@ public class RunPlanner
 	{
 		if (!config.holdClustersUntilReady()
 			|| !CLUSTER_TYPES.contains(patch.getImplementation()))
+		{
+			return false;
+		}
+
+		// Never for the plot being stood on. The hold exists to save the teleport, and
+		// standing there means it is already spent — starting a run at Falador should pick
+		// Falador's ready flower whatever the herb beside it is doing.
+		if (patch.getRegion().getRegionId() == playerLocation.getRegionId())
 		{
 			return false;
 		}
@@ -1398,6 +1431,38 @@ public class RunPlanner
 	 * flag check unless a supply leg is actually in progress. Being driven by the tick is what lets
 	 * the <i>vault</i> finish the leg too, since nothing about the vault fires a bank event.
 	 */
+	/**
+	 * Whether the player has waved the supply leg past; see {@link #waiveBankLeg()}.
+	 */
+	private boolean bankLegWaived;
+
+	/**
+	 * Ends the supply leg on the player's say-so, whatever the withdraw list still wants.
+	 *
+	 * <p>The leg's exit condition is "nothing outstanding", and every outstanding item is
+	 * cleared only by withdrawing it — so a payment the player has decided not to make, or a
+	 * tool they mean to buy at a shop instead, parked the run at the bank with no way past
+	 * it: {@code retarget()} returns early while at the leg, so even the travel skip could
+	 * not get off it. This is the same escape hatch the travel leg has in
+	 * {@code skipRegion}, scoped the same way — to this run, cleared with it.
+	 */
+	public void waiveBankLeg()
+	{
+		synchronized (this)
+		{
+			if (!atBankLeg)
+			{
+				return;
+			}
+			bankLegWaived = true;
+			atBankLeg = false;
+			supplyOwed = false;
+			postedSources = null;
+		}
+		log.debug("Supply leg waived by the player; routing to patches");
+		retarget();
+	}
+
 	public void leaveBank()
 	{
 		synchronized (this)
@@ -1475,6 +1540,9 @@ public class RunPlanner
 			active = false;
 			atBankLeg = false;
 			supplyOwed = false;
+			bankLegWaived = false;
+			runCompletePending = false;
+			postedSources = null;
 		}
 		// Same rule as start: the router is another plugin, reached over an event bus that
 		// delivers synchronously, so it is never called with this lock held.
@@ -1687,9 +1755,46 @@ public class RunPlanner
 			return;
 		}
 
+		// A pending run-complete from retarget(), confirmed only against a later exemption
+		// push than the one that produced it. A one-tick over-broad push arms this and is
+		// then contradicted by the next tick's honest set; a real completion is re-affirmed
+		// and the run ends one tick later than it used to, which nobody can see.
+		boolean confirm;
+		synchronized (this)
+		{
+			confirm = runCompletePending && exemptionPushes != runCompleteGeneration;
+		}
+		if (confirm)
+		{
+			if (getRemaining().isEmpty())
+			{
+				log.debug("Run complete - every stop finished");
+				synchronized (this)
+				{
+					active = false;
+					runCompletePending = false;
+				}
+				router.clear();
+				return;
+			}
+			synchronized (this)
+			{
+				runCompletePending = false;
+			}
+		}
+
 		boolean finishedSomething = false;
 		synchronized (this)
 		{
+			// The announcement is an edge detector, so it must re-arm: a stop that completed
+			// under an exemption (no seed) and then un-completed (seed withdrawn) could
+			// otherwise never announce - and never retarget - when it completes for real.
+			announced.removeIf(region ->
+			{
+				RunStop stop = stops.get(region);
+				return stop != null && !isComplete(stop);
+			});
+
 			for (RunStop stop : stops.values())
 			{
 				if (isComplete(stop) && announced.add(stop.getRegion().getRegionId()))
@@ -1703,7 +1808,34 @@ public class RunPlanner
 		// Outside the lock, like every other route post. See start().
 		if (finishedSomething)
 		{
+			// The same deferred-supply pickup onPatchChanged does. This polling path exists
+			// precisely for completions whose varbit transition never arrives - a patch never
+			// seen this session, a harvest-only stop, an exemption - and those used to walk
+			// straight past the supply trip the run still owed.
+			pickUpDeferredSupplies();
 			retarget();
+		}
+	}
+
+	/** Collects a supply trip deferred because the run started standing on work. */
+	private void pickUpDeferredSupplies()
+	{
+		synchronized (this)
+		{
+			// "No" means no for the rest of the run - a waived leg must not come back the
+			// moment the next stop completes.
+			if (bankLegWaived)
+			{
+				return;
+			}
+		}
+		if (owesSupplies() && needsSupplyTrip())
+		{
+			synchronized (this)
+			{
+				atBankLeg = true;
+			}
+			log.debug("Picking up the supply trip that was deferred at the start");
 		}
 	}
 
@@ -1769,14 +1901,7 @@ public class RunPlanner
 
 			// A supply trip deferred because the run started on top of some work is collected
 			// now, rather than being quietly dropped.
-			if (owesSupplies() && needsSupplyTrip())
-			{
-				synchronized (this)
-				{
-					atBankLeg = true;
-				}
-				log.debug("Picking up the supply trip that was deferred at the start");
-			}
+			pickUpDeferredSupplies();
 			retarget();
 		}
 		return completedStop;
@@ -1822,12 +1947,22 @@ public class RunPlanner
 		List<RunStop> remaining = getRemaining();
 		if (remaining.isEmpty())
 		{
-			router.clear();
+			// Not the end of the run yet - the first sighting only arms it. reviewProgress
+			// confirms against a fresh exemption push; see exemptionPushes.
 			synchronized (this)
 			{
-				active = false;
+				if (!runCompletePending)
+				{
+					runCompletePending = true;
+					runCompleteGeneration = exemptionPushes;
+				}
 			}
+			router.clear();
 			return;
+		}
+		synchronized (this)
+		{
+			runCompletePending = false;
 		}
 
 		// Nothing is routed while there is work where you stand. Finishing a location before
@@ -1880,6 +2015,19 @@ public class RunPlanner
 	public Collection<String> getCurrentTransports()
 	{
 		return router.getCurrentTransports();
+	}
+
+	/** The object the route's first hop goes through — "Spirit tree" — or null. */
+	@Nullable
+	public String getFirstTransportObject()
+	{
+		return router.getFirstTransportObject();
+	}
+
+	/** Whether a route has been asked for and not answered yet. Volatile read, no lock. */
+	public boolean isRouteAnswerPending()
+	{
+		return router.isAwaitingRoute();
 	}
 
 	/**

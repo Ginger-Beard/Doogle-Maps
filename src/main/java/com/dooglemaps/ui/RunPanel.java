@@ -475,7 +475,11 @@ class RunPanel extends JPanel
 		List<RunOption> offered = new ArrayList<>();
 		for (RunOption option : groups.runOptions())
 		{
-			if (PatchTabs.isEnabled(config, option.getType()))
+			// The contract line survives the tab filter: the contract is a job, not a patch
+			// type, and it happening to be cactus this week must not make it untickable for
+			// someone who hid the cactus tab. Every other line is a "do my X" the hidden tab
+			// already answered.
+			if (option.getGroup().isContract() || PatchTabs.isEnabled(config, option.getType()))
 			{
 				offered.add(option);
 			}
@@ -1008,8 +1012,13 @@ class RunPanel extends JPanel
 			{
 				continue;
 			}
+			// Including noted, which is the only way anyone carries thirty cactus spines. The
+			// guide's own budget (GuideTracker.allocationFor) counts them; counting unnoted
+			// here had the sidebar under-allocating while the guide allocated in full - the
+			// same noted/unnoted split already fixed once in the loadout.
 			available.put(payment.getItemID(),
-				bank.getCount(payment.getItemID()) + carried.getCount(payment.getItemID()));
+				bank.getCount(payment.getItemID())
+					+ carried.getCountIncludingNoted(payment.getItemID()));
 		}
 
 		return new ProtectionBudget(available, seed -> protection.isProtecting(group, seed));

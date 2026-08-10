@@ -82,4 +82,17 @@ public class BarbarianFarming
 		log.info("Seed planted with no dibber carried - this account has Barbarian Farming, so "
 			+ "a dibber will not be asked for again.");
 	}
+
+	/**
+	 * Forgets the observation, for a profile reset.
+	 *
+	 * <p>This is observed state by the class's own definition, and it was the one observation
+	 * the reset button could not reach — meaning a bad latch, however it happened, was
+	 * permanent with no escape hatch at all. The unlock being real costs nothing here: it is
+	 * re-observed on the very next planting.
+	 */
+	public void clear()
+	{
+		configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, KEY);
+	}
 }

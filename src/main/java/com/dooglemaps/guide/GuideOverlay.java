@@ -120,6 +120,15 @@ public class GuideOverlay extends Overlay
 			// just teleported in and is looking at the room. You have to click the thing before
 			// there is a menu to highlight.
 			highlightHouseTeleports(graphics, colour);
+
+			// Outside the house, the route's first hop can be a world object - the GE's
+			// spirit tree, a fairy ring - and nothing marked it: the drawn line says where to
+			// walk, but the thing to click at the end of the walk went unlit. Reported from
+			// play at the GE spirit tree.
+			if (!house.isInside())
+			{
+				highlightRouteObject(graphics, colour);
+			}
 			return null;
 		}
 
@@ -642,6 +651,90 @@ public class GuideOverlay extends Overlay
 			destination, transports);
 	}
 
+	/** The scene objects matching the route's first hop, re-scanned once a tick. */
+	private java.util.List<TileObject> routeObjects = java.util.Collections.emptyList();
+	private int routeObjectTick = -1;
+	@Nullable
+	private String routeObjectName;
+
+	/**
+	 * Outlines the world object the route's first hop goes through.
+	 *
+	 * <p>Shortest Path names it in the transports message ({@code objectInfo}), and the scene
+	 * is searched for objects wearing that name — the same treatment the house gives its
+	 * furniture, extended to the overworld. Cached per tick like every other scene scan here.
+	 */
+	private void highlightRouteObject(Graphics2D graphics, Color colour)
+	{
+		String name = tracker.routeObjectName();
+		if (name == null || name.length() < 4)
+		{
+			return;
+		}
+
+		int tick = client.getTickCount();
+		if (tick != routeObjectTick || !name.equals(routeObjectName))
+		{
+			routeObjectTick = tick;
+			routeObjectName = name;
+			routeObjects = scanForObjects(name);
+		}
+
+		for (TileObject object : routeObjects)
+		{
+			Shape clickbox = object.getClickbox();
+			if (clickbox != null)
+			{
+				OverlayUtil.renderPolygon(graphics, clickbox, colour,
+					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
+			}
+			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+			{
+				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
+					config.guideOutlineFeathering());
+			}
+		}
+	}
+
+	/** Every object in the scene whose resolved name matches, impostors followed. */
+	private java.util.List<TileObject> scanForObjects(String name)
+	{
+		java.util.List<TileObject> found = new java.util.ArrayList<>();
+		java.util.Set<Long> seen = new java.util.HashSet<>();
+		net.runelite.api.WorldView worldView = client.getTopLevelWorldView();
+		net.runelite.api.Tile[][][] tiles = worldView.getScene().getTiles();
+		for (net.runelite.api.Tile[] column : tiles[worldView.getPlane()])
+		{
+			for (net.runelite.api.Tile tile : column)
+			{
+				if (tile == null)
+				{
+					continue;
+				}
+				for (net.runelite.api.GameObject object : tile.getGameObjects())
+				{
+					if (object == null || !seen.add(object.getHash()))
+					{
+						continue;
+					}
+					net.runelite.api.ObjectComposition definition =
+						client.getObjectDefinition(object.getId());
+					if (definition != null && definition.getImpostorIds() != null)
+					{
+						net.runelite.api.ObjectComposition impostor = definition.getImpostor();
+						definition = impostor != null ? impostor : definition;
+					}
+					if (definition != null && definition.getName() != null
+						&& definition.getName().equalsIgnoreCase(name))
+					{
+						found.add(object);
+					}
+				}
+			}
+		}
+		return found;
+	}
+
 	private void highlightHouseTeleports(Graphics2D graphics, Color colour)
 	{
 		TravelHint hint = tracker.getStatus().getTravelHint();
@@ -660,11 +753,18 @@ public class GuideOverlay extends Overlay
 		// Varrock Portal does — is the route's choice, read back rather than guessed. Settled
 		// with the owner: no per-stop table of this plugin's own, and without Shortest Path
 		// there is no route, so nothing is outlined — the guide says where to go, not how.
-		List<String> transports = tracker.getStatus().getTransports();
+		// Live rather than the tick snapshot: the router answers mid-tick, and the fallback
+		// below must not judge "nothing serves the route" against hops that are a frame stale.
+		// See GuideTracker.liveTransports.
+		List<String> transports = tracker.liveTransports();
 		List<TileObject> furniture = house.matchingFurniture(name ->
 			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)));
 
-		if (furniture.isEmpty() && house.isInside())
+		// justEntered guards the arrival tick, where this overlay's live isInside() is a tick
+		// ahead of the tracker's route — the stale hops matched no furniture and the exit
+		// portal flashed lit for the ~600ms until the tracker retargeted. Reported from play.
+		if (furniture.isEmpty() && house.isInside() && !house.justEntered()
+			&& !tracker.routeAnswerPending())
 		{
 			// Nothing in the house serves the route, and you are standing in the house — so the
 			// route continues outside it, and the way out is the exit portal. The common case is
@@ -673,6 +773,12 @@ public class GuideOverlay extends Overlay
 			// as a route hop (see HouseTeleports.furnitureServesHop), so the exits could never be
 			// chosen above; here they are the answer precisely because nothing else was.
 			// Reported from play at a Prifddinas house: teleported in, and the guide lit nothing.
+			//
+			// ...and only once the router has actually answered. Arriving in the house clears
+			// the transports and asks for a fresh route, and for the second that takes, "no
+			// transports" is a pending question rather than a walking answer — the exit portal
+			// lit during the wait and then flipped. Reported from play. Waiting shows nothing
+			// for that second, which is honest: the guide does not know yet.
 			furniture = house.exitPortals();
 		}
 
@@ -711,9 +817,20 @@ public class GuideOverlay extends Overlay
 	 */
 	private void highlightNpcById(Graphics2D graphics, Color colour, int npcId)
 	{
+		// Through the farmer table's grouping, not the raw id alone. One person can be several
+		// ids — Guildmaster Jane is three, and the step carries her chathead id while the NPC
+		// in the guild stands as an _1OP/_2OP variant, so the exact compare outlined nobody.
+		// Farmers already groups every alias under one name; ids it does not know fall back to
+		// the exact match, so every single-id farmer behaves as before.
+		String alias = com.dooglemaps.data.Farmers.getName(npcId);
 		for (NPC npc : client.getTopLevelWorldView().npcs())
 		{
-			if (npc == null || npc.getId() != npcId)
+			if (npc == null)
+			{
+				continue;
+			}
+			if (npc.getId() != npcId
+				&& (alias == null || !alias.equals(com.dooglemaps.data.Farmers.getName(npc.getId()))))
 			{
 				continue;
 			}

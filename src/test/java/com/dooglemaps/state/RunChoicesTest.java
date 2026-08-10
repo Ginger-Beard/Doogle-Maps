@@ -17,6 +17,7 @@ import org.mockito.invocation.InvocationOnMock;
 
 import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
@@ -227,6 +228,39 @@ public class RunChoicesTest
 		assertTrue("the contract tick has to come back", reloaded.isSelected(contract));
 		assertTrue("and still contribute its type",
 			reloaded.getSelected().contains(PatchImplementation.CACTUS));
+	}
+
+	/**
+	 * The contract tick follows the contract when its type changes.
+	 *
+	 * <p>The tick is stored type-scoped — {@code CACTUS#contract} — but it means "do the
+	 * contract", not "do cactus contracts". Every new assignment of a new type arrived with a
+	 * fresh, unticked line, however often the box was ticked; reported from play as "it gets
+	 * unchecked in the run selection". Retargeting renames the stored key to the live
+	 * contract's type, so one tick is one decision.
+	 */
+	@Test
+	public void theContractTickFollowsANewContract()
+	{
+		RunOption cactus = RunOption.full(PlantingGroup.contract(PatchImplementation.CACTUS));
+		RunOption herb = RunOption.full(PlantingGroup.contract(PatchImplementation.HERB));
+
+		RunTypeStore types = newTypes();
+		types.setSelected(java.util.Collections.singleton(cactus));
+
+		// Jane hands out a herb contract next.
+		types.retargetContract(PatchImplementation.HERB);
+
+		assertTrue("the tick moved with the contract", types.isSelected(herb));
+		assertTrue("and contributes the new type",
+			types.getSelected().contains(PatchImplementation.HERB));
+		assertFalse("the stale cactus key is gone, not accumulating",
+			types.isSelected(cactus));
+
+		// And the renamed key is what a restart reads back.
+		RunTypeStore reloaded = newTypes();
+		reloaded.load();
+		assertTrue(reloaded.isSelected(herb));
 	}
 
 	/** The other two scopes keep working, since the parser that broke was shared. */

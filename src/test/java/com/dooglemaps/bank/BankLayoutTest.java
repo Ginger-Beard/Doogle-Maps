@@ -12,6 +12,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Covers the bank layout map: the grid arithmetic, and what happens to a map that is wrong.
@@ -300,6 +301,55 @@ public class BankLayoutTest
 			new java.util.HashSet<>(java.util.Arrays.asList(SEED_A)));
 
 		assertEquals("nothing moved", first, layout[at('A', 1)]);
+	}
+
+	/**
+	 * The pin finds the route item in any of its bank forms, not just the exact id.
+	 *
+	 * <p>Reported from play with the Ectophial: the route resolved to the form the player held
+	 * (full, 4251) while the layout carried the other (the empty 4252 is the same item to the
+	 * variation table), the exact-id scan concluded it was absent, and a second Ectophial was
+	 * written into slot one while the first kept its own slot.
+	 */
+	@Test
+	public void theRouteItemIsFoundInAnyBankForm()
+	{
+		int full = 4251;   // Ectophial
+		int empty = 4252;  // Ectophial (empty) - same item, other id
+
+		List<LoadoutItem> items = new ArrayList<>();
+		items.add(item(TELE_A, LoadoutItem.Category.TELEPORT));
+		items.add(item(empty, LoadoutItem.Category.TELEPORT));
+		int[] layout = BankLayout.build(items, BankLayout.DEFAULT_MAP);
+
+		BankLayout.pinFirst(layout, full, null);
+
+		assertEquals("the laid-out form was swapped to slot one",
+			empty, layout[at('A', 1)]);
+		assertEquals("no second copy of the item exists anywhere", 1,
+			java.util.Arrays.stream(layout).filter(id -> id == full || id == empty).count());
+	}
+
+	/**
+	 * Pinning an item with no slot of its own must not drop what slot one held.
+	 *
+	 * <p>The doc promised a swap and the code shipped an overwrite: the displaced item left the
+	 * layout entirely, and Bank Tags then re-appended it as overflow in the bottom-right corner
+	 * of the grid — the wandering item the Ectophial report described. It goes to the first
+	 * empty slot instead.
+	 */
+	@Test
+	public void pinningAnUnplacedItemKeepsTheDisplacedOne()
+	{
+		int[] layout = BankLayout.build(loadout(), BankLayout.DEFAULT_MAP);
+		int displaced = layout[at('A', 1)];
+		int stranger = 999_999;
+
+		BankLayout.pinFirst(layout, stranger, null);
+
+		assertEquals("the route's item sits first", stranger, layout[at('A', 1)]);
+		assertTrue("and what was there is still in the layout",
+			java.util.Arrays.stream(layout).anyMatch(id -> id == displaced));
 	}
 
 	private static int at(char column, int row)

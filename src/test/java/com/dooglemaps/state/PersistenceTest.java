@@ -428,6 +428,109 @@ public class PersistenceTest
 		assertEquals(0, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.SEED_BOX));
 	}
 
+	/**
+	 * An Empty that moved nothing must not wipe the box when something else moves later.
+	 *
+	 * <p>Reported from play as "skipping prifddinas - no seed" with the seed sitting in the
+	 * box. The game's Empty moves only what fits, so Empty into a full pack is a silent
+	 * no-op — no container change fires, and the armed action used to wait around until an
+	 * out-of-order harvest changed the inventory, at which point the box was zeroed while
+	 * still holding the run's seeds. A pending action now expires after a couple of ticks.
+	 */
+	@Test
+	public void aNoOpEmptyDoesNotWipeTheBoxLater() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class, client, configManager, gson);
+		seeds.load();
+
+		int ranarr = com.dooglemaps.data.Seed.RANARR.getItemID();
+		int guam = com.dooglemaps.data.Seed.GUAM.getItemID();
+		seeds.record(SeedSource.SEED_BOX.getContainerId(), container(ranarr, 6));
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container());
+
+		// Empty clicked into a full pack on tick 0: nothing moves, nothing fires.
+		// The next inventory change - seeds withdrawn from the bank, ticks later - is not it.
+		when(client.getTickCount()).thenReturn(0, 10);
+		seeds.noteSeedBoxAction(SeedBoxAction.EMPTY);
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container(guam, 4));
+
+		assertEquals("the stale Empty wiped a box that still held seeds",
+			6, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.SEED_BOX));
+		assertEquals(4, seeds.getCount(com.dooglemaps.data.Seed.GUAM, SeedSource.INVENTORY));
+	}
+
+	/** The same staleness in the other direction: a no-op Fill, then a seed planted. */
+	@Test
+	public void aNoOpFillDoesNotCreditPlantedSeedsToTheBox() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class, client, configManager, gson);
+		seeds.load();
+
+		int ranarr = com.dooglemaps.data.Seed.RANARR.getItemID();
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container(ranarr, 6));
+
+		when(client.getTickCount()).thenReturn(0, 10);
+		seeds.noteSeedBoxAction(SeedBoxAction.FILL);
+		// Ten ticks later a seed goes into the ground, not into the box.
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container(ranarr, 5));
+
+		assertEquals(0, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.SEED_BOX));
+		assertEquals(5, seeds.getOwned(com.dooglemaps.data.Seed.RANARR));
+	}
+
+	/**
+	 * Empty moves what fits and keeps the rest, and the count has to say so.
+	 *
+	 * <p>The old rule wiped the box on any Empty, which was only right when the whole box
+	 * fit in the pack. The box is now debited by exactly what appeared.
+	 */
+	@Test
+	public void aPartialEmptyKeepsWhatDidNotFit() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class, client, configManager, gson);
+		seeds.load();
+
+		int ranarr = com.dooglemaps.data.Seed.RANARR.getItemID();
+		seeds.record(SeedSource.SEED_BOX.getContainerId(), container(ranarr, 6));
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container());
+
+		// Two free slots... the stack splits: two seeds come out, four stay in the box.
+		seeds.noteSeedBoxAction(SeedBoxAction.EMPTY);
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container(ranarr, 2));
+
+		assertEquals(4, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.SEED_BOX));
+		assertEquals(2, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.INVENTORY));
+		assertEquals(6, seeds.getOwned(com.dooglemaps.data.Seed.RANARR));
+	}
+
+	/**
+	 * Emptying the box with a bank open tips it into the bank, not the inventory.
+	 *
+	 * <p>That is where most Emptys actually happen, and the inventory never changes, so the
+	 * bank's own container event is the only evidence of the move.
+	 */
+	@Test
+	public void emptyingAtTheBankDebitsTheBox() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class, client, configManager, gson);
+		seeds.load();
+
+		int ranarr = com.dooglemaps.data.Seed.RANARR.getItemID();
+		seeds.record(SeedSource.SEED_BOX.getContainerId(), container(ranarr, 6));
+		seeds.record(SeedSource.BANK.getContainerId(), container(ranarr, 10));
+
+		seeds.noteSeedBoxAction(SeedBoxAction.EMPTY);
+		seeds.record(SeedSource.BANK.getContainerId(), container(ranarr, 16));
+
+		assertEquals(0, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.SEED_BOX));
+		assertEquals(16, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.BANK));
+		assertEquals(16, seeds.getOwned(com.dooglemaps.data.Seed.RANARR));
+	}
+
 	/** Seeds leaving the inventory for any other reason must not be credited to the box. */
 	@Test
 	public void plantingSeedsDoesNotPutThemInTheSeedBox() throws Exception

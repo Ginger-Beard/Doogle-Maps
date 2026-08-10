@@ -66,12 +66,28 @@ joke. The config group and package are `dooglemaps`.
 
 ## Compliance — the line that must not be crossed
 
-Plugin Hub rules are **read-only and UI-only**. No input automation, no click or movement
-scripting. The plugin reads game state and draws things; the human clicks.
+The goal is the Plugin Hub, so the rule is the Hub's: stay inside the Plugin Hub and Jagex
+third-party client regulations, as actually written and as actually ruled on
+(RuneLite's *Rejected or Rolled Back Features* wiki page is where the rulings live).
 
-That is exactly how Quest Helper works, which is what makes the pattern safe to follow. It
-applies to everything, including the bank and vault highlight and filter, and any reuse of
-the Geomancy interface — all of it stays display-only.
+What that means in practice:
+
+- **No input automation, ever.** No click or movement scripting, no acting on the player's
+  behalf. One click from the player is always exactly one game action. This is the part
+  with no judgement calls in it.
+- **Reading and drawing are unrestricted territory.** Game state in, overlays out — the
+  Quest Helper pattern. The bank and vault highlight and filter, the dialog-option
+  outlines, and any reuse of the Geomancy interface all live here.
+- **Menu reordering is a permitted category, used within its ruling.** The rulings allow
+  left-click and shift-click swaps (core's own Menu Entry Swapper is the precedent) and
+  forbid *conditional menu entry removing*. `GuideMenuSwap` therefore reorders only —
+  never removes, never renames — is opt-in by setting, and is scoped to the guide's own
+  items (the seed box, the empty bucket) and to Guildmaster Jane. The seed box and bucket
+  swaps are now standing-while-the-run-is-on rather than step-driven, which is also the
+  shape a reviewer objecting to step-driven swaps would ask for; only Jane's is still
+  conditional on the current step, and the feature does not depend on that cleverness.
 
 Submission and every update draw human and AI review. A single automation-shaped feature
-gets the plugin removed, so this is not a rule to be clever about.
+gets the plugin removed, so the first bullet is not a rule to be clever about — and when a
+feature sits near a category boundary, the rejected-features page is checked before it is
+built, not after.

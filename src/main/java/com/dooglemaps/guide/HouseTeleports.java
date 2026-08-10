@@ -48,6 +48,11 @@ public final class HouseTeleports
 		// The lettered option menu, for the teleports that genuinely open one.
 		InterfaceID.Menu.LJ_LAYER1,
 		InterfaceID.Menu.LJ_LAYER2,
+		// The reworked menu interface the spirit tree's "Spirit Tree Locations" list opens -
+		// the game moved it off the old Menu group, so "6: Prifddinas" sat in a widget tree
+		// this scan never visited and no row lit. Reported from play at the GE tree.
+		InterfaceID.MenuNew.UNIVERSE,
+		InterfaceID.MenuNew.CONTENT,
 		InterfaceID.Chatmenu.OPTIONS,
 	};
 
@@ -244,16 +249,29 @@ public final class HouseTeleports
 	static final int MAX_WIDGET_DEPTH = 6;
 
 	/**
-	 * Places the game and this plugin call different things.
+	 * Places whose teleports the game names differently.
 	 *
-	 * <p>Containment alone does not cover these: the nexus row for the Troll Stronghold patch
-	 * reads <b>Trollheim</b>, and the two share no substring at all.
+	 * <p>Containment alone does not cover these: a nexus serving the Troll Stronghold patch
+	 * may do it through its <b>Trollheim</b> row, and the two share no substring at all. An
+	 * alias is a stand-in, not a synonym — the nexus can hold a real "Troll Stronghold" row
+	 * too (attuned with stony basalt), which lands beside the patch where Trollheim lands up
+	 * the mountain. {@code namesTheSamePlaceDirectly} is how a caller prefers the real row
+	 * when both are on offer.
 	 */
 	private static final Map<String, String> PLACE_ALIASES = new HashMap<>();
 
 	static
 	{
 		PLACE_ALIASES.put("troll stronghold", "trollheim");
+
+		// The nexus's Varrock teleport can be redirected to the Grand Exchange, and the row
+		// then *says* "Grand Exchange" — no substring in common with the "Varrock" the run
+		// stop is named after. The furniture match has known this pair since the nexus
+		// destination list was written (see FURNITURE_DESTINATIONS); the row match needs the
+		// same vocabulary, or the plugin lights the nexus and then goes dark inside its menu.
+		// Reported from play. A nexus holding a real "Varrock" row still wins over this: the
+		// direct-beats-aliased preference in GuideInventoryOverlay handles that.
+		PLACE_ALIASES.put("varrock", "grand exchange");
 	}
 
 	/**
@@ -262,12 +280,33 @@ public final class HouseTeleports
 	 * <p>Containment either way, lower-cased, plus the alias table. Requiring equality would mean
 	 * this almost never fired — the game says "Catherby Teleport" where the plugin says
 	 * "Catherby".
+	 */
+	static boolean namesTheSamePlace(String a, String b)
+	{
+		if (namesTheSamePlaceDirectly(a, b))
+		{
+			return true;
+		}
+
+		String left = a == null ? "" : a.toLowerCase().trim();
+		String right = b == null ? "" : b.toLowerCase().trim();
+		if (left.isEmpty() || right.isEmpty())
+		{
+			return false;
+		}
+		return matchesAlias(left, right) || matchesAlias(right, left);
+	}
+
+	/**
+	 * As {@link #namesTheSamePlace}, but by the name alone — no aliases. A direct match is the
+	 * row that actually lands at the destination, where an aliased one is the best stand-in;
+	 * callers with a whole list to choose from should light the direct rows when any exist.
 	 *
 	 * <p>The empty guard matters more than it looks: {@code contains("")} is true of every string,
 	 * so without it an unlabelled widget — and an interface has many — would match every
 	 * destination and light the whole panel up.
 	 */
-	static boolean namesTheSamePlace(String a, String b)
+	static boolean namesTheSamePlaceDirectly(String a, String b)
 	{
 		if (a == null || b == null)
 		{
@@ -281,12 +320,7 @@ public final class HouseTeleports
 			return false;
 		}
 
-		if (left.contains(right) || right.contains(left))
-		{
-			return true;
-		}
-
-		return matchesAlias(left, right) || matchesAlias(right, left);
+		return left.contains(right) || right.contains(left);
 	}
 
 	private static boolean matchesAlias(String pluginName, String gameName)

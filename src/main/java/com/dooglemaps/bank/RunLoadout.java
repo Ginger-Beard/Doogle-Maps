@@ -70,7 +70,7 @@ public class RunLoadout
 	};
 
 	/** Both forms of the seed box, closed and open. */
-	private static final int[] SEED_BOX = {ItemID.SEED_BOX, ItemID.SEED_BOX_OPEN};
+	private static final int[] SEED_BOX = {ItemID.SEED_BOX, ItemID.SEEDBOX, ItemID.SEED_BOX_OPEN};
 
 	/**
 	 * The forestry basket first: it <i>is</i> a log basket (combined with the forestry kit),
@@ -244,6 +244,27 @@ public class RunLoadout
 	private List<LoadoutItem> tickCache;
 	private int cachedTick = -1;
 	private Set<PatchImplementation> cachedTypes = EnumSet.noneOf(PatchImplementation.class);
+
+	/**
+	 * Drops the cached answer the moment any container changes.
+	 *
+	 * <p>The tick key alone assumed "everything this reads changes on events that advance the
+	 * tick anyway", which is false in the one direction that matters: {@code
+	 * ItemContainerChanged} fires several times <b>within</b> a tick. A withdrawal invalidated
+	 * nothing — the bank capture's own "act on it in the same tick" refresh read the
+	 * pre-withdrawal list back out of this cache, so the highlight, the filter and the
+	 * supply-leg exit all lagged the click by a tick. Registered on the event bus by the
+	 * plugin, beside the capture classes.
+	 */
+	@net.runelite.client.eventbus.Subscribe
+	public void onItemContainerChanged(net.runelite.api.events.ItemContainerChanged event)
+	{
+		synchronized (this)
+		{
+			tickCache = null;
+			cachedTick = -1;
+		}
+	}
 
 	/**
 	 * Whether this group is being visited for its harvest alone, so nothing goes in the ground.
@@ -1318,7 +1339,15 @@ public class RunLoadout
 			}
 		}
 
-		Set<Integer> found = new LinkedHashSet<>();
+		// One row per physical item, not per item id. Charged and uncharged forms, an item and
+		// its bank placeholder, a full and an empty Ectophial — all share their in-game name,
+		// and a set keyed on the raw id turned each into its own teleport row: two Books of the
+		// dead, side by side. Keyed on the name instead, holding one representative id; the
+		// carried form wins when there is one, because the row's HAVE/WITHDRAW answer is read
+		// off exactly that id. The name is safe as an identity precisely because it is also
+		// the thing being matched: two ids the same entry matched by the same name are, to the
+		// player reading the list, one item.
+		Map<String, Integer> found = new LinkedHashMap<>();
 		for (int itemId : bankIds)
 		{
 			// Two names per item, and an entry matching either counts. The game's, learned from
@@ -1338,10 +1367,15 @@ public class RunLoadout
 
 			if (matchesName(exact, wildcards, name) || matchesName(exact, wildcards, label))
 			{
-				found.add(itemId);
+				String key = (name != null ? name : label).toLowerCase();
+				Integer existing = found.get(key);
+				if (existing == null || (!carried.has(existing) && carried.has(itemId)))
+				{
+					found.put(key, itemId);
+				}
 			}
 		}
-		return found;
+		return new LinkedHashSet<>(found.values());
 	}
 
 	private static boolean matchesName(Set<String> exact, List<String> wildcards,
@@ -1474,6 +1508,14 @@ public class RunLoadout
 	{
 		Set<Integer> forms = new LinkedHashSet<>();
 		forms.add(itemId);
+
+		// Every charge and fill state of the same physical item, from the client's own
+		// variation table: a full Ectophial (4251) and an empty one (4252) are one item to
+		// the player, a skills necklace is one necklace at any charge. Matching only the
+		// exact id was the root of the bank's duplicate rows — the layout held one variant,
+		// the bank another, and every consumer of this method concluded they were unrelated.
+		forms.addAll(net.runelite.client.game.ItemVariationMapping.getVariations(
+			net.runelite.client.game.ItemVariationMapping.map(itemId)));
 
 		Seed seed = Seed.forItemId(itemId);
 		if (seed != null && seed.isSapling())

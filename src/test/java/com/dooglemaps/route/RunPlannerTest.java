@@ -865,6 +865,29 @@ public class RunPlannerTest
 			1, planner.start(EnumSet.of(PatchImplementation.HERB)).size());
 	}
 
+	/**
+	 * The plot the player is standing on is never held.
+	 *
+	 * <p>The hold exists to save the teleport, and standing there means it is already spent —
+	 * starting a run at Falador should pick Falador's ready herb whatever the allotment
+	 * beside it is doing.
+	 */
+	@Test
+	public void thePlotBeingStoodOnIsNeverHeld()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(12083);
+
+		record(FALADOR_HERB, 43);
+		record("12083.4771", 7);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch("12083.4771"), true);
+
+		assertEquals("the teleport this setting saves is already spent",
+			1, planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.ALLOTMENT))
+				.size());
+	}
+
 	/** The same plot, setting off: the ready herb gets its trip exactly as before. */
 	@Test
 	public void aSharedPlotIsNotHeldByDefault()
@@ -1291,6 +1314,14 @@ public class RunPlannerTest
 		planner.leaveBank();
 
 		service(FALADOR_HERB);
+
+		// Completion arms rather than ends: the emptiness has to be confirmed against a
+		// fresh exemption push before the run deactivates, so a one-tick over-broad push
+		// (the loadout blind for a tick) cannot kill a live run. The two lines below are
+		// what the next game tick does - the guide pushes its exemptions, the plugin polls.
+		assertTrue("still active until the next tick confirms", planner.isActive());
+		planner.setNothingToDo(Collections.emptySet());
+		planner.reviewProgress();
 
 		assertFalse(planner.isActive());
 		assertTrue("nothing left to route to", planner.getRemaining().isEmpty());

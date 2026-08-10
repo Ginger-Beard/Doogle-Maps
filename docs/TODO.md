@@ -112,10 +112,12 @@ each so a wrong result points somewhere.
   off, not at the tree patch. Wants a step (and possibly a small timer) in the bank leg.
 - **No arrow or navigation line.** Quest Helper has both, toggleable.
 - ~~**No menu swap for the seed box.**~~ Done, decided by request from play: `GuideMenuSwap` makes
-  Fill or Empty the left-click only while the current step asks for it, reordering entries and
-  never renaming them (SeedCapture matches the option strings). Behind the `seedBoxLeftClick`
-  toggle. Same side of the compliance line as core's Menu Entry Swapper: it shapes what a click
-  means and clicks nothing itself.
+  Fill or Empty the left-click for the whole run, reordering entries and never renaming them
+  (SeedCapture matches the option strings). Behind the `seedBoxLeftClick` toggle. Which of the
+  two is chosen comes from the box, not from a step — Empty once it holds seeds and nothing
+  loose would fit, Fill otherwise — because the steps that used to drive it are gone. Same side
+  of the compliance line as core's Menu Entry Swapper: it shapes what a click means and clicks
+  nothing itself.
 - **Four classes past readable size**, and the gap is widening: `RunPlanner` 1,613 ·
   `GuideTracker` 1,517 · `RunLoadout` 1,258 · `DoogleMapsConfig` 1,213. `RunLoadout` is the one
   that splits cleanly — eight `addX` builders that barely interact, each taking the run's types

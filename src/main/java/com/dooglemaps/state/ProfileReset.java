@@ -40,17 +40,19 @@ public class ProfileReset
 	private final FarmingBonusStore bonuses;
 	private final PatchLocationStore patchLocations;
 	private final BankLocationStore bankLocations;
+	private final BarbarianFarming barbarianFarming;
 
 	@Inject
 	ProfileReset(PatchStateStore patches, SeedInventoryStore seeds,
 		FarmingBonusStore bonuses, PatchLocationStore patchLocations,
-		BankLocationStore bankLocations)
+		BankLocationStore bankLocations, BarbarianFarming barbarianFarming)
 	{
 		this.patches = patches;
 		this.seeds = seeds;
 		this.bonuses = bonuses;
 		this.patchLocations = patchLocations;
 		this.bankLocations = bankLocations;
+		this.barbarianFarming = barbarianFarming;
 	}
 
 	/**
@@ -73,6 +75,9 @@ public class ProfileReset
 		bonuses.clear();
 		patchLocations.clear();
 		bankLocations.clear();
+		// Observed like everything above, and previously the one observation the reset could
+		// not reach - a wrongly-latched "no dibber needed" was permanent. See BarbarianFarming.
+		barbarianFarming.clear();
 
 		log.info("Doogle Maps profile reset - patches, seeds and learned locations cleared; "
 			+ "settings, harvest stats, patch toggles and seed selection kept");

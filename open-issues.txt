@@ -71,3 +71,323 @@ I think I found a bit of a bug in SP, the checkbox POH mounted items assumes you
 > for which mount is built aren't exposed outside the house, so per-item checkboxes like the
 > jewellery box tier dropdown is the practical shape). Interim workaround: leave it unchecked
 > and accept losing the digsite mount hint, or keep it and ignore the xeric's leg.
+
+
+
+guild master jane note getting highlighted on step to hand in contract for reward, menu swap to "contract" highlight the conversation text to click too
+> RESOLVED (all three parts).
+> - Jane not outlined: she is THREE NPC ids - 8586/8587 standing in the guild, 8628 as her
+>   dialogue chathead - and the hand-in step carried the chathead id while the overlay
+>   compared it against world NPCs by exact id, so nobody ever matched and nothing at all was
+>   highlighted. highlightNpcById now matches through the Farmers alias table (which already
+>   grouped all three); ContractCapture's chathead gate also widened to the id set and given
+>   the NPC_CHATHEAD model-type guard ProtectionCapture already had.
+> - Menu swap: GuideMenuSwap generalised from item-only to any menu entry; while a
+>   HAND_IN_CONTRACT or TAKE_CONTRACT step is current, Jane's "Contract" option becomes her
+>   left-click. New toggle "Left-click Jane's Contract option" (on by default). Option string
+>   matched case-insensitively since the exact wording isn't pinned - verify in client.
+> - Dialog rows: the hand-in conversation's options are now outlined like the pay-farmer
+>   dialogue. Denylist (everything except the header and obvious "No/Nothing/I'll come back"
+>   declines) because the exact option strings aren't captured anywhere yet - if you note the
+>   real wording in client, we can tighten it to a prefix list.
+
+Contracts are getting skipped because seeds are in the bank, we should navigate to get that, but instead it gets unchecked in the run selection
+> RESOLVED. The banked seed was innocent - two real causes:
+> - "It gets unchecked": the Farming Contract tick is stored under a TYPE-scoped key
+>   (CACTUS#contract). Every new contract of a new type created a fresh, unticked line, so
+>   the box "came back unchecked" no matter how often you ticked it. The stored key now
+>   follows the contract (RunTypeStore.retargetContract, wired to contract changes and plugin
+>   load) - tick Farming Contract once and it stays ticked across assignments. Test added.
+>   Once ticked, the existing supply machinery already creates the bank leg for a banked
+>   contract seed.
+> - The misleading note: standing in the guild with the seed in the bank, the panel said
+>   "not part of this run - tick Farming contract" even when it WAS ticked. It now says the
+>   honest thing ("your contract seed is in your bank - withdraw it") when the box is ticked
+>   and the seed is owned but not on you.
+> - Also: the contract line no longer disappears from the run selection when its patch
+>   type's tab is hidden in settings - the contract is a job, not a patch type.
+
+there seems to be a lot of step/state drift from the items I have in my inventory, how can we prevent that from happening?
+> RESOLVED (a full pipeline audit; five concrete drift mechanisms found and the big ones fixed).
+> - CarriedItems now re-reads the pack AND worn items from the client once a tick, as a
+>   backstop, same pattern as LeprechaunStore. Events alone had no way back from one missed
+>   read - worn gear can go a whole session without a container event, so a single skipped
+>   startup read meant every worn cape/cloak/ring counted as unowned until you changed gear.
+>   This was very likely the bulk of "a lot of drift". Runs before GuideTracker in tick
+>   order, so steps always see this tick's pack.
+> - FarmingBonusStore (cape/secateurs/outfit bonuses) is PERSISTED and was never relearned -
+>   take the cape off while the plugin isn't looking and "+5%" survived across restarts.
+>   It now relearns from the client at plugin load alongside the other stores.
+> - RunPanel's protection budget counted only unnoted payments while the guide's counted
+>   noted too, so the sidebar under-allocated while the guide allocated in full - the same
+>   noted/unnoted split fixed once before in the loadout. Now getCountIncludingNoted.
+> - Seed box: a lagged SEED_BOX container event arriving just after a Fill/Empty could
+>   overwrite the correctly-derived contents with the pre-action snapshot; box reads within
+>   2 ticks of a box action are now ignored (any later read is trusted as truth).
+> - Known remaining (lower priority): taking seeds out of the box one at a time still leaves
+>   the derived count high until the box is next observed; carried-side lookups are exact-id
+>   while the bank side canonicalises variants (charged jewellery) - flag it if it bites.
+
+"Farm run
+Travel to Kourend.
+5 stops left
+via Camelot Teleport: Seers'
+via Xeric's talisman: 2. Xeric's Glade" - okay but when I tele to house I have mounted items turned off in SP, and its not taking me to Camelot, its having me do the kourend castle tele, and then its having me tele back home once i do that, either way none of this is near Camelot. And I don't have a mounted Xerics like I said. Area mismatch of some sort?
+> RESOLVED. Settled after discussion (the talisman was in the BANK, not carried): the two
+> "via" lines were one coherent SP plan after all - Camelot Teleport to Seers' -> the bank
+> beside the landing -> WITHDRAW the banked Xeric's talisman -> rub to Xeric's Glade -> walk
+> to the patches. SP models bank pickups: once a path passes a bank, banked teleport items
+> become usable hops, and Xeric's Glade is far closer to the Hosidius patches than Kourend
+> Castle, so its cost model preferred tele+bank+tele over the carried Kourend Castle spell
+> plus the long walk. It was ALLOWED to consider that on a plain travel leg because our
+> includeBankPath override was only sent when TRUE - omitted, SP fell back to the user's own
+> "include bank path" setting.
+> - THE fix: includeBankPath is now sent explicitly both ways, so travel legs can never plan
+>   through a bank. Supply legs keep it on, where bank pickups are the whole point.
+> - A walk-edge "phantom hop" filter was added under an earlier (wrong) theory and REMOVED
+>   by request once the hop turned out to be real: the router's account of its own route is
+>   not something to second-guess.
+> - Stale route points surviving a clear: ShortestPathIntegration.clear() reset the
+>   transports but NOT the destinations, so the travel naming kept reading a dead route's
+>   landing points. Fixed.
+> - Transports messages are now ignored unless WE have a route outstanding - SP posts one
+>   for every path once postTransports is on, including paths you set yourself, and those
+>   were displayed as the farm route.
+> - Destination naming now reads the hop landings back-to-front (they're kept in path order
+>   now): the LAST landing names the trip, so an intermediate hop's town can't.
+> - Remaining/upstream: the teleport-home-then-teleport-back flip-flop while STANDING in the
+>   POH is SP re-pathing from your instance position every tick - the plugin-message API's
+>   "start" isn't sticky the way SP's own setStart is, so our front-door reroute is honoured
+>   for exactly one computation. Needs an upstream PR (make plugin-message start set
+>   startPointSet, or extend the walk-edge suppression); re-posting from our side every tick
+>   would just fight it.
+> - Also upstream: the transports message carries no request id, so a LATE answer to a
+>   previous target can still be mistaken for the current leg's for one exchange. Gating on
+>   the answer's landing points being near our targets is unsound (a legit route can end
+>   with a multi-region walk), so fully closing it means a request token in SP's message
+>   payload.
+
+"Farm run
+Travel to Kourend.
+5 stops left
+via Camelot Teleport: Seers'
+via Xeric's talisman: 2. Xeric's Glade" - okay but when I tele to house I have mounted items turned off in SP, and its not taking me to Camelot, its having me do the kourend castle tele, and then its having me tele back home once i do that, either way none of this is near Camelot. And I don't have a mounted Xerics like I said. Area mismatch of some sort?
+
+2 book of the deads showing up in teleport list, both placeholders, one with charges, one without.
+> RESOLVED (with the Ectophial item below - one root cause). The plugin had no item-identity
+> canonicalisation anywhere: charged/uncharged variants, full/empty forms and bank
+> placeholders are distinct ids, and every bank-path dedup was keyed on the raw id.
+> - listedTeleportIds now keeps ONE row per item NAME (carried form preferred), so the book
+>   and its placeholder id can never both become teleport rows.
+> - RunLoadout.bankFormsOf now expands through RuneLite's ItemVariationMapping, so the
+>   filter, highlight, counts and layout all treat every variant as one item.
+> Needs an in-client look: if a faded second book still appears, it is Bank Tags' own
+> objvar-placeholder handling and we'll take it from there.
+
+Ectophial showing up at the bottom right corner of the bank list for some reason, withdrawing it snaps a second copy up to the top, looking similar to the book of the dead issue.
+> RESOLVED. Full (4251) and empty (4252) Ectophial are two ids for one item, and
+> BankLayout.pinFirst matched the route item by EXACT id only - the route resolved one form,
+> the layout held the other, so the pin "missed", overwrote slot A1 with a second copy, and
+> the displaced item fell out of the layout entirely (Bank Tags then re-appended it as
+> overflow in the bottom-right corner, which is the wandering item you saw).
+> pinFirst now matches any bank form, and when the item genuinely has no slot the displaced
+> occupant moves to the first empty slot instead of being dropped. Tests added.
+
+when visiting a bank noted crops are highlighted in yellow, change it to cyan
+> RESOLVED. Deposit highlight (BankHighlightOverlay.DEPOSIT_COLOUR) changed from amber to
+> cyan, matching the withdraw-count cyan.
+
+2 copies of the notification list icon at the top of left of the screen? one even when the plugin is off? how?
+> RESOLVED. Found the smoking gun in client.log: disabling the plugin while the bank filter
+> was open threw "AssertionError: must be called on client thread" - RuneLite stops plugins
+> on the Swing EDT, and BankFilter.shutDown -> closeBankTag ends in runScript. The error
+> aborted DoogleMapsPlugin.shutDown before removeInfoBox ran, orphaning the infobox (it
+> renders off config alone, so it survived the plugin being off), and the next enable added
+> a second. close() now runs on the client thread, and bankFilter.shutDown moved to the END
+> of the plugin's shutDown so UI teardown can never be skipped by it again. The same abort
+> also leaked all 4 overlays, 7 store listeners and the sidebar button - all fixed by the
+> same change.
+
+stats page jerking around while getting xp in game
+> RESOLVED. Feedback loop: every Farming xp drop writes farmingXp to config, the write posts
+> ConfigChanged in OUR group, and onConfigChanged treated any group key as a settings change
+> -> full refresh() -> HarvestStatsPanel torn down and rebuilt several times per game tick
+> (intended cadence: the 20-second idle refresh). onConfigChanged now ignores keys that are
+> not actual @ConfigItem settings; state writes rely on their stores' own change listeners,
+> which is what they were already wired to.
+
+not highlighting seedbox to fill again after planting
+> RESOLVED. "Fill the seed box before moving on" was structurally unreachable: planting the
+> last patch completes the stop, the stop leaves getRemaining() that same tick, stopAt()
+> goes null and computeStepsHere returned [] - so every before-moving-on errand (fill box,
+> note crops, return buckets) silently vanished the moment it should have become current.
+> The leaving errands are now re-attached when standing at the just-finished stop
+> (workingRegion), same failure shape as the old walked-off-before-payment bug. Also
+> plugged: the third seed box id (ItemID.SEEDBOX) was missing from the step generators.
+
+via Varrock Teleport: GE not highlighting in the nexus, exit portal still flashing highlighted for a split second when teleing into POH
+> RESOLVED (both halves).
+> - The nexus's Varrock teleport redirected to Grand Exchange makes the row SAY "Grand
+>   Exchange", which shares no substring with "Varrock". The furniture match knew the pair;
+>   the ROW match did not. Added varrock<->grand exchange to PLACE_ALIASES - a real Varrock
+>   row still wins via the direct-beats-aliased preference. Test added.
+> - The flash had two windows: (1) on the arrival tick, GuideTracker runs before PlayerHouse
+>   (event bus orders subscribers by class name), so "inside house" went true while the
+>   route was still the pre-teleport one that matches no furniture -> exit-portal fallback
+>   for a full tick. PlayerHouse.justEntered() now suppresses the fallback on that tick.
+>   (2) the router answers mid-tick while the overlay judged by the once-a-tick snapshot;
+>   the overlay now reads the live transports, same as the tracker itself does.
+
+getting a next step of "skipping prifddinas - no seed" but I do have a seed, its in my seedbox and the plugin knows it. But I went out of order and harvested another patch before doing any planting. as soon as I empty the seedbox its fixed again
+> RESOLVED. A seed box Fill/Empty click armed a pending action that was cashed in by the
+> NEXT inventory event of any kind. An Empty into a full pack moves nothing and fires no
+> event, so the armed EMPTY sat there until the out-of-order harvest changed the inventory -
+> and then "confirmed" it, silently zeroing the box's tracked contents (the panel kept
+> showing them; the allocator read zero, and Prifddinas is late in the key-sorted patch
+> order, so it starved first). Emptying for real moved the seeds into the always-live
+> inventory count, which is why that fixed it.
+> Three fixes in SeedInventoryStore: a pending action expires after 2 ticks (a no-op click
+> can never be redeemed by a later unrelated event); Empty is now derived from the container
+> delta exactly like Fill (partial empties into a near-full pack are also right now, and
+> emptying at a BANK - where the seeds land in the bank, not the pack - is tracked too);
+> and a box change fires the change listeners so the panel can never show one thing while
+> the allocator reads another. Four tests added.
+
+self-healing state pass: make decisions deterministic/derived so a missed step or event can't kill a run
+> DONE (three package-wide audits: guide/, state/+capture/, route/+bank/+lifecycle). Every
+> mutable field was traced for "state that can't heal itself". Fixed this pass:
+> - GuideTracker's run-scoped state (skips, contract/errand announcements, destination
+>   anchor) now clears when the planner goes inactive - reset() only ran on plugin shutdown,
+>   so a skipped "pay the farmer" silently planted unprotected on every later run all session.
+> - Contract deadlock: the awaiting-hand-in flag could only be cleared by two tick-sampled
+>   dialogue lines; spam-clicking past both left a hand-in step for produce that no longer
+>   existed and suppressed TAKE_CONTRACT forever (config-persisted, survives restart). Now
+>   reconciled against Time Tracking - a new assignment proves the old hand-in happened.
+>   Also: the patch-evidence completion fallback now requires a varbit-observed state, not
+>   an elapsed time estimate, before it rewrites config.
+> - The load() priming block (relearn pack/seeds/bonuses, item names, prices) was a one-shot
+>   behind a LOGGED_IN guard with no retry - enable the plugin at a login screen and the
+>   whole session ran unprimed. Now a re-queued clientThread.invoke that runs on the first
+>   logged-in frame, guaranteed.
+> - Session state now resets at the login screen / profile change: protected-herb unlock
+>   memo (account B inherited A's memo and never got its own key written - protected tab
+>   absent all session), leprechaun stores, house portal answer, payment-patch selection,
+>   pending seed-box action, in-memory inventory seed counts.
+> - Seed inventory: per-tick reconcile against the live container (same backstop
+>   CarriedItems got), and the pending-action tick math is range-checked so a tick-counter
+>   reset can't freeze box reads.
+> - Payment-patch selection now expires (60s) - a stale selection from one farmer could
+>   record another farmer's payment on the wrong patch of a pair. Refusal over guessing.
+> - Compost pending window cut 30s -> 15s, and resolution takes the most recent qualifying
+>   click instead of an arbitrary one (paired allotments could swap records).
+> - Barbarian Farming's permanent "no dibber needed" latch is now covered by profile reset -
+>   it was the one observation the reset button couldn't reach.
+> - Time Tracking backfill no longer resurrects spent protection/compost: it only fills
+>   while a crop is standing in a state the fact could still be true for.
+> - RunPlanner: the deferred supply trip is picked up on BOTH completion paths (the polling
+>   path dropped it); completion re-arms (a stop that un-completes when you withdraw the
+>   missing seed can announce again); run-end needs the emptiness confirmed against a fresh
+>   exemption push (a one-tick over-broad push used to end a live run outright).
+> - NEW ESCAPE HATCH: Skip step, pressed during the supply leg, now waives the bank leg for
+>   the run - previously a payment you'd decided not to make parked the run at the bank with
+>   no way past. Needs in-client verification.
+> - Caches that served stale answers within a tick now invalidate on the event: the loadout
+>   (withdrawing an item un-highlights it the same tick), the route item (a retarget stops
+>   pinning the previous leg's teleport).
+> - Bank filtering re-probes for Bank Tags (rate-limited) instead of one shot at startup;
+>   awaiting-route times out after 10s so an uninstalled Shortest Path can't hold the
+>   overlay in "waiting" forever; bank locations are never learned inside instances (the
+>   template tile is a void coordinate, and the store is permanent).
+> DEFERRED, deliberately (bigger design changes, flag if they bite):
+> - RunPlanner.stops is still a plan-time snapshot: a crop that ripens mid-run can't join
+>   the run, and won't until the next Start. Fixing means re-deriving stop membership per
+>   tick (union, never remove) - doable but touches completion semantics everywhere.
+> - The front-door house reroute is still undone by SP re-pathing from the instance
+>   position every tick (upstream: plugin-message start isn't sticky). Latching differently
+>   on our side would just fight it per tick.
+> - GuideTracker's tick handler runs after the plugin's (class-name event ordering), so
+>   reviewProgress reads last tick's exemptions - one-tick lag, benign, but the ordering is
+>   implicit; an explicit @Subscribe priority would document it (and changing it would also
+>   reorder CarriedItems, so not done casually).
+> - DroppedProduce can still read a deliberate drop as overflow for ~1 min (needs a
+>   harvest-witness: only accept a spawn when the inventory gained produce that tick).
+> - RunStop.serviced is a one-way latch whose only consumer is test-only getRemainingPatches;
+>   worth deleting both.
+
+Farm run header on the infobox should always have the patch location listed in parenthesis next to it, some instances I've seen where it doesn't
+> RESOLVED. The header's location came from stopAt(), which only knows REMAINING stops - the
+> moment a stop completed (or was skipped) the name vanished from "Farm run - Falador" while
+> the player was still standing there packing up. Same gap that ate the leaving errands. The
+> title now names any stop of the run whose region you are standing in; step generation
+> keeps its stricter test.
+
+seed box empty, but still highlighted to empty before planting, but the seed I need is already in my inventory and not highlighted. Protected herb patches, ranarr
+> RESOLVED (two layers).
+> - The phantom: the box's derived count had accumulated seeds that are not in it (the old
+>   pre-fix corruption persists in config until the box is next observed). NEW HEAL: an
+>   Empty click that moves nothing while the pack has a free slot is now taken as proof the
+>   box is empty, and the count is zeroed - so following the phantom step once clears it,
+>   instead of the step surviving the very action it asks for. Opening the box also still
+>   corrects the count outright.
+> - A regression the heal also guards: the per-tick inventory reconcile added earlier could
+>   consume a pending Fill/Empty on the click's own tick against an unchanged container (the
+>   game applies the move a beat later), so the real change arrived to a store that had
+>   forgotten anything was owed - recreating exactly this phantom. The reconcile now stands
+>   down during the two-tick pending window.
+> - (The plant step with the ranarr highlight was hiding BEHIND the phantom empty step; both
+>   fixes above make it surface.)
+
+second seedbox bug, seedbox can only hold 6 seed types at a time, don't step to fill seed box when its already full
+> RESOLVED. "Fill the seed box before moving on" gated on loose seeds alone; it now asks
+> whether the box can actually TAKE any of them - a loose kind already boxed always fits
+> (stacks), a new kind fits only while fewer than six kinds are boxed. A full box with a
+> seventh kind loose raises no step, because the game would refuse the fill.
+
+weird bug with routing: at the GE the panel kept saying "Cast Teleport to House / via Respawn Portal (Prifddinas)" until ~10 tiles from the spirit tree; spirit tree not highlighted; "via 6: Prifddinas" unreadable; Farm run title missing location
+> RESOLVED (three of four; the first is SP's cost model, explained below).
+> - "via 6: Prifddinas" now reads "via Spirit tree - 6: Prifddinas": SP's message carries
+>   objectInfo (the thing you click) beside displayInfo (its menu row) and we were
+>   discarding the half that names the object. Item/spell hops unchanged.
+> - The GE spirit tree (and any world object the route's first hop goes through) is now
+>   outlined - the same treatment house furniture gets, extended to the overworld via the
+>   objectInfo name and a per-tick scene scan.
+> - The tree's "Spirit Tree Locations" sub-menu rows now highlight: the game moved that
+>   list to the new Menu interface (MenuNew) and our row scan only covered the old one.
+> - Farm run title now falls back to the DESTINATION between stops ("Farm run -
+>   Prifddinas"), so the header never goes blank mid-journey.
+> - The stale-looking house route at the GE is Shortest Path re-pathing honestly: its cost
+>   model kept preferring tele-to-house -> respawn portal -> Prifddinas until you stood
+>   close enough to the tree that walking won. Two SP-side things to check: the "Respawn
+>   Portal (Prifddinas)" edge is SP imagining POH portals (its POH portal data has no
+>   per-portal requirements; our override can only disable the whole category, and only
+>   when your house has NO portal-room portals - if you have any portal built but not that
+>   one, turn off "POH teleportation portals" in SP's own settings). SP's teleport
+>   wait-time cost setting also moves that crossover point.
+
+"Farm run - Prifddinas / Fill the seedbox with your loose seeds before moving on" correctly highlighted and menu-swapped the seedbox, but the north allotment (stage 1 snape grass) was highlighted too - it came back whenever I emptied the box into my inventory. Take out the seedbox instructions and highlighting; keep the menu swap but make it simple with a toggle: box full -> Empty, box partly full and no seeds in inv -> Empty, box empty -> Fill, box partly full and seeds in inv -> Fill.
+> RESOLVED, by removal. The stray outline: the fill step was hung on stop.getPatches().get(0)
+> so it would sit at the right stop, and GuideStep.highlightsPatch() is true for it - so the
+> stop's first patch got lit by an instruction about an inventory item. Rather than exempt the
+> action, both box steps are gone (FILL_SEED_BOX and WITHDRAW_SEEDS removed from GuideAction,
+> with GuidePlan's empty-before-planting branch and GuideTracker.appendFillSeedBoxBeforeLeaving).
+> What is left is GuideMenuSwap, no longer step-driven: while a run is on and seedBoxLeftClick
+> is set, the box's left-click is Empty when it holds seeds and nothing loose in the pack would
+> fit in it, and Fill otherwise - which is the four cases asked for, with "full" meaning the
+> game would refuse the fill (six kinds boxed, seventh kind loose) rather than a count. Reads
+> the box, not the guide: GuideMenuSwap.wantedBoxOption, pinned by GuideMenuSwapTest.
+
+"via Teleport Menu Fancy Jewellery Box 37501 - J: Farming Guild" - remove the item id "37501" from these
+> RESOLVED. Shortest Path's objectInfo column is "menuOption menuTarget objectID" in its own
+> transport TSVs ("Teleport Menu Fancy Jewellery Box 37501", "Travel Spirit tree 37329",
+> "Enter Annakarl Portal 29341") and we were prefixing the hop line with it raw. The trailing
+> id is now stripped (ShortestPathIntegration.objectName, pinned by HopWordingTest) for both
+> the panel wording and the route-object highlight name. Only the trailing number goes - the
+> numbers inside a hop's wording, like a mushtree's menu row, are wording.
+>
+> STILL OPEN, found while doing this: the route-object highlight cannot match. GuideOverlay
+> .scanForObjects compares the objectInfo name to a scene object's name with equalsIgnoreCase,
+> but objectInfo carries the MENU OPTION too - "Travel Spirit tree" will never equal an object
+> named "Spirit tree", id stripped or not. So the GE-spirit-tree highlight logged as resolved
+> earlier in this file has probably never lit anything. The fix is a suffix match, and it wants
+> deciding on rather than assuming: a plain suffix rule makes "Enter Annakarl Portal" match any
+> object named "Portal", and a POH is full of them.

@@ -906,7 +906,7 @@ The order per patch is the spec's: empty it out, then fill it back up.
 | dead | clear it |
 | growing | *nothing at all* |
 | empty, compost chosen and not applied | withdraw compost if you lack it, then apply |
-| empty, treated, seeds in the box | empty the seed box |
+| empty, treated, seeds in the box | plant — the box has no step; its left-click is Empty |
 | empty, treated, seeds in hand | plant |
 
 Pieces: `GuideAction` (seven verbs), `GuideStep` (one action, one object, at most one item),
@@ -1076,9 +1076,9 @@ allotment; the crops are what exist. Options, none tried:
   but still arbitrary where the plugin has never learned a patch's position and falls back to
   the region centre.
 - **No arrow or navigation line.** Quest Helper has both, and both are toggleable there.
-- **No menu swap for the seed box.** The spec asks for Empty as left-click; the step names it
-  instead, which is honest but slower. A menu swap is also the first thing here that would
-  modify input rather than describe it, so it wants deciding on rather than assuming.
+- ~~**No menu swap for the seed box.**~~ Done, and it is now the *only* thing said about the
+  box: the two box steps that named it were both removed by request, and `GuideMenuSwap`
+  chooses Fill or Empty from the box's own contents (see the seed box section below).
 - Completion is inferred from patch state, so a step lingers for the tick between clicking and
   the varbit arriving.
 
@@ -1353,6 +1353,15 @@ in path order — a comment written from a guess and never checked. And it was s
 single hop reported by several `Transport` objects with the same display string appeared as
 "portal, portal", which reads as the plugin having lost count. Both were visible in one screenshot
 from play and neither was visible from the unit tests.
+
+**A third, from the same habit.** `objectInfo` was shown raw too, and it is not a name: the
+router's transport TSVs write that column as `menuOption menuTarget objectId`, so the panel said
+"via Teleport Menu Fancy Jewellery Box **37501** - J: Farming Guild". The id is stripped now
+(`ShortestPathIntegration.objectName`). The rest is left alone, because the string does not say
+where the option ends and the object's name begins — which is also why the route-object
+highlight, which compares that value to a scene object's name outright, cannot match: "Travel
+Spirit tree" is never equal to "Spirit tree". Open, and noted in `open-issues.txt`; a plain
+suffix match would light every object named "Portal" in a house.
 
 ## Highlighting the way there, not just the thing to click
 

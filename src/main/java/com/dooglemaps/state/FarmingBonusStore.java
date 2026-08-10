@@ -119,6 +119,29 @@ public class FarmingBonusStore
 	}
 
 	/**
+	 * Re-reads both containers the bonuses live in, for a plugin switched on mid-session.
+	 *
+	 * <p>The bonuses are persisted to config and otherwise refreshed only by container events —
+	 * and worn gear can go a whole session without one. Take the cape off while the plugin is
+	 * not running and the stored "+5% Farming cape" survived indefinitely, disagreeing on
+	 * screen with the loadout, which reads the live equipment. Same job as
+	 * {@code SeedInventoryStore.relearnFromClient}, and called beside it.
+	 *
+	 * <p>Client thread only.
+	 */
+	public void relearnFromClient()
+	{
+		for (int containerId : new int[]{InventoryID.INV, InventoryID.WORN})
+		{
+			ItemContainer container = client.getItemContainer(containerId);
+			if (container != null)
+			{
+				record(containerId, container);
+			}
+		}
+	}
+
+	/**
 	 * Farming cape, its trimmed form, and any max cape.
 	 *
 	 * <p>Matched on the item's name rather than a list of ids, because there are more than

@@ -109,6 +109,34 @@ public class CarriedItems
 	}
 
 	/**
+	 * Once a tick, the model is thrown away and re-read from the client outright.
+	 *
+	 * <p>The event subscriber above stays — it is what keeps within-tick changes sharp — but
+	 * events alone leave no way back from a single missed read. The worn map is the standing
+	 * casualty: equipment fires an event only when gear changes, which can be never in a whole
+	 * farm run, so one skipped {@code relearnFromClient} at startup meant every worn cape,
+	 * cloak and ring read as unowned until the player happened to change an item. Every model
+	 * failure of that shape ends here at the next tick instead of at the next accident.
+	 *
+	 * <p>Same reasoning {@code LeprechaunStore.onGameTick} already states: cheap and
+	 * unconditionally correct beats clever and conditionally correct. The cost is two container
+	 * reads and at most 28 cached item-definition lookups, on the client thread, which already
+	 * does far more per tick elsewhere in this plugin.
+	 *
+	 * <p>Runs before {@code GuideTracker}'s tick handler — the event bus orders same-priority
+	 * subscribers by class name — so the steps computed this tick see this tick's pack.
+	 */
+	@Subscribe
+	public void onGameTick(net.runelite.api.events.GameTick event)
+	{
+		if (client.getGameState() != net.runelite.api.GameState.LOGGED_IN)
+		{
+			return;
+		}
+		relearnFromClient();
+	}
+
+	/**
 	 * Replaces what we think is in the inventory.
 	 *
 	 * <p>Public only so a test in another package can hand it a container; nothing in the

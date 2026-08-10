@@ -131,6 +131,13 @@ public class GuideInventoryOverlay extends Overlay
 			highlightPayOptions(graphics, colour);
 		}
 
+		// The hand-in's dialogue rows too, and for the same reason the payment got them: Jane
+		// is outlined, the produce is outlined, and the clicks between them were unlit.
+		if (step.getAction() == GuideAction.HAND_IN_CONTRACT)
+		{
+			highlightContractOptions(graphics, colour);
+		}
+
 		if (!step.hasItem())
 		{
 			return null;
@@ -364,7 +371,14 @@ public class GuideInventoryOverlay extends Overlay
 		// Reported from play, as cosmetic, which is exactly what an unclipped rectangle looks
 		// like. A row reachable from two scanned containers — the nexus universe and its rows
 		// layer overlap by construction — keeps the tightest rectangle it got.
+		//
+		// Direct matches and aliased ones are kept apart, and the direct rows win when any
+		// exist. The alias is a stand-in for the row that lands at the destination, not a
+		// second answer: a nexus can hold both "Troll Stronghold" (beside the patch) and
+		// "Trollheim" (up the mountain), and lighting both told the player the plugin could
+		// not choose. Only when no direct row exists does the aliased one carry the highlight.
 		Map<Widget, Rectangle> found = new HashMap<>();
+		Map<Widget, Rectangle> aliased = new HashMap<>();
 		java.util.List<String> seen = new java.util.ArrayList<>();
 		for (int listId : HouseTeleports.DESTINATION_LISTS)
 		{
@@ -383,15 +397,22 @@ public class GuideInventoryOverlay extends Overlay
 				}
 
 				seen.add(text);
-				if (HouseTeleports.namesTheSamePlace(text, destination))
+				boolean direct = HouseTeleports.namesTheSamePlaceDirectly(text, destination);
+				if (direct || HouseTeleports.namesTheSamePlace(text, destination))
 				{
+					Map<Widget, Rectangle> into = direct ? found : aliased;
 					Rectangle clipped = textBounds(row).intersection(list.getBounds());
-					Rectangle already = found.get(row);
-					found.put(row, already == null
+					Rectangle already = into.get(row);
+					into.put(row, already == null
 						? clipped
 						: already.intersection(clipped));
 				}
 			}
+		}
+
+		if (found.isEmpty())
+		{
+			found = aliased;
 		}
 
 		scannedRows = new java.util.ArrayList<>();
@@ -685,6 +706,53 @@ public class GuideInventoryOverlay extends Overlay
 				{
 					outline(graphics, bounds, colour);
 				}
+			}
+		}
+	}
+
+	/**
+	 * Marks the hand-in conversation's rows at Guildmaster Jane.
+	 *
+	 * <p>Same arrangement as {@link #highlightPayOptions}: only ever drawn while the current
+	 * step is {@code HAND_IN_CONTRACT}, so the step is the gate and a similar row in some
+	 * unrelated dialogue is never at risk.
+	 *
+	 * <p>A denylist rather than an allowlist, deliberately. The pay dialogue's exact lines are
+	 * pinned by {@code ProtectionCapture}, so the pay highlighter can name them; the hand-in
+	 * conversation's option strings are not recorded anywhere in this codebase, and an
+	 * allowlist built from guesses fails silently — the player sees nothing lit, which is the
+	 * failure that prompted this. So every option is marked except the header row and the
+	 * obvious declines; when the real wording has been captured in play, tighten this to a
+	 * prefix list and record the strings beside {@code ContractCapture}'s patterns.
+	 */
+	private void highlightContractOptions(Graphics2D graphics, Color colour)
+	{
+		Widget list = client.getWidget(InterfaceID.Chatmenu.OPTIONS);
+		if (list == null || list.isHidden() || list.getDynamicChildren() == null)
+		{
+			return;
+		}
+
+		for (Widget row : list.getDynamicChildren())
+		{
+			if (row == null || row.getText() == null)
+			{
+				continue;
+			}
+
+			String text = net.runelite.client.util.Text.removeTags(row.getText()).trim();
+			// The header ("Select an Option") and the ways of saying no.
+			if (text.isEmpty() || text.startsWith("Select an Option")
+				|| text.startsWith("No") || text.startsWith("Nothing")
+				|| text.startsWith("I'll come back"))
+			{
+				continue;
+			}
+
+			Rectangle bounds = textBounds(row).intersection(list.getBounds());
+			if (!bounds.isEmpty())
+			{
+				outline(graphics, bounds, colour);
 			}
 		}
 	}

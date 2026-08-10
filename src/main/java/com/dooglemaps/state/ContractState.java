@@ -96,6 +96,20 @@ public class ContractState
 	/** Guildmaster Jane, who assigns them and takes them back. */
 	public static final int GUILDMASTER_JANE = net.runelite.api.gameval.NpcID.FARMING_GUILD_MASTER;
 
+	/**
+	 * Every id Jane wears — she is one person and three NPC ids, and which one you are looking
+	 * at depends on where you are looking. {@code FARMING_GUILD_MASTER} (the constant above) is
+	 * what her <b>dialogue chathead</b> reports; the NPC actually standing in the guild is one
+	 * of the {@code _1OP}/{@code _2OP} variants, which is how the game varies her menu options.
+	 * Conflating the two is exactly how the hand-in step outlined nobody: the world NPC was
+	 * compared against the chathead's id and never matched. Anything matching Jane in the
+	 * <i>scene or a menu</i> wants this set; only the chathead reader wants the single id.
+	 */
+	public static final java.util.Set<Integer> JANE_NPC_IDS = java.util.Set.of(
+		net.runelite.api.gameval.NpcID.FARMING_GUILD_MASTER,
+		net.runelite.api.gameval.NpcID.FARMING_GUILD_MASTER_1OP,
+		net.runelite.api.gameval.NpcID.FARMING_GUILD_MASTER_2OP);
+
 	private final ConfigManager configManager;
 
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
@@ -310,6 +324,38 @@ public class ContractState
 		clear(CAPTURED_CONTRACT_KEY);
 		log.debug("Farming contract handed in");
 		fireChanged();
+	}
+
+	/**
+	 * Squares the awaiting-hand-in record against a fresh assignment from Time Tracking.
+	 *
+	 * <p>The awaiting flag is cleared by exactly two dialogue captures — the REWARDED line and
+	 * the next ASSIGNED line — and both are sampled once a tick, so spam-clicking through Jane
+	 * can skip past both between samples. The flag then deadlocked: the hand-in step pointed
+	 * at produce that no longer existed, the take-a-contract step was suppressed because
+	 * something still read as awaiting, and the events that could clear it were precisely the
+	 * ones being missed. Circular, and it survives restarts because it is config.
+	 *
+	 * <p>Time Tracking parses the same dialogue on its own schedule, and Jane does not assign
+	 * while a reward is uncollected — so a Time Tracking assignment that <b>differs</b> from
+	 * what we think is awaiting proves the old contract was settled, whether or not we saw it
+	 * happen. The same reasoning {@link #recordAssigned} already applies to our own capture,
+	 * pointed at the other source.
+	 */
+	public void reconcileAwaitingHandIn()
+	{
+		Produce awaiting = getAwaitingHandIn();
+		if (awaiting == null)
+		{
+			return;
+		}
+		Produce assigned = fromTimeTracking();
+		if (assigned != null && assigned != awaiting)
+		{
+			log.debug("Time Tracking sees {} assigned while {} still read as awaiting hand-in - "
+				+ "the hand-in happened unseen", assigned.getName(), awaiting.getName());
+			recordHandedIn();
+		}
 	}
 
 	/** Announces the contract once at start-up, so a silent one is diagnosable after the fact. */

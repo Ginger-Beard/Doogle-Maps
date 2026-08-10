@@ -59,6 +59,13 @@ public class SeedCapture
 		bonuses.record(event.getContainerId(), event.getItemContainer());
 	}
 
+	/** The once-a-tick inventory reconcile; see {@code SeedInventoryStore.relearnInventoryFromClient}. */
+	@Subscribe
+	public void onGameTick(net.runelite.api.events.GameTick event)
+	{
+		seeds.relearnInventoryFromClient();
+	}
+
 	/**
 	 * Watches for the seed box being filled or emptied.
 	 *

@@ -117,6 +117,49 @@ public class PlaceNameMatchTest
 			HouseTeleports.furnitureServesHop("Portal", "Varrock Portal"));
 	}
 
+	/**
+	 * An alias is a stand-in, not a synonym.
+	 *
+	 * <p>A nexus can hold both "Trollheim" and "Troll Stronghold" — the second attuned with
+	 * stony basalt, landing beside the patch where the first lands up the mountain. The alias
+	 * lets the Trollheim row carry a Troll Stronghold destination when it is the only row
+	 * there is; the direct test is what lets the row scan prefer the real one when both are.
+	 */
+	@Test
+	public void theAliasIsLooseAndTheDirectMatchIsNot() throws Exception
+	{
+		assertTrue("the Trollheim row can stand in for Troll Stronghold",
+			matches("Troll Stronghold", "Trollheim"));
+		assertFalse("but never as a direct match - the real row must win when both exist",
+			matchesDirectly("Troll Stronghold", "Trollheim"));
+		assertTrue("the basalt-attuned row is the direct one",
+			matchesDirectly("Troll Stronghold", "Troll Stronghold"));
+	}
+
+	/**
+	 * The nexus's Varrock teleport can be redirected to land at the Grand Exchange, and the row
+	 * then reads "Grand Exchange" — no substring shared with the "Varrock" the run stop is named
+	 * after. Reported from play: the nexus itself was outlined (the furniture list has known the
+	 * pair all along) and then no row lit inside it.
+	 */
+	@Test
+	public void theGrandExchangeRowStandsInForVarrock() throws Exception
+	{
+		assertTrue("the GE-redirected row can stand in for Varrock",
+			matches("Grand Exchange", "Varrock"));
+		assertTrue("whichever way round it is asked", matches("Varrock", "Grand Exchange"));
+		assertFalse("but never as a direct match - a real Varrock row must win when both exist",
+			matchesDirectly("Grand Exchange", "Varrock"));
+	}
+
+	private static boolean matchesDirectly(String a, String b) throws Exception
+	{
+		Method method = HouseTeleports.class
+			.getDeclaredMethod("namesTheSamePlaceDirectly", String.class, String.class);
+		method.setAccessible(true);
+		return (boolean) method.invoke(null, a, b);
+	}
+
 	private static boolean matches(String a, String b) throws Exception
 	{
 		Method method = HouseTeleports.class

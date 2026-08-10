@@ -45,6 +45,21 @@ public class ProtectionCapture
 	/** Which of a multi-patch farmer's patches the player last chose. */
 	private int lastSelectedOption;
 
+	/**
+	 * The tick the selection was made on, so it cannot be redeemed by a different dialogue.
+	 *
+	 * <p>The acceptance line always follows the selection within the same conversation, so a
+	 * selection more than a minute old is a leftover from some earlier farmer — and matching
+	 * a *stale* one recorded the payment against the wrong patch of a pair, silently: one
+	 * allotment modelled as protected that is not, and one paid for that still reads unpaid.
+	 * When the selection is stale the multi-patch record is refused outright; a missed record
+	 * shows up as "pay the farmer" reappearing, which is visible, where a wrong one never is.
+	 */
+	private int lastSelectedTick = -1000;
+
+	/** Generous — a payment conversation takes seconds; a minute covers reading the options. */
+	private static final int SELECTION_FRESH_TICKS = 100;
+
 	@Inject
 	ProtectionCapture(Client client, PatchStateStore stateStore)
 	{
@@ -55,6 +70,7 @@ public class ProtectionCapture
 	public void reset()
 	{
 		lastSelectedOption = 0;
+		lastSelectedTick = -1000;
 	}
 
 	@Subscribe
@@ -95,6 +111,7 @@ public class ProtectionCapture
 			{
 				// Child 0 is the "Select an Option" header.
 				lastSelectedOption = widget.getIndex() - 1;
+				lastSelectedTick = client.getTickCount();
 			}
 		}
 		else if ((action == MenuAction.NPC_THIRD_OPTION || action == MenuAction.NPC_FOURTH_OPTION)
@@ -102,6 +119,7 @@ public class ProtectionCapture
 		{
 			// Some farmers expose their patches directly as right-click options instead.
 			lastSelectedOption = action == MenuAction.NPC_THIRD_OPTION ? 0 : 1;
+			lastSelectedTick = client.getTickCount();
 		}
 	}
 
@@ -128,6 +146,7 @@ public class ProtectionCapture
 		if (option != null && isPatchOption(option.getText()))
 		{
 			lastSelectedOption = subId - 1;
+			lastSelectedTick = client.getTickCount();
 		}
 	}
 
@@ -154,8 +173,12 @@ public class ProtectionCapture
 					continue;
 				}
 				// patchNumber is only meaningful for farmers tending more than one patch;
-				// for the rest, matching the NPC is enough.
-				if (patch.getPatchNumber() == -1 || patch.getPatchNumber() == lastSelectedOption)
+				// for the rest, matching the NPC is enough. The multi-patch match also
+				// demands a fresh selection - see lastSelectedTick.
+				int age = client.getTickCount() - lastSelectedTick;
+				boolean fresh = age >= 0 && age <= SELECTION_FRESH_TICKS;
+				if (patch.getPatchNumber() == -1
+					|| (fresh && patch.getPatchNumber() == lastSelectedOption))
 				{
 					found = patch;
 				}

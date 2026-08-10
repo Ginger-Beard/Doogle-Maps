@@ -270,30 +270,78 @@ public final class BankLayout
 	 * <p>Slot one is the one place every eye passes first, and the route item is the one thing
 	 * the player is about to click on the way out — Shortest Path picked it, so it outranks
 	 * the map's regions for that single slot. Whatever the map had there moves to the route
-	 * item's old slot when it had one, and to the overflow below the grid when it did not:
-	 * a swap, never a shift, so the rest of the map stays exactly where it was drawn.
+	 * item's old slot when it had one, and to the first empty slot when it did not: a swap,
+	 * never a shift, so the rest of the map stays exactly where it was drawn. It used to be
+	 * dropped outright in the no-slot case, which is not what the doc above it promised — and
+	 * the dropped item did not vanish, it reappeared as Bank Tags overflow in the bottom-right
+	 * corner of the grid, which is where the wandering Ectophial was found.
 	 *
-	 * <p>Skipped when the item is not in the bank ({@code banked} says): a reservation for an
-	 * absent item draws a faded stand-in, and slot one is the worst place for a ghost.
+	 * <p>Matched in every bank form, not by the exact id: the route resolves to whichever
+	 * variant of the item it saw — a full Ectophial where the layout holds the empty one — and
+	 * an exact scan concluded the item was absent and wrote a second copy into slot one while
+	 * the first kept its own slot.
+	 *
+	 * <p>Skipped when no form of the item is in the bank ({@code banked} says): a reservation
+	 * for an absent item draws a faded stand-in, and slot one is the worst place for a ghost.
 	 */
 	public static void pinFirst(int[] layout, int itemId, Set<Integer> banked)
 	{
-		if (itemId <= 0 || layout.length == 0 || layout[0] == itemId
-			|| (banked != null && !banked.contains(itemId)))
+		if (itemId <= 0 || layout.length == 0)
 		{
 			return;
 		}
 
-		for (int i = 1; i < layout.length; i++)
+		Set<Integer> forms = RunLoadout.bankFormsOf(itemId);
+		if (forms.contains(layout[0]))
 		{
-			if (layout[i] == itemId)
+			return;
+		}
+
+		// Pin the form the bank actually holds, so the slot draws a real item rather than a
+		// stand-in for the variant the route happened to name.
+		int pin = itemId;
+		if (banked != null)
+		{
+			pin = -1;
+			for (int form : forms)
 			{
-				layout[i] = layout[0];
-				layout[0] = itemId;
+				if (banked.contains(form))
+				{
+					pin = form;
+					break;
+				}
+			}
+			if (pin == -1)
+			{
 				return;
 			}
 		}
-		layout[0] = itemId;
+
+		for (int i = 1; i < layout.length; i++)
+		{
+			if (forms.contains(layout[i]))
+			{
+				int laidOut = layout[i];
+				layout[i] = layout[0];
+				layout[0] = laidOut;
+				return;
+			}
+		}
+
+		int displaced = layout[0];
+		layout[0] = pin;
+		if (displaced == NO_ITEM)
+		{
+			return;
+		}
+		for (int i = 1; i < layout.length; i++)
+		{
+			if (layout[i] == NO_ITEM)
+			{
+				layout[i] = displaced;
+				return;
+			}
+		}
 	}
 
 	/** Every slot each letter claims, in reading order. */

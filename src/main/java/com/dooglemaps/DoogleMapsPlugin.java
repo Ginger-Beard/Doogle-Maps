@@ -268,6 +268,24 @@ public class DoogleMapsPlugin extends Plugin
 
 	/** The protected tab can only be built once the unlocks are known, which is after startUp. */
 	private final Runnable onProtectionChanged = () -> panel.structureChanged();
+
+	/**
+	 * Keeps the stored "Farming Contract" tick pointed at whatever Jane has assigned.
+	 *
+	 * <p>Registered before {@code onProtectionChanged} on the contract store, deliberately: the
+	 * key has to be renamed before the panel rebuilds its checkboxes off it, or the fresh
+	 * contract's line draws unticked once and flickers. See {@code RunTypeStore.retargetContract}.
+	 */
+	private final Runnable onContractChanged = this::retargetContractTick;
+
+	private void retargetContractTick()
+	{
+		com.dooglemaps.data.Produce contract = contracts.getContract();
+		if (contract != null)
+		{
+			runTypes.retargetContract(contract.getPatchImplementation());
+		}
+	}
 	private Instant lastIdleRefresh = Instant.EPOCH;
 
 	/**
@@ -310,6 +328,10 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(droppedProduce);
 		eventBus.register(guideMenuSwap);
 		eventBus.register(bankFilter);
+		// For its cache invalidation alone - registered before the capture classes run
+		// (the bus orders same-priority subscribers by class name, and bank.* precedes
+		// capture.*), so a withdrawal's same-tick readers see a fresh loadout.
+		eventBus.register(runLoadout);
 		bankFilter.startUp();
 
 		// Anything drawn from the bank — the protection rows' "you have 8 of the 24 this run
@@ -319,6 +341,8 @@ public class DoogleMapsPlugin extends Plugin
 		protectedPatches.addChangeListener(onProtectionChanged);
 		// A contract appearing or being handed in adds or removes a whole planting group, so the
 		// tab strip and the run list both have to be rebuilt rather than merely repainted.
+		// The retarget first — see its field doc for why the order matters.
+		contracts.addChangeListener(onContractChanged);
 		contracts.addChangeListener(onProtectionChanged);
 		stateStore.addChangeListener(onStateChanged);
 		availability.addChangeListener(onStateChanged);
@@ -370,10 +394,11 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(droppedProduce);
 		eventBus.unregister(guideMenuSwap);
 		eventBus.unregister(bankFilter);
-		bankFilter.shutDown();
+		eventBus.unregister(runLoadout);
 
 		bankContents.removeChangeListener(onStateChanged);
 		protectedPatches.removeChangeListener(onProtectionChanged);
+		contracts.removeChangeListener(onContractChanged);
 		contracts.removeChangeListener(onProtectionChanged);
 		stateStore.removeChangeListener(onStateChanged);
 		availability.removeChangeListener(onStateChanged);
@@ -391,6 +416,12 @@ public class DoogleMapsPlugin extends Plugin
 		clientToolbar.removeNavigation(navigationButton);
 		navigationButton = null;
 		loaded = false;
+
+		// After the UI teardown above, deliberately. This is the one shutdown step that talks
+		// to another plugin, which makes it the one most able to fail — and when it threw, it
+		// took the infobox and overlay removals below it down too. Last, so whatever it does,
+		// nothing of ours is left on screen.
+		bankFilter.shutDown();
 
 		interactionTracker.reset();
 		compostCapture.reset();
@@ -428,17 +459,73 @@ public class DoogleMapsPlugin extends Plugin
 		{
 			// A different account may log in next, so the cache has to be read again.
 			loaded = false;
+			resetSessionState();
 		}
+	}
+
+	/**
+	 * Forgets everything scoped to the account that just left.
+	 *
+	 * <p>Every one of these was reset only on plugin shutdown, which made them silently
+	 * <b>session</b>-scoped across account switches: account A's herb-patch unlocks memoised
+	 * so account B's were never written (the protected-herb tab simply absent for B all
+	 * session), A's leprechaun stores and house-portal answer inherited by B, a payment-patch
+	 * selection from A's dialogue redeemable by B's. Cleared on the way out — at the login
+	 * screen and on a profile change — so the next account starts from "never looked" rather
+	 * than from someone else's answers. Everything here rebuilds by playing, most of it
+	 * within a tick of logging in.
+	 */
+	private void resetSessionState()
+	{
+		protectedPatches.reset();
+		leprechaunStore.reset();
+		playerHouse.reset();
+		protectionCapture.reset();
+		seedStore.forgetSession();
 	}
 
 	/** Time Tracking's group and contract key, watched for the reason {@code onConfigChanged} gives. */
 	private static final String CONTRACT_CONFIG_GROUP = "timetracking";
 	private static final String CONTRACT_CONFIG_KEY = "contract";
 
+	/**
+	 * The keys that are actually settings — the ones {@code onConfigChanged} should rebuild for.
+	 *
+	 * <p>The plugin's own stores persist state into the same config group: farming xp, seed
+	 * counts, harvest stats, growth timers. Every one of those writes posts a {@code
+	 * ConfigChanged} just like a settings toggle does, and treating them alike put a full panel
+	 * refresh behind every write. Farming experience was the one that hurt — it is written per
+	 * xp drop, several times a game tick while picking, so the Stats page was being torn down
+	 * and rebuilt continuously and visibly jerked around. The intended cadence is the 20-second
+	 * idle refresh, roughly two orders of magnitude slower.
+	 *
+	 * <p>State writes do not need this listener at all: the stores that own them fire their own
+	 * change listeners when something worth repainting happens, on their own judgement of what
+	 * is worth it — that is what {@code onStateChanged} is wired to.
+	 */
+	private static final java.util.Set<String> SETTING_KEYS = settingKeys();
+
+	private static java.util.Set<String> settingKeys()
+	{
+		java.util.Set<String> keys = new java.util.HashSet<>();
+		for (java.lang.reflect.Method method : DoogleMapsConfig.class.getMethods())
+		{
+			net.runelite.client.config.ConfigItem item =
+				method.getAnnotation(net.runelite.client.config.ConfigItem.class);
+			if (item != null)
+			{
+				keys.add(item.keyName());
+			}
+		}
+		return keys;
+	}
+
 	@Subscribe
 	public void onProfileChanged(ProfileChanged event)
 	{
-		// Config is per RuneScape profile, so switching accounts swaps the whole cache.
+		// Config is per RuneScape profile, so switching accounts swaps the whole cache —
+		// and the in-memory session state has to go with it; see resetSessionState.
+		resetSessionState();
 		load();
 	}
 
@@ -472,6 +559,13 @@ public class DoogleMapsPlugin extends Plugin
 		if (DoogleMapsConfig.CLEAR_HARVEST_STATS_KEY.equals(event.getKey()))
 		{
 			handleClearStatsRequest();
+			return;
+		}
+
+		// The plugin's own persisted state shares the group; see SETTING_KEYS for why it
+		// must not land here.
+		if (!SETTING_KEYS.contains(event.getKey()))
+		{
 			return;
 		}
 
@@ -550,16 +644,20 @@ public class DoogleMapsPlugin extends Plugin
 
 		// And relearn what the client can still tell us without the player doing anything:
 		// the Farming level, plus every seed container it is currently holding. Both are
-		// client reads, so they go through the client thread.
-		clientThread.invokeLater(() ->
+		// client reads, so they go through the client thread — re-queued until logged in,
+		// same as load()'s priming block and for the same reason.
+		clientThread.invoke(() ->
 		{
-			if (client.getGameState() == GameState.LOGGED_IN)
+			if (client.getGameState() != GameState.LOGGED_IN)
 			{
-				seedStore.recordFarmingLevel();
-				seedStore.recordWoodcuttingLevel();
-				seedStore.relearnFromClient();
-				carriedItems.relearnFromClient();
+				return false;
 			}
+			seedStore.recordFarmingLevel();
+			seedStore.recordWoodcuttingLevel();
+			seedStore.relearnFromClient();
+			carriedItems.relearnFromClient();
+			bonusStore.relearnFromClient();
+			return true;
 		});
 	}
 
@@ -700,7 +798,16 @@ public class DoogleMapsPlugin extends Plugin
 		// The Farming level is only otherwise learned from a Farming XP drop, which may not
 		// come for hours. Without it every yield estimate stays hidden, so it is read
 		// outright whenever we load.
-		clientThread.invokeLater(() ->
+		//
+		// invoke(BooleanSupplier), not invokeLater(Runnable). The queue drains on every
+		// client frame regardless of game state, so an invokeLater posted while the world
+		// was still LOADING - or from a load at the login screen - evaluated its guard
+		// once, no-opped, and was gone; loaded was already true, so the onGameTick and
+		// LOGGED_IN retries both declined, and the whole priming block was silently lost
+		// for the session. Item prices never recorded, the pack's seeds invisible, worn
+		// gear unowned. A false-returning invoke is re-queued by RuneLite until it says
+		// true, which turns "primed" from a hope into a fact.
+		clientThread.invoke(() ->
 		{
 			if (client.getGameState() == GameState.LOGGED_IN)
 			{
@@ -720,6 +827,10 @@ public class DoogleMapsPlugin extends Plugin
 				// than the seed containers. Without it every teleport, cloak and ring you are
 				// already carrying reads as missing and goes on the withdraw list.
 				carriedItems.relearnFromClient();
+
+				// And the bonuses, whose staleness is worse: they are persisted, so a cape
+				// taken off while the plugin was not looking stayed "+5%" across restarts.
+				bonusStore.relearnFromClient();
 
 				// Protection payment names, read here because getItemComposition is a client
 				// thread call and the sidebar needs them on Swing. A fixed set, read once.
@@ -755,6 +866,8 @@ public class DoogleMapsPlugin extends Plugin
 				// wait for the idle timer to come round.
 				refresh();
 			}
+			// True consumes the invoke; false has RuneLite re-queue it for the next frame.
+			return client.getGameState() == GameState.LOGGED_IN;
 		});
 		seedSelection.load();
 		runTypes.load();
@@ -783,6 +896,10 @@ public class DoogleMapsPlugin extends Plugin
 		// Time Tracking switched off, nothing assigned, or one already handed in — and from the
 		// sidebar all three look identical to the feature not working.
 		contracts.logState();
+		// The contract may have changed type while the plugin was off - a session with Time
+		// Tracking alone, or another machine. Pointing the stored tick at whatever is assigned
+		// now is what keeps "Farming Contract" a once-per-account decision; see retargetContract.
+		retargetContractTick();
 		refresh();
 
 		loaded = true;

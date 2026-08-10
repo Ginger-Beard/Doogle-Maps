@@ -130,14 +130,17 @@ public class GuideStepOverlay extends OverlayPanel
 	 * panel at each place. (An earlier pass had the place first, and before that
 	 * {@code Farm run (Catherby)}; the constant part leading is the arrangement that stuck.)
 	 *
-	 * <p>The location only while at a stop. Between them it is the destination, which the
-	 * first line already gives — saying it twice would just be noise.
+	 * <p>The location while at a stop, the destination while between them — by owner request,
+	 * the title always says where the run's attention is. (The destination also appears in the
+	 * first line; the title carrying it too keeps the header from going blank mid-journey,
+	 * which read as the plugin losing track of where you were going.)
 	 */
 	private static String title(GuideStatus status)
 	{
-		return status.getLocation() == null
-			? "Farm run"
-			: "Farm run - " + status.getLocation();
+		String place = status.getLocation() != null
+			? status.getLocation()
+			: status.getDestination();
+		return place == null ? "Farm run" : "Farm run - " + place;
 	}
 
 	/**

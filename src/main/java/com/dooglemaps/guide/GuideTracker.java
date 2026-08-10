@@ -185,7 +185,23 @@ public class GuideTracker
 			: null;
 
 		WorldPoint player = playerLocation();
+		// For the overlay's "Farm run - Falador" title, any stop of the run counts, not just
+		// the remaining ones: stopAt() goes null the moment the stop completes (or was
+		// skipped), so the place name vanished from the header while the player was still
+		// standing there packing up. Reported from play. The step generation above keeps its
+		// own, stricter stopAt.
 		RunStop here = player == null ? null : stopAt(player);
+		if (here == null && player != null)
+		{
+			for (RunStop stop : planner.getStops())
+			{
+				if (stop.getRegion().getRegionId() == player.getRegionID())
+				{
+					here = stop;
+					break;
+				}
+			}
+		}
 
 		status = new GuideStatus(steps, planner.isActive(), planner.isAtBankLeg(),
 			remaining.size(), new ArrayList<>(planner.getCurrentTransports()),
@@ -395,6 +411,12 @@ public class GuideTracker
 		return getCurrentStep() != null;
 	}
 
+	/** Whether the router owes an answer, for the overlay's exit-portal patience. Lock-free. */
+	public boolean routeAnswerPending()
+	{
+		return planner.isRouteAnswerPending();
+	}
+
 	/**
 	 * Whether the skip button has a travel leg to act on instead of a step.
 	 *
@@ -406,8 +428,19 @@ public class GuideTracker
 	 */
 	public boolean canSkipTravel()
 	{
-		return planner.isActive() && !planner.isAtBankLeg() && getCurrentStep() == null
-			&& destinationStop(planner.getRemaining()) != null;
+		if (!planner.isActive() || getCurrentStep() != null)
+		{
+			return false;
+		}
+		// The supply leg is a destination too, and it used to be the one journey the skip
+		// could not decline: every outstanding item on the withdraw list is cleared only by
+		// withdrawing it, so a payment the player had decided against parked the run at the
+		// bank with no way past. Skipping while at the bank leg waives the leg for the run.
+		if (planner.isAtBankLeg())
+		{
+			return true;
+		}
+		return destinationStop(planner.getRemaining()) != null;
 	}
 
 	/**
@@ -422,6 +455,15 @@ public class GuideTracker
 		if (getCurrentStep() != null)
 		{
 			return false;
+		}
+
+		// The supply leg first: while it is on, the destination is a bank, and declining it
+		// means "run without the withdrawals", not "drop a stop". See canSkipTravel.
+		if (planner.isAtBankLeg())
+		{
+			log.debug("Skipped the supply leg");
+			planner.waiveBankLeg();
+			return true;
 		}
 
 		RunStop stop = destinationStop(planner.getRemaining());
@@ -487,6 +529,7 @@ public class GuideTracker
 			// Also the moment to forget which patch was being worked: arriving somewhere new
 			// should pick the nearest thing there, not resume a patch two teleports away.
 			working = null;
+			appendLeavingErrandsAtFinishedStop(steps, player);
 			return steps;
 		}
 
@@ -553,46 +596,39 @@ public class GuideTracker
 		announceResurrectables(ordered);
 
 		appendLeprechaunErrands(steps, stop);
-		appendFillSeedBoxBeforeLeaving(steps, stop);
 		appendContractErrands(steps, stop);
 		insertPickUpDrops(steps, stop, player);
 		return steps;
 	}
 
 	/**
-	 * Tells you to pocket the loose seeds before leaving a stop.
+	 * The leaving errands at a stop that completed under your feet.
 	 *
-	 * <p>The travelling shape of the pre-harvest nudge in {@code GuidePlan}: that one fires
-	 * when a harvest is about to outgrow the pack, this one fires when the stop's work is done
-	 * and the loose stacks would otherwise ride to the next stop a slot each. The box's Empty
-	 * step at the next patch is the other half of the loop, and both are left-clicks while
-	 * current — see {@code GuideMenuSwap}. Requested from play.
+	 * <p>Planting the last patch is what completes a stop, and a freshly planted patch is not
+	 * actionable — so the tick it happens, the stop leaves {@code getRemaining()}, {@code
+	 * stopAt} goes null, and every "before moving on" errand vanished with it: note the crops,
+	 * hand back the buckets. Reported from play. Same failure shape as the protection-payment
+	 * bug, which was fixed by keeping the *patch* actionable; these errands belong to the stop,
+	 * not a patch, so they are re-attached here instead.
 	 *
-	 * <p>Appended last, so it becomes current only once everything else here — including the
-	 * planting those seeds might be for — is finished with.
+	 * <p>Only at the stop that was just being worked — {@code workingRegion} — not any
+	 * completed stop the player happens to walk back through later. The errands say "before
+	 * moving on", and that claim is only true where the moving on is about to happen.
 	 */
-	private void appendFillSeedBoxBeforeLeaving(List<GuideStep> steps, RunStop stop)
+	private void appendLeavingErrandsAtFinishedStop(List<GuideStep> steps, WorldPoint player)
 	{
-		// Same gate as the leprechaun errands: a patch still to check has work behind it,
-		// and packing up mid-stop reads as the guide leaving early.
-		if (anythingStillToCheck(stop) || containsAction(steps, GuideAction.FILL_SEED_BOX))
-		{
-			return;
-		}
-		if (!carried.hasAny(ItemID.SEED_BOX, ItemID.SEED_BOX_OPEN)
-			|| !GuidePlan.anyLooseSeeds(seeds))
+		if (player.getRegionID() != workingRegion)
 		{
 			return;
 		}
 
-		GuideStep fill = GuideStep.withItem(GuideAction.FILL_SEED_BOX, stop.getPatches().get(0),
-			GuidePlan.seedBoxCarried(carried),
-			"Fill the seed box with your loose seeds before moving on.");
-		// The errands are appended after the skip filter runs, so the filter is asked by hand -
-		// waving this step past has to keep it past.
-		if (!skippedSteps.contains(keyOf(fill)))
+		for (RunStop stop : planner.getStops())
 		{
-			steps.add(fill);
+			if (stop.getRegion().getRegionId() == workingRegion)
+			{
+				appendLeprechaunErrands(steps, stop);
+				return;
+			}
 		}
 	}
 
@@ -802,6 +838,20 @@ public class GuideTracker
 			// Cleared with the run, like the contract announcements: the next run's dead
 			// crops are new news.
 			announcedResurrect.clear();
+
+			// Everything else that is scoped to "this run" is cleared here too — this branch
+			// runs every tick the planner is inactive, which makes it the run boundary that
+			// reset() never was. reset() is wired to plugin shutdown only, so these used to be
+			// session-scoped in practice while their docs claimed run scope; a skipped
+			// "pay the farmer" then silently planted that patch unprotected on every later
+			// run of the session, and a skipped pick-up never offered again. A skip is a
+			// statement about this run; the next run starts with none.
+			skippedSteps.clear();
+			announcedBlock = null;
+			loggedErrandsAt = null;
+			lastNamedStop = null;
+			working = null;
+			workingRegion = -1;
 			return;
 		}
 
@@ -1147,13 +1197,24 @@ public class GuideTracker
 	/**
 	 * Whether a guild patch is standing there holding the finished contract crop.
 	 *
-	 * <p>{@code isReady} is the same test RuneLite's own contract tracker applies — fully grown, or
-	 * past its done estimate — rather than "has been harvested". A contract completes on the crop
-	 * finishing; picking it is a separate job the rest of the guide already handles.
-	 *
 	 * <p>Only ever asked to <b>detect</b> a completion nothing recorded. Whether the hand-in can
 	 * happen yet is a different question with a different answer for regrowing crops; see
 	 * {@link #owesYouSomething}.
+	 *
+	 * <h2>A varbit witness, not a clock</h2>
+	 *
+	 * This used {@code isReady()}, which is true for a crop merely <i>past its done estimate</i>
+	 * — an extrapolation, not an observation. That mattered because the caller <b>persists</b>
+	 * off this answer: {@code recordCompleted()} rewrites config and deletes the assignment
+	 * record, so one tick of a wrong estimate — a patch not looked at since planting, a
+	 * projection running ahead of the world — did permanent damage off evidence no one had
+	 * seen. Now it takes the varbit's own word: {@code HARVESTABLE} actually decoded from the
+	 * patch, or the check-health case, whose final stage never reads {@code HARVESTABLE} until
+	 * checked and which {@link #owesYouSomething} holds the hand-in back for anyway — so a
+	 * premature answer there defers rather than deceives. The completion the player was
+	 * <i>online</i> for is caught by the game's own chat line in {@code ContractCapture};
+	 * this fallback only needs to cover growth finished while logged out, and the player is
+	 * then standing in the world where the varbit can actually be read.
 	 *
 	 * <p>Deliberately requires the produce to <i>match</i>. A dead herb reads as {@code ANYHERB}
 	 * and a patch someone planted something else in is not a completed contract, so anything but an
@@ -1165,7 +1226,12 @@ public class GuideTracker
 			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
 		{
 			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
-			if (projection != null && projection.getProduce() == contract && projection.isReady())
+			if (projection == null || projection.getProduce() != contract)
+			{
+				continue;
+			}
+			if (projection.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE
+				|| projection.needsHealthCheck())
 			{
 				return true;
 			}
@@ -1229,6 +1295,22 @@ public class GuideTracker
 
 		if (blocking == null)
 		{
+			// Which of two very different problems is it? The old wording blamed the checkbox
+			// unconditionally, and the reported case was a ticked contract whose seed sat in
+			// the bank — the note said "tick Farming contract" while the box was ticked, and
+			// the honest answer ("it's in your bank") was only in the skip list beside it.
+			com.dooglemaps.data.PlantingGroup group =
+				com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation());
+			Seed seed = contracts.getContractSeed();
+			if (runTypes.isSelected(com.dooglemaps.data.RunOption.full(group))
+				&& seed != null && !GuidePlan.seedAtHand(seed, seeds))
+			{
+				// Owned — missingContractSeed above already returned for "owns none" — just
+				// not on you. The run's supply leg fetches it; say where it is meanwhile.
+				return "Your " + contract.getName().toLowerCase() + " contract seed is "
+					+ whereSeedsAre(seed) + " - withdraw it to plant the contract this trip.";
+			}
+
 			return "Your " + contract.getName().toLowerCase()
 				+ " contract is not part of this run - tick Farming contract to include it.";
 		}
@@ -1424,6 +1506,43 @@ public class GuideTracker
 		{
 			steps.addAll(errands);
 		}
+	}
+
+	/**
+	 * Whether furniture in this room serves any hop of the current route — the same test the
+	 * overlay outlines by and {@link #routeFromTheFrontDoor} judges by, asked here so the
+	 * travel hint cannot contradict what is being outlined. Client thread only, like every
+	 * furniture question.
+	 */
+	private boolean furnitureServesTheRoute()
+	{
+		java.util.Collection<String> transports = planner.getCurrentTransports();
+		return !transports.isEmpty() && !house.matchingFurniture(name ->
+			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)))
+			.isEmpty();
+	}
+
+	/**
+	 * The route's hops as they are <i>right now</i>, not as they were at the last tick.
+	 *
+	 * <p>For the overlay's furniture matching, and only that. The once-a-tick snapshot in
+	 * {@code GuideStatus} is right for everything the Swing panel reads, but the router's
+	 * answer arrives asynchronously mid-tick — and judging the exit-portal fallback against a
+	 * snapshot taken while the question was still out lit the exit portal for the rest of the
+	 * tick after the answer had already named the nexus. Live here, exactly as
+	 * {@link #furnitureServesTheRoute} already reads it, so the overlay and the tracker agree
+	 * within the same frame. Client thread only.
+	 */
+	public List<String> liveTransports()
+	{
+		return new ArrayList<>(planner.getCurrentTransports());
+	}
+
+	/** The object the route's first hop goes through, or null. Live, like the transports. */
+	@Nullable
+	public String routeObjectName()
+	{
+		return planner.getFirstTransportObject();
 	}
 
 	/** Where the first step that happens at the leprechaun is, or -1 if there is none. */
@@ -1763,33 +1882,12 @@ public class GuideTracker
 			snapshot == null ? null : snapshot.getCompost(),
 			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
 			!alreadyPaid && protection.isProtecting(group, inGround),
-			harvestShapedOnly || runTypes.isHarvestOnly(group), patchesToTreat,
-			expectedYield(projection, snapshot));
+			harvestShapedOnly || runTypes.isHarvestOnly(group), patchesToTreat);
 	}
 
-	/**
-	 * What one full pick of this patch is expected to yield, for the seed-box nudge.
-	 *
-	 * <p>The same model the estimate prices runs with and the harvest log validates against,
-	 * asked with {@code FarmingBonuses.NONE} deliberately: bonuses only raise the figure, so
-	 * leaving them out under-counts — the nudge fires a little less often, which is the right
-	 * way for advice to be wrong. Zero when there is nothing to pick or the crop maps to no
-	 * seed, and zero disables the nudge in {@code GuidePlan}.
-	 */
-	private double expectedYield(PatchProjection projection, @Nullable PatchSnapshot snapshot)
-	{
-		if (!projection.hasProduceToPick())
-		{
-			return 0;
-		}
-
-		Seed growing = Seed.forProduce(projection.getProduce());
-		CompostTier applied = snapshot == null || snapshot.getCompost() == null
-			? CompostTier.NONE
-			: snapshot.getCompost();
-		return com.dooglemaps.timer.CropYieldModel.expected(growing, seeds.getFarmingLevel(),
-			applied, com.dooglemaps.timer.FarmingBonuses.NONE);
-	}
+	// An expectedYield() helper lived here, feeding GuidePlan's pre-harvest seed-box nudge.
+	// Both went together when the box settled on its plain rhythm — empty before planting,
+	// fill before leaving — which needs no yield model at all.
 
 	/**
 	 * How many patches at this stop are waiting for the same compost as this one.
@@ -2022,6 +2120,18 @@ public class GuideTracker
 		// perfectly good hint from inside the house.
 		boolean inHouse = house.isInside();
 
+		// More generally: standing beside furniture that reaches this destination, the
+		// furniture is the instruction — one click, no runes — and the overlay is already
+		// outlining it, by exactly this test. The route's own hop still names its vehicle
+		// ("via Trollheim Teleport"), and resolving that put a lit spellbook next to a lit
+		// nexus: two contradictory instructions, with the nexus the one the player actually
+		// wanted. Reported from play. A destination-only hint keeps the furniture the answer,
+		// and still lights the right row once the nexus is open.
+		if (inHouse && furnitureServesTheRoute())
+		{
+			return new TravelHint(-1, null, destination, TravelHint.Where.UNOWNED);
+		}
+
 		TeleportSpell spell = routeItem.currentSpell();
 		if (spell != null && !(inHouse && spell == TeleportSpell.TELEPORT_TO_HOUSE))
 		{
@@ -2041,7 +2151,11 @@ public class GuideTracker
 		}
 
 		TeleportItems.Teleport banked = null;
-		for (WorldPoint point : planner.getCurrentDestinations())
+		// Back to front, like destinationStop: the last landing is where the journey ends,
+		// and a hint should offer a teleport to there rather than to a bank passed through.
+		List<WorldPoint> landings = new ArrayList<>(planner.getCurrentDestinations());
+		java.util.Collections.reverse(landings);
+		for (WorldPoint point : landings)
 		{
 			for (TeleportItems.Teleport teleport : TeleportItems.forRegion(point.getRegionID()))
 			{
@@ -2126,50 +2240,46 @@ public class GuideTracker
 	 * The stop behind {@link #destinationName}, for the travel skip to act on. Same rule: only
 	 * when unambiguous.
 	 *
-	 * <h2>The points are per-hop arrivals, not the journey's end</h2>
+	 * <h2>The points are per-hop arrivals, and the last one is the journey's end</h2>
 	 *
 	 * Shortest Path's {@code destination} payload is one point per <b>transport</b> — where
-	 * each hop lands, read straight from its path (verified in its source). A teleport usually
-	 * lands inside the stop's own region, which is why matching regions exactly names most
-	 * legs. A route through the player-owned house does not: its last transport lands wherever
-	 * the house exit drops you, a region away from the patches, and the leg went entirely
-	 * unnamed — no place name, no spell highlight, no furniture outline, all of which hang off
-	 * this answer. Reported from play, at a Prifddinas house. So a second pass accepts a stop
-	 * whose region merely <i>touches</i> a reported point's region, still requiring a unique
-	 * stop — near two stops at once stays quiet, exactly as an ambiguous exact match does, and
-	 * an exact match always outranks a touching one.
+	 * each hop lands, read straight from its path (verified in its source), and now kept in
+	 * path order by the integration. So the honest reading is back to front: the final landing
+	 * is where the route ends, and any earlier point is somewhere passed through — a
+	 * bank-detour teleport enroute must not name the trip after the bank's town. Walked from
+	 * the last point backwards, taking the first point that names a stop; the backward walk
+	 * covers the house case, whose last hop lands wherever the exit drops you, a region away
+	 * from the patches. A point whose region merely <i>touches</i> a stop's counts only when
+	 * it touches exactly one — near two stops at once stays quiet, and an exact match always
+	 * outranks a touching one at the same point.
 	 */
 	@Nullable
 	private RunStop destinationStop(List<RunStop> remaining)
 	{
-		RunStop exact = null;
-		RunStop near = null;
-		boolean exactClash = false;
-		boolean nearClash = false;
-		for (WorldPoint destination : planner.getCurrentDestinations())
+		List<WorldPoint> points = new ArrayList<>(planner.getCurrentDestinations());
+		for (int i = points.size() - 1; i >= 0; i--)
 		{
+			WorldPoint destination = points.get(i);
+			RunStop near = null;
+			boolean nearClash = false;
 			for (RunStop stop : remaining)
 			{
 				if (stop.getRegion().getRegionId() == destination.getRegionID())
 				{
-					exactClash |= exact != null && !exact.getName().equals(stop.getName());
-					exact = stop;
+					lastNamedStop = stop;
+					return stop;
 				}
-				else if (regionsTouch(stop.getRegion().getRegionId(), destination.getRegionID()))
+				if (regionsTouch(stop.getRegion().getRegionId(), destination.getRegionID()))
 				{
 					nearClash |= near != null && !near.getName().equals(stop.getName());
 					near = stop;
 				}
 			}
-		}
-
-		RunStop found = exact != null
-			? (exactClash ? null : exact)
-			: (nearClash ? null : near);
-		if (found != null)
-		{
-			lastNamedStop = found;
-			return found;
+			if (near != null && !nearClash)
+			{
+				lastNamedStop = near;
+				return near;
+			}
 		}
 
 		// Inside the house the router often has nothing to say at all: the reroute from the

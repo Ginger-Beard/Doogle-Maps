@@ -178,6 +178,39 @@ public class RunTypeStore extends ProfileJsonStore
 		return keys;
 	}
 
+	/**
+	 * Points any stored contract tick at the type the contract now wants.
+	 *
+	 * <p>The contract's run line is stored under a type-scoped key — {@code CACTUS#contract} —
+	 * because that is what {@code RunOption.getKey} produces. But the tick means "do the
+	 * contract", not "do cactus contracts": when Jane's next assignment is a herb, the stored
+	 * cactus key matched nothing, the fresh herb line came up unticked, and the contract
+	 * quietly left the run. Reported from play as "it gets unchecked in the run selection" —
+	 * every new contract of a new type arrived unchecked, however often the box was ticked.
+	 *
+	 * <p>Renaming the stored key when the contract changes keeps {@code isSelected} and
+	 * {@code getSelected} exact — no fuzzy family matching at read time — and merges any
+	 * stale contract keys from older builds into the one that is live.
+	 */
+	public void retargetContract(@Nullable PatchImplementation type)
+	{
+		if (type == null)
+		{
+			return;
+		}
+
+		Set<String> keys = new java.util.LinkedHashSet<>();
+		synchronized (this)
+		{
+			for (String key : selected)
+			{
+				int marker = key.indexOf("#contract");
+				keys.add(marker < 0 ? key : type.name() + key.substring(marker));
+			}
+		}
+		replace(keys);
+	}
+
 	private void replace(Set<String> keys)
 	{
 		synchronized (this)

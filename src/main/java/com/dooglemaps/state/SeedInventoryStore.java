@@ -82,8 +82,23 @@ public class SeedInventoryStore
 
 	private final Map<SeedSource, SourceCache> cached = new EnumMap<>(SeedSource.class);
 
-	/** A Fill or Empty seen this tick, waiting for the inventory change it caused. */
+	/** A Fill or Empty just clicked, waiting for the container change it caused. */
 	private SeedBoxAction pendingSeedBoxAction;
+
+	/** The tick the pending action was armed on. See {@link #applyPendingSeedBoxAction}. */
+	private int pendingSeedBoxTick = -1000;
+
+	/**
+	 * How long a Fill or Empty click stays armed, in ticks.
+	 *
+	 * <p>The container change a successful click causes lands on the same tick or the next.
+	 * A click that produced nothing inside this window was a no-op — Fill with no seeds
+	 * loose, Empty into a full pack — and its action must not be cashed in by whatever
+	 * container change happens along later. That is exactly what happened in play: a no-op
+	 * Empty stayed armed through half a farm run, and the inventory change from harvesting
+	 * a patch "confirmed" it, silently zeroing a box that still held the run's seeds.
+	 */
+	private static final int PENDING_BOX_ACTION_TICKS = 2;
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
 	@Inject
@@ -127,17 +142,40 @@ public class SeedInventoryStore
 			return false;
 		}
 
-		Map<Integer, Integer> counts = countSeeds(container);
-		if (source == SeedSource.INVENTORY)
+		// Not the box's own container just after a Fill or Empty. The client's copy of the
+		// box lags a step behind those actions - the whole reason the box is derived from
+		// deltas instead of read - and a lagged box event landing right after the derivation
+		// would overwrite the correct answer with the contents from before the move. The box
+		// is skipped for the couple of ticks around an action; any later event is trusted.
+		synchronized (this)
 		{
-			applyPendingSeedBoxAction(counts);
+			// Range-checked in both directions: the tick counter restarts on a new client
+			// connection, so an unsigned "recent" test against a stamp from the old counter
+			// would read as recent for thousands of ticks and freeze the box's reads.
+			int sinceAction = client.getTickCount() - pendingSeedBoxTick;
+			if (source == SeedSource.SEED_BOX
+				&& sinceAction >= 0 && sinceAction <= PENDING_BOX_ACTION_TICKS)
+			{
+				return true;
+			}
+		}
+
+		Map<Integer, Integer> counts = countSeeds(container);
+
+		// Both containers a box action can land in: Fill draws from the inventory, and Empty
+		// tips into the inventory - or straight into the bank when one is open, which is
+		// where most Emptys actually happen.
+		boolean boxChanged = false;
+		if (source == SeedSource.INVENTORY || source == SeedSource.BANK)
+		{
+			boxChanged = applyPendingSeedBoxAction(source, counts);
 		}
 
 		// Only tell anyone if something actually moved. Opening a bank fires this with a
 		// thousand items whose seed counts are, almost always, exactly what we already had -
 		// and a change notification rebuilds the visible tab and rewrites the config, which
 		// is what made opening a bank feel like it stuttered.
-		if (store(source, counts))
+		if (store(source, counts) || boxChanged)
 		{
 			fireChanged();
 		}
@@ -157,46 +195,80 @@ public class SeedInventoryStore
 	public synchronized void noteSeedBoxAction(SeedBoxAction action)
 	{
 		pendingSeedBoxAction = action;
+		pendingSeedBoxTick = client.getTickCount();
 	}
 
 	/**
-	 * Moves seeds between the inventory and the box for a Fill or Empty we just saw.
+	 * Moves seeds between a container and the box for a Fill or Empty we just saw.
 	 *
-	 * @param incoming what the inventory holds now; the cached copy is still the "before"
+	 * <h2>Both directions are deltas now</h2>
+	 *
+	 * Empty used to assert "the box is now provably empty" and wipe it. That is only true
+	 * of an Empty that succeeded in full — the game moves what fits, so Empty into a pack
+	 * with two free slots moves two stacks and keeps the rest, and Empty into a full pack
+	 * moves nothing at all. Worse, a no-op Empty fires no container change, so the wipe
+	 * waited around for the <i>next</i> inventory event of any kind — a harvest, mid-run —
+	 * and destroyed the count of a box still holding seeds. Reported from play as
+	 * "skipping prifddinas - no seed" with the seeds sitting right there in the box.
+	 *
+	 * <p>So Empty is now the mirror of Fill: whatever seeds <b>appeared</b> in the changed
+	 * container came out of the box, and only those leave the box's count. A full Empty
+	 * still zeroes it — via arithmetic that is also right the rest of the time.
+	 *
+	 * @param source   the container that just changed; INVENTORY or BANK
+	 * @param incoming what it holds now; the cached copy is still the "before"
+	 * @return whether the box's counts changed
 	 */
-	private void applyPendingSeedBoxAction(Map<Integer, Integer> incoming)
+	private boolean applyPendingSeedBoxAction(SeedSource source, Map<Integer, Integer> incoming)
 	{
 		final SeedBoxAction action;
 		synchronized (this)
 		{
+			if (pendingSeedBoxAction == null)
+			{
+				return false;
+			}
+
+			// A click that produced no container change inside the window was a no-op, and
+			// this later event is unrelated to it. See PENDING_BOX_ACTION_TICKS. The age is
+			// range-checked both ways: a negative age means the tick counter restarted, and
+			// a stamp from the old counter must expire, not count as fresh forever.
+			int age = client.getTickCount() - pendingSeedBoxTick;
+			if (age < 0 || age > PENDING_BOX_ACTION_TICKS)
+			{
+				pendingSeedBoxAction = null;
+				return false;
+			}
+
+			// Fill only ever draws from the inventory, so a bank event cannot be the change
+			// it caused. Leave it armed for the inventory event that is.
+			if (pendingSeedBoxAction == SeedBoxAction.FILL && source != SeedSource.INVENTORY)
+			{
+				return false;
+			}
+
 			action = pendingSeedBoxAction;
 			pendingSeedBoxAction = null;
-		}
-
-		if (action == null)
-		{
-			return;
-		}
-
-		if (action == SeedBoxAction.EMPTY)
-		{
-			// Empty tips the whole box into the inventory, so the box is now provably empty -
-			// no arithmetic needed, and nothing left to get wrong.
-			store(SeedSource.SEED_BOX, new HashMap<>());
-			return;
 		}
 
 		Map<Integer, Integer> box;
 		synchronized (this)
 		{
-			SourceCache previousInventory = cached.get(SeedSource.INVENTORY);
+			SourceCache previous = cached.get(source);
+			if (previous == null)
+			{
+				// No "before" to diff against, so nothing can be derived. The box is left
+				// alone; the next time it is opened, its own container corrects it.
+				return false;
+			}
+
 			SourceCache boxCache = cached.get(SeedSource.SEED_BOX);
 			box = boxCache == null ? new HashMap<>() : new HashMap<>(boxCache.counts);
 
-			if (previousInventory != null)
+			if (action == SeedBoxAction.FILL)
 			{
 				// Whatever left the inventory on a Fill went into the box.
-				previousInventory.counts.forEach((itemId, before) ->
+				previous.counts.forEach((itemId, before) ->
 				{
 					int moved = before - incoming.getOrDefault(itemId, 0);
 					if (moved > 0)
@@ -205,8 +277,120 @@ public class SeedInventoryStore
 					}
 				});
 			}
+			else
+			{
+				// Whatever appeared here on an Empty came out of the box.
+				incoming.forEach((itemId, now) ->
+				{
+					int moved = now - previous.counts.getOrDefault(itemId, 0);
+					if (moved > 0)
+					{
+						box.merge(itemId, -moved, Integer::sum);
+					}
+				});
+				// Clamped rather than trusted below zero: a box count that was already
+				// stale-low must not go negative and poison the totals.
+				box.values().removeIf(count -> count <= 0);
+			}
 		}
-		store(SeedSource.SEED_BOX, box);
+		return store(SeedSource.SEED_BOX, box);
+	}
+
+	/**
+	 * Forgets the parts of this store that belong to the session rather than the profile.
+	 *
+	 * <p>Called when the account is about to change — login screen, profile switch. The
+	 * persisted sources are per-profile and reload correctly; the in-memory inventory is not,
+	 * and {@code load()} deliberately leaves it alone (see its note on the login race), so
+	 * account A's pack of seeds survived into account B's session until something disturbed
+	 * B's inventory. The pending box action goes with it: it described a click on the other
+	 * account's box.
+	 */
+	public void forgetSession()
+	{
+		synchronized (this)
+		{
+			pendingSeedBoxAction = null;
+			pendingSeedBoxTick = -1000;
+			cached.remove(SeedSource.INVENTORY);
+		}
+		fireChanged();
+	}
+
+	/**
+	 * Reconciles the inventory against the live container, once a tick.
+	 *
+	 * <p>The same backstop {@code CarriedItems} runs and for the same reason: events keep the
+	 * count sharp, but a single missed read — a priming block that never ran, a profile switch
+	 * — used to leave phantom seeds in the model until the pack happened to change. The bank,
+	 * vault and box stay event-and-derivation driven; the inventory is the one container that
+	 * is always available to check. Client thread only. No-op when not logged in.
+	 */
+	public void relearnInventoryFromClient()
+	{
+		if (client.getGameState() != net.runelite.api.GameState.LOGGED_IN)
+		{
+			return;
+		}
+
+		// Hands off while a box action is in flight. This reconcile goes through record(),
+		// which is also where a pending Fill/Empty gets cashed in — and on the click's own
+		// tick the live container can still show the PRE-action contents, so the reconcile
+		// consumed the pending action against a zero delta and the real container change
+		// arrived a tick later to a store that had forgotten anything was owed. An Empty
+		// "moved nothing", the box kept its phantom seeds, and the guide kept asking for an
+		// empty that had already happened. The window is two ticks; the reconcile waits.
+		boolean boxProvedEmpty = false;
+		synchronized (this)
+		{
+			if (pendingSeedBoxAction != null)
+			{
+				int age = client.getTickCount() - pendingSeedBoxTick;
+				if (age >= 0 && age <= PENDING_BOX_ACTION_TICKS)
+				{
+					return;
+				}
+
+				// The click expired unredeemed - no container changed because nothing moved.
+				// For an Empty that is itself evidence: with room in the pack for seeds to
+				// land in, an Empty that moved nothing means the box holds nothing, however
+				// many phantom seeds the derived count had accumulated. This is the heal for
+				// a corrupted box record: click Empty once and the model matches the box.
+				boxProvedEmpty = pendingSeedBoxAction == SeedBoxAction.EMPTY
+					&& inventoryHasAFreeSlot();
+				pendingSeedBoxAction = null;
+			}
+		}
+		if (boxProvedEmpty && store(SeedSource.SEED_BOX, new HashMap<>()))
+		{
+			log.debug("An Empty moved nothing with pack space free - the seed box is empty");
+			fireChanged();
+		}
+
+		ItemContainer container = client.getItemContainer(SeedSource.INVENTORY.getContainerId());
+		if (container != null)
+		{
+			record(SeedSource.INVENTORY.getContainerId(), container);
+		}
+	}
+
+	/** Whether the live inventory has an open slot. Client thread only. */
+	private boolean inventoryHasAFreeSlot()
+	{
+		ItemContainer container = client.getItemContainer(SeedSource.INVENTORY.getContainerId());
+		if (container == null)
+		{
+			return false;
+		}
+		int used = 0;
+		for (Item item : container.getItems())
+		{
+			if (item != null && item.getId() > 0 && item.getQuantity() > 0)
+			{
+				used++;
+			}
+		}
+		return used < 28;
 	}
 
 	/**

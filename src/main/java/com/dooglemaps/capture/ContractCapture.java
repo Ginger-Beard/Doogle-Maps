@@ -14,6 +14,7 @@ import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.gameval.InterfaceID;
 import net.runelite.api.widgets.Widget;
+import net.runelite.api.widgets.WidgetModelType;
 import net.runelite.client.eventbus.Subscribe;
 import net.runelite.client.util.Text;
 
@@ -109,8 +110,13 @@ public class ContractCapture
 			return;
 		}
 
+		// The model-type guard first, the same one ProtectionCapture uses: without it a
+		// non-NPC model whose id collides is read as a chathead. Then any of Jane's three
+		// ids, not just the documented chathead one — if the client ever reports a world
+		// variant here, the REWARDED line must still be seen or the hand-in step never clears.
 		Widget head = client.getWidget(InterfaceID.ChatLeft.HEAD);
-		if (head == null || head.getModelId() != ContractState.GUILDMASTER_JANE)
+		if (head == null || head.getModelType() != WidgetModelType.NPC_CHATHEAD
+			|| !ContractState.JANE_NPC_IDS.contains(head.getModelId()))
 		{
 			return;
 		}

@@ -179,11 +179,12 @@ public class BankHighlightOverlay extends Overlay
 	}
 
 	/**
-	 * Amber, deliberately neither the withdraw highlight nor the route's cyan: this is the
-	 * opposite errand — things leaving the pack — and colouring it like a withdrawal would
-	 * read as "take more of these".
+	 * Cyan, by request from play. This started amber to keep the deposit errand visually apart
+	 * from the withdraw marks, but at the bank the amber read as the game's own quantity yellow
+	 * and looked like a warning rather than a suggestion. Deposits sit in the pack-side panel,
+	 * withdrawals in the bank grid, so the position already carries the distinction.
 	 */
-	private static final Color DEPOSIT_COLOUR = new Color(0xE6, 0x9A, 0x28);
+	private static final Color DEPOSIT_COLOUR = new Color(0x00, 0xFF, 0xFF);
 
 	/**
 	 * Marks the noted crops in the pack that this bank visit should absorb.

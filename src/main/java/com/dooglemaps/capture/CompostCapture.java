@@ -50,7 +50,13 @@ import net.runelite.client.eventbus.Subscribe;
 @Singleton
 public class CompostCapture
 {
-	private static final Duration PENDING_TIMEOUT = Duration.ofSeconds(30);
+	/**
+	 * How long a click stays redeemable. Long enough to walk across a farm to the patch that
+	 * was clicked from range; short enough that an abandoned click — cancelled, walked away —
+	 * is not still armed minutes later to claim some other patch's message. Was 30 seconds,
+	 * which is the "pending action outliving its moment" shape that bit the seed box.
+	 */
+	private static final Duration PENDING_TIMEOUT = Duration.ofSeconds(15);
 
 	private static final Pattern COMPOST_USED_ON_PATCH = Pattern.compile(
 		"You treat the .+ with (?<compostType>ultra|super|)compost\\.");
@@ -188,9 +194,13 @@ public class CompostCapture
 
 		pending.values().removeIf(p -> Instant.now().isAfter(p.getTimeout()));
 
+		// The most recent qualifying click, not an arbitrary one. Paired allotments are both
+		// "beside" the player, so findFirst over a HashMap let a stale pending on one patch
+		// claim the message a fresh click on the other had just earned — ultracompost recorded
+		// on a patch that never got it, and nothing on the one that did.
 		pending.values().stream()
 			.filter(this::playerIsBesidePatch)
-			.findFirst()
+			.max(java.util.Comparator.comparing(PendingCompost::getTimeout))
 			.ifPresent(p ->
 			{
 				stateStore.recordCompost(p.getPatch(), used);

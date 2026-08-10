@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.Set;
 import javax.inject.Inject;
 import javax.inject.Singleton;
+import javax.annotation.Nullable;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.coords.WorldPoint;
@@ -62,6 +63,7 @@ public class ShortestPathIntegration
 	private static final String KEY_CONFIG = "config";
 
 	private static final String KEY_DISPLAY_INFO = "displayInfo";
+	private static final String KEY_OBJECT_INFO = "objectInfo";
 	private static final String KEY_DESTINATION = "destination";
 
 	private static final String CONFIG_POST_TRANSPORTS = "postTransports";
@@ -208,10 +210,13 @@ public class ShortestPathIntegration
 		// patches it will happily decide the cheapest route runs house, bank, teleport, and
 		// draw that. Standing at the Ardougne patches with the work in front of you, the
 		// on-screen instruction read "teleport home" and stayed there.
-		if (mayVisitBank)
-		{
-			configOverride.put(CONFIG_INCLUDE_BANK_PATH, true);
-		}
+		//
+		// Sent explicitly in BOTH directions, which is the part that was missing: an omitted
+		// key falls back to the player's own Shortest Path setting, so a user with
+		// "include bank path" on in SP got bank detours on plain travel legs anyway — a
+		// teleport to Seers' bank in the middle of a hop to Kourend, which is exactly the
+		// route the comment above says this exists to prevent. Reported from play.
+		configOverride.put(CONFIG_INCLUDE_BANK_PATH, mayVisitBank);
 		data.put(KEY_CONFIG, configOverride);
 
 		// The old path's transports describe a route from where the player used to be, so they
@@ -221,6 +226,15 @@ public class ShortestPathIntegration
 		// because the gap between the two is exactly when the stale list was being shown.
 		currentTransports = new ArrayList<>();
 		currentDestinations = new HashSet<>();
+		firstTransportObject = null;
+		// ...and the gap itself is now a stated fact, because empty-while-waiting and
+		// empty-as-the-answer mean different things: "no transports" as an *answer* is what
+		// sends the overlay to the exit portal, and jumping there during the wait lit the
+		// portal for the second Shortest Path took to think. Reported from play.
+		awaitingRoute = true;
+		requestedAtMillis = System.currentTimeMillis();
+		routeRequested = true;
+		routeGeneration++;
 
 		log.debug("Routing to {} target(s){}", targets.size(),
 			mayVisitBank ? ", bank detours allowed" : "");
@@ -259,8 +273,65 @@ public class ShortestPathIntegration
 	public void clear()
 	{
 		currentTransports = new ArrayList<>();
+		// The destinations too — they were surviving a clear, so everything that names the
+		// travel target off them (destinationStop, the travel hint's region fallback) kept
+		// reading a dead route's landing points indefinitely. The stalest of the reported
+		// "area mismatch" generators.
+		currentDestinations = new HashSet<>();
+		awaitingRoute = false;
+		routeRequested = false;
+		routeGeneration++;
 		post(new PluginMessage(NAMESPACE, MESSAGE_CLEAR));
 	}
+
+	/**
+	 * Whether a route of ours is outstanding — asked for and not yet cleared.
+	 *
+	 * <p>The gate on the listener below. Shortest Path posts a transports message for
+	 * <b>every</b> path it computes once {@code postTransports} is on — including paths the
+	 * player set themselves, which have nothing to do with the run. Accepting those displayed
+	 * a personal errand's hops as the farm route and pointed the destination naming at
+	 * wherever the player happened to be going. With no route of ours live, the messages are
+	 * simply not ours to read.
+	 */
+	private volatile boolean routeRequested;
+
+	/**
+	 * Whether a route has been asked for and not answered yet.
+	 *
+	 * <p>True from {@link #setTargets} until the transports message lands, so callers can tell
+	 * "Shortest Path said the route uses nothing" from "Shortest Path has not said". Volatile,
+	 * like the lists: read per frame by the overlay with no lock.
+	 */
+	private volatile boolean awaitingRoute;
+
+	/** When the outstanding request was posted, for the timeout below. */
+	private volatile long requestedAtMillis;
+
+	/**
+	 * A question outstanding this long is a question nobody is answering.
+	 *
+	 * <p>Shortest Path is a soft dependency: not installed, or disabled mid-run, no reply ever
+	 * comes — and "awaiting" was unbounded, so everything gated on it (the exit-portal
+	 * fallback, the travel-hint wording) stayed in the waiting state for the rest of the run.
+	 * Real answers arrive within a second or two; ten is generous.
+	 */
+	private static final long ROUTE_ANSWER_TIMEOUT_MILLIS = 10_000;
+
+	/** See {@link #awaitingRoute} — false once the reply lands or the timeout passes. */
+	public boolean isAwaitingRoute()
+	{
+		return awaitingRoute
+			&& System.currentTimeMillis() - requestedAtMillis < ROUTE_ANSWER_TIMEOUT_MILLIS;
+	}
+
+	/**
+	 * Bumped whenever the route the world should be read against changes: a new request, a
+	 * clear, an accepted answer. For per-tick caches downstream ({@code RouteItem}) whose tick
+	 * key alone kept serving the previous route's answer for the rest of the tick.
+	 */
+	@Getter
+	private volatile int routeGeneration;
 
 	/**
 	 * Picks up what Shortest Path posts about the path it just found.
@@ -281,8 +352,30 @@ public class ShortestPathIntegration
 			return;
 		}
 
+		// Only while a route of ours is live. See routeRequested.
+		if (!routeRequested)
+		{
+			return;
+		}
+
+		List<WorldPoint> landings = readPoints(event, KEY_DESTINATION);
 		currentTransports = readTransports(event);
-		currentDestinations = readDestinations(event);
+		firstTransportObject = readFirstObject(event);
+
+		// Insertion-ordered, so iterating reaches the path's last landing last — the closest
+		// thing the message has to "where this route ends", which the destination naming
+		// prefers over any intermediate hop.
+		Set<WorldPoint> destinations = new LinkedHashSet<>();
+		for (WorldPoint landing : landings)
+		{
+			if (landing != null)
+			{
+				destinations.add(landing);
+			}
+		}
+		currentDestinations = destinations;
+		awaitingRoute = false;
+		routeGeneration++;
 
 		log.debug("Path uses {} transport(s), ending at {} point(s)",
 			currentTransports.size(), currentDestinations.size());
@@ -295,6 +388,13 @@ public class ShortestPathIntegration
 	 * display string — a portal listed twice running is one hop reported twice, not two hops, and
 	 * shown raw it reads as a counting bug. Insertion order is kept, so the list still reads as
 	 * the journey.
+	 *
+	 * <p>Every reported hop is kept, deliberately. A walk-edge filter briefly lived here on
+	 * the theory that Shortest Path reports teleports for tiles the path merely walks across;
+	 * the reported case turned out to be a real hop of a real plan — a bank detour collecting
+	 * a banked talisman, see the includeBankPath note in {@code setTargets} — and
+	 * second-guessing the router's own account of its route is how a true instruction gets
+	 * hidden.
 	 */
 	private static List<String> readTransports(PluginMessage event)
 	{
@@ -304,44 +404,108 @@ public class ShortestPathIntegration
 			return new ArrayList<>();
 		}
 
+		// The object the hop goes through, alongside what its menu row says. displayInfo
+		// alone read as a riddle for object transports — "via 6: Prifddinas" is a spirit
+		// tree's row label with the tree cut out of it — and objectInfo is the half of the
+		// message that names the thing to click. Reported from play. Item and spell hops
+		// carry no objectInfo and are unchanged.
+		Object objectInfo = event.getData().get(KEY_OBJECT_INFO);
+		List<?> objects = objectInfo instanceof List ? (List<?>) objectInfo : null;
+		List<?> entries = (List<?>) displayInfo;
+		boolean parallel = objects != null && objects.size() == entries.size();
+
 		Set<String> seen = new LinkedHashSet<>();
-		for (Object entry : (List<?>) displayInfo)
+		for (int i = 0; i < entries.size(); i++)
 		{
-			if (entry instanceof String && !((String) entry).isEmpty())
+			Object entry = entries.get(i);
+			if (!(entry instanceof String) || ((String) entry).isEmpty())
 			{
-				seen.add((String) entry);
+				continue;
 			}
+			String line = (String) entry;
+			if (parallel && objects.get(i) instanceof String)
+			{
+				String object = objectName((String) objects.get(i));
+				if (!object.isEmpty() && !line.toLowerCase().contains(object.toLowerCase()))
+				{
+					line = object + " - " + line;
+				}
+			}
+			seen.add(line);
 		}
 		return new ArrayList<>(seen);
 	}
 
-	/**
-	 * Where the path ends, as far as Shortest Path will say.
-	 *
-	 * <p>Deliberately tolerant about what arrives. It may be the single point the router settled
-	 * on, or it may be every target it was handed — the API takes a set, so both are plausible
-	 * and the difference is not documented. Reading it as a set and letting the caller decide
-	 * what a set of two means is the version of this that cannot be wrong.
-	 */
-	private static Set<WorldPoint> readDestinations(PluginMessage event)
-	{
-		Set<WorldPoint> destinations = new HashSet<>();
+	/** The trailing object or item id on a Shortest Path {@code objectInfo} value. */
+	private static final java.util.regex.Pattern OBJECT_ID =
+		java.util.regex.Pattern.compile("\\s+\\d+$");
 
-		Object destination = event.getData().get(KEY_DESTINATION);
-		if (destination instanceof WorldPoint)
+	/**
+	 * Shortest Path's {@code objectInfo}, with the id taken off the end.
+	 *
+	 * <p>The column is {@code menuOption menuTarget objectId} in its own transport TSVs —
+	 * <i>"Teleport Menu Fancy Jewellery Box 37501"</i>, <i>"Travel Spirit tree 37329"</i> — and
+	 * the id is there for the router, not for reading. It reached the panel as
+	 * <i>"via Teleport Menu Fancy Jewellery Box 37501 - J: Farming Guild"</i>. Reported from
+	 * play; the rest of the value is left exactly as the router wrote it, since where the menu
+	 * option ends and the object's name begins is not something the string says.
+	 */
+	static String objectName(String objectInfo)
+	{
+		return OBJECT_ID.matcher(objectInfo).replaceFirst("").trim();
+	}
+
+	/**
+	 * The object the route's first hop goes through — "Spirit tree" — or null when the first
+	 * hop is not an object (an item, a spell, or nothing at all).
+	 *
+	 * <p>For the overlay: the drawn line says where to walk, but nothing in the scene was
+	 * marked as the thing to click when the hop was neither an item nor house furniture. The
+	 * GE's spirit tree went entirely unhighlighted. Reported from play.
+	 */
+	@Getter
+	private volatile String firstTransportObject;
+
+	@Nullable
+	private static String readFirstObject(PluginMessage event)
+	{
+		Object objectInfo = event.getData().get(KEY_OBJECT_INFO);
+		if (!(objectInfo instanceof List) || ((List<?>) objectInfo).isEmpty())
 		{
-			destinations.add((WorldPoint) destination);
+			return null;
 		}
-		else if (destination instanceof Collection)
+		Object first = ((List<?>) objectInfo).get(0);
+		if (!(first instanceof String) || ((String) first).isEmpty())
 		{
-			for (Object entry : (Collection<?>) destination)
+			return null;
+		}
+		String name = objectName((String) first);
+		return name.isEmpty() ? null : name;
+	}
+
+	/**
+	 * One of the message's parallel per-hop point lists, in path order.
+	 *
+	 * <p>Deliberately tolerant about what arrives — a single point, a list, or nothing — and
+	 * order-preserving, because the <i>last</i> landing is the closest thing the message has
+	 * to "where this path ends", and callers naming the destination want it distinguishable.
+	 */
+	private static List<WorldPoint> readPoints(PluginMessage event, String key)
+	{
+		List<WorldPoint> points = new ArrayList<>();
+
+		Object value = event.getData().get(key);
+		if (value instanceof WorldPoint)
+		{
+			points.add((WorldPoint) value);
+		}
+		else if (value instanceof Collection)
+		{
+			for (Object entry : (Collection<?>) value)
 			{
-				if (entry instanceof WorldPoint)
-				{
-					destinations.add((WorldPoint) entry);
-				}
+				points.add(entry instanceof WorldPoint ? (WorldPoint) entry : null);
 			}
 		}
-		return destinations;
+		return points;
 	}
 }

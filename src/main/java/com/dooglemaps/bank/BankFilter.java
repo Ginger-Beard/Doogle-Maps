@@ -231,7 +231,14 @@ public class BankFilter
 
 	public void shutDown()
 	{
-		close();
+		// On the client thread, always. RuneLite stops plugins from the Swing EDT, and
+		// close() ends in closeBankTag -> runScript, which asserts the client thread — the
+		// AssertionError (an Error, past every catch) aborted the rest of the plugin's own
+		// shutDown, leaving the infobox, overlays and listeners behind. An orphaned infobox
+		// icon that survived the plugin being switched off was the visible half of that.
+		// invoke() runs it inline when already on the client thread, so an in-game shutdown
+		// still closes the filter before the tag is unregistered below.
+		clientThread.invoke(this::close);
 		forgetLayout();
 		if (registered && tagManager != null)
 		{
@@ -546,6 +553,16 @@ public class BankFilter
 				+ "Start run first");
 			return;
 		}
+		if (!registered && client.getTickCount() - lastBankTagsProbe > 100)
+		{
+			// Another try, from a moment it is actually wanted. startUp()'s probe was a
+			// one-shot, and plugin load order at client start could have it looking for Bank
+			// Tags before Bank Tags existed - filtering then stayed dead for the session with
+			// a single line in the log. Rate-limited, because this method runs every tick
+			// while an unfiltered bank is open and the probe logs its answer.
+			lastBankTagsProbe = client.getTickCount();
+			startUp();
+		}
 		if (!registered)
 		{
 			logOnce("Bank Tags did not accept the filter tag, so filtering is unavailable");
@@ -565,6 +582,9 @@ public class BankFilter
 		}
 		open();
 	}
+
+	/** The last tick Bank Tags was probed for, so a missing plugin is not searched per tick. */
+	private int lastBankTagsProbe = -1000;
 
 	/** The last thing said about why the filter is off, so it is said once and not every bank. */
 	private String lastComplaint;

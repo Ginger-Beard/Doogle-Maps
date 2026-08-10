@@ -293,15 +293,25 @@ public class PatchStateStore extends ProfileJsonStore
 					continue;
 				}
 
+				// Only while a crop is standing in a state the fact could still be true for.
+				// "Fills gaps" used to mean any absence — but an absence is also exactly what
+				// our own expiry produces: protection clears when the crop leaves or turns
+				// HARVESTABLE (the payment is spent), compost clears with the crop. Time
+				// Tracking's key lifecycle is not ours to guarantee, so an unconditional fill
+				// resurrected spent protection on every reload — a promise of disease safety
+				// that no longer held, which is the wrong direction to be wrong in.
+				boolean protectable = snapshot.getCropState() == com.dooglemaps.data.CropState.GROWING
+					|| snapshot.getCropState() == com.dooglemaps.data.CropState.DISEASED;
+
 				Boolean paid = timeTracking.isProtected(patch);
-				if (paid != null && paid && !snapshot.isPatchProtected())
+				if (paid != null && paid && protectable && !snapshot.isPatchProtected())
 				{
 					snapshot.setPatchProtected(true);
 					filled++;
 				}
 
 				CompostTier tier = timeTracking.compost(patch);
-				if (tier != null && snapshot.getCompost() == CompostTier.NONE
+				if (tier != null && protectable && snapshot.getCompost() == CompostTier.NONE
 					&& tier != CompostTier.NONE)
 				{
 					snapshot.setCompost(tier);

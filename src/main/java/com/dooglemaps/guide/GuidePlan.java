@@ -68,7 +68,7 @@ public final class GuidePlan
 		PlantingGroup group, Seed chosen, SeedInventoryStore seeds,
 		CompostSelectionStore compostChoice,
 		CarriedItems carried, LeprechaunStore leprechaun, BarbarianFarming barbarianFarming,
-		boolean protecting, boolean harvestOnly, int patchesToTreat, double expectedYield)
+		boolean protecting, boolean harvestOnly, int patchesToTreat)
 	{
 		List<GuideStep> steps = new ArrayList<>();
 		if (projection == null)
@@ -196,21 +196,11 @@ public final class GuidePlan
 						+ projection.getProduce().getName().toLowerCase()
 						+ " with the tool leprechaun."));
 			}
-			// Before a harvest that will outgrow the pack, pocket the loose seeds. Seeds
-			// stack, but each loose type still holds a slot, and in front of a yield already
-			// bigger than the free space those slots are the difference between one noting
-			// trip and two. Only when the box is actually carried and only when there is
-			// something loose to put in it — and never once the pack is full, where the note
-			// step above is the fix and this would just be in its way. Requested from play.
-			else if (expectedYield > carried.getFreeSlots()
-				&& carried.hasAny(ItemID.SEED_BOX, ItemID.SEED_BOX_OPEN)
-				&& anyLooseSeeds(seeds))
-			{
-				steps.add(GuideStep.withItem(GuideAction.FILL_SEED_BOX, patch,
-					seedBoxCarried(carried),
-					"Fill the seed box with your loose seeds - this harvest is bigger than "
-						+ "your free slots."));
-			}
+			// A "fill the box before this harvest" nudge lived here, gated on the expected
+			// yield outgrowing the pack. Removed by request as overthought: with the box on a
+			// plain empty-before-planting, fill-before-leaving rhythm (see the sow branch
+			// below and GuideTracker.appendFillSeedBoxBeforeLeaving), a pre-harvest fill was
+			// the third box step at a stop and fought the empty that followed it.
 			steps.add(GuideStep.of(GuideAction.HARVEST, patch, harvestText(projection)));
 			return steps;
 		}
@@ -307,19 +297,14 @@ public final class GuidePlan
 			return steps;
 		}
 
-		// 4. Sow. If the seeds are in the box rather than the pack, that comes first - and the
-		//    box is worth naming because Empty is not its left-click option by default.
+		// 4. Sow. The seed box gets no step of its own — not here and not on the way out. Two
+		//    box steps were tried, empty-before-planting and fill-before-leaving, and both were
+		//    removed by request: the box is a container you touch twice a stop, and being told
+		//    to is noise around the clicks that matter. What is left is the left-click swap,
+		//    which is standing and reads the box's contents rather than the current step; see
+		//    {@code GuideMenuSwap}. The step also lit the patch it was hung on, which is how a
+		//    stage-one snape grass allotment came to be outlined by a seed box instruction.
 		int perPatch = chosen.getSeedsPerPatch();
-		if (seeds.getCount(chosen, SeedSource.INVENTORY) < perPatch
-			&& seeds.getCount(chosen, SeedSource.SEED_BOX) >= perPatch)
-		{
-			// The box, not the seed. Highlighting the seed was the bug: the whole reason this step
-			// exists is that the seed is *inside the box* and therefore not in the inventory, so
-			// there was nothing on screen for the outline to land on and it silently drew nothing.
-			// The thing to click is the box.
-			steps.add(GuideStep.withItem(GuideAction.WITHDRAW_SEEDS, patch, seedBoxCarried(carried),
-				"Empty your seed box to get the " + chosen.getName().toLowerCase() + "."));
-		}
 
 		// A dibber for anything sown from a seed. Saplings go in by hand, so a tree patch is
 		// deliberately silent here rather than asking for a tool it does not use — and so is
@@ -485,37 +470,6 @@ public final class GuidePlan
 	{
 		return seeds.getPlantable(seed, SeedSource.INVENTORY)
 			+ seeds.getPlantable(seed, SeedSource.SEED_BOX) >= seed.getSeedsPerPatch();
-	}
-
-	/**
-	 * Whichever form of the seed box the player is carrying.
-	 *
-	 * <p>Two ids for one item, and the difference is only whether it is open. Defaulting to the
-	 * closed one when neither is found is harmless: the step is only reached when the seeds are
-	 * known to be in a box, so one of them is there.
-	 */
-	static int seedBoxCarried(CarriedItems carried)
-	{
-		return carried.has(ItemID.SEED_BOX_OPEN) ? ItemID.SEED_BOX_OPEN : ItemID.SEED_BOX;
-	}
-
-	/**
-	 * Whether any seed the box could hold is sitting loose in the pack.
-	 *
-	 * <p>Non-sapling seeds only: a sapling cannot go in the box, and for tree crops the count
-	 * cannot tell an acorn from the sapling it became — the run carries the sapling, so tree
-	 * rows are simply left out rather than guessed at.
-	 */
-	static boolean anyLooseSeeds(SeedInventoryStore seeds)
-	{
-		for (Seed seed : Seed.values())
-		{
-			if (!seed.isSapling() && seeds.getCount(seed, SeedSource.INVENTORY) > 0)
-			{
-				return true;
-			}
-		}
-		return false;
 	}
 
 	/**
