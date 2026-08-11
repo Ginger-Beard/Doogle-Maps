@@ -321,11 +321,23 @@ public class GrowthTimer
 		int phaseStages = stagesFor(produce, cropState);
 		int tickRate = tickRateFor(produce, cropState);
 
-		// With auto-weed on, weeds never come back, so there is nothing to count down.
+		// With auto-weed on, weeds never come back, so there is nothing to count down. Only the
+		// counting is stopped, though: this used to zero the stage as well, which said the weeds
+		// standing there right now were not standing there.
+		//
+		// They can be. Auto-weed stops weeds GROWING; it does not rake a patch that is already
+		// weedy — a patch unlocked or first visited after the unlock still arrives with its
+		// original weeds on it. So an account with auto-weed on (varbit 2) reported a weedy
+		// patch that the guide walked straight past, offering the compost step: every reader of
+		// the stage was told the patch was clean, and GuidePlan's rake branch asks for exactly
+		// "WEEDS with a stage above zero".
+		//
+		// Dropping the tick rate alone is the whole of the intent: the projection block below
+		// is skipped, so the stage stays as it was observed and no doneEstimate is produced —
+		// which also keeps the fully-weedy patch from being promoted to HARVESTABLE, the other
+		// thing that block would do.
 		if (isAutoweedEnabled() && produce == Produce.WEEDS)
 		{
-			phaseStage = 0;
-			phaseStages = 1;
 			tickRate = 0;
 		}
 

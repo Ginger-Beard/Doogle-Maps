@@ -391,6 +391,22 @@ weird bug with routing: at the GE the panel kept saying "Cast Teleport to House 
 > earlier in this file has probably never lit anything. The fix is a suffix match, and it wants
 > deciding on rather than assuming: a plain suffix rule makes "Enter Annakarl Portal" match any
 > object named "Portal", and a POH is full of them.
+> RESOLVED (that sub-issue). Confirmed still broken on read: firstTransportObject holds the
+> id-stripped objectInfo ("Travel Spirit tree"), scanForObjects demanded equalsIgnoreCase
+> against a scene name, so the overworld outline had never lit anything - only the panel's
+> WORDING was ever fixed. The rule, decided against SP's own data rather than guessed: every
+> objectInfo row in all 24 transport TSVs was read, the column is "menuOption menuTarget
+> objectID" with no delimiter, and the longest menu option in the data is TWO words ("Teleport
+> Menu", "Look out", "Land's End", "The Pandemonium", "Draynor Village"). So a scene object
+> matches when its name is a word-boundary SUFFIX of the hop and the prefix is at most two
+> words - with two guards the plain suffix rule lacks:
+> - a ONE-word name may only follow a ONE-word option. "Enter Annakarl" is itself two words,
+>   so the cap alone does not stop "Portal" claiming that hop and lighting every house exit;
+>   this does. Genuine bare names ("Climb-up Ladder") are the whole of a two-word hop.
+> - among matches, the LONGEST name wins, so "Ape Atoll Dungeon Portal" beats "Dungeon Portal"
+>   when both are standing there.
+> An option longer than two words simply fails to match, which is where this started - no
+> regression possible. Tests: RouteObjectMatchTest, every fixture a real TSV row.
 
 Bushes aren't getting prompted to be cleared after harvesting them
 > RESOLVED. A regrowing crop never empties - picked clean it sits HARVESTABLE with a stock of
@@ -963,5 +979,174 @@ seedbox still not highlighting to fill, whats the full logic around that right n
 >   sapling-never-counts).
 
 with herb, allotment, flower patches checked, we shouldn't visit the areas with those 3 until all 3 are finished growing, its a waste of teles, we already did a pass at this and its not working.
+> DIAGNOSIS PENDING - one real bug found and fixed (the counter), the routing itself not
+> reproducible yet. Everything below was settled against live state, not theory.
+> RULED OUT, each with evidence:
+> - The toggle: holdClustersUntilReady is TRUE in the profile.
+> - The build: build-windows/.../RunPlanner.class (what the running client loaded) contains
+>   clusterHeld, so the deployed code has the feature.
+> - The protection-payment exception, which was the prime suspect: runProtection is
+>   ["FRUIT_TREE|PALM","CACTUS|POTATO_CACTUS","CALQUAT|CALQUAT","TREE|MAPLE","TREE|YEW",
+>   "TREE|MAGIC"] - no HERB, ALLOTMENT or FLOWER anywhere, so wantsProtectionPayment can never
+>   fire for a cluster patch and the exception is unreachable on this account.
+> - The rule itself, against this account's own recorded plot: RunPlannerTest
+>   .theGuildPlotIsHeldWhileItsHerbAndAllotmentsGrow rebuilds the Farming Guild from the stored
+>   varbits verbatim (flower 32 ready, herb 56 avantoe growing, allotments 59/58 growing) with
+>   the group and run-option lookups made to behave like the client's rather than the null-
+>   returning mocks the other tests get away with. It holds. The paired
+>   theGuildPlotIsVisitedOnceNothingIsStillGrowing proves the fixture can produce a visit, so
+>   the hold is not passing by accident.
+> FIXED (a real inconsistency found while ruling the above out): the ready counter - the
+> top-left infobox - applied heldForRegrowth but NOT clusterHeld, so it counted the ready
+> flower of a plot Start run would refuse to visit and said "go now" about exactly the teleport
+> this setting exists to prevent. selectedForRuns now applies both, scoped to the ticked types
+> (new tickedTypes(), since runTypes is empty between runs, which is when the counter is read).
+> - The rule was restated from play and matches what the code already does: for the three types
+>   that share a plot, hold the location while any patch of a TICKED one of them is still
+>   growing - two ticked types wait for each other exactly as three do, and an unticked type is
+>   not part of the question. (An empty patch cannot hold: it is only filled by visiting.)
+> - So the failure is in one of the three ways a plot legitimately goes free, and which one is
+>   not recoverable after the fact - the decision is derived at Start from four stores and the
+>   crop has grown on by the time the trip is noticed. The prime suspect is the protection
+>   payment: a growing crop that is protection-selected and has no recorded payment deliberately
+>   lets the trip through, and with Herb (protected) + ultracompost every herb planted is
+>   protection-selected - so ONE missed payment capture leaves the plot free for the whole
+>   growth cycle. Second suspect is the tick scoping, e.g. Catherby's herb belonging to the
+>   plain Herb group while only Herb (protected) is ticked.
+> - NEW LINE at run start (only when the setting is on): "Shared plots: Falador [HELD] [...]",
+>   naming every cluster patch, its state, and the verdict that decided it - "growing - HOLDS
+>   the plot", "growing, but owed its protection payment - lets the trip through", "not ticked
+>   for this run, so it holds nothing", "you are standing here", "empty", "finished (DISEASED)".
+>   Next run that routes you somewhere early, grep client.log for "Shared plots" and the cause
+>   names itself. RunPlanner.describeClusterHolds.
 
 don't prompt to note logs on lep, thats not a thing, they won't note logs.
+> RESOLVED, and wiki-confirmed: the tool leprechaun's page lists "Any type of logs" among what
+> he refuses. Every tree family's Produce row carries its LOGS as the item - that is what core's
+> enum stores for a tree - so a pack of magic logs read as a pack of notable crop and the guide
+> sent you to him with nothing he would take. Not merely a wasted trip: one you cannot complete.
+> - New Produce.isLeprechaunNotable, narrower than isNotable, refusing TREE / HARDWOOD_TREE /
+>   REDWOOD (logs) plus three false positives of the same shape that were sitting behind it:
+>   BELLADONNA (cave nightshade, also on his refusal list), CRYSTAL_TREE (shards, which stack -
+>   and a stack of a hundred would have outbid every real crop for the step) and SPIRIT_TREE
+>   (a dummy item that is not a drop). Both places that send you to him now ask it:
+>   GuideTracker's note-before-leaving scan and GuidePlan's full-pack note.
+> - isNotable itself is unchanged and still what the bank's deposit highlight asks - a noted log
+>   still belongs in the bank; it is only the walk to the leprechaun that was wrong.
+> - ROOTS are unaffected and still noted (wiki: added 2014), so a tree dig-up is still a trip to
+>   him - it is the logs half that is not.
+> - FOUND WHILE DOING IT, same fault read the other way round: CELASTRUS's Produce item is a
+>   BATTLESTAFF (what the bark becomes), so celastrus BARK - the actual harvest - was as
+>   invisible to the note step as grimy herbs and roots were before it, and carrying ordinary
+>   battlestaves read as a celastrus harvest. Bark (22935, CELASTRUS_WOOD) added to
+>   NotableHarvests; the battlestaff id is deliberately left alone in Produce, since the farming
+>   contract is stored as that id and must decode back to CELASTRUS.
+> Tests: LeprechaunErrandOrderTest.logsAreNeverOfferedForNoting /
+> theRootsFromTheSameDigUpAreStillNoted / celastrusBarkIsNotedButABattlestaffIsNot.
+
+not getting prompted to rake a weedy patch, or withdraw rake from lep, goes straight to compost step.
+> RESOLVED. One wrong assumption, held in two places: "has auto-weed" was treated as "has no
+> weeds". The unlock stops weeds GROWING - it does not rake a patch that is already weedy, and a
+> patch that was weedy when it was bought, or one first reached afterwards, still has its
+> original weeds. Confirmed against live state before theorising: this account's autoweed varbit
+> reads 2 (on), which is why the weedy patch was invisible.
+> - GrowthTimer.project zeroed the STAGE of any WEEDS produce whenever auto-weed was on, so
+>   every reader was told the patch was clean. GuidePlan's rake branch asks for exactly "WEEDS
+>   at a stage above zero", so it never fired and the patch fell through to the compost step -
+>   and with no rake step there was no leprechaun fetch either, which is the second half of the
+>   report. Now only the tick rate is dropped: the weeds do not count down, the observed stage
+>   survives, and no doneEstimate is produced (which still keeps a fully weedy patch from being
+>   promoted to HARVESTABLE, the other thing that block did).
+> - ToolNeeds.requiredFor left the rake out of the loadout entirely on the strength of the
+>   unlock, so the bank leg would not fetch one either. It now asks whether anything in the run
+>   is actually weedy - same stage test as the guide, on the same two stores, so the loadout
+>   cannot promise a rake the patch does not want or stay quiet about one it does. On a normal
+>   account with the unlock and no weeds, nothing changes.
+> Tests: GuidePlanTest.aWeedyPatchIsRakedEvenWithAutoweedOn /
+> aRakedPatchIsNotRakedAgainWithAutoweedOn (the fix must not invent weeds either),
+> RunLoadoutTest.autoweedDropsTheRakeWhileNothingIsWeedy /
+> aWeedyPatchStillWantsTheRakeDespiteAutoweed.
+
+If I'm an idiot and deposit my spade I never get prompted to withdraw one mid run, can get from the lep or bank depending on what the user has
+> RESOLVED. Two halves, and each was individually defensible, which is how the gap between them
+> went unnoticed:
+> - Whether a run needs a bank was decided ONCE, at start(), and re-asked only for a contract
+>   taken from Jane mid-run. Nothing ever asked again, so a tool that left the pack during the
+>   run was invisible to the planner.
+> - GuidePlan.addToolStep offers the LEPRECHAUN's copy and is deliberately silent when he has
+>   none, on the grounds that a tool in your bank is the loadout's business before setting off.
+> Between them, a spadeless run walked patch to patch with nothing to say and nothing it could
+> do there.
+> - NEW RunPlanner.reviewSupplies, polled beside reviewProgress/reviewContract: re-arms the
+>   supply leg when ToolNeeds.anyOnlyInBank goes true, which is exactly "the run needs this, it
+>   is not on you, and the leprechaun has not got one either". The loadout already lists the
+>   tool as WITHDRAW from BANK and suppliesOutstanding already refuses to close the leg until
+>   it is withdrawn, so the rest of the machinery needed nothing.
+> - The LEPRECHAUN case needed no change and must not be broken: anyOnlyInBank is false whenever
+>   he holds one, so the run never diverts past a leprechaun standing next to you - the patch's
+>   own tool step already says "get it from him", which is the cheaper trip. Pinned, because the
+>   tempting shape ("the spade is not in your pack, go to a bank") would do exactly that.
+> - An UNREAD store cannot cause a divert either: sourceOf returns UNKNOWN, not BANK, until both
+>   the bank and the leprechaun have been read (his fills in within 600ms of login).
+> - A bank leg the player waived with Skip step stays waived - the escape hatch outranks this,
+>   same rule pickUpDeferredSupplies already follows.
+> Tests: RunPlannerTest.aToolLostMidRunSendsTheRunBackForIt /
+> aToolTheLeprechaunHoldsNeverDivertsTheRun / aWaivedBankLegIsNotReArmedByALostTool.
+>
+> STILL FELL THROUGH after that, and the log named the reason on sight: the run-planned line
+> read "Spade=AT_LEPRECHAUN", not BANK - so the divert above was right to stay out of it, and
+> the failure was the PATCH step that should have offered his copy. Cause found by the owner:
+> "maybe because its a sapling? spade is needed to plant those".
+> - Confirmed on the wiki, same sentence on the tree patch AND fruit tree patch articles:
+>   "players must have a spade in their inventory when planting and removing the stump of a
+>   tree". Only the stump half was ever modelled. GuidePlan's sow branch fetched a DIBBER for a
+>   seed and NOTHING for a sapling, on a comment that said "saplings go in by hand" - a wrong
+>   fact, sitting there as the justification for the silence. So a run whose spade was in the
+>   leprechaun's store reached a tree patch, said "plant the yew sapling", and the game refused;
+>   nothing in the guide had a reason to speak.
+> - A sapling now takes the spade through the same addToolStep the rake, dibber and clearing
+>   spade always used, so it fetches from the leprechaun when he has one and the loadout's
+>   always-required spade covers the bank before setting off.
+> - Barbarian Farming does NOT excuse it - the unlock removes the seed DIBBER requirement, so it
+>   stays consulted only on the seed branch. Pinned, because reading it as "no tool needed to
+>   plant" puts the tree patch straight back here.
+> Tests: GuidePlanTest.plantingASaplingFetchesTheSpadeFromTheLeprechaun /
+> aCarriedSpadeLeavesTheSaplingPlantingAlone / barbarianFarmingDoesNotExcuseTheSaplingsSpade.
+
+SP is trying to have me use the ardougne cloak 3 to go to ardougne farm right now and I'm out of my daily teles there - can we dynamically exclude that use from the run when its out of charges
+> RESOLVED as far as it can be locally; the routing half is upstream's and is stated below.
+> Researched first, because the numbers matter: the Ardougne cloak's MONASTERY teleport is
+> unlimited on every tier, and it is the FARM PATCH teleport that is rationed - 3/day on the
+> cloak 2, 5/day on the cloak 3 (raised from 1/day in Nov 2017), unlimited on the cloak 4 and
+> the max cape. Explorer's ring 2 is 3/day to the cabbage patch; rings 3 and 4 are unlimited.
+> - Shortest Path ALREADY tries to gate this: teleportation_items.tsv gates the cloak rows on
+>   "6069<3" and "6069<5". The gate can never fire. Varbit 6069 is ARDOUGNE_CLOAK_LOWBITS -
+>   bit 18 of varplayer 635, ONE bit, so its value is 0 or 1 and always under three. Bits 19+
+>   of that varp are unrelated varbits (ARDOUGNE_ROL_RESPAWN_POINT, ARDOUGNE_FREE_ESSENCE,
+>   YANILLE_*, BERT_DAILYHINT), so the rest of the counter is not in the varp at all and the
+>   server does not send it - SP's own data comment says "varbit 6069 is only lowbits, highbits
+>   is not transmitted". The count is genuinely unreadable client-side.
+> - The explorer's ring needs nothing: varbit 4552 (LUMBRIDGE_CABBAGE_TELEPORT) is bits 25-26
+>   of the same varp, a real 0-3 counter that does arrive, so SP's gate on the ring works.
+> - We cannot tell SP to drop one transport. Its plugin-message config override only accepts
+>   ^(avoidWilderness|includeBankPath|currencyThreshold|use\w+|cost\w+)$ - whole categories.
+>   The nearest lever, useTeleportationItems=*_NON_CONSUMABLE, would also drop the Skills
+>   necklace and every teleport tab (the TSV marks those Consumable=T as well). So SP goes on
+>   DRAWING the cloak hop, and only what we say about it changes.
+> - What we say now comes from the game itself: "You have already used all of your available
+>   teleports for today. Try again tomorrow when the cape has recharged." DailyTeleports
+>   latches that per RS profile against the UTC date (the game's own reset), and
+>   TeleportChargeCapture credits it to the item the click named, or to what is worn if the
+>   click cannot be read. RouteItem skips a spent hop, travelHint's TeleportItems fallback
+>   skips a spent item - between them that was the "use your Ardougne cloak" instruction - and
+>   the step overlay lists the hop as "... - out of teleports today" in grey instead of as a
+>   "via" line. Clearable from the profile reset, in case a refusal is ever credited wrongly.
+> - Deliberately NOT counting successful teleports to predict the last one. A count that drifts
+>   high withholds a teleport the player really has, with no way to say otherwise until the day
+>   rolls over; the message cannot produce a false positive. The honest cost is one wasted click
+>   per day, on the first cloak teleport that fails.
+> - Upstream, if it is ever worth a PR: either SP tracks the uses itself (it already intends to
+>   gate them) or it accepts a per-request transport exclusion, at which point this store is
+>   already the thing that would feed it.
+> Tests: DailyTeleportsTest, TeleportChargeCaptureTest, SpentTeleportIsNotTheHintTest,
+> RouteItemTest.aTeleportTheGameHasRefusedTodayIsSkipped.

@@ -97,6 +97,9 @@ public class GuideTracker
 	/** Where banks are, for the contract seed fetch — is there one at this stop to send to. */
 	private final com.dooglemaps.route.BankLocationStore bankLocations;
 
+	/** Which daily teleports the game has said are spent, so none is offered as the way there. */
+	private final com.dooglemaps.state.DailyTeleports dailyTeleports;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -107,8 +110,10 @@ public class GuideTracker
 		ContractState contracts, com.dooglemaps.DoogleMapsConfig config,
 		net.runelite.client.chat.ChatMessageManager chat,
 		com.dooglemaps.bank.RouteItem routeItem, net.runelite.api.Client client,
-		DroppedProduce droppedProduce, com.dooglemaps.route.BankLocationStore bankLocations)
+		DroppedProduce droppedProduce, com.dooglemaps.route.BankLocationStore bankLocations,
+		com.dooglemaps.state.DailyTeleports dailyTeleports)
 	{
+		this.dailyTeleports = dailyTeleports;
 		this.bankLocations = bankLocations;
 		this.droppedProduce = droppedProduce;
 		this.client = client;
@@ -2406,11 +2411,14 @@ public class GuideTracker
 
 		for (Produce produce : Produce.values())
 		{
-			// Notable, not merely a crop: the compost tiers are Produce too, for the bin's
-			// sake, and scanning for isCrop() here told a player at Prifddinas to "note" the
-			// ultracompost they had just withdrawn — which hands it back to him, which raised
-			// the withdrawal again, forever.
-			if (!produce.isNotable())
+			// What he will actually take, not merely a crop. Two rounds of this: the compost
+			// tiers are Produce too, for the bin's sake, and scanning for isCrop() told a player
+			// at Prifddinas to "note" the ultracompost they had just withdrawn — which hands it
+			// back to him, which raised the withdrawal again, forever. Then logs, reported from
+			// play: every tree family's Produce item IS its logs, and "Any type of logs" is on
+			// his refusal list. See Produce.isLeprechaunNotable for the full set and the roots
+			// that are still worth the trip.
+			if (!produce.isLeprechaunNotable())
 			{
 				continue;
 			}
@@ -2594,6 +2602,14 @@ public class GuideTracker
 				// teleport list became a filter, and a hint naming something the loadout never
 				// told you to bring is an instruction you cannot follow.
 				if (!loadout.isOnTeleportList(teleport.getItemId()))
+				{
+					continue;
+				}
+				// Nor one the game has already refused for the day. This table's Ardougne
+				// entry is the cloak's farm-patch teleport, which runs out — and with the
+				// router's own pick skipped for the same reason, this fallback was the next
+				// thing to say "use your Ardougne cloak". See DailyTeleports.
+				if (dailyTeleports.isItemSpent(teleport.getItemId()))
 				{
 					continue;
 				}

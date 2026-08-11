@@ -58,6 +58,7 @@ public class ProfileResetTest
 	private BankLocationStore bankLocations;
 	private HarvestStatsStore stats;
 	private BarbarianFarming barbarianFarming;
+	private DailyTeleports dailyTeleports;
 	private ProfileReset reset;
 
 	@Before
@@ -109,8 +110,10 @@ public class ProfileResetTest
 		barbarianFarming = construct(BarbarianFarming.class, configManager,
 			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 
+		dailyTeleports = construct(DailyTeleports.class, configManager);
+
 		reset = construct(ProfileReset.class, patches, seeds, bonuses, patchLocations,
-			bankLocations, barbarianFarming);
+			bankLocations, barbarianFarming, dailyTeleports);
 	}
 
 	private static String key(InvocationOnMock invocation)

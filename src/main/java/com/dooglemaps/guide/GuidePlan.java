@@ -202,7 +202,13 @@ public final class GuidePlan
 		//    what left harvest-only stops unable to finish. See PatchProjection.hasProduceToPick.
 		if (projection.hasProduceToPick())
 		{
-			if (carried.getFreeSlots() <= FULL_INVENTORY_SLACK)
+			// Gated on what he will take, not merely on the pack being full: a tree patch's
+			// Produce item is its LOGS, and he refuses every kind of log (wiki), so a full pack
+			// at a magic tree sent the player to him with nothing he would accept. A full pack
+			// is still a full pack — but the honest answer there is silence, not a trip that
+			// ends in "the leprechaun refuses". See Produce.isLeprechaunNotable.
+			if (carried.getFreeSlots() <= FULL_INVENTORY_SLACK
+				&& projection.getProduce().isLeprechaunNotable())
 			{
 				steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN, patch,
 					projection.getProduce().getItemID(), null,
@@ -352,10 +358,24 @@ public final class GuidePlan
 		//    stage-one snape grass allotment came to be outlined by a seed box instruction.
 		int perPatch = chosen.getSeedsPerPatch();
 
-		// A dibber for anything sown from a seed. Saplings go in by hand, so a tree patch is
-		// deliberately silent here rather than asking for a tool it does not use — and so is
-		// every patch once Barbarian Farming has been seen, since it removes the requirement.
-		if (!chosen.isSapling() && !barbarianFarming.isUnlocked())
+		// The tool the sowing itself takes, and which one that is depends on what goes in the
+		// ground.
+		//
+		// A sapling takes a SPADE. "Saplings go in by hand" stood here as the reason a tree
+		// patch was deliberately silent, and it is wrong — wiki, on both the tree and fruit tree
+		// patch articles in the same words: "players must have a spade in their inventory when
+		// planting and removing the stump of a tree". Only the stump half was ever modelled, so
+		// a run whose spade was in the leprechaun's store reached a tree patch, said "plant the
+		// yew sapling", and the game refused. Reported from play, with the player working out
+		// the cause: "maybe because it's a sapling? spade is needed to plant those".
+		//
+		// Barbarian Farming does not get you out of this one — it removes the seed DIBBER
+		// requirement, which is why the unlock is only consulted on that branch.
+		if (chosen.isSapling())
+		{
+			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
+		}
+		else if (!barbarianFarming.isUnlocked())
 		{
 			addToolStep(steps, patch, FarmingTool.SEED_DIBBER, carried, leprechaun);
 		}

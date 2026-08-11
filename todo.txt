@@ -1,3 +1,109 @@
 Need to model compost runs, what crops/items create what compost, this is going to involve a lot of bank trips, also volcanic ash mechanics and things like that, research this.
 
 Also need to model seaweed runs, mushroom runs, belladona runs, calquat, celastrus, and coral runs, I don't do these frequently so again, heavy research on these mechanics, I know we'll need flippers(optional) and diving helm/cape for the underwater ones. Maybe a boat for coral, I've literally never done it.
+
+--- Research for the run items above (2026-08-11, wiki-checked per seed page) ---
+
+Data that already exists for all six: Produce, Seed (incl. sapling forms), ProtectionPayment,
+and the patches themselves in FarmingWorldData. What is missing is crop-xp.tsv rows and a
+place in PlantingGroups.RUNNABLE — plus, for the two underwater ones, access modelling the
+plugin has never needed before.
+
+  type        lvl  seed              plant   check     harvest  growth        protection
+  seaweed      23  Seaweed spore      19       -        21      40m (4x10)    200 numulite (Mernia)
+  mushroom     53  Mushroom spore     61.5     -        57.7    4h (6x40)     none - unprotectable
+  belladonna   63  Belladonna seed    91       -       512      5h20 (4x80)   none - unprotectable
+  calquat      72  Calquat tree seed 129.5  12096       48.5    21h20 (8x160) 8 poison ivy berries
+  celastrus    85  Celastrus seed    200    14130        23.5   13h20 (5x160) 8 potato cactus
+  coral        28/52/77  frags        see below                 160m each     5 of the tier below
+
+Per-type mechanics that are NOT just data:
+- SEAWEED and CORAL are underwater. Seaweed: Fossil Island underwater area, needs Bone Voyage
+  and diving apparatus + fishbowl helmet worn. Coral: Coral Nurseries beneath the eastern coast
+  of The Great Conch (Sailing), needs Troubled Tortugans and either the same diving pair or a
+  Medallion of the deep. Two nurseries; gardener is Chet. Nothing in the loadout or the guide
+  models "you must be wearing this to be there at all", and the route to an underwater patch is
+  not a Shortest Path hop either - this is the real work in both.
+- CORAL TAKES NO COMPOST. Wiki: "unlike most farming patches, coral nurseries cannot be treated
+  with compost to reduce disease risk or to increase yield" - even though it can be diseased and
+  Chet takes payment. FIXED already (CropYieldModel.TAKES_NO_COMPOST); it was offering the
+  dropdown and banking buckets that cannot be emptied. Giant seaweed composts normally.
+- MUSHROOM and BELLADONNA have no gardener at all, so the protection step must stay silent for
+  them rather than saying "nobody here to pay" - ProtectionPayment already has no row for either.
+- BELLADONNA yields one nightshade and the plant is spent; magic secateurs do not raise it.
+- CALQUAT regrows (6 fruit, keeps producing) so it wants a harvest-only line; CELASTRUS does not
+  regrow - bark is harvested, then the tree is chopped and the patch cleared with a spade, which
+  is the chop-and-stump flow SpadeClearedCrops deliberately does not cover yet.
+- Coral frags come from chest loot, salvage sorting, or aquanites (78 Slayer) - there is no shop,
+  so the loadout cannot tell anyone to go and buy one.
+
+Still to check before coral goes in: the three frag XP figures (the summary table gives one
+unlabelled number per tier - 20.5 / 52.5 / 136 - and crop-xp.tsv rejects unlabelled figures by
+design, same rule that kept fruit trees out for so long), and the yields.
+
+Note on process: CropXp.java is generated. Rows go in tools/crop-xp.tsv and then
+`python3 tools/generate_farming_data.py /tmp/rl-src` per DEVELOPMENT.md - hand-editing the .java
+gets overwritten by the next regeneration. XP_NAME_OVERRIDES will need entries for the spore and
+frag names, whose seed constants do not follow the guessing rule.
+
+--- Research for compost runs (2026-08-11, wiki-checked) ---
+
+What the plugin ALREADY has, and it is more than expected: PatchRules decodes both bin varbits
+in full - EMPTY / FILLING (with the count of items already in) / GROWING / HARVESTABLE, and
+which product is in there (compost, supercompost, ultracompost, rotten tomato), for the normal
+bin and the big one. FarmingWorldData carries a COMPOST patch in every allotment region and the
+BIG_COMPOST in the Farming Guild. So the state half is done; nothing reads it yet, because
+PlantingGroups.RUNNABLE leaves the bins out ("no seed at all").
+
+The mechanics a run has to model:
+- Capacity 15 items (normal bin) / 30 (big bin), un-noted. Fill, then CLOSE the lid; it takes
+  35-70 minutes. Items cannot be taken back out, only dumped.
+- All 15/30 supercompostable -> supercompost. All tomatoes -> ROTTEN TOMATOES, which is a trap
+  worth warning about rather than silently allowing. Anything else -> ordinary compost.
+- Emptying needs empty buckets, one per compost, or a bottomless compost bucket. Ordinary
+  buckets fill first when both are carried.
+- Upgrades happen IN the bin, before withdrawing, and the bin is much cheaper than doing it per
+  bucket:
+    compost -> supercompost: 1 dose of compost potion for the whole bin.
+    supercompost -> ultracompost: 25 volcanic ash (normal bin) or 50 (big bin). Per bucket it
+    is 2 ash each, so 30 for the same 15 - the bin saves 5.
+  No Farming level for either.
+- Volcanic ash: mined from ash piles at the Fossil Island volcano (22 Mining, 1 ash a drop
+  rising to 6 at 97), dropped by Fossil Island monsters, and - the one that matters for a run -
+  sold unlimited by Petrified Pete at 40gp. Fossil Island itself needs Bone Voyage.
+
+Supercompostable, from the Supercompost page: pineapple, watermelon, papaya, coconut (and half
+coconut), dragonfruit, jangerberries, white berries, poison ivy berries, snape grass, mushroom,
+white lily, calquat fruit, celastrus bark, ent branch, tenti pineapple, white tree fruit, the
+five tree roots (oak/willow/maple/yew/magic), and the herbs from toadflax up (toadflax, avantoe,
+kwuarm, snapdragon, cadantine, lantadyme, dwarf weed, torstol). Wants to be a hand-written table
+like NotableHarvests - PatchImplementation is generated and cannot carry it.
+
+Open design question before any of this is written: is a compost run its OWN run type, or are
+bin stops folded into every run? Every bin but the guild's sits beside allotment and herb
+patches you are already standing at, so a separate trip is mostly a wasted circuit - but the
+bank trip is real and different (15 items per bin, plus buckets, plus ash), and that is the part
+that wants planning up front rather than discovering at the patch.
+
+--- Compost runs: the shape decided (owner, 2026-08-11) ---
+
+A run type of its own, a tickable line like Herb or Tree, routing the bins.
+
+Fill: a selector populated the way the seed list is - the supercompostable items, from what the
+account actually has - so the run knows what it is filling with and the loadout can bank 15 (or
+30 for the guild's big bin) of it per bin.
+
+Volcanic ash: a checkbox per the protection-payment control, NOT a fill choice. It applies to a
+bin that is already ready, and the ORDER is the part that matters and is easy to get wrong:
+ash goes in AFTER the bin is ready to harvest and BEFORE any bucket is filled - 25 for a normal
+bin, 50 for the big one, upgrading the whole bin at once. Once a bucket is filled it is 2 ash
+each and the saving is gone.
+
+Buckets go through the leprechaun, both ways: empty buckets fetched from his store, and the
+filled compost buckets of whatever tier deposited straight back to him rather than carried.
+This needs nothing new to read - FarmingTool already has EMPTY_BUCKET ("where the empties go
+back") and the three compost tiers, and LeprechaunStore reads all four counts every tick.
+
+So the step order at a bin: apply ash if ticked and it is supercompost -> take empty buckets
+from the leprechaun -> empty the bin -> deposit the filled buckets with him -> fill with the
+chosen item -> close the lid.

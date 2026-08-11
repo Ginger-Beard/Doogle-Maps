@@ -94,10 +94,14 @@ public class ToolNeeds
 	private final SeedSelectionStore selection;
 	private final GrowthTimer growthTimer;
 	private final BarbarianFarming barbarianFarming;
+	private final com.dooglemaps.state.AvailabilityProfile availability;
+	private final com.dooglemaps.state.PatchStateStore stateStore;
 
 	@Inject
 	ToolNeeds(LeprechaunStore leprechaun, CarriedItems carried, BankContents bank,
-		SeedSelectionStore selection, GrowthTimer growthTimer, BarbarianFarming barbarianFarming)
+		SeedSelectionStore selection, GrowthTimer growthTimer, BarbarianFarming barbarianFarming,
+		com.dooglemaps.state.AvailabilityProfile availability,
+		com.dooglemaps.state.PatchStateStore stateStore)
 	{
 		this.barbarianFarming = barbarianFarming;
 		this.leprechaun = leprechaun;
@@ -105,6 +109,9 @@ public class ToolNeeds
 		this.bank = bank;
 		this.selection = selection;
 		this.growthTimer = growthTimer;
+		// Both leaves, like everything else here — see the class note on the lock graph.
+		this.availability = availability;
+		this.stateStore = stateStore;
 	}
 
 	/** Every tool this run wants, with where each would come from. */
@@ -146,11 +153,14 @@ public class ToolNeeds
 			return tools;
 		}
 
-		// A rake, unless weeds never grow. Auto-weed is a Farming Guild unlock and the plugin
-		// already tracks it for the growth timers, so this costs nothing to get right — and
-		// telling someone with auto-weed to fetch a rake would be the kind of stale advice that
-		// makes a player stop reading the rest.
-		if (!growthTimer.isAutoweedEnabled())
+		// A rake, unless weeds never grow AND none are standing. Auto-weed is a Farming Guild
+		// unlock the plugin already tracks for the growth timers, and telling someone who has it
+		// to fetch a rake would be the kind of stale advice that makes a player stop reading the
+		// rest — but "has auto-weed" is not "has no weeds". The unlock stops weeds GROWING; a
+		// patch that was already weedy when it was bought, or one first reached afterwards, is
+		// still weedy and still needs the rake. Reported from play: a weedy patch with the run
+		// carrying nothing to clear it with, going straight to the compost step.
+		if (!growthTimer.isAutoweedEnabled() || anythingWeedy(types))
 		{
 			tools.add(FarmingTool.RAKE);
 		}
@@ -176,6 +186,42 @@ public class ToolNeeds
 		}
 
 		return tools;
+	}
+
+	/**
+	 * Whether any patch this run could reach has weeds on it right now.
+	 *
+	 * <p>Asked only when auto-weed says there should be none, so on the overwhelmingly common
+	 * account this is never reached at all. The state is the same pair of stores the guide's own
+	 * rake step reads, so the loadout cannot promise a rake the patch does not want, or stay
+	 * quiet about one it does.
+	 *
+	 * <p>{@code stage > 0} is the test, not "is it weeds": a clean patch is also weeds, which is
+	 * how the game encodes an empty one, and the stage runs backwards from a full patch at 3 to a
+	 * raked one at 0. Same test as {@code GuidePlan}'s rake branch, deliberately.
+	 */
+	private boolean anythingWeedy(Set<PatchImplementation> types)
+	{
+		for (PatchImplementation type : types)
+		{
+			if (type == PatchImplementation.GRAPES)
+			{
+				// A vinery is never raked; its empty states merely decode as weeds.
+				continue;
+			}
+			for (com.dooglemaps.data.FarmPatch patch : availability.getAvailablePatches(type))
+			{
+				com.dooglemaps.timer.PatchProjection projection =
+					growthTimer.project(patch, stateStore.get(patch));
+				if (projection != null
+					&& projection.getProduce() == com.dooglemaps.data.Produce.WEEDS
+					&& projection.getStage() > 0)
+				{
+					return true;
+				}
+			}
+		}
+		return false;
 	}
 
 	/**

@@ -174,6 +174,18 @@ public final class CropYieldModel
 		return produce != null && produce.getRegrowTickrate() > 0;
 	}
 
+	/**
+	 * Patches no bucket of compost can be emptied into, whatever else is true of them.
+	 *
+	 * <p>A short list on purpose, and every member needs a wiki sentence saying so — this is
+	 * the exception to "can it be diseased, then treating it helps", and the exception is a
+	 * property of the patch rather than of the crop. Giant seaweed is <b>not</b> a member: it
+	 * is underwater too and composts normally, which is why the family is named per patch and
+	 * not "anything underwater".
+	 */
+	private static final java.util.Set<PatchImplementation> TAKES_NO_COMPOST =
+		java.util.EnumSet.of(PatchImplementation.CORAL);
+
 	/** Whether compost changes this crop's yield at all. Only the lives mechanic cares. */
 	public static boolean respondsToCompost(Seed seed)
 	{
@@ -196,6 +208,17 @@ public final class CropYieldModel
 	 */
 	public static boolean compostMatters(PatchImplementation type)
 	{
+		// Before either question, because both would answer yes: a coral nursery takes no
+		// compost at all. The wiki is explicit — "unlike most farming patches, coral nurseries
+		// cannot be treated with compost to reduce disease risk or to increase yield" — and
+		// coral IS diseaseable, with a gardener who takes payment for it, so the rule below
+		// offered a dropdown for a bucket that cannot be applied. The run then banked the
+		// buckets and the guide would have asked for them to be used underwater.
+		if (TAKES_NO_COMPOST.contains(type))
+		{
+			return false;
+		}
+
 		// Whether it does something in the game, not whether the projection can show it. Asking
 		// isRiskKnown alone hid the dropdown on flowers — a patch that can be diseased and that
 		// compost genuinely protects — because Jagex has never published a flower rate. The player

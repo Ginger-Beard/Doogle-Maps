@@ -703,11 +703,82 @@ public class GuideOverlay extends Overlay
 		}
 	}
 
-	/** Every object in the scene whose resolved name matches, impostors followed. */
-	private java.util.List<TileObject> scanForObjects(String name)
+	/**
+	 * How many words of menu option may sit in front of the object's own name.
+	 *
+	 * <h2>Why a word count is the rule</h2>
+	 *
+	 * Shortest Path's {@code objectInfo} column is <b>{@code menuOption menuTarget objectID}</b>
+	 * with no delimiter between the first two, and the target is the object's name. So the hop
+	 * arrives here (id already stripped) as "Travel Spirit tree", "Enter Annakarl Portal",
+	 * "Teleport Menu Fancy Jewellery Box" — never as the bare name this scan used to demand with
+	 * {@code equalsIgnoreCase}, which is why the overworld highlight has never lit anything. The
+	 * spirit tree at the Grand Exchange, logged as fixed once, was fixed only in the panel's
+	 * <i>wording</i>; the outline half was still comparing a menu row to an object name.
+	 *
+	 * <p>A plain suffix rule is the obvious repair and is not safe: "Enter Annakarl Portal" ends
+	 * in "Portal", and a house is full of objects called exactly that. So the prefix has to be
+	 * plausible as a menu option, and counting its words is what makes that checkable. Every
+	 * {@code objectInfo} row across Shortest Path's twenty-four transport TSVs was read for this
+	 * — the longest options in the data are two words ("Teleport Menu", "Look out", "Land's
+	 * End", "The Pandemonium", "Draynor Village"), so two is the cap. "Enter Annakarl Portal"
+	 * minus "Portal" leaves four words and is refused; minus "Annakarl Portal" it leaves one and
+	 * is accepted. An option longer than two words simply fails to match, which is exactly where
+	 * this started — no regression, and nothing lights that should not.
+	 */
+	private static final int MAX_MENU_OPTION_WORDS = 2;
+
+	/**
+	 * How much of the hop this object's name accounts for, or 0 when it is not the hop's object.
+	 *
+	 * <p>A length rather than a boolean so the scan can prefer the <b>longest</b> answer: with
+	 * both "Annakarl Portal" and a plain "Portal" in the scene, the longer name is the one the
+	 * router meant and the short one is a coincidence of the wording. Package-private so the
+	 * matcher can be pinned without a client.
+	 */
+	static int routeObjectMatch(String hop, @Nullable String objectName)
+	{
+		if (objectName == null || objectName.isEmpty() || hop.length() < objectName.length())
+		{
+			return 0;
+		}
+		if (hop.equalsIgnoreCase(objectName))
+		{
+			return objectName.length();
+		}
+
+		// Same length and not equal above means it is simply a different name; the boundary
+		// check below would read the character before the string.
+		int start = hop.length() - objectName.length();
+		if (start == 0 || hop.charAt(start - 1) != ' '
+			|| !hop.regionMatches(true, start, objectName, 0, objectName.length()))
+		{
+			return 0;
+		}
+
+		String option = hop.substring(0, start).trim();
+		if (option.isEmpty())
+		{
+			return 0;
+		}
+
+		// A one-word name may only follow a one-word option, which is what stops "Portal" from
+		// answering for "Enter Annakarl Portal": both parses of that hop fit the two-word cap
+		// ("Enter" + "Annakarl Portal", and "Enter Annakarl" + "Portal"), so the cap alone
+		// cannot separate them, and the shorter parse is the one that lights every exit in a
+		// house. Real one-word names arrive as the whole of a two-word hop — "Climb-up Ladder",
+		// "Open Gate" — and those still match.
+		int optionWords = option.split("\\s+").length;
+		int allowed = objectName.indexOf(' ') < 0 ? 1 : MAX_MENU_OPTION_WORDS;
+		return optionWords > allowed ? 0 : objectName.length();
+	}
+
+	/** Every object in the scene the route's hop names, impostors followed. */
+	private java.util.List<TileObject> scanForObjects(String hop)
 	{
 		java.util.List<TileObject> found = new java.util.ArrayList<>();
 		java.util.Set<Long> seen = new java.util.HashSet<>();
+		int best = 0;
 		net.runelite.api.WorldView worldView = client.getTopLevelWorldView();
 		net.runelite.api.Tile[][][] tiles = worldView.getScene().getTiles();
 		for (net.runelite.api.Tile[] column : tiles[worldView.getPlane()])
@@ -731,11 +802,22 @@ public class GuideOverlay extends Overlay
 						net.runelite.api.ObjectComposition impostor = definition.getImpostor();
 						definition = impostor != null ? impostor : definition;
 					}
-					if (definition != null && definition.getName() != null
-						&& definition.getName().equalsIgnoreCase(name))
+
+					int match = definition == null
+						? 0
+						: routeObjectMatch(hop, definition.getName());
+					if (match == 0 || match < best)
 					{
-						found.add(object);
+						continue;
 					}
+					// A longer name has turned up, so everything matched on a shorter one was a
+					// coincidence of the wording — see routeObjectMatch.
+					if (match > best)
+					{
+						best = match;
+						found.clear();
+					}
+					found.add(object);
 				}
 			}
 		}

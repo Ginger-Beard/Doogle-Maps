@@ -41,12 +41,15 @@ public class ProfileReset
 	private final PatchLocationStore patchLocations;
 	private final BankLocationStore bankLocations;
 	private final BarbarianFarming barbarianFarming;
+	private final DailyTeleports dailyTeleports;
 
 	@Inject
 	ProfileReset(PatchStateStore patches, SeedInventoryStore seeds,
 		FarmingBonusStore bonuses, PatchLocationStore patchLocations,
-		BankLocationStore bankLocations, BarbarianFarming barbarianFarming)
+		BankLocationStore bankLocations, BarbarianFarming barbarianFarming,
+		DailyTeleports dailyTeleports)
 	{
+		this.dailyTeleports = dailyTeleports;
 		this.patches = patches;
 		this.seeds = seeds;
 		this.bonuses = bonuses;
@@ -78,6 +81,10 @@ public class ProfileReset
 		// Observed like everything above, and previously the one observation the reset could
 		// not reach - a wrongly-latched "no dibber needed" was permanent. See BarbarianFarming.
 		barbarianFarming.clear();
+		// Expires by itself at the daily reset, so this is an escape hatch rather than
+		// housekeeping: a refusal message credited to the wrong cape would otherwise withhold
+		// a teleport the player has until midnight UTC. See DailyTeleports.
+		dailyTeleports.clear();
 
 		log.info("Doogle Maps profile reset - patches, seeds and learned locations cleared; "
 			+ "settings, harvest stats, patch toggles and seed selection kept");

@@ -49,6 +49,13 @@ public final class NotableHarvests
 		BY_ITEM_ID.put(ItemID.YEW_ROOTS, "yew roots");
 		BY_ITEM_ID.put(ItemID.MAGIC_ROOTS, "magic roots");
 
+		// Celastrus bark, the third harvest with no Produce row of its own: core's enum stores
+		// celastrus as a BATTLESTAFF — what the bark is eventually made into — so the bark itself
+		// (22935, named CELASTRUS_WOOD in the cache) was as invisible to the note step as the
+		// grimy herbs were. Found while removing logs from the step, which is the same fault read
+		// the other way round: the enum's item is not always the thing that comes off the patch.
+		BY_ITEM_ID.put(ItemID.CELASTRUS_WOOD, "celastrus bark");
+
 		// One per herb Produce row. Goutweed is absent because it has no grimy form, and the
 		// raids and jungle herbs are absent because no farm patch grows them.
 		herb(ItemID.UNIDENTIFIED_GUAM, "grimy guam");

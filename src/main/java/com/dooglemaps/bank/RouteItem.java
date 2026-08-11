@@ -4,6 +4,7 @@ import com.dooglemaps.data.ItemNames;
 import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.guide.TeleportSpell;
 import com.dooglemaps.route.ShortestPathIntegration;
+import com.dooglemaps.state.DailyTeleports;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -23,9 +24,13 @@ import net.runelite.api.Client;
  * first slot, the highlight can mark it in cyan, and the step panel can name it.
  *
  * <p>Deliberately <b>soft</b>. It never joins the loadout's needs and never holds the supply
- * leg: some transports are not items at all, some items cannot be resolved from a display
- * string, and some — diary items with daily charges, for one — have constraints no plugin can
- * see. When nothing resolves, nothing appears, and the route line on the map is still there.
+ * leg: some transports are not items at all, and some items cannot be resolved from a display
+ * string. When nothing resolves, nothing appears, and the route line on the map is still there.
+ *
+ * <p>The daily-charge caveat that used to be in that list — <i>"diary items with daily
+ * charges have constraints no plugin can see"</i> — is now only half true, and the half that
+ * is not is handled here: a hop the game has said outright is spent for the day is skipped,
+ * and the next one that resolves takes its place. See {@link DailyTeleports}.
  *
  * <h2>Matched from display strings, best-effort by design</h2>
  *
@@ -56,6 +61,7 @@ public class RouteItem
 	private final BankContents bank;
 	private final CarriedItems carried;
 	private final Client client;
+	private final DailyTeleports dailyTeleports;
 
 	private int resolvedId = -1;
 	private String resolvedName;
@@ -65,13 +71,14 @@ public class RouteItem
 
 	@Inject
 	RouteItem(ShortestPathIntegration router, ItemNames itemNames, BankContents bank,
-		CarriedItems carried, Client client)
+		CarriedItems carried, Client client, DailyTeleports dailyTeleports)
 	{
 		this.router = router;
 		this.itemNames = itemNames;
 		this.bank = bank;
 		this.carried = carried;
 		this.client = client;
+		this.dailyTeleports = dailyTeleports;
 	}
 
 	/** The item id the route's first item-shaped hop resolves to, or -1 for none. */
@@ -127,6 +134,16 @@ public class RouteItem
 		// player will actually click.
 		for (String transport : transports)
 		{
+			// Not one the game has already refused today. The router cannot know — the count
+			// is not in any varbit it can read, see DailyTeleports — so it goes on planning
+			// through a spent Ardougne cloak, and naming it here would put the cloak in the
+			// bank's first slot and a cyan outline round it. Reported from play. Skipped
+			// rather than stopping the loop: the next hop is the one that will be clicked.
+			if (dailyTeleports.isHopSpent(transport))
+			{
+				continue;
+			}
+
 			// A carried item first, the spell second, a banked item last. The order is how
 			// many clicks each costs from wherever the player is standing: an item on you is
 			// one click, a castable spell is two, and a banked item is a detour. Trying the

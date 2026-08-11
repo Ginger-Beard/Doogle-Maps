@@ -66,11 +66,16 @@ public class GuideStepOverlay extends OverlayPanel
 	private final GuideTracker tracker;
 	private final DoogleMapsConfig config;
 
+	/** Which hops of the drawn route are teleports the game has already refused today. */
+	private final com.dooglemaps.state.DailyTeleports dailyTeleports;
+
 	@Inject
-	GuideStepOverlay(GuideTracker tracker, DoogleMapsConfig config)
+	GuideStepOverlay(GuideTracker tracker, DoogleMapsConfig config,
+		com.dooglemaps.state.DailyTeleports dailyTeleports)
 	{
 		this.tracker = tracker;
 		this.config = config;
+		this.dailyTeleports = dailyTeleports;
 
 		setPosition(OverlayPosition.TOP_LEFT);
 
@@ -344,7 +349,18 @@ public class GuideStepOverlay extends OverlayPanel
 		List<String> transports = status.getTransports();
 		for (int i = 0; i < shown(transports.size()); i++)
 		{
-			line("via " + transports.get(i), config.guideHighlightColour());
+			String hop = transports.get(i);
+			// A hop the game has already refused for the day is still on the drawn line —
+			// Shortest Path cannot count the charges, see DailyTeleports — so it is listed,
+			// because a route with a hop missing from the list reads as the plugin having
+			// lost one. It is listed as a fact rather than as an instruction: no "via", and
+			// not in the colour every other clickable thing on this panel is drawn in.
+			if (dailyTeleports.isHopSpent(hop))
+			{
+				line(hop + " - out of teleports today", java.awt.Color.GRAY);
+				continue;
+			}
+			line("via " + hop, config.guideHighlightColour());
 		}
 
 		appendOverflow(transports.size(), "more hops");

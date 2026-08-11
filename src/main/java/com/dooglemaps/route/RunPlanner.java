@@ -311,6 +311,11 @@ public class RunPlanner
 			describeTools(),
 			atBankLeg ? "starting at a bank" : "starting where you are");
 
+		if (config.holdClustersUntilReady())
+		{
+			log.info("Shared plots: {}", describeClusterHolds(types));
+		}
+
 		// Outside the lock, deliberately, and for the same reason markServiced and leaveBank
 		// do it that way: retargeting posts across threads into another plugin's event bus,
 		// and EventBus delivers synchronously. Holding this planner's monitor while arbitrary
@@ -411,18 +416,49 @@ public class RunPlanner
 	}
 
 	/**
-	 * Whether a run started right now would care about this patch — ticked for a run, and
-	 * not being held for regrowth.
+	 * Whether a run started right now would care about this patch — ticked for a run, and not
+	 * being held back by either of the two things that hold a patch back.
 	 *
 	 * <p>For the ready counter, whose number used to count every available patch: a bush at
 	 * three berries and a herb patch whose type was never ticked both inflated a count that
 	 * exists to say "a farm run is worth starting". Reported from play. Everything here is
 	 * lock-guarded store reads and pure projection arithmetic, so it is safe from the
 	 * counter's any-thread update path.
+	 *
+	 * <p>The shared-plot hold was missing from here while its sibling {@code heldForRegrowth}
+	 * was present, and the two have to be the same list or the number is a lie: a plot waiting
+	 * for its slowest crop is precisely a patch <b>Start run would not visit</b>, so counting
+	 * its ready flower said "go now" about a teleport the setting exists to prevent. The run's
+	 * own types are what the hold is scoped to, which is what {@code runTypes()} answers.
 	 */
 	public boolean selectedForRuns(FarmPatch patch)
 	{
-		return inTheRun(patch) && !heldForRegrowth(patch);
+		return inTheRun(patch) && !heldForRegrowth(patch)
+			&& !clusterHeld(patch, tickedTypes());
+	}
+
+	/**
+	 * The patch types ticked for a run right now, for questions asked outside a run.
+	 *
+	 * <p>{@link #runTypes} is the <i>live</i> run's set and is empty between runs, which is
+	 * exactly when the ready counter is being looked at. Derived from the ticks instead, the
+	 * same way starting a run derives them.
+	 */
+	private Set<PatchImplementation> tickedTypes()
+	{
+		Set<PatchImplementation> types = EnumSet.noneOf(PatchImplementation.class);
+		for (PatchImplementation type : PatchImplementation.values())
+		{
+			for (FarmPatch patch : availability.getAvailablePatches(type))
+			{
+				if (inTheRun(patch))
+				{
+					types.add(type);
+					break;
+				}
+			}
+		}
+		return types;
 	}
 
 	/**
@@ -957,18 +993,29 @@ public class RunPlanner
 	 * Whether this patch's trip should wait for the rest of its plot.
 	 *
 	 * <p>The classic locations put an allotment pair, a flower and (except Prifddinas) a herb
-	 * patch on the same ground, and they grow at different speeds — a marigold is done in
-	 * twenty minutes, a ranarr in eighty. Left alone the run happily made the trip for
+	 * patch within a few tiles of each other, and they grow at different speeds — a marigold is
+	 * done in twenty minutes, a ranarr in eighty. Left alone the run happily made the trip for
 	 * whichever finished first, which is two trips where one was wanted. With the setting on,
-	 * a cluster patch is held out of the plan while any <b>selected</b> sibling on the same
-	 * plot is still healthily growing. Requested from play.
+	 * a cluster patch is held out of the plan until every <b>ticked</b> cluster patch on that
+	 * ground has finished doing anything. Requested from play, and the scoping restated there:
+	 * <i>"if it's in the immediate same patch area for specifically those three patch types,
+	 * don't go there unless whatever is ticked out of those three are ready, diseased, or
+	 * dead"</i> — so two ticked types wait for each other exactly as three do, and an unticked
+	 * type is not part of the question.
 	 *
-	 * <p>Only siblings of the types ticked for this run count, which is the whole point of the
-	 * scoping: with just flower and herb ticked, a growing allotment holds nothing. A diseased
-	 * sibling never holds the trip back — waiting on a crop that is dying is how it dies — and
-	 * neither does one still owed its protection payment, for the same reason the payment
-	 * keeps a patch actionable at all. Nor is the plot the player is standing on ever held:
-	 * the whole point is saving the teleport, and that one is already spent.
+	 * <p>What counts as finished, and its complement is the whole test:
+	 *
+	 * <ul>
+	 *   <li><b>ready</b> — grown, or due by the clock. Nothing more is coming.</li>
+	 *   <li><b>diseased or dead</b> — waiting on a crop that is dying is how it dies.</li>
+	 *   <li><b>empty</b> — and this one is not optional. An empty patch is only filled by
+	 *       visiting, so holding for it would hold the plot for ever.</li>
+	 * </ul>
+	 *
+	 * <p>A crop still owed its protection payment also lets the trip through: that is an errand
+	 * at the plot rather than a crop to wait on, and it is the same reason the payment keeps a
+	 * patch actionable at all. Nor is the plot the player is standing on ever held: the whole
+	 * point is saving the teleport, and that one is already spent.
 	 *
 	 * <p>Planning-time only, deliberately: this filter runs in {@link #planStops} and the
 	 * counts that price it, never in {@link #isComplete}. Mid-run, a freshly replanted flower
@@ -1011,6 +1058,87 @@ public class RunPlanner
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Every shared plot and what the hold made of it, for the run-planned log.
+	 *
+	 * <h2>Why this exists</h2>
+	 *
+	 * "It routed me to a plot with a crop still growing" has now been reported against a hold
+	 * whose own logic reads correctly, and the decision is unrecoverable after the fact: it is
+	 * derived at {@code start} from four stores at once, and by the time the trip is noticed the
+	 * crop has grown on. Every input is cheap to print and none of it is printed anywhere else —
+	 * same reasoning as the run-planned line above it, and the seed-box highlight line.
+	 *
+	 * <p>Each plot names its own patches with the verdict that decided it, so a hold that did
+	 * not happen says <b>which</b> patch let the trip through and on what grounds. The three
+	 * ways that can happen without the hold being broken are all called out by name: the patch
+	 * type is not ticked, the crop is owed a protection payment, or you are standing there.
+	 */
+	private String describeClusterHolds(Set<PatchImplementation> types)
+	{
+		Map<FarmRegion, List<String>> byPlot = new LinkedHashMap<>();
+		for (PatchImplementation type : CLUSTER_TYPES)
+		{
+			for (FarmPatch patch : availability.getAvailablePatches(type))
+			{
+				byPlot.computeIfAbsent(patch.getRegion(), k -> new ArrayList<>())
+					.add(patch.getDisplayName() + ": " + describeClusterPatch(patch, types));
+			}
+		}
+
+		if (byPlot.isEmpty())
+		{
+			return "none available";
+		}
+
+		List<String> plots = new ArrayList<>();
+		byPlot.forEach((region, patches) ->
+		{
+			boolean held = region.getPatches().stream()
+				.filter(patch -> CLUSTER_TYPES.contains(patch.getImplementation()))
+				.anyMatch(patch -> clusterHeld(patch, types));
+			plots.add(region.getName() + " [" + (held ? "HELD" : "free to visit") + "] "
+				+ patches);
+		});
+		return String.join("; ", plots);
+	}
+
+	/** One patch's side of {@link #describeClusterHolds} — the state, and what it counted for. */
+	private String describeClusterPatch(FarmPatch patch, Set<PatchImplementation> types)
+	{
+		if (!types.contains(patch.getImplementation()) || !inTheRun(patch))
+		{
+			return "not ticked for this run, so it holds nothing";
+		}
+		if (patch.getRegion().getRegionId() == playerLocation.getRegionId())
+		{
+			return "you are standing here, so nothing is held";
+		}
+
+		PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
+		if (projection == null)
+		{
+			return "never observed, so it holds nothing";
+		}
+		if (projection.isEmpty())
+		{
+			return "empty - holds nothing, it needs the visit to be planted";
+		}
+		if (projection.getCropState() != CropState.GROWING)
+		{
+			return "finished (" + projection.getCropState() + ") - holds nothing";
+		}
+		if (projection.isReady())
+		{
+			return "grown, waiting on a check - holds nothing";
+		}
+		if (wantsProtectionPayment(patch, projection))
+		{
+			return "growing, but owed its protection payment - lets the trip through";
+		}
+		return "growing - HOLDS the plot";
 	}
 
 	/** Whether a growing crop is protectable, asked to be protected, and not yet paid for. */
@@ -1970,6 +2098,61 @@ public class RunPlanner
 			pickUpDeferredSupplies();
 			retarget();
 		}
+	}
+
+	/**
+	 * Sends the run back for a tool it started with and no longer has.
+	 *
+	 * <h2>The gap this closes</h2>
+	 *
+	 * Whether a run needs a bank was decided once, at {@link #start}, and re-asked only for a
+	 * contract taken mid-run. So a tool that leaves your pack <b>during</b> the run — deposited
+	 * by accident is the reported way, but dropping one does it too — was never noticed by
+	 * anything. The guide's own tool step could not cover it either: it offers the leprechaun's
+	 * copy and is deliberately silent when he has none, on the grounds that a rake in your bank
+	 * is the loadout's business before setting off. Both halves were true, and between them a
+	 * spadeless run walked from patch to patch with nothing to say and nothing it could do.
+	 *
+	 * <p>So the question start asks is asked again, once a tick, against the only clause that
+	 * can newly become true mid-run: {@link ToolNeeds#anyOnlyInBank}, which is exactly "the run
+	 * needs this, you are not carrying it, and the leprechaun has not got one either". When the
+	 * <b>leprechaun</b> has one this stays silent by construction — his store is not the bank,
+	 * the clause is false, and the patch's own tool step already says "get it from him", which
+	 * is the cheaper trip and the one to prefer.
+	 *
+	 * <p>Never re-arms a leg the player waived: Skip step during the supply leg means no for the
+	 * rest of the run, and that has to outrank this or the escape hatch stops being one.
+	 */
+	public void reviewSupplies()
+	{
+		synchronized (this)
+		{
+			if (!active || atBankLeg || bankLegWaived)
+			{
+				return;
+			}
+		}
+
+		// Outside the lock, like every store walk here: RunPlanner -> Availability -> patches.
+		if (!tools.anyOnlyInBank(runTypesSnapshot()))
+		{
+			return;
+		}
+
+		synchronized (this)
+		{
+			// Re-checked under the lock, because the store walk above ran without it.
+			if (!active || atBankLeg || bankLegWaived)
+			{
+				return;
+			}
+			supplyOwed = true;
+			atBankLeg = true;
+		}
+
+		log.info("A tool the run needs is no longer on you or with the leprechaun - "
+			+ "diverting to a bank: {}", describeTools());
+		retarget();
 	}
 
 	/** Collects a supply trip deferred because the run started standing on work. */

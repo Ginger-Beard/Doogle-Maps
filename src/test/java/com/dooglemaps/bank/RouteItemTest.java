@@ -3,7 +3,7 @@ package com.dooglemaps.bank;
 import com.dooglemaps.data.ItemNames;
 import com.dooglemaps.guide.CarriedItems;
 import com.dooglemaps.route.ShortestPathIntegration;
-import java.lang.reflect.Constructor;
+import com.dooglemaps.state.DailyTeleports;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -31,6 +31,7 @@ public class RouteItemTest
 {
 	private static final int NECKLACE = 3853;
 	private static final int HOUSE_TAB = 8013;
+	private static final int CLOAK = 13123;
 
 	@Test
 	public void theFirstItemShapedTransportWins() throws Exception
@@ -160,6 +161,41 @@ public class RouteItemTest
 		assertNull(route.currentSpell());
 	}
 
+	/**
+	 * A hop the game has said is spent for the day is passed over, not resolved.
+	 *
+	 * <p>The reported case: the Ardougne cloak's farm teleport runs out after five uses and
+	 * nothing in the client can count them — see {@code DailyTeleports} — so Shortest Path
+	 * goes on planning through it, and this named the cloak as the thing to click. Once the
+	 * game has refused it outright, the next hop is the one that will actually be used.
+	 */
+	@Test
+	public void aTeleportTheGameHasRefusedTodayIsSkipped() throws Exception
+	{
+		DailyTeleports spent = Mockito.mock(DailyTeleports.class);
+		when(spent.isHopSpent("Ardougne cloak: Ardougne Farm")).thenReturn(true);
+
+		RouteItem route = routeWith(
+			Arrays.asList("Ardougne cloak: Ardougne Farm", "Games necklace (Barbarian Outpost)"),
+			names(CLOAK, "Ardougne cloak", NECKLACE, "Games necklace(8)"),
+			spent, CLOAK, NECKLACE);
+
+		assertEquals("the cloak is spent, so the necklace is the next real click",
+			NECKLACE, route.currentItemId());
+	}
+
+	/** ...and while it has charges, it is the router's pick like any other hop. */
+	@Test
+	public void theSameHopResolvesNormallyWhileItHasCharges() throws Exception
+	{
+		RouteItem route = routeWith(
+			Arrays.asList("Ardougne cloak: Ardougne Farm", "Games necklace (Barbarian Outpost)"),
+			names(CLOAK, "Ardougne cloak", NECKLACE, "Games necklace(8)"),
+			CLOAK, NECKLACE);
+
+		assertEquals(CLOAK, route.currentItemId());
+	}
+
 	// ------------------------------------------------------------------- helpers
 
 	private static Map<Integer, String> names(Object... idThenName)
@@ -174,6 +210,13 @@ public class RouteItemTest
 
 	private static RouteItem routeWith(java.util.List<String> transports,
 		Map<Integer, String> names, int... carriedIds) throws Exception
+	{
+		return routeWith(transports, names, Mockito.mock(DailyTeleports.class), carriedIds);
+	}
+
+	private static RouteItem routeWith(java.util.List<String> transports,
+		Map<Integer, String> names, DailyTeleports dailyTeleports, int... carriedIds)
+		throws Exception
 	{
 		ShortestPathIntegration router = Mockito.mock(ShortestPathIntegration.class);
 		when(router.getCurrentTransports()).thenReturn(transports);
@@ -197,9 +240,8 @@ public class RouteItemTest
 
 		Client client = Mockito.mock(Client.class);
 
-		Constructor<?> constructor = RouteItem.class.getDeclaredConstructors()[0];
-		constructor.setAccessible(true);
-		return (RouteItem) constructor.newInstance(router, itemNames, bank, carried, client);
+		return com.dooglemaps.Construct.construct(RouteItem.class, router, itemNames, bank,
+			carried, client, dailyTeleports);
 	}
 
 	/** The same, but the items are in the bank rather than on the player. */
@@ -224,9 +266,7 @@ public class RouteItemTest
 		CarriedItems carried = Mockito.mock(CarriedItems.class);
 		when(carried.getItemIds()).thenReturn(new java.util.LinkedHashSet<>());
 
-		Constructor<?> constructor = RouteItem.class.getDeclaredConstructors()[0];
-		constructor.setAccessible(true);
-		return (RouteItem) constructor.newInstance(router, itemNames, bank, carried,
-			Mockito.mock(Client.class));
+		return com.dooglemaps.Construct.construct(RouteItem.class, router, itemNames, bank,
+			carried, Mockito.mock(Client.class), Mockito.mock(DailyTeleports.class));
 	}
 }

@@ -512,6 +512,71 @@ public class GuidePlanTest
 		assertTrue(step.getText(), step.getText().toLowerCase().contains("rake"));
 	}
 
+	/**
+	 * And raked with auto-weed on, which is the state every account that hits this is in.
+	 *
+	 * <h2>Why the branch above could never fire in play</h2>
+	 *
+	 * Auto-weed stops weeds <b>growing</b>; it does not rake a patch that is already weedy — a
+	 * patch unlocked, or first reached, after the unlock still arrives with its original weeds.
+	 * But {@code GrowthTimer.project} zeroed the stage of any weeds whenever auto-weed was on,
+	 * which said the weeds standing there were not there, and the rake branch asks for exactly
+	 * "weeds at a stage above zero". So the guide walked past a weedy patch and offered the
+	 * compost step instead — reported from play, on an account with the unlock (varbit 2).
+	 *
+	 * <p>Only the counting-down should have stopped, and now only that does.
+	 */
+	@Test
+	public void aWeedyPatchIsRakedEvenWithAutoweedOn() throws Exception
+	{
+		FarmPatch patch = statePatch(0);   // weeds, unraked
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
+		carrying(CompostTier.ULTRACOMPOST.getItemID(), 4);
+		stockInventory(Seed.POTATO, 10);
+
+		PatchProjection projection = autoweeded().project(patch, patches.get(patch));
+		assertEquals("the weeds are still standing", Produce.WEEDS, projection.getProduce());
+		assertTrue("and the stage is what says so", projection.getStage() > 0);
+
+		List<GuideStep> steps = GuidePlan.forPatch(projection,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 4);
+
+		assertEquals(GuideAction.CLEAR, steps.get(0).getAction());
+		assertTrue(steps.get(0).getText(),
+			steps.get(0).getText().toLowerCase().contains("rake"));
+	}
+
+	/** A clean patch is still clean with auto-weed on - the fix must not invent weeds. */
+	@Test
+	public void aRakedPatchIsNotRakedAgainWithAutoweedOn() throws Exception
+	{
+		FarmPatch patch = statePatch(3);   // raked, empty
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
+		carrying(CompostTier.ULTRACOMPOST.getItemID(), 4);
+		stockInventory(Seed.POTATO, 10);
+
+		List<GuideStep> steps = GuidePlan.forPatch(
+			autoweeded().project(patch, patches.get(patch)),
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 4);
+
+		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
+	}
+
+	/** A growth timer whose account has the auto-weed unlock switched on. */
+	private static GrowthTimer autoweeded() throws Exception
+	{
+		ConfigManager unlocked = Mockito.mock(ConfigManager.class);
+		when(unlocked.getRSProfileConfiguration(anyString(), anyString(), eq(int.class)))
+			.thenAnswer(i -> "autoweed".equals(i.getArgument(1))
+				? GrowthTimer.AUTOWEED_ON
+				: 85);
+		GrowthTimer timer = construct(GrowthTimer.class, unlocked);
+		assertTrue("fixture is meant to have the unlock", timer.isAutoweedEnabled());
+		return timer;
+	}
+
 	/** The withdrawal says how many, so you take the right number in one go. */
 	@Test
 	public void theWithdrawalNamesAQuantity()
@@ -665,6 +730,73 @@ public class GuidePlanTest
 		assertEquals("the sapling is what goes in the ground",
 			Seed.OAK.getSaplingItemID(), step.getItemId());
 		assertTrue(step.getText(), step.getText().contains("sapling"));
+	}
+
+	/**
+	 * Planting a sapling fetches the spade, because the game will not let you plant without one.
+	 *
+	 * <h2>The wrong fact this replaces</h2>
+	 *
+	 * "Saplings go in by hand" stood in the code as the reason a tree patch asked for no tool at
+	 * all when sowing. The wiki says otherwise, in the same words on both the tree and fruit
+	 * tree patch articles: <i>"players must have a spade in their inventory when planting and
+	 * removing the stump of a tree"</i>. Only the stump half was ever modelled — so a run whose
+	 * spade sat in the leprechaun's store arrived at a tree patch, was told to plant the yew
+	 * sapling, and the game refused. Reported from play twice, the second time with the cause
+	 * attached: "maybe because it's a sapling? spade is needed to plant those".
+	 */
+	@Test
+	public void plantingASaplingFetchesTheSpadeFromTheLeprechaun() throws Exception
+	{
+		FarmPatch patch = treePatch();
+		compost.set(PatchImplementation.TREE, CompostTier.NONE);
+		stockInventory(Seed.OAK, 1);
+		carrying();                                     // no spade on the player
+		leprechaun = leprechaunHolding(FarmingTool.SPADE);
+
+		List<GuideStep> steps = steps(patch, Seed.OAK);
+
+		assertEquals("the spade first - the game refuses the planting without it",
+			GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
+		assertEquals(FarmingTool.SPADE.getItemID(), steps.get(0).getItemId());
+		assertEquals("then the sapling goes in", GuideAction.PLANT, steps.get(1).getAction());
+	}
+
+	/** With the spade already carried, the planting is the first and only word. */
+	@Test
+	public void aCarriedSpadeLeavesTheSaplingPlantingAlone() throws Exception
+	{
+		FarmPatch patch = treePatch();
+		compost.set(PatchImplementation.TREE, CompostTier.NONE);
+		stockInventory(Seed.OAK, 1);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+		leprechaun = leprechaunHolding(FarmingTool.SPADE);
+
+		assertEquals(GuideAction.PLANT, firstStep(patch, Seed.OAK).getAction());
+	}
+
+	/**
+	 * A sapling asks for the spade, never the dibber - and Barbarian Farming changes neither.
+	 *
+	 * <p>The unlock removes the seed dibber requirement, which is why it is consulted only on
+	 * the seed branch. Reading it as "no tools needed to plant" would put the tree patch back
+	 * exactly where this bug came from.
+	 */
+	@Test
+	public void barbarianFarmingDoesNotExcuseTheSaplingsSpade() throws Exception
+	{
+		FarmPatch patch = treePatch();
+		compost.set(PatchImplementation.TREE, CompostTier.NONE);
+		stockInventory(Seed.OAK, 1);
+		carrying();
+		leprechaun = leprechaunHolding(FarmingTool.SPADE, FarmingTool.SEED_DIBBER);
+		barbarian.observePlantedWithoutDibber();
+
+		List<GuideStep> steps = steps(patch, Seed.OAK);
+
+		assertEquals(FarmingTool.SPADE.getItemID(), steps.get(0).getItemId());
+		assertTrue("a sapling never wants a dibber", steps.stream()
+			.noneMatch(step -> step.getItemId() == FarmingTool.SEED_DIBBER.getItemID()));
 	}
 
 	// ------------------------------------------------------------------- helpers

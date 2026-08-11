@@ -165,6 +165,55 @@ public enum Produce
 			&& patchImplementation != PatchImplementation.BIG_COMPOST;
 	}
 
+	/**
+	 * The families the leprechaun hands straight back.
+	 *
+	 * <p>Wiki-checked on the tool leprechaun's own page, which lists what he refuses. The one
+	 * that matters in practice is <b>logs</b>: "Any type of logs" is on the refusal list, and
+	 * every tree family's {@code itemID} here is its logs, so the guide cheerfully sent players
+	 * to him with a pack of magic logs. Reported from play. Note that <i>roots</i> — the tree
+	 * patch's other harvest, and the one {@code NotableHarvests} carries — <b>are</b> noted, so
+	 * a tree dig-up is still a leprechaun trip; it is the logs half that is not.
+	 *
+	 * <p>The rest are false positives of the same shape, each one an item that would have named
+	 * a step nobody can follow:
+	 *
+	 * <ul>
+	 *   <li>{@code BELLADONNA} carries cave nightshade, untradeable and on the refusal list.</li>
+	 *   <li>{@code CRYSTAL_TREE} carries crystal shards, which stack — noting is meaningless,
+	 *       and a stack of a hundred would have outbid every real crop for the step.</li>
+	 *   <li>{@code SPIRIT_TREE} carries a dummy item that is not a drop at all.</li>
+	 *   <li>{@code CELASTRUS} carries a <i>battlestaff</i>, because that is what core's enum
+	 *       stores — so a pack with battlestaves in it read as celastrus to note. The real
+	 *       harvest is bark, which reaches the step through {@code NotableHarvests} instead,
+	 *       exactly as grimy herbs do. The id here is deliberately left alone: the farming
+	 *       contract is stored as this id and must decode back to {@code CELASTRUS}.</li>
+	 * </ul>
+	 */
+	private static final java.util.Set<PatchImplementation> LEPRECHAUN_REFUSES = java.util.EnumSet.of(
+		PatchImplementation.TREE,
+		PatchImplementation.HARDWOOD_TREE,
+		PatchImplementation.REDWOOD,
+		PatchImplementation.BELLADONNA,
+		PatchImplementation.CRYSTAL_TREE,
+		PatchImplementation.SPIRIT_TREE,
+		PatchImplementation.CELASTRUS);
+
+	/**
+	 * Whether the leprechaun will actually turn this into a bank note.
+	 *
+	 * <p>Narrower than {@link #isNotable}, which asks only whether this is a harvest rather than
+	 * a compost row. Everything that tells a player to walk to the leprechaun must ask
+	 * <b>this</b>; {@code isNotable} remains the right question for "is this finished harvest",
+	 * which is what the bank's deposit highlight wants — a noted log still belongs in the bank.
+	 *
+	 * @see #LEPRECHAUN_REFUSES
+	 */
+	public boolean isLeprechaunNotable()
+	{
+		return isNotable() && !LEPRECHAUN_REFUSES.contains(patchImplementation);
+	}
+
 	/** Minimum minutes from planting to fully grown, ignoring disease setbacks. */
 	public int getMinutesToGrow()
 	{

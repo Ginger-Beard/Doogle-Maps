@@ -5,6 +5,7 @@ import com.dooglemaps.data.FarmingTool;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProduceState;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.guide.CarriedItems;
@@ -135,10 +136,14 @@ public class RunLoadoutTest
 		leprechaun = construct(LeprechaunStore.class, leprechaunClient);
 		leprechaun.onGameTick(new net.runelite.api.events.GameTick());
 
+		// The last two are the same stores every other fixture here writes to, so a test that
+		// puts weeds on a patch is asking the real question: with auto-weed on, whether the rake
+		// is needed turns on whether any patch is actually weedy right now.
 		ToolNeeds toolNeeds = construct(ToolNeeds.class, leprechaun, carried, bank, selection,
 			construct(GrowthTimer.class, configManager),
 			construct(com.dooglemaps.state.BarbarianFarming.class, configManager,
-				Mockito.mock(com.dooglemaps.DoogleMapsConfig.class)));
+				Mockito.mock(com.dooglemaps.DoogleMapsConfig.class)),
+			availability, patches);
 		protection = construct(com.dooglemaps.state.ProtectionSelectionStore.class,
 			configManager, gson);
 		// A real teleport list would need item names, which only the client can supply, so the
@@ -242,6 +247,55 @@ public class RunLoadoutTest
 		{
 			assertEquals(item.getName(), LoadoutItem.Need.AT_LEPRECHAUN, item.getNeed());
 		}
+	}
+
+	/**
+	 * Auto-weed drops the rake from the loadout only while nothing is actually weedy.
+	 *
+	 * <h2>"Has auto-weed" is not "has no weeds"</h2>
+	 *
+	 * The unlock stops weeds <b>growing</b>. It does not rake a patch that is already weedy, so
+	 * a patch that was weedy when it was bought — or one first reached afterwards — still needs
+	 * the rake, and the loadout used to leave it in the bank on the strength of the unlock
+	 * alone. Reported from play alongside the guide's own half of the same wrong assumption: a
+	 * weedy patch, no rake fetched, and the run going straight to the compost step.
+	 */
+	@Test
+	public void autoweedDropsTheRakeWhileNothingIsWeedy()
+	{
+		stored.put("dooglemaps.autoweed", GrowthTimer.AUTOWEED_ON);
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		assertNull("with the unlock and no weeds standing, the rake is noise",
+			find(LoadoutItem.Category.TOOL, "Rake"));
+	}
+
+	/**
+	 * The other half, as its own run because the loadout answers once per tick.
+	 *
+	 * <p>Same account, same unlock, one patch that was already weedy when it was bought.
+	 */
+	@Test
+	public void aWeedyPatchStillWantsTheRakeDespiteAutoweed()
+	{
+		stored.put("dooglemaps.autoweed", GrowthTimer.AUTOWEED_ON);
+		weedyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		assertNotNull("a weedy patch needs the rake, unlock or no unlock",
+			find(LoadoutItem.Category.TOOL, "Rake"));
+	}
+
+	/** A herb patch with its weeds still standing: varbit 0 is unraked, stage 3 of 3. */
+	private void weedyHerbPatch()
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.HERB).get(0);
+		ProduceState decoded = patch.getImplementation().forVarbitValue(0);
+		assertNotNull(decoded);
+		assertEquals("fixture must be weeds", Produce.WEEDS, decoded.getProduce());
+		patches.recordVarbit(patch, 0, decoded);
+		availability.setAvailable(patch, true);
 	}
 
 	/**

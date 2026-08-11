@@ -238,11 +238,21 @@ public class RunOptionCoverageTest
 			PatchImplementation.BUSH, PatchImplementation.TREE, PatchImplementation.FRUIT_TREE,
 			PatchImplementation.HARDWOOD_TREE, PatchImplementation.CACTUS,
 			PatchImplementation.MUSHROOM, PatchImplementation.BELLADONNA,
-			PatchImplementation.CELASTRUS, PatchImplementation.CORAL))
+			PatchImplementation.CELASTRUS))
 		{
 			assertTrue(type + " can be diseased, so treating it is a real choice",
 				CropYieldModel.compostMatters(type));
 		}
+
+		// The one exception, and it is a property of the patch rather than of the crop: a coral
+		// nursery can be diseased, has a gardener who takes payment for it, and still cannot be
+		// composted — "unlike most farming patches, coral nurseries cannot be treated with
+		// compost to reduce disease risk or to increase yield". The rule above offered a
+		// dropdown for a bucket that cannot be emptied, and the run banked the buckets.
+		assertTrue("coral is diseaseable, which is what made this look like a compost patch",
+			com.dooglemaps.timer.DiseaseRisk.canCatchDisease(PatchImplementation.CORAL));
+		assertFalse("...but no compost can be applied to a coral nursery",
+			CropYieldModel.compostMatters(PatchImplementation.CORAL));
 
 		// And still not everywhere. A compost bin takes buckets and weeds rather than seeds, and
 		// offering to treat one would be nonsense.

@@ -7,6 +7,7 @@ import com.dooglemaps.capture.PatchLocationCapture;
 import com.dooglemaps.capture.ContractCapture;
 import com.dooglemaps.capture.ProtectionCapture;
 import com.dooglemaps.capture.SeedCapture;
+import com.dooglemaps.capture.TeleportChargeCapture;
 import com.dooglemaps.bank.BankContents;
 import com.dooglemaps.bank.BankFilter;
 import com.dooglemaps.bank.BankHighlightOverlay;
@@ -202,6 +203,9 @@ public class DoogleMapsPlugin extends Plugin
 	private SeedCapture seedCapture;
 
 	@Inject
+	private TeleportChargeCapture teleportChargeCapture;
+
+	@Inject
 	private SeedInventoryStore seedStore;
 
 	@Inject
@@ -322,6 +326,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(protectionCapture);
 		eventBus.register(contractCapture);
 		eventBus.register(seedCapture);
+		eventBus.register(teleportChargeCapture);
 		eventBus.register(locationCapture);
 		eventBus.register(bankCapture);
 		eventBus.register(router);
@@ -388,6 +393,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(protectionCapture);
 		eventBus.unregister(contractCapture);
 		eventBus.unregister(seedCapture);
+		eventBus.unregister(teleportChargeCapture);
 		eventBus.unregister(locationCapture);
 		eventBus.unregister(bankCapture);
 		eventBus.unregister(router);
@@ -436,6 +442,7 @@ public class DoogleMapsPlugin extends Plugin
 		harvestLog.reset();
 		protectionCapture.reset();
 		contractCapture.reset();
+		teleportChargeCapture.reset();
 		carriedItems.reset();
 		playerLocation.reset();
 		guideTracker.reset();
@@ -489,6 +496,7 @@ public class DoogleMapsPlugin extends Plugin
 		leprechaunStore.reset();
 		playerHouse.reset();
 		protectionCapture.reset();
+		teleportChargeCapture.reset();
 		seedStore.forgetSession();
 	}
 
@@ -751,6 +759,12 @@ public class DoogleMapsPlugin extends Plugin
 		// Ordered after reviewProgress deliberately: adopting the patch is what stops the guild
 		// being written off as finished, so it must not be undone by the review that runs next.
 		runPlanner.reviewContract();
+
+		// And a tool can leave your pack mid-run - deposited by accident is the reported way -
+		// which nothing used to notice, because whether the run needed a bank was decided once
+		// at the start. Silent unless the leprechaun has none either, since his copy is the
+		// cheaper trip and the guide's own tool step already offers it at the patch.
+		runPlanner.reviewSupplies();
 
 		// Which herb patches cannot be diseased, re-read rather than sampled once at login.
 		// The load fires the instant LOGGED_IN does, and the quest and diary varbits are not

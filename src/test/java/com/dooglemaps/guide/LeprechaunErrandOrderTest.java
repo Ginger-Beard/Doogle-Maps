@@ -367,6 +367,89 @@ public class LeprechaunErrandOrderTest
 			GuideAction.HARVEST, steps.get(2).getAction());
 	}
 
+	/**
+	 * Logs are never something to note. Reported from play: "they won't note logs".
+	 *
+	 * <h2>Why the guide thought otherwise</h2>
+	 *
+	 * Every tree family's {@code Produce} row carries its <b>logs</b> as the item — that is what
+	 * core's enum stores for a tree — so a pack of magic logs read as a pack of notable crop, and
+	 * the guide sent the player to a leprechaun whose own refusal list (wiki) begins "any type of
+	 * logs". The trip is not merely wasted: it is one you cannot complete, which is the worst
+	 * thing a guide can ask for.
+	 */
+	@Test
+	public void logsAreNeverOfferedForNoting() throws Exception
+	{
+		carrying(Produce.MAGIC.getItemID(), 20, ItemID.BUCKET_EMPTY, 2);
+
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+			ItemID.BUCKET_ULTRACOMPOST, null, "Withdraw ultracompost."));
+
+		bundle(steps);
+
+		assertEquals("he refuses every kind of log - there is no step to give",
+			0, steps.stream()
+				.filter(step -> step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+				.count());
+		assertEquals("the rest of the visit is unaffected",
+			GuideAction.RETURN_BUCKETS, steps.get(0).getAction());
+	}
+
+	/**
+	 * The roots off the same dig-up still are, which is why the trip survives at all.
+	 *
+	 * <p>A tree patch hands over two things and he takes exactly one of them. Pinned together
+	 * with the logs case because the tempting fix — "trees are not a noting trip" — would have
+	 * lost the half that is, and roots were themselves a reported bug once already.
+	 */
+	@Test
+	public void theRootsFromTheSameDigUpAreStillNoted() throws Exception
+	{
+		carrying(Produce.MAGIC.getItemID(), 20, ItemID.MAGIC_ROOTS, 1);
+
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.of(GuideAction.HARVEST, somePatch(), "Chop the magic tree."));
+
+		bundle(steps);
+
+		GuideStep note = stepWith(steps, GuideAction.NOTE_AT_LEPRECHAUN);
+		assertEquals("the roots are what he takes, however many logs outnumber them",
+			ItemID.MAGIC_ROOTS, note.getItemId());
+	}
+
+	/**
+	 * Celastrus bark is noted, and it took the logs fix to notice it never had been.
+	 *
+	 * <p>Core's enum stores celastrus as a <i>battlestaff</i> — what the bark is made into — so
+	 * the bark itself was invisible to the scan, exactly as grimy herbs and tree roots were
+	 * before it. The battlestaff must not stand in for it either: a pack with battlestaves in it
+	 * is not a celastrus harvest.
+	 */
+	@Test
+	public void celastrusBarkIsNotedButABattlestaffIsNot() throws Exception
+	{
+		carrying(ItemID.CELASTRUS_WOOD, 3);
+
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.of(GuideAction.HARVEST, somePatch(), "Pick the celastrus bark."));
+		bundle(steps);
+
+		assertEquals("the bark is the harvest, so the bark is what he is handed",
+			ItemID.CELASTRUS_WOOD, stepWith(steps, GuideAction.NOTE_AT_LEPRECHAUN).getItemId());
+
+		carrying(ItemID.BATTLESTAFF, 3);
+		List<GuideStep> staves = new ArrayList<>();
+		staves.add(GuideStep.of(GuideAction.HARVEST, somePatch(), "Pick the celastrus bark."));
+		bundle(staves);
+
+		assertEquals("carrying battlestaves is not carrying a crop",
+			0, staves.stream()
+				.filter(step -> step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+				.count());
+	}
+
 	private static void collapse(List<GuideStep> steps) throws Exception
 	{
 		Method method = GuideTracker.class.getDeclaredMethod(

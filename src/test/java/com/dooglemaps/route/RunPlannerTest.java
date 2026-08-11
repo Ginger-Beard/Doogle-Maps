@@ -1284,6 +1284,244 @@ public class RunPlannerTest
 	}
 
 	/** The Farming Guild's patch of a type, which is where its bank and vault also are. */
+	/**
+	 * The reported failure, rebuilt from the account's own recorded patch states.
+	 *
+	 * <h2>Why this fixture is real numbers rather than invented ones</h2>
+	 *
+	 * "It still routes me to a plot with a crop growing" survived two rounds of reading the
+	 * hold's logic and finding it correct, so the next step is not another reading — it is the
+	 * actual world it failed in. These varbit values are lifted verbatim from the reporting
+	 * account's stored snapshots for the Farming Guild plot: the flower ready, both allotments
+	 * and the herb still growing. If the hold works, this plot is not visited.
+	 *
+	 * <p>The other half of the reconstruction is {@code inTheRun}, which every other test here
+	 * gets for free because the mocked {@code PlantingGroups} answers null and the check passes
+	 * trivially. In the client it does not: the group has to be one the player ticked. Both
+	 * mocks are made to behave here, which is the only way this test can fail for the reason it
+	 * is looking for.
+	 */
+	@Test
+	public void theGuildPlotIsHeldWhileItsHerbAndAllotmentsGrow()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(12850);   // anywhere that is not the guild
+
+		groupsAndOptionsBehaveNormally(EnumSet.of(PatchImplementation.HERB,
+			PatchImplementation.ALLOTMENT, PatchImplementation.FLOWER));
+
+		// Live values from the account's stored snapshots, 2026-08-11.
+		guildState(PatchImplementation.FLOWER, 32);      // limpwurt, HARVESTABLE - the trip
+		guildState(PatchImplementation.HERB, 56);        // avantoe, GROWING stage 3 of 5
+		guildAllotments(59, 58);                         // watermelons, GROWING stages 7 and 6
+
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.HERB,
+			PatchImplementation.ALLOTMENT, PatchImplementation.FLOWER);
+		assertTrue("the ready flower is not worth the teleport while the plot is still growing",
+			planner.start(types).stream()
+				.noneMatch(stop -> stop.getRegion().getRegionId() == 4922));
+	}
+
+	/** And once they are all done, the trip is on. */
+	@Test
+	public void theGuildPlotIsVisitedOnceNothingIsStillGrowing()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(12850);
+
+		groupsAndOptionsBehaveNormally(EnumSet.of(PatchImplementation.HERB,
+			PatchImplementation.ALLOTMENT, PatchImplementation.FLOWER));
+
+		guildState(PatchImplementation.FLOWER, 32);      // limpwurt, ready
+		guildState(PatchImplementation.HERB, 57);        // avantoe, HARVESTABLE
+		guildAllotments(60, 60);                         // watermelons, ready
+
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.HERB,
+			PatchImplementation.ALLOTMENT, PatchImplementation.FLOWER);
+		assertTrue("nothing is holding it now",
+			planner.start(types).stream()
+				.anyMatch(stop -> stop.getRegion().getRegionId() == 4922));
+	}
+
+	/**
+	 * A tool that leaves your pack mid-run sends the run back for it.
+	 *
+	 * <h2>Why nothing caught this</h2>
+	 *
+	 * Whether a run needs a bank was decided once, at {@code start}, and re-asked only for a
+	 * contract taken from Jane. Deposit your spade at the second stop and no question was ever
+	 * asked again — and the guide's own tool step could not cover it either, being deliberately
+	 * silent when the leprechaun has none. Reported from play, in those words: never prompted to
+	 * withdraw one, mid run.
+	 */
+	@Test
+	public void aToolLostMidRunSendsTheRunBackForIt()
+	{
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		standingIn(12850);
+		// Seeds in hand, so the run has no reason of its own to open at a bank.
+		selection.toggle(com.dooglemaps.data.Seed.TOADFLAX);
+		stockInventory(com.dooglemaps.data.Seed.TOADFLAX, 5);
+
+		// Setting off with everything in hand: no bank leg.
+		when(tools.anyOnlyInBank(any())).thenReturn(false);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertFalse("nothing was owed at the start", planner.isAtBankLeg());
+
+		// The spade goes into the bank, and the leprechaun has none either - which is exactly
+		// what anyOnlyInBank means.
+		when(tools.anyOnlyInBank(any())).thenReturn(true);
+		planner.reviewSupplies();
+
+		assertTrue("the run diverts to a bank for it", planner.isAtBankLeg());
+	}
+
+	/**
+	 * The leprechaun's copy is the cheaper trip, so it never causes a divert.
+	 *
+	 * <p>{@code anyOnlyInBank} is false whenever he has one, and the patch's own tool step
+	 * already says "get it from him". Pinned because the tempting shape for this feature — "the
+	 * spade is not in your pack, go to a bank" — would teleport a player away from a leprechaun
+	 * standing next to them.
+	 */
+	@Test
+	public void aToolTheLeprechaunHoldsNeverDivertsTheRun()
+	{
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		standingIn(12850);
+		// Seeds in hand, so the run has no reason of its own to open at a bank.
+		selection.toggle(com.dooglemaps.data.Seed.TOADFLAX);
+		stockInventory(com.dooglemaps.data.Seed.TOADFLAX, 5);
+
+		when(tools.anyOnlyInBank(any())).thenReturn(false);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.reviewSupplies();
+
+		assertFalse("his store is not a bank trip", planner.isAtBankLeg());
+	}
+
+	/** A bank leg the player waived stays waived - the escape hatch outranks this. */
+	@Test
+	public void aWaivedBankLegIsNotReArmedByALostTool()
+	{
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		standingIn(12850);
+
+		// No seeds picked, so this run opens at a bank - which is what there is to waive.
+		when(tools.anyOnlyInBank(any())).thenReturn(false);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertTrue("this run opens at a bank", planner.isAtBankLeg());
+		planner.waiveBankLeg();
+		assertFalse("and the player pressed Skip on it", planner.isAtBankLeg());
+
+		when(tools.anyOnlyInBank(any())).thenReturn(true);
+		planner.reviewSupplies();
+
+		assertFalse("no means no for the rest of the run", planner.isAtBankLeg());
+	}
+
+	/**
+	 * The ready counter does not advertise a plot the run would refuse to visit.
+	 *
+	 * <h2>The half of the hold that was missing</h2>
+	 *
+	 * {@code selectedForRuns} — the top-left infobox's "a farm run is worth starting" number —
+	 * applied {@code heldForRegrowth} but not {@code clusterHeld}, and the two have to be the
+	 * same list or the number is a lie. Kourend, from this account's stored state, is the case:
+	 * a ripe watermelon and a ripe limpwurt beside a ranarr with most of its growth left. Start
+	 * run correctly refuses the teleport; the counter was saying "two ready, go now" about it,
+	 * which is the trip the setting exists to prevent.
+	 */
+	@Test
+	public void theReadyCounterDoesNotAdvertiseAHeldPlot()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(12850);
+		groupsAndOptionsBehaveNormally(EnumSet.of(PatchImplementation.HERB,
+			PatchImplementation.ALLOTMENT, PatchImplementation.FLOWER));
+
+		// Kourend, live values: north allotment raked empty, south ripe, flower ripe, and a
+		// ranarr in the herb patch with its growth ahead of it.
+		FarmPatch flower = kourendPatch(PatchImplementation.FLOWER);
+		FarmPatch herb = kourendPatch(PatchImplementation.HERB);
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.ALLOTMENT))
+		{
+			if (patch.getRegion().getRegionId() == 6967)
+			{
+				record(patch.getKey(), 60);          // watermelon, ready
+				availability.setAvailable(patch, true);
+			}
+		}
+		record(flower.getKey(), 32);                 // limpwurt, ready
+		availability.setAvailable(flower, true);
+		record(herb.getKey(), 32);                   // ranarr, growing
+		availability.setAvailable(herb, true);
+
+		assertFalse("a ripe flower on a plot the run will not visit is not a reason to go",
+			planner.selectedForRuns(flower));
+
+		// And the counter agrees with Start run, which is the property that was broken.
+		assertTrue("Start run refuses this plot", planner.start(EnumSet.of(
+			PatchImplementation.HERB, PatchImplementation.ALLOTMENT,
+			PatchImplementation.FLOWER)).stream()
+			.noneMatch(stop -> stop.getRegion().getRegionId() == 6967));
+	}
+
+	private static FarmPatch kourendPatch(PatchImplementation type)
+	{
+		for (FarmPatch candidate : FarmingWorldData.getPatches(type))
+		{
+			if (candidate.getRegion().getRegionId() == 6967)
+			{
+				return candidate;
+			}
+		}
+		throw new AssertionError("no " + type + " patch at Kourend");
+	}
+
+	/**
+	 * Makes the two mocks that stand between a patch and {@code inTheRun} answer like the real
+	 * thing: every patch in its plain group, and the given types ticked for a full run.
+	 */
+	private void groupsAndOptionsBehaveNormally(Set<PatchImplementation> ticked)
+	{
+		when(groups.groupFor(any())).thenAnswer(i -> i.getArgument(0) == null
+			? null
+			: com.dooglemaps.data.PlantingGroup.of(
+				((FarmPatch) i.getArgument(0)).getImplementation()));
+		when(runOptions.isSelected(any())).thenAnswer(i ->
+		{
+			com.dooglemaps.data.RunOption option = i.getArgument(0);
+			return ticked.contains(option.getGroup().getType());
+		});
+	}
+
+	private void guildState(PatchImplementation type, int varbitValue)
+	{
+		FarmPatch patch = guildPatch(type);
+		record(patch.getKey(), varbitValue);
+		availability.setAvailable(patch, true);
+	}
+
+	private void guildAllotments(int north, int south)
+	{
+		int[] values = {north, south};
+		int index = 0;
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.ALLOTMENT))
+		{
+			if (patch.getRegion().getRegionId() != 4922)
+			{
+				continue;
+			}
+			record(patch.getKey(), values[index++]);
+			availability.setAvailable(patch, true);
+		}
+		assertEquals("the guild should have two allotment patches", 2, index);
+	}
+
 	private static FarmPatch guildPatch(PatchImplementation type)
 	{
 		for (FarmPatch candidate : com.dooglemaps.data.FarmingWorldData.getPatches(type))
