@@ -30,6 +30,17 @@ public final class NotableHarvests
 	/** Item id to display name, as the note step speaks it. */
 	private static final Map<Integer, String> BY_ITEM_ID = new LinkedHashMap<>();
 
+	/**
+	 * The grimy herbs alone, because they are the one entry here with a hostile left-click.
+	 *
+	 * <p>Everything else in the table defaults to Use, which is exactly what handing it to the
+	 * leprechaun wants. A grimy herb's left-click is <b>Clean</b> — so following the note step
+	 * by clicking the highlighted herb quietly cleaned one instead, and cleaned herbs are ones
+	 * he will not note. {@code GuideMenuSwap} promotes Use over Clean while the note step is
+	 * current, and this set is how it knows which items that applies to.
+	 */
+	private static final java.util.Set<Integer> GRIMY_HERBS = new java.util.LinkedHashSet<>();
+
 	static
 	{
 		BY_ITEM_ID.put(ItemID.OAK_ROOTS, "oak roots");
@@ -40,21 +51,27 @@ public final class NotableHarvests
 
 		// One per herb Produce row. Goutweed is absent because it has no grimy form, and the
 		// raids and jungle herbs are absent because no farm patch grows them.
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_GUAM, "grimy guam");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_MARENTILL, "grimy marrentill");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_TARROMIN, "grimy tarromin");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_HARRALANDER, "grimy harralander");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_RANARR, "grimy ranarr");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_TOADFLAX, "grimy toadflax");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_IRIT, "grimy irit");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_AVANTOE, "grimy avantoe");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_KWUARM, "grimy kwuarm");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_HUASCA, "grimy huasca");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_SNAPDRAGON, "grimy snapdragon");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_CADANTINE, "grimy cadantine");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_LANTADYME, "grimy lantadyme");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_DWARF_WEED, "grimy dwarf weed");
-		BY_ITEM_ID.put(ItemID.UNIDENTIFIED_TORSTOL, "grimy torstol");
+		herb(ItemID.UNIDENTIFIED_GUAM, "grimy guam");
+		herb(ItemID.UNIDENTIFIED_MARENTILL, "grimy marrentill");
+		herb(ItemID.UNIDENTIFIED_TARROMIN, "grimy tarromin");
+		herb(ItemID.UNIDENTIFIED_HARRALANDER, "grimy harralander");
+		herb(ItemID.UNIDENTIFIED_RANARR, "grimy ranarr");
+		herb(ItemID.UNIDENTIFIED_TOADFLAX, "grimy toadflax");
+		herb(ItemID.UNIDENTIFIED_IRIT, "grimy irit");
+		herb(ItemID.UNIDENTIFIED_AVANTOE, "grimy avantoe");
+		herb(ItemID.UNIDENTIFIED_KWUARM, "grimy kwuarm");
+		herb(ItemID.UNIDENTIFIED_HUASCA, "grimy huasca");
+		herb(ItemID.UNIDENTIFIED_SNAPDRAGON, "grimy snapdragon");
+		herb(ItemID.UNIDENTIFIED_CADANTINE, "grimy cadantine");
+		herb(ItemID.UNIDENTIFIED_LANTADYME, "grimy lantadyme");
+		herb(ItemID.UNIDENTIFIED_DWARF_WEED, "grimy dwarf weed");
+		herb(ItemID.UNIDENTIFIED_TORSTOL, "grimy torstol");
+	}
+
+	private static void herb(int itemId, String name)
+	{
+		BY_ITEM_ID.put(itemId, name);
+		GRIMY_HERBS.add(itemId);
 	}
 
 	private NotableHarvests()
@@ -65,6 +82,12 @@ public final class NotableHarvests
 	public static boolean isNotable(int itemId)
 	{
 		return BY_ITEM_ID.containsKey(itemId);
+	}
+
+	/** Whether this item is a grimy herb, whose left-click is Clean rather than Use. */
+	public static boolean isGrimyHerb(int itemId)
+	{
+		return GRIMY_HERBS.contains(itemId);
 	}
 
 	/** The item's name as spoken in guide text, or null for an item not in the table. */

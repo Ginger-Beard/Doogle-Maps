@@ -126,6 +126,19 @@ public class BankFilter
 	private boolean open;
 
 	/**
+	 * Set when the player clicks away from the filter — another tab, their own tag — while the
+	 * bank is open.
+	 *
+	 * <p>Their click already closed our view; the question is only whether we fight them for
+	 * it. We did: any bank change while they were browsing re-opened the tag through
+	 * {@link #relayoutIfBankChanged}, and the once-a-tick {@link #openIfWanted} would have done
+	 * the same the moment anything nudged {@link #open} false. Being yanked back to the filter
+	 * mid-browse was reported from play as exactly what it is — rude. So leaving the filter is
+	 * an answer, and it holds until this bank closes; the next bank opens filtered as always.
+	 */
+	private boolean navigatedAway;
+
+	/**
 	 * Whether the bank is, right now, narrowed to the run.
 	 *
 	 * <p>Not the same question as {@code config.filterBankToRun()}, which is only what was asked
@@ -413,14 +426,24 @@ public class BankFilter
 	{
 		if (!open)
 		{
-			if (bankIsOpen())
+			if (!bankIsOpen())
 			{
-				// Rebuilt before opening rather than on a timer, so the first thing shown is
-				// right. A filter that is briefly wrong is worse than one that appears a moment
-				// later.
-				refresh();
-				openIfWanted();
+				// The bank the player left the filter in is gone; the next one starts
+				// filtered again.
+				navigatedAway = false;
+				return;
 			}
+			if (navigatedAway)
+			{
+				// The player clicked away from the filter this bank; reopening it under
+				// them is the jerk-back this flag exists to stop.
+				return;
+			}
+			// Rebuilt before opening rather than on a timer, so the first thing shown is
+			// right. A filter that is briefly wrong is worse than one that appears a moment
+			// later.
+			refresh();
+			openIfWanted();
 			return;
 		}
 
@@ -439,6 +462,21 @@ public class BankFilter
 			close();
 			return;
 		}
+
+		// The player clicking another tab or their own tag deactivates ours — Bank Tags'
+		// answer, not an inference. Their view is already where they put it, so there is
+		// nothing to close; the filter just stands down for the rest of this bank instead of
+		// re-asserting itself through the relayout below.
+		if (bankTags != null && !TAG.equals(bankTags.getActiveTag()))
+		{
+			log.debug("The player navigated away from the filter; leaving the bank alone");
+			open = false;
+			navigatedAway = true;
+			laidOutFor = null;
+			laidOutWanted = null;
+			return;
+		}
+
 		refresh();
 		relayoutIfBankChanged();
 	}

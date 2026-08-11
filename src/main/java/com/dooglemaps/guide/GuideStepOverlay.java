@@ -185,8 +185,12 @@ public class GuideStepOverlay extends OverlayPanel
 	 * a step nobody can perform would leave the stop reading as unfinished for the rest of the run.
 	 * Grey, and last, so it reads as a footnote rather than as the next thing to do.
 	 *
-	 * <p>Wrapped by hand because {@code LineComponent} does not wrap, and this is a sentence rather
-	 * than the short phrases every other line here is.
+	 * <p>Not wrapped by hand. It used to be, at a guessed character count, on the belief that
+	 * {@code LineComponent} could not wrap — it can ({@code lineBreakText}, against the panel's
+	 * real pixel width), and the guess sat wider than the panel, so its fragments were broken a
+	 * second time and the note came out ragged, with break points that read as new bullets.
+	 * Reported from play. One component per note, and the measuring is left to the one place
+	 * that knows the font.
 	 */
 	private void appendContractNote(GuideStatus status)
 	{
@@ -196,10 +200,7 @@ public class GuideStepOverlay extends OverlayPanel
 			return;
 		}
 
-		for (String wrapped : wrap(note, NOTE_WRAP))
-		{
-			line(wrapped, java.awt.Color.GRAY);
-		}
+		line(note, java.awt.Color.GRAY);
 	}
 
 	/**
@@ -213,39 +214,8 @@ public class GuideStepOverlay extends OverlayPanel
 	{
 		for (String line : status.getSkipped())
 		{
-			for (String wrapped : wrap(line, NOTE_WRAP))
-			{
-				line(wrapped, java.awt.Color.GRAY);
-			}
+			line(line, java.awt.Color.GRAY);
 		}
-	}
-
-	/** Characters per line for the contract note, chosen to sit inside {@link #MAX_WIDTH}. */
-	private static final int NOTE_WRAP = 44;
-
-	/** Greedy word wrap. Enough for one sentence; nothing here warrants a text engine. */
-	private static java.util.List<String> wrap(String text, int width)
-	{
-		java.util.List<String> lines = new java.util.ArrayList<>();
-		StringBuilder current = new StringBuilder();
-		for (String word : text.split(" "))
-		{
-			if (current.length() > 0 && current.length() + 1 + word.length() > width)
-			{
-				lines.add(current.toString());
-				current.setLength(0);
-			}
-			if (current.length() > 0)
-			{
-				current.append(' ');
-			}
-			current.append(word);
-		}
-		if (current.length() > 0)
-		{
-			lines.add(current.toString());
-		}
-		return lines;
 	}
 
 	/**

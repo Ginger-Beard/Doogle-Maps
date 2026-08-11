@@ -355,6 +355,23 @@ public class ContractState
 			log.debug("Time Tracking sees {} assigned while {} still read as awaiting hand-in - "
 				+ "the hand-in happened unseen", assigned.getName(), awaiting.getName());
 			recordHandedIn();
+			return;
+		}
+
+		// The same crop still ASSIGNED there is the other contradiction. The completion
+		// message clears Time Tracking's key the moment it fires, and Jane never assigns the
+		// same crop twice running — so its key still holding the crop we think is awaiting
+		// means no completion message ever came, and the record is corruption from the old
+		// patch-evidence fallback, which read a crop health-checked before the contract as a
+		// completion. Only judged while Time Tracking is actually on: switched off, its key
+		// merely goes stale, and a stale key still holding the crop is exactly what a real
+		// completion looks like from here.
+		if (assigned == awaiting && isTimeTrackingEnabled())
+		{
+			log.info("Time Tracking still has {} assigned, so no completion message ever fired - "
+				+ "clearing the awaiting-hand-in record as corruption", awaiting.getName());
+			clear(AWAITING_HAND_IN_KEY);
+			fireChanged();
 		}
 	}
 

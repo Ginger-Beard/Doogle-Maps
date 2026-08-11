@@ -52,6 +52,19 @@ public final class GuidePlan
 	 */
 	private static final int FULL_INVENTORY_SLACK = 0;
 
+	/**
+	 * The families whose <b>harvest</b> takes a spade — the game refuses the pick without one.
+	 *
+	 * <p>Herbs are wiki-stated ("a spade to harvest herbs") and were the report: the guide
+	 * said "harvest" at a patch the game would not let the player touch, spades in the bank
+	 * and the leprechaun's store both. Allotment crops come out of the ground the same way.
+	 * Flowers, hops and every regrowing family pick by hand and are deliberately absent —
+	 * extend this on evidence, not symmetry, since a wrong entry costs a pointless
+	 * leprechaun errand.
+	 */
+	private static final java.util.Set<PatchImplementation> SPADE_HARVESTED =
+		java.util.EnumSet.of(PatchImplementation.HERB, PatchImplementation.ALLOTMENT);
+
 	private GuidePlan()
 	{
 	}
@@ -196,6 +209,16 @@ public final class GuidePlan
 					"Your inventory is full - note the "
 						+ projection.getProduce().getName().toLowerCase()
 						+ " with the tool leprechaun."));
+			}
+			// The harvest itself takes a spade for these families — wiki-checked ("a spade
+			// to harvest herbs"), and the game refuses the pick outright without one. The
+			// guide said "harvest the herb" regardless, at a stop where the player's spades
+			// sat in the bank and the leprechaun's store. Reported from play. After the
+			// note, before the harvest: noting frees the slots, and the fetch is the same
+			// trip to him.
+			if (SPADE_HARVESTED.contains(patch.getImplementation()))
+			{
+				addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
 			}
 			// A "fill the box before this harvest" nudge lived here, gated on the expected
 			// yield outgrowing the pack. Removed by request as overthought: with the box on a

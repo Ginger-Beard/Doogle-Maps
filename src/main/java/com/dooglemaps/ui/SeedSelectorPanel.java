@@ -245,10 +245,18 @@ class SeedSelectorPanel extends JPanel
 		return box;
 	}
 
-	/** How many of an item are on the player, for the have-versus-need count. */
+	/**
+	 * How many of an item are on the player, for the have-versus-need count.
+	 *
+	 * <p>Including noted, which is how payments actually travel — the gardener takes the note.
+	 * This was the last counter still asking for loose ones only, after the loadout, the
+	 * estimate's budget and the guide's allocation were each fixed in turn, and it showed the
+	 * same way every time: a full stack of noted payments in the pack, and the Protect row red
+	 * off the bank's count alone until they were deposited. Reported from play.
+	 */
 	private int carriedCount(int itemId)
 	{
-		return carried == null ? 0 : carried.getCount(itemId);
+		return carried == null ? 0 : carried.getCountIncludingNoted(itemId);
 	}
 
 	/** Warning colour for a payment the run is short of. */

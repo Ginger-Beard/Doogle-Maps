@@ -80,6 +80,13 @@ public class GuideInventoryOverlay extends Overlay
 	 */
 	private static final Color DROP_BUCKET_RED = new Color(0xC4, 0x3B, 0x3B);
 
+	/**
+	 * The fill-side box highlight's own orange — a "when convenient" colour like the
+	 * bucket's red, distinct from both it and the guide colour so the three ambient
+	 * meanings stay tellable apart at a glance.
+	 */
+	private static final Color FILL_BOX_ORANGE = new Color(0xE8, 0x8D, 0x1E);
+
 	/** Both forms of the seed box, the same pair {@code SeedCapture} watches. Not SEEDBOX —
 	 * that gameval name is the Seed pack, and the packs lit up. See SeedCapture.isSeedBox. */
 	private static final int[] SEED_BOX_IDS = {
@@ -134,6 +141,22 @@ public class GuideInventoryOverlay extends Overlay
 		{
 			highlightInInventory(graphics, net.runelite.api.gameval.ItemID.BUCKET_EMPTY,
 				DROP_BUCKET_RED);
+		}
+
+		// The box, when filling it is the useful move: loose seeds in the pack that would
+		// actually go in (the swap's own six-kinds rule, shared so the two cannot drift).
+		// This direction simply had no highlight at all — the fill steps were removed long
+		// ago for hanging patch outlines off an inventory instruction, and the later
+		// re-added highlight covered only the take-seeds-out side. Reported from play,
+		// twice, as "the box never lights to fill". Ambient like the bucket, in its own
+		// orange for the same reason the bucket got its own red: it means "when
+		// convenient", and the guide colour means "this is the step".
+		if (tracker.getStatus().isRunning() && GuideMenuSwap.boxCanTakeLooseSeeds(seeds))
+		{
+			for (int boxId : SEED_BOX_IDS)
+			{
+				highlightInInventory(graphics, boxId, FILL_BOX_ORANGE);
+			}
 		}
 
 		GuideStep step = tracker.getCurrentStep();
@@ -198,11 +221,16 @@ public class GuideInventoryOverlay extends Overlay
 			// left-click swap (GuideMenuSwap, its own toggle) is untouched — it reads the box,
 			// not this. Drawn alongside the seed's own highlight, not instead: with a partial
 			// stack loose in the pack, both are true and both light up.
-			if (step.getAction() == GuideAction.PLANT && boxHoldsNeededSeeds(step.getItemId()))
+			if (step.getAction() == GuideAction.PLANT)
 			{
-				for (int boxId : SEED_BOX_IDS)
+				boolean lit = boxHoldsNeededSeeds(step.getItemId());
+				noteBoxDecision(step, lit);
+				if (lit)
 				{
-					highlightInInventory(graphics, boxId, colour);
+					for (int boxId : SEED_BOX_IDS)
+					{
+						highlightInInventory(graphics, boxId, colour);
+					}
 				}
 			}
 		}
@@ -227,6 +255,42 @@ public class GuideInventoryOverlay extends Overlay
 			&& carried.getInventoryCount(plantedItemId) < seed.getSeedsPerPatch();
 	}
 
+	/** The last box-highlight decision logged, as {@code patch#seed#answer}. */
+	@javax.annotation.Nullable
+	private String loggedBoxDecision;
+
+	/**
+	 * Says what the box highlight decided at each plant step, once per distinct answer.
+	 *
+	 * <p>Added because "the box never lights" is not diagnosable after the fact: the decision
+	 * is three live counts, and by the time it is reported all three have moved on. The gate's
+	 * logic is pinned by {@code SeedBoxHighlightTest}, so a dark box in play means one of the
+	 * inputs is not what it looks like on screen — and this line says which. Same spirit as
+	 * the errand-bundle and layout notes.
+	 */
+	private void noteBoxDecision(GuideStep step, boolean lit)
+	{
+		com.dooglemaps.data.Seed seed = com.dooglemaps.data.Seed.forItemId(step.getItemId());
+		String key = step.getPatch().getKey() + "#" + step.getItemId() + "#" + lit;
+		if (key.equals(loggedBoxDecision))
+		{
+			return;
+		}
+		loggedBoxDecision = key;
+
+		if (seed == null)
+		{
+			log.info("Seed box highlight at {}: OFF - the plant step's item {} is not in the "
+				+ "seed table at all", step.getPatch().getKey(), step.getItemId());
+			return;
+		}
+		log.info("Seed box highlight at {}: {} - {} in the box (plantable), {} loose in the "
+			+ "pack, patch takes {}",
+			step.getPatch().getKey(), lit ? "ON" : "OFF",
+			seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.SEED_BOX),
+			carried.getInventoryCount(step.getItemId()), seed.getSeedsPerPatch());
+	}
+
 	/**
 	 * Marks the way to the next stop, wherever the player is looking when they go to travel.
 	 *
@@ -248,14 +312,30 @@ public class GuideInventoryOverlay extends Overlay
 			return;
 		}
 
-		highlightDestinationRow(graphics, hint.getDestination(), colour);
-
-		// The category button is the *previous* screen once its menu is open. Marking both left
-		// the whole amulet lit up next to the row you actually want, which reads as the plugin
-		// pointing at the jewellery rather than at the destination.
-		if (matchingRows(hint.getDestination()).isEmpty())
+		// Which row to light is asked of the route's own words FIRST, the destination name
+		// second. A hop through a teleport menu names the exact row the router planned
+		// ("... - 1: Emir's Arena"), while the destination is the STOP's name — and the same
+		// box can carry that name verbatim on a different row: an Al Kharid trip planned
+		// through the Emir's Arena row highlighted "R: Al Kharid" instead, and following the
+		// highlight put the player somewhere the router immediately re-planned around —
+		// teleport home, box again, forever. Reported from play. A hint can also travel
+		// nameless now — the vehicle comes from the hops — which the wanted-list handles by
+		// simply having no destination entry.
+		java.util.List<String> wanted = rowNames(hint.getDestination());
+		if (!wanted.isEmpty())
 		{
-			highlightJewelleryCategory(graphics, hint.getDestination(), colour);
+			for (Rectangle row : matchingRows(wanted))
+			{
+				outline(graphics, row, colour);
+			}
+
+			// The category button is the *previous* screen once its menu is open. Marking both
+			// left the whole amulet lit up next to the row you actually want, which reads as
+			// the plugin pointing at the jewellery rather than at the destination.
+			if (matchingRows(wanted).isEmpty())
+			{
+				highlightJewelleryCategory(graphics, wanted, colour);
+			}
 		}
 
 		// The route travels by spell: the click is in the spellbook, or on the magic tab
@@ -390,16 +470,39 @@ public class GuideInventoryOverlay extends Overlay
 	 * player has attuned or unlocked varies per account, so there is no fixed slot to look up the
 	 * way the leprechaun's store has.
 	 */
-	private void highlightDestinationRow(Graphics2D graphics, String destination, Color colour)
+	/**
+	 * The strings a teleport-list row may be looked up by, most authoritative first.
+	 *
+	 * <p>Each route hop that carries a {@code " - "} names its row after it — "Teleport Menu
+	 * Fancy Jewellery Box - 1: Emir's Arena", "Portal Nexus - Varrock" — and those are the
+	 * router's own choices, in path order. The destination name comes last, as the fallback
+	 * it always was: the nexus's model-less destinations (Stony basalt) are only findable
+	 * that way.
+	 */
+	private java.util.List<String> rowNames(@javax.annotation.Nullable String destination)
 	{
-		for (Rectangle row : matchingRows(destination))
+		java.util.List<String> names = new java.util.ArrayList<>();
+		for (String hop : tracker.liveTransports())
 		{
-			outline(graphics, row, colour);
+			int cut = hop.lastIndexOf(" - ");
+			if (cut > 0)
+			{
+				String row = hop.substring(cut + 3).trim();
+				if (row.length() >= 2)
+				{
+					names.add(row);
+				}
+			}
 		}
+		if (destination != null)
+		{
+			names.add(destination);
+		}
+		return names;
 	}
 
 	/**
-	 * Rows naming the destination, rescanned once a tick.
+	 * Rows naming any of the wanted strings, rescanned once a tick; earlier wants win.
 	 *
 	 * <p>Cached because the search is expensive and render is per frame: it walks up to six levels
 	 * of children across five candidate interfaces, and doing that fifty times a second was enough
@@ -411,14 +514,15 @@ public class GuideInventoryOverlay extends Overlay
 	 * default mistake in an overlay, because render is where the drawing goes and the searching
 	 * ends up there with it.
 	 */
-	private java.util.List<Rectangle> matchingRows(String destination)
+	private java.util.List<Rectangle> matchingRows(java.util.List<String> wanted)
 	{
 		int tick = client.getTickCount();
-		if (tick != scannedRowTick || !destination.equals(scannedRowFor))
+		String key = String.join(" ", wanted);
+		if (tick != scannedRowTick || !key.equals(scannedRowFor))
 		{
 			scannedRowTick = tick;
-			scannedRowFor = destination;
-			scannedRows = scanRows(destination);
+			scannedRowFor = key;
+			scannedRows = scanRows(wanted);
 		}
 
 		// The search is once a tick; the MEASURING is every frame. These lists scroll, and a
@@ -457,18 +561,22 @@ public class GuideInventoryOverlay extends Overlay
 	}
 
 	/**
-	 * Finds the widgets whose rows name the destination, in whichever list is open.
+	 * Finds the widgets whose rows name one of the wanted strings, in whichever list is open.
 	 *
-	 * <p>Direct matches and aliased ones are kept apart, and the direct rows win when any
-	 * exist. The alias is a stand-in for the row that lands at the destination, not a
-	 * second answer: a nexus can hold both "Troll Stronghold" (beside the patch) and
+	 * <p>The wants are tried in order and the first with any match settles it — the route's
+	 * own row names come before the destination, so a hop planned through "1: Emir's Arena"
+	 * cannot lose to an "R: Al Kharid" row that merely shares the stop's name.
+	 *
+	 * <p>Within one want, direct matches and aliased ones are kept apart, and the direct rows
+	 * win when any exist. The alias is a stand-in for the row that lands at the destination,
+	 * not a second answer: a nexus can hold both "Troll Stronghold" (beside the patch) and
 	 * "Trollheim" (up the mountain), and lighting both told the player the plugin could
 	 * not choose. Only when no direct row exists does the aliased one carry the highlight.
 	 */
-	private java.util.List<MatchedRow> scanRows(String destination)
+	private java.util.List<MatchedRow> scanRows(java.util.List<String> wanted)
 	{
-		java.util.List<MatchedRow> found = new java.util.ArrayList<>();
-		java.util.List<MatchedRow> aliased = new java.util.ArrayList<>();
+		// One walk of the open lists, shared by every want; the walking is the expensive half.
+		java.util.List<MatchedRow> rows = new java.util.ArrayList<>();
 		java.util.List<String> seen = new java.util.ArrayList<>();
 		for (int listId : HouseTeleports.DESTINATION_LISTS)
 		{
@@ -477,33 +585,46 @@ public class GuideInventoryOverlay extends Overlay
 			{
 				continue;
 			}
-
 			for (Widget row : descendants(list, HouseTeleports.MAX_WIDGET_DEPTH))
 			{
 				String text = row.getText();
-				if (text == null || text.trim().isEmpty())
+				if (text != null && !text.trim().isEmpty())
 				{
-					continue;
-				}
-
-				seen.add(text);
-				boolean direct = HouseTeleports.namesTheSamePlaceDirectly(text, destination);
-				if (direct || HouseTeleports.namesTheSamePlace(text, destination))
-				{
-					(direct ? found : aliased).add(new MatchedRow(row, list));
+					rows.add(new MatchedRow(row, list));
+					seen.add(text);
 				}
 			}
 		}
 
-		if (found.isEmpty())
+		for (String want : wanted)
 		{
-			found = aliased;
+			java.util.List<MatchedRow> found = new java.util.ArrayList<>();
+			java.util.List<MatchedRow> aliased = new java.util.ArrayList<>();
+			for (int i = 0; i < rows.size(); i++)
+			{
+				String text = seen.get(i);
+				boolean direct = HouseTeleports.namesTheSamePlaceDirectly(text, want);
+				if (direct || HouseTeleports.namesTheSamePlace(text, want))
+				{
+					(direct ? found : aliased).add(rows.get(i));
+				}
+			}
+
+			if (found.isEmpty())
+			{
+				found = aliased;
+			}
+			if (!found.isEmpty())
+			{
+				return found;
+			}
 		}
-		if (!seen.isEmpty() && found.isEmpty())
+
+		if (!seen.isEmpty())
 		{
-			noteUnmatched(destination, seen);
+			noteUnmatched(String.join(" / ", wanted), seen);
 		}
-		return found;
+		return new java.util.ArrayList<>();
 	}
 
 	/** A destination row and the list it was found in, which its outline is clipped to. */
@@ -597,14 +718,21 @@ public class GuideInventoryOverlay extends Overlay
 	}
 
 	/**
-	 * Outlines the jewellery box category holding the destination.
+	 * Outlines the jewellery box category holding what the route wants.
 	 *
 	 * <p>Still worth marking, but it is the <i>first</i> screen rather than the last: the box
 	 * opens on six named buttons, and knowing to press Skills rather than hunting through all of
 	 * them is most of the help. Once past it,
 	 * {@link #highlightDestinationRow} marks the actual line.
+	 *
+	 * <p>The wants are tried in order and the first with any button settles it — the same rule
+	 * the rows follow, for the same reason. This used to ask only the destination, so an
+	 * Al Kharid trip the router had planned through the ring of dueling's Emir's Arena lit the
+	 * <i>glory's</i> button off the stop's bare name, and the route's own section sat dark.
+	 * Reported from play.
 	 */
-	private void highlightJewelleryCategory(Graphics2D graphics, String destination, Color colour)
+	private void highlightJewelleryCategory(Graphics2D graphics, java.util.List<String> wanted,
+		Color colour)
 	{
 		Widget frame = client.getWidget(InterfaceID.PohJewelleryBox.FRAME);
 		if (frame == null || frame.isHidden())
@@ -612,17 +740,27 @@ public class GuideInventoryOverlay extends Overlay
 			return;
 		}
 
-		for (HouseTeleports.JewelleryCategory category : HouseTeleports.JewelleryCategory.values())
+		for (String want : wanted)
 		{
-			if (!category.reaches(destination))
+			boolean any = false;
+			for (HouseTeleports.JewelleryCategory category
+				: HouseTeleports.JewelleryCategory.values())
 			{
-				continue;
-			}
+				if (!category.reaches(want))
+				{
+					continue;
+				}
 
-			Widget button = client.getWidget(category.getWidgetId());
-			if (button != null && !button.isHidden())
+				Widget button = client.getWidget(category.getWidgetId());
+				if (button != null && !button.isHidden())
+				{
+					outline(graphics, button.getBounds(), colour);
+					any = true;
+				}
+			}
+			if (any)
 			{
-				outline(graphics, button.getBounds(), colour);
+				return;
 			}
 		}
 	}

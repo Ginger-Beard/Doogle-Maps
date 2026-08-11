@@ -7,6 +7,7 @@ import com.dooglemaps.data.CropState;
 import com.dooglemaps.data.NotableHarvests;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
+import com.dooglemaps.data.SpadeClearedCrops;
 import com.dooglemaps.bank.BankContents;
 import com.dooglemaps.bank.TeleportItems;
 import com.dooglemaps.route.PatchLocationStore;
@@ -93,6 +94,9 @@ public class GuideTracker
 	/** The crops a full-pack harvest spilled onto the ground, for the pick-up step. */
 	private final DroppedProduce droppedProduce;
 
+	/** Where banks are, for the contract seed fetch — is there one at this stop to send to. */
+	private final com.dooglemaps.route.BankLocationStore bankLocations;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -103,8 +107,9 @@ public class GuideTracker
 		ContractState contracts, com.dooglemaps.DoogleMapsConfig config,
 		net.runelite.client.chat.ChatMessageManager chat,
 		com.dooglemaps.bank.RouteItem routeItem, net.runelite.api.Client client,
-		DroppedProduce droppedProduce)
+		DroppedProduce droppedProduce, com.dooglemaps.route.BankLocationStore bankLocations)
 	{
+		this.bankLocations = bankLocations;
 		this.droppedProduce = droppedProduce;
 		this.client = client;
 		this.routeItem = routeItem;
@@ -195,7 +200,7 @@ public class GuideTracker
 		{
 			for (RunStop stop : planner.getStops())
 			{
-				if (stop.getRegion().getRegionId() == player.getRegionID())
+				if (standingAt(stop, player))
 				{
 					here = stop;
 					break;
@@ -383,6 +388,7 @@ public class GuideTracker
 		lastRegion = -1;
 		loggedErrandsAt = null;
 		announcedBlock = null;
+		announcedDud = null;
 		lastNamedStop = null;
 		skippedSteps.clear();
 	}
@@ -610,9 +616,18 @@ public class GuideTracker
 			}
 		}
 
+		// One visit, said once. A full pack raises "note this with the leprechaun" from every
+		// patch still holding produce — each naming its own crop — and the panel repeated the
+		// notice under every harvest at the stop. Reported from play. Only the first survives:
+		// the list is re-derived every tick, so once that note is followed the next crop's note
+		// surfaces by itself if the pack is somehow still full.
+		collapseDuplicateNotes(steps);
+
 		// Anything waved past, dropped before anyone sees the list. Done here rather than inside
 		// stepsFor so the skip cannot leak into patchesWanting or the allocation — those are
-		// statements about the world, and a skip is a statement about the player.
+		// statements about the world, and a skip is a statement about the player. After the
+		// collapse above, so skipping the one visible note silences the notice instead of
+		// promoting the next patch's copy of it.
 		steps.removeIf(step -> skippedSteps.contains(keyOf(step)));
 
 		// What this stop is passing over, in words for the panel. The planner's own exemptions
@@ -642,14 +657,14 @@ public class GuideTracker
 	 */
 	private void appendLeavingErrandsAtFinishedStop(List<GuideStep> steps, WorldPoint player)
 	{
-		if (player.getRegionID() != workingRegion)
-		{
-			return;
-		}
-
 		for (RunStop stop : planner.getStops())
 		{
-			if (stop.getRegion().getRegionId() == workingRegion)
+			// standingAt, not a region compare: the stop that just completed can have been
+			// worked from a tile whose region id is the neighbour's — the guild's cactus
+			// patch is the reported case — and the errands vanished there the moment the
+			// stop did. Still anchored to workingRegion, so only the stop just being worked
+			// qualifies, never a completed stop walked back through later.
+			if (stop.getRegion().getRegionId() == workingRegion && standingAt(stop, player))
 			{
 				appendLeprechaunErrands(steps, stop);
 				return;
@@ -873,6 +888,7 @@ public class GuideTracker
 			// statement about this run; the next run starts with none.
 			skippedSteps.clear();
 			announcedBlock = null;
+			announcedDud = null;
 			loggedErrandsAt = null;
 			lastNamedStop = null;
 			working = null;
@@ -1020,10 +1036,25 @@ public class GuideTracker
 
 			// Worth a word only when the patch is waiting on something the player does not have.
 			// An empty patch with no seed is the case that strands runs; anything else with no
-			// steps is simply finished or growing, and needs no explanation.
+			// steps is simply finished or growing, and needs no explanation. "Waiting" implies
+			// the run was going to plant it, so a group whose full line is not ticked has
+			// nothing to explain either — nothing was ever going to go in.
 			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 			PlantingGroup group = groups.groupFor(patch);
-			if (projection == null || !projection.isEmpty() || runTypes.isHarvestOnly(group))
+			if (projection == null || !projection.isEmpty()
+				|| !runTypes.isSelected(com.dooglemaps.data.RunOption.full(group)))
+			{
+				continue;
+			}
+
+			// The contract's own patch is contractNote's to explain, and it already does, in
+			// better words — it says where the seed is *and* what to do about it. Both fired
+			// at once at the guild: "Skipping farming guild - the cadantine seeds are in your
+			// bank" stacked on top of "Your cadantine contract seed is in your bank..." said
+			// the same fact twice in one panel, and the skip wording reads as skipping the
+			// whole place because the guild's patches carry no disambiguator of their own.
+			// Reported from play, at a fresh cadantine contract.
+			if (group.isContract())
 			{
 				continue;
 			}
@@ -1141,7 +1172,141 @@ public class GuideTracker
 			steps.add(0, GuideStep.atNpc(GuideAction.TAKE_CONTRACT, anchor, -1,
 				ContractState.GUILDMASTER_JANE,
 				"Ask Guildmaster Jane for a new farming contract before you leave."));
+			return;
 		}
+
+		GuideStep fetch = contractSeedFetch(stop);
+		if (fetch != null)
+		{
+			// Front of the queue like the other contract errands. The seed is the contract's
+			// whole blocker at this point, and fetching it is what turns the rest of the
+			// guild's steps into "while you're at it" rather than "instead".
+			steps.add(0, fetch);
+		}
+	}
+
+	/**
+	 * The step that fetches the contract's seed from storage at this stop, or null.
+	 *
+	 * <p>This used to be only a note — "your seed is in your bank; withdraw it" — which could
+	 * not be the current instruction, could not be skipped, and sat in grey while the player
+	 * stood a short walk from the guild's own bank chest with the run already asking them to
+	 * dig at lesser patches. A fresh contract whose seed is banked <i>here</i> is a step, not
+	 * a footnote. Asked for from play.
+	 *
+	 * <p>Only when following it leads somewhere: the contract's patch must be part of this
+	 * stop and be ground a plant can actually reach this trip — empty, or a picked-clean
+	 * spade-cleared crop the replant machinery already knows how to take out. Anything else
+	 * standing there has its own answer (the blocked note, the dud note, or the patch's own
+	 * steps), and a withdraw step in front of those would be a shopping trip for a seed with
+	 * nowhere to go.
+	 *
+	 * <p>{@link #contractNote} asks this too, and goes quiet when it answers — the note and
+	 * the step saying the same thing at once is the duplicate this replaces.
+	 *
+	 * <p>Deliberately does not ask {@link #contractToHandIn()}: both callers have already
+	 * established there is nothing to hand in before getting here, and asking again is not
+	 * free — its patch-evidence fallback <b>records</b> a completion it detects, so a second
+	 * ask per tick is a second write. The awaiting flag is checked directly instead, which
+	 * costs a config read and changes nothing.
+	 */
+	@Nullable
+	private GuideStep contractSeedFetch(RunStop stop)
+	{
+		Produce contract = contracts.getContract();
+		if (contract == null || contracts.getAwaitingHandIn() != null
+			|| contractDudPatch() != null)
+		{
+			return null;
+		}
+
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation());
+		if (!runTypes.isSelected(com.dooglemaps.data.RunOption.full(group)))
+		{
+			return null;
+		}
+
+		Seed seed = contracts.getContractSeed();
+		if (seed == null || GuidePlan.seedAtHand(seed, seeds))
+		{
+			return null;
+		}
+
+		FarmPatch target = null;
+		for (FarmPatch patch : groups.patchesIn(group))
+		{
+			if (!stop.getPatches().contains(patch))
+			{
+				continue;
+			}
+			if (!outstandingFor(patch, stop).isEmpty())
+			{
+				// The trip already has clicks for this ground; the seed is not the blocker yet.
+				return null;
+			}
+
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection == null || projection.getProduce() == contract)
+			{
+				// Unknown ground gets no shopping trip; the contract already planted needs none.
+				return null;
+			}
+			if (!projection.isEmpty()
+				&& !(projection.isReady()
+					&& SpadeClearedCrops.isSpadeCleared(patch.getImplementation())))
+			{
+				// Occupied. Mid-growth is the blocked note's business; a picked-clean crop only
+				// counts where a spade takes it straight out, because that is the one shape the
+				// replant steps know how to clear — a spent fruit tree is finished ground.
+				return null;
+			}
+			target = patch;
+		}
+		if (target == null)
+		{
+			return null;
+		}
+
+		String storage = contractSeedStorageHere(stop, seed);
+		if (storage == null)
+		{
+			return null;
+		}
+
+		return GuideStep.of(GuideAction.FETCH_SEED, target,
+			"Withdraw your " + contract.getName().toLowerCase() + " seed from the "
+				+ storage + " here.");
+	}
+
+	/**
+	 * The storage at this stop actually holding the contract seed, in words, or null.
+	 *
+	 * <p>"Here" is the claim the step makes, so it is only made where a bank the player can use
+	 * shares the stop's region — seeded or learned, the same set the router trusts. The seed
+	 * vault is the guild's own furniture and sits beside its bank chest, so it gets the same
+	 * treatment under its own name.
+	 */
+	@Nullable
+	private String contractSeedStorageHere(RunStop stop, Seed seed)
+	{
+		int region = stop.getRegion().getRegionId();
+		if (seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.BANK) > 0)
+		{
+			for (net.runelite.api.coords.WorldPoint bank : bankLocations.getUsableBanks())
+			{
+				if (bank.getRegionID() == region)
+				{
+					return "bank";
+				}
+			}
+		}
+		if (seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.SEED_VAULT) > 0
+			&& bankLocations.getSeedVault().getRegionID() == region)
+		{
+			return "seed vault";
+		}
+		return null;
 	}
 
 	/**
@@ -1274,13 +1439,72 @@ public class GuideTracker
 			{
 				continue;
 			}
-			if (projection.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE
-				|| projection.needsHealthCheck())
+
+			// Which state counts as evidence depends on how the crop's contract completes,
+			// and the wiki is explicit about the split: a health-checked crop completes its
+			// contract AT THE CHECK, anything else completes at the final harvest. For the
+			// check-health families HARVESTABLE only exists after the check — so a
+			// HARVESTABLE bush with no completion on record was checked BEFORE the contract
+			// was taken, and the wiki's word is that such a crop can never satisfy it at
+			// all ("plant a new seed and wait for it to grow"). Reading it as a completion
+			// is exactly how a pre-checked poison ivy walked its owner to Jane with berries
+			// she would not take. Reported from play. The logged-out case this fallback
+			// exists for cannot produce it either: growth finishing offline leaves the crop
+			// grown-but-unchecked, because the check is a click only a present player can
+			// make. See contractDudPatch, which is where that state now gets its answer.
+			boolean healthChecked = patch.getImplementation().isHealthCheckRequired();
+			if (healthChecked
+				? projection.needsHealthCheck()
+				: projection.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE)
 			{
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * The standing guild crop that matches the assigned contract but can never satisfy it,
+	 * or null.
+	 *
+	 * <p>Wiki-checked: a contract crop whose <b>health check happened before the contract was
+	 * assigned</b> is spent — the check is the completion event for its whole family, it fires
+	 * once per planting, and harvesting what regrows changes nothing. The only way forward is
+	 * to dig the crop up and plant a fresh one.
+	 *
+	 * <p>That state is identified exactly as {@link #isGrownInGuild} refuses it: a check-health
+	 * crop standing {@code HARVESTABLE} (which only exists after the check) while nothing is
+	 * recorded as awaiting hand-in (a check made <i>during</i> the contract announces itself in
+	 * the chatbox, and that capture writes the record before this is ever asked). Harvest-class
+	 * crops cannot be duds — their completion event empties the patch, so a standing crop is
+	 * always still eligible.
+	 *
+	 * <p>No new steps hang off this. The run already knows how to replant a picked-clean bush or
+	 * cactus — harvest, dig up, plant — and the contract machinery already allocates the seed;
+	 * what was missing was only the refusal above and the explanation this feeds, in
+	 * {@link #contractNote}.
+	 */
+	@Nullable
+	private FarmPatch contractDudPatch()
+	{
+		Produce assigned = contracts.getContract();
+		if (assigned == null || contracts.getAwaitingHandIn() != null
+			|| !assigned.getPatchImplementation().isHealthCheckRequired())
+		{
+			return null;
+		}
+
+		for (FarmPatch patch : groups.patchesIn(
+			com.dooglemaps.data.PlantingGroup.contract(assigned.getPatchImplementation())))
+		{
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null && projection.getProduce() == assigned
+				&& projection.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE)
+			{
+				return patch;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -1304,6 +1528,19 @@ public class GuideTracker
 		if (contract == null || contractToHandIn() != null)
 		{
 			return null;
+		}
+
+		// Said even while the steps are already walking the player through it, because the
+		// steps alone read as vandalism: "dig up the poison ivy" at a healthy producing bush
+		// needs its why. missingContractSeed stays quiet here — it treats the contract crop
+		// being in the ground as "seed already spent", which is exactly wrong for a dud —
+		// so the fresh seed is asked for in this wording instead.
+		if (contractDudPatch() != null)
+		{
+			announceDudContract(contract);
+			return "The " + contract.getName().toLowerCase() + " here was health-checked "
+				+ "before the contract was taken, so it can never count for it. Dig it up "
+				+ "and plant a fresh " + contract.getName().toLowerCase() + " seed.";
 		}
 
 		String missing = missingContractSeed(contract);
@@ -1350,13 +1587,23 @@ public class GuideTracker
 				&& seed != null && !GuidePlan.seedAtHand(seed, seeds))
 			{
 				// Owned — missingContractSeed above already returned for "owns none" — just
-				// not on you. The run's supply leg fetches it; say where it is meanwhile.
+				// not on you. Where the storage holding it is at this very stop, the fetch is
+				// a real step on the panel and the note saying it too would be the duplicate
+				// this used to produce. The note survives only for the stops that cannot act:
+				// the seed is in a bank somewhere else, and saying where is all there is.
+				if (contractSeedFetch(here) != null)
+				{
+					return null;
+				}
+				// A semicolon rather than " - ": the overlay wraps this at panel width, and a
+				// break landing just before the dash opened the next line with "- withdraw",
+				// which reads as another step in the checklist above it. Reported from play.
 				return "Your " + contract.getName().toLowerCase() + " contract seed is "
-					+ whereSeedsAre(seed) + " - withdraw it to plant the contract this trip.";
+					+ whereSeedsAre(seed) + "; withdraw it to plant the contract this trip.";
 			}
 
 			return "Your " + contract.getName().toLowerCase()
-				+ " contract is not part of this run - tick Farming contract to include it.";
+				+ " contract is not part of this run; tick Farming contract to include it.";
 		}
 
 		// Said in the chatbox as well as here, once. The panel note is only read by someone already
@@ -1399,6 +1646,39 @@ public class GuideTracker
 				.append(" wants a patch with a " + blocking.getName().toLowerCase()
 					+ " still growing in it. You can remove it to get on with the contract, or "
 					+ "wait until it is ready.")
+				.build())
+			.build());
+	}
+
+	/** The contract already announced as a dud, so it is said once per run like the block. */
+	@Nullable
+	private String announcedDud;
+
+	/**
+	 * Says, once, that the standing crop cannot complete the contract.
+	 *
+	 * <p>A chat line as well as the panel note, same reasoning as the blocked contract: the run
+	 * is about to ask for a healthy producing bush to be dug up, which without its why reads as
+	 * the guide malfunctioning. The one situation in the contract cycle the game itself never
+	 * explains — Jane just restates the assignment as if nothing were planted.
+	 */
+	private void announceDudContract(Produce contract)
+	{
+		if (contract.name().equals(announcedDud))
+		{
+			return;
+		}
+		announcedDud = contract.name();
+
+		chat.queue(net.runelite.client.chat.QueuedMessage.builder()
+			.type(net.runelite.api.ChatMessageType.GAMEMESSAGE)
+			.runeLiteFormattedMessage(new net.runelite.client.chat.ChatMessageBuilder()
+				.append(net.runelite.client.chat.ChatColorType.HIGHLIGHT)
+				.append("Your " + contract.getName().toLowerCase() + " contract")
+				.append(net.runelite.client.chat.ChatColorType.NORMAL)
+				.append(" cannot be completed by the " + contract.getName().toLowerCase()
+					+ " already growing here - its health was checked before the contract was "
+					+ "taken. Dig it up and plant a fresh one.")
 				.build())
 			.build());
 	}
@@ -1602,10 +1882,53 @@ public class GuideTracker
 	 * tick after the answer had already named the nexus. Live here, exactly as
 	 * {@link #furnitureServesTheRoute} already reads it, so the overlay and the tracker agree
 	 * within the same frame. Client thread only.
+	 *
+	 * <h2>The house keeps the last plan that entered it</h2>
+	 *
+	 * A house is an instance, and arriving in one is exactly when the router's answer goes
+	 * away: it cannot path from inside, so the hop list that said "Teleport to House, Enter
+	 * Catherby Portal" empties the moment the teleport lands. With nothing to match and the
+	 * leg unnamed — a many-stop run does not know which stop the router had picked — every
+	 * question the overlay asks came back empty, and the exit portal lit as the last resort
+	 * while the player stood beside the nexus their own route had chosen. Reported from play,
+	 * repeatedly. So the last hop list that planned <i>through</i> the house is kept, and
+	 * answers for the house while the live list is empty; a fresh non-empty answer replaces
+	 * it, and a plan that does not mention the house clears it.
 	 */
 	public List<String> liveTransports()
 	{
-		return new ArrayList<>(planner.getCurrentTransports());
+		List<String> live = new ArrayList<>(planner.getCurrentTransports());
+		if (!planner.isActive())
+		{
+			houseLegTransports = java.util.Collections.emptyList();
+			return live;
+		}
+
+		if (!live.isEmpty())
+		{
+			houseLegTransports = mentionsTheHouse(live)
+				? new ArrayList<>(live)
+				: java.util.Collections.<String>emptyList();
+			return live;
+		}
+
+		return house.isInside() ? houseLegTransports : live;
+	}
+
+	/** The remembered house-bound hop list; see {@link #liveTransports}. */
+	private List<String> houseLegTransports = java.util.Collections.emptyList();
+
+	/** Whether any hop names the house — the "Teleport to House" leg, in the router's words. */
+	private static boolean mentionsTheHouse(List<String> hops)
+	{
+		for (String hop : hops)
+		{
+			if (hop != null && hop.toLowerCase().contains("house"))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** The object the route's first hop goes through, or null. Live, like the transports. */
@@ -1679,6 +2002,30 @@ public class GuideTracker
 			}
 		}
 		return held.isEmpty() ? "none" : String.join(", ", held);
+	}
+
+	/**
+	 * Keeps only the first "note this with the leprechaun" step in the list.
+	 *
+	 * <p>The note is raised per patch — each names the crop that patch would add to a pack with
+	 * no room for it — but the trip it asks for is one trip, and a stop with four harvestable
+	 * patches listed it four times. The first occurrence is the working patch's, which names the
+	 * crop being harvested right now, so it is the copy worth keeping.
+	 */
+	private static void collapseDuplicateNotes(List<GuideStep> steps)
+	{
+		boolean seen = false;
+		for (java.util.Iterator<GuideStep> it = steps.iterator(); it.hasNext(); )
+		{
+			if (it.next().getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+			{
+				if (seen)
+				{
+					it.remove();
+				}
+				seen = true;
+			}
+		}
 	}
 
 	private static boolean containsAction(List<GuideStep> steps, GuideAction action)
@@ -1938,6 +2285,17 @@ public class GuideTracker
 		// the allocation is what makes the guidance and the promise the same thing.
 		Seed chosen = allocationFor(group).seedFor(patch);
 
+		// Full treatment only for a group whose full line is actually ticked, not merely one
+		// that is not harvest-only. The two differ for a patch standing at a stop while its
+		// group has no line ticked at all — a contract hand-in re-groups the guild's old
+		// contract patch back into its plain group mid-run, and if that group is unticked the
+		// old rule read it as a full run and offered to dig up the picked-clean crop. Reported
+		// from play: a poison ivy, harvested for its contract moments earlier, got a "dig it
+		// up" step the player never asked for. Digging up a regrowing crop is only wanted
+		// where the player has said "replant these" — the full tick — or where the contract
+		// machinery says so through its own ticked line.
+		boolean fullRun = runTypes.isSelected(com.dooglemaps.data.RunOption.full(group));
+
 		// The allocation only names seeds for patches this trip can still plant, so for a crop
 		// already in the ground `chosen` is null — and the protection question was being asked
 		// of a null seed, which is never protected. That made the payment step unreachable for
@@ -1952,7 +2310,7 @@ public class GuideTracker
 			snapshot == null ? null : snapshot.getCompost(),
 			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
 			!alreadyPaid && protection.isProtecting(group, inGround),
-			harvestShapedOnly || runTypes.isHarvestOnly(group), patchesToTreat);
+			harvestShapedOnly || !fullRun, patchesToTreat);
 	}
 
 	// An expectedYield() helper lived here, feeding GuidePlan's pre-harvest seed-box nudge.
@@ -2176,10 +2534,13 @@ public class GuideTracker
 	@Nullable
 	private TravelHint travelHint(@Nullable String destination)
 	{
-		if (destination == null)
-		{
-			return null;
-		}
+		// A nameless destination is not a hint-less leg. destinationStop only names the trip
+		// when it can do so without guessing, and a null here used to drop the whole hint —
+		// so a run too ambiguous to name travelled with no spell line, no item highlight and
+		// no spellbook outline, while the via-lines happily listed the hops. Reported from
+		// play: "via Teleport to House" on screen and nothing lit. The vehicle comes from the
+		// route's hops, not from the name; only the destination-keyed extras (the nexus row,
+		// the jewellery category) go quiet, and their overlays already null-guard.
 
 		// The route's own pick can be a house teleport you have already taken: Shortest Path
 		// words a hop like "Teleport to house via Catherby Portal", which resolves to the
@@ -2374,6 +2735,8 @@ public class GuideTracker
 	@Nullable
 	private RunStop stopAt(WorldPoint player)
 	{
+		// Exact region matches first, so a stop can never lose its own region's ground to a
+		// neighbour's edge tolerance.
 		for (RunStop stop : planner.getRemaining())
 		{
 			if (stop.getRegion().getRegionId() == player.getRegionID())
@@ -2381,7 +2744,56 @@ public class GuideTracker
 				return stop;
 			}
 		}
+		for (RunStop stop : planner.getRemaining())
+		{
+			if (standingAt(stop, player))
+			{
+				return stop;
+			}
+		}
 		return null;
+	}
+
+	/**
+	 * How far past its region's edge a stop still claims the player, in tiles.
+	 *
+	 * <p>A stop is a 64x64 map region, and nothing pins its patches to the middle: the
+	 * Farming Guild's cactus patch works out to sit close enough to the edge that standing
+	 * on its far side put the player's region id one column over — and every region-keyed
+	 * question answered "between stops" at once: the step list emptied, the note step went
+	 * with it, and the leprechaun stopped highlighting until the player walked ~6 tiles back
+	 * over an invisible line. Reported from play. Ten tiles covers standing anywhere around
+	 * a patch while staying far too small to claim a player genuinely travelling away.
+	 */
+	private static final int STOP_EDGE_TILES = 10;
+
+	/**
+	 * Whether the player is standing at this stop, region edges notwithstanding: the stop's
+	 * own region, or a touching one within {@link #STOP_EDGE_TILES} of one of its patches.
+	 *
+	 * <p>The distance needs a learned patch location, which is the right failure direction —
+	 * a patch never walked up to has nothing to measure from, and also no work the player
+	 * could be standing beside.
+	 */
+	private boolean standingAt(RunStop stop, WorldPoint player)
+	{
+		int region = stop.getRegion().getRegionId();
+		if (region == player.getRegionID())
+		{
+			return true;
+		}
+		if (!regionsTouch(region, player.getRegionID()))
+		{
+			return false;
+		}
+		for (FarmPatch patch : stop.getPatches())
+		{
+			if (distance(player, patch) <= STOP_EDGE_TILES)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

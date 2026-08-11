@@ -104,6 +104,48 @@ public class GuidePlanTest
 	}
 
 	/**
+	 * A spadeless harvest fetches the spade first, when the leprechaun holds one.
+	 *
+	 * <h2>The game will not let you pick without it</h2>
+	 *
+	 * Herb and allotment crops come out of the ground with a spade — wiki-stated for herbs
+	 * ("a spade to harvest herbs") and refused outright by the game either way. The guide
+	 * said "harvest the herb" regardless, at a stop where the player's spades sat in the
+	 * bank and the leprechaun's store both. Reported from play. The bank half is the
+	 * loadout's job; here the fetch goes in front of the pick, same as the rake and the
+	 * dibber always have.
+	 */
+	@Test
+	public void aSpadelessHarvestFetchesTheSpadeFromTheLeprechaun() throws Exception
+	{
+		FarmPatch patch = statePatch(10);   // potatoes, harvestable - an allotment
+		carrying();                          // no spade on the player
+		leprechaun = leprechaunHolding(FarmingTool.SPADE);
+
+		List<GuideStep> steps = GuidePlan.forPatch(
+			growthTimer.project(patch, patches.get(patch)),
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			leprechaun, barbarian, false, false, 1);
+
+		assertEquals("the spade first - the game refuses the pick without it",
+			GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
+		assertEquals(FarmingTool.SPADE.getItemID(), steps.get(0).getItemId());
+		assertEquals("then the harvest", GuideAction.HARVEST, steps.get(1).getAction());
+	}
+
+	/** With the spade already in the pack, the harvest stays the first and only word. */
+	@Test
+	public void aCarriedSpadeLeavesTheHarvestAlone() throws Exception
+	{
+		FarmPatch patch = statePatch(10);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+		leprechaun = leprechaunHolding(FarmingTool.SPADE);
+
+		GuideStep step = firstStep(patch, Seed.POTATO);
+		assertEquals(GuideAction.HARVEST, step.getAction());
+	}
+
+	/**
 	 * A harvest is never interrupted by the seed box.
 	 *
 	 * <p>Two box steps lived here over time — a pre-harvest "fill the box" gated on the expected

@@ -24,6 +24,7 @@ import com.google.gson.Gson;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
+import javax.annotation.Nullable;
 import net.runelite.api.Item;
 import net.runelite.api.ItemContainer;
 import net.runelite.api.gameval.ItemID;
@@ -1096,6 +1097,176 @@ public class RunLoadoutTest
 	public void noPatchTypesMeansNoLoadout()
 	{
 		assertTrue(loadout.forRun(EnumSet.noneOf(PatchImplementation.class)).isEmpty());
+	}
+
+	/**
+	 * Payment rows follow the allocation, exactly as the seed rows do.
+	 *
+	 * <p>The reported run: five magic saplings, plenty of yews, 49 coconuts, every tree patch
+	 * empty. The coconuts protect one magic at 25 each, so the allocation plants one magic and
+	 * gives the yews the rest — and the seed rows said so. The payment rows did their own
+	 * arithmetic instead: every payment times <i>every</i> patch in the group, which asked for
+	 * seven patches of coconuts (175) and seven of spines (70). The spine figure was simply
+	 * wrong beside six yews; the coconut one then went over what the player held, so the row
+	 * fell off the withdraw list as MISSING — a loadout that said to plant a magic and bring
+	 * no coconuts. Reported from play.
+	 */
+	@Test
+	public void paymentRowsFollowTheAllocationRatherThanTheWholeGroup()
+	{
+		int patches = readyAllTreePatches();
+		selection.toggle(Seed.MAGIC);   // picked first, so the magics outrank the yews
+		selection.toggle(Seed.YEW);
+		// One combined record: seeds.record swaps the whole container in, so two calls of
+		// the single-seed helper would leave only the second seed owned.
+		bankHolds(Seed.MAGIC.getItemID(), 5);
+		bankHolds(Seed.YEW.getItemID(), 74);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(Seed.MAGIC.getItemID(), 5, Seed.YEW.getItemID(), 74));
+		com.dooglemaps.data.PlantingGroup trees =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE);
+		protection.setProtecting(trees, Seed.MAGIC, true);
+		protection.setProtecting(trees, Seed.YEW, true);
+		bankHolds(ItemID.COCONUT, 49);
+		bankHolds(ItemID.CACTUS_SPINE, 200);
+
+		int magics = 49 / 25;
+		int yews = patches - magics;
+
+		LoadoutItem coconuts = payment(ItemID.COCONUT);
+		assertNotNull("the one magic the coconuts afford still wants its payment", coconuts);
+		assertEquals("25 per magic, for the magics actually being planted",
+			25 * magics, coconuts.getQuantity());
+		assertEquals("49 in the bank covers that, so it is a withdrawal, not missing",
+			LoadoutItem.Need.WITHDRAW, coconuts.getNeed());
+
+		LoadoutItem spines = payment(ItemID.CACTUS_SPINE);
+		assertNotNull(spines);
+		assertEquals("10 per yew, for the patches the yews actually take",
+			10 * yews, spines.getQuantity());
+		assertEquals(LoadoutItem.Need.WITHDRAW, spines.getNeed());
+	}
+
+	/** And a crop the payments cannot cover at all asks for nothing rather than for zero. */
+	@Test
+	public void anUnaffordableCropContributesNoPaymentRow()
+	{
+		readyAllTreePatches();
+		selection.toggle(Seed.MAGIC);
+		selection.toggle(Seed.YEW);
+		// One combined record: seeds.record swaps the whole container in, so two calls of
+		// the single-seed helper would leave only the second seed owned.
+		bankHolds(Seed.MAGIC.getItemID(), 5);
+		bankHolds(Seed.YEW.getItemID(), 74);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(Seed.MAGIC.getItemID(), 5, Seed.YEW.getItemID(), 74));
+		com.dooglemaps.data.PlantingGroup trees =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE);
+		protection.setProtecting(trees, Seed.MAGIC, true);
+		protection.setProtecting(trees, Seed.YEW, true);
+		// Not enough for a single magic: the allocation gives them all to the yews.
+		bankHolds(ItemID.COCONUT, 24);
+		bankHolds(ItemID.CACTUS_SPINE, 200);
+
+		assertNull("no magic is being planted, so no coconuts are asked for",
+			payment(ItemID.COCONUT));
+	}
+
+	/**
+	 * The whole reported scenario, stocks verbatim from the live profile: saplings split
+	 * across bank and vault, payments capping the magics.
+	 *
+	 * <p>55 coconuts protect two magics at 25 each, so the allocation plants 2 magics and
+	 * 5 yews across the 7 patches. The magic saplings sit 1 in the bank and 4 in the vault —
+	 * and the fetch now says exactly that: one row per container, 1 from the bank, 1 from
+	 * the vault. The old single-container rule sent the whole errand to the vault, and the
+	 * bank's count then said "take 2" over a slot holding one — which read as the arithmetic
+	 * being wrong rather than as a second container being involved. Reported from play.
+	 */
+	@Test
+	public void aFetchNeitherContainerCoversIsSplitAcrossBoth()
+	{
+		int patches = readyAllTreePatches();
+		selection.toggle(Seed.MAGIC);
+		selection.toggle(Seed.YEW);
+		com.dooglemaps.data.PlantingGroup trees =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE);
+		protection.setProtecting(trees, Seed.MAGIC, true);
+		protection.setProtecting(trees, Seed.YEW, true);
+
+		bankHolds(Seed.MAGIC.getPlantedItemID(), 1);
+		bankHolds(Seed.YEW.getPlantedItemID(), 6);
+		bankHolds(ItemID.COCONUT, 55);
+		bankHolds(ItemID.CACTUS_SPINE, 93);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(Seed.MAGIC.getPlantedItemID(), 1, Seed.YEW.getPlantedItemID(), 6));
+		seeds.record(com.dooglemaps.state.SeedSource.SEED_VAULT.getContainerId(),
+			containerOf(Seed.MAGIC.getPlantedItemID(), 4, Seed.YEW.getPlantedItemID(), 68));
+
+		int magics = 55 / 25;
+		int yews = patches - magics;
+
+		List<LoadoutItem> magic = seedRows(Seed.MAGIC);
+		assertEquals("one row per container holding a share", 2, magic.size());
+		assertEquals("the bank's share is the one sapling it holds",
+			LoadoutItem.From.BANK, magic.get(0).getFrom());
+		assertEquals(1, magic.get(0).getWithdrawCount());
+		assertEquals("the vault covers the rest",
+			LoadoutItem.From.SEED_VAULT, magic.get(1).getFrom());
+		assertEquals(magics - 1, magic.get(1).getWithdrawCount());
+
+		List<LoadoutItem> yew = seedRows(Seed.YEW);
+		assertEquals("a container that covers it alone keeps a single row", 1, yew.size());
+		assertEquals(yews, yew.get(0).getQuantity());
+		assertEquals(LoadoutItem.From.BANK, yew.get(0).getFrom());
+
+		assertEquals(25 * magics, payment(ItemID.COCONUT).getQuantity());
+		assertEquals(10 * yews, payment(ItemID.CACTUS_SPINE).getQuantity());
+	}
+
+	/** The seed rows of a tree run for one crop, in list order. */
+	private List<LoadoutItem> seedRows(Seed seed)
+	{
+		List<LoadoutItem> rows = new java.util.ArrayList<>();
+		for (LoadoutItem item : loadout.forRun(EnumSet.of(PatchImplementation.TREE)))
+		{
+			if (item.getCategory() == LoadoutItem.Category.SEED
+				&& item.getItemId() == seed.getPlantedItemID())
+			{
+				rows.add(item);
+			}
+		}
+		return rows;
+	}
+
+	/** A payment row of a tree run, by its item id. */
+	@Nullable
+	private LoadoutItem payment(int itemId)
+	{
+		for (LoadoutItem item : loadout.forRun(EnumSet.of(PatchImplementation.TREE)))
+		{
+			if (item.getCategory() == LoadoutItem.Category.PAYMENT && item.getItemId() == itemId)
+			{
+				return item;
+			}
+		}
+		return null;
+	}
+
+	/** Every tree patch in the data, empty and switched on. */
+	private int readyAllTreePatches()
+	{
+		int count = 0;
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.TREE))
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(0);
+			assertNotNull(decoded);
+			patches.recordVarbit(patch, 0, decoded);
+			availability.setAvailable(patch, true);
+			count++;
+		}
+		assertTrue("this scenario wants several tree patches", count >= 2);
+		return count;
 	}
 
 	// ------------------------------------------------------------------- helpers

@@ -236,6 +236,94 @@ public class ContractHandInOrderTest
 		assertTrue("and nothing to say about it", queued().isEmpty());
 	}
 
+	/**
+	 * A crop health-checked <b>before</b> the contract was assigned is not read as a completion.
+	 *
+	 * <h2>The poison ivy report</h2>
+	 *
+	 * Wiki-checked: a check-health crop completes its contract at the check, the check fires once
+	 * per planting, and one made before the assignment can never satisfy it — "they will need to
+	 * plant a new seed and wait for it to grow". The patch-evidence fallback read the standing
+	 * {@code HARVESTABLE} bush as a completion nothing had recorded, wrote it to config, and
+	 * marched the player to Jane with berries she would not take. {@code HARVESTABLE} only exists
+	 * <i>after</i> the check for these families, and a check made during the contract announces
+	 * itself in the chatbox — so this state with nothing awaiting is exactly the pre-checked dud.
+	 */
+	@Test
+	public void aPreCheckedCropIsNotMistakenForACompletedContract() throws Exception
+	{
+		when(contracts.getContract()).thenReturn(Produce.POTATO_CACTUS);
+		when(contracts.getAwaitingHandIn()).thenReturn(null);
+		when(contracts.hasContract()).thenReturn(true);
+		// Post-check and picked clean - the state the report ended in after the harvest.
+		project(cactus, Produce.POTATO_CACTUS, CropState.HARVESTABLE, 0);
+
+		List<GuideStep> steps = errands();
+
+		assertFalse("Jane will not take it, so the guide must not send you",
+			has(steps, GuideAction.HAND_IN_CONTRACT));
+		assertFalse("and the contract is still assigned, so there is nothing to ask for",
+			has(steps, GuideAction.TAKE_CONTRACT));
+		Mockito.verify(contracts, Mockito.never()).recordCompleted();
+	}
+
+	/** The logged-out case the fallback exists for still works: grown, unchecked, detected. */
+	@Test
+	public void aGrownUncheckedContractIsStillDetected() throws Exception
+	{
+		when(contracts.getContract()).thenReturn(Produce.POTATO_CACTUS);
+		when(contracts.getAwaitingHandIn()).thenReturn(null);
+		when(contracts.hasContract()).thenReturn(true);
+		project(cactus, Produce.POTATO_CACTUS, CropState.GROWING,
+			Produce.POTATO_CACTUS.getStages() - 1, 0);
+
+		errands();
+
+		Mockito.verify(contracts).recordCompleted();
+	}
+
+	/** A harvest-class crop cannot be a dud - standing grown is still completion evidence. */
+	@Test
+	public void aGrownHerbStillReadsAsACompletion() throws Exception
+	{
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		assertNotNull("the Farming Guild has no herb patch in the data", herb);
+		when(groups.patchesIn(PlantingGroup.contract(PatchImplementation.HERB)))
+			.thenReturn(Collections.singletonList(herb));
+
+		when(contracts.getContract()).thenReturn(Produce.RANARR);
+		when(contracts.getAwaitingHandIn()).thenReturn(null);
+		when(contracts.hasContract()).thenReturn(true);
+		project(herb, Produce.RANARR, CropState.HARVESTABLE, 3);
+
+		errands();
+
+		Mockito.verify(contracts).recordCompleted();
+	}
+
+	/** The dud is explained - in the panel note and once in the chatbox - not just refused. */
+	@Test
+	public void aPreCheckedCropSaysWhyItIsBeingReplanted() throws Exception
+	{
+		when(contracts.getContract()).thenReturn(Produce.POTATO_CACTUS);
+		when(contracts.getAwaitingHandIn()).thenReturn(null);
+		when(contracts.hasContract()).thenReturn(true);
+		project(cactus, Produce.POTATO_CACTUS, CropState.HARVESTABLE, 0);
+
+		String note = note();
+		assertNotNull("digging up a healthy crop needs its why", note);
+		assertTrue("it says the check came first: " + note,
+			note.contains("health-checked before the contract"));
+		assertTrue("and what to do about it: " + note, note.contains("Dig it up"));
+
+		note();
+		note();
+		java.util.List<QueuedMessage> said = queued();
+		assertEquals("said once, not once a tick", 1, said.size());
+		assertTrue("the chat line carries the same explanation",
+			said.get(0).getRuneLiteFormattedMessage().contains("checked before the contract"));
+	}
+
 	// ------------------------------------------------------------------- helpers
 
 	/** A run standing in the guild, with {@code occupant} mid-growth in the contract's patch. */

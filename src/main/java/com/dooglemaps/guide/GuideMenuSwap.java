@@ -80,15 +80,28 @@ public class GuideMenuSwap
 
 		GuideStep step = tracker.getCurrentStep();
 
-		// Jane's Contract option, while a contract step is current. The one step-driven swap
-		// left, so it only wins at the moment the guide is pointing at her — and matched on
-		// the NPC rather than an item id. Requested from play.
+		// Jane's Contract option, while a contract step is current. Step-driven, so it only
+		// wins at the moment the guide is pointing at her — and matched on the NPC rather
+		// than an item id. Requested from play.
 		if (config.contractLeftClick() && step != null
 			&& (step.getAction() == GuideAction.HAND_IN_CONTRACT
 				|| step.getAction() == GuideAction.TAKE_CONTRACT))
 		{
 			promote("Contract", entry -> entry.getNpc() != null
 				&& com.dooglemaps.state.ContractState.JANE_NPC_IDS.contains(entry.getNpc().getId()));
+		}
+
+		// A grimy herb's Use option, while a note step is current. Every other crop he notes
+		// already defaults to Use; a grimy herb's left-click is Clean, so following the
+		// highlight quietly cleaned a herb instead — and cleaned herbs are ones he will not
+		// note. Requested from play. Any grimy herb, not just the one the step names: the
+		// step points at the biggest stack, the visit notes them all, and the menu being
+		// reordered is only ever the hovered item's own.
+		if (config.herbUseLeftClick() && step != null
+			&& step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+		{
+			promote("Use", entry ->
+				com.dooglemaps.data.NotableHarvests.isGrimyHerb(entry.getItemId()));
 		}
 	}
 
@@ -179,8 +192,11 @@ public class GuideMenuSwap
 	 * kind is already boxed always fits; a new kind fits only while a slot is free. Saplings
 	 * are left out — the box will not take one, and for tree crops the count cannot tell an
 	 * acorn from the sapling it became.
+	 *
+	 * <p>Package-visible for {@code GuideInventoryOverlay}: the fill-side box highlight is
+	 * this same question, and two copies of the six-kinds rule would drift.
 	 */
-	private static boolean boxCanTakeLooseSeeds(SeedInventoryStore seeds)
+	static boolean boxCanTakeLooseSeeds(SeedInventoryStore seeds)
 	{
 		int kindsBoxed = 0;
 		for (Seed seed : Seed.values())

@@ -666,9 +666,302 @@ when you run out of seeds, our seed inventory should keep them listed in the pla
 > itself proof of belonging. Visible means untickable/reorderable again. Test added.
 
 when having to note an item on lep when your inventory is full, the infobox freaks out and puts the notice under each of the steps. Also before your inventory is full it puts that at the bottom of the list?
+> RESOLVED (the freak-out; the bottom-of-list one is intended, see below).
+> - The repeat: the full-pack note step is raised per PATCH - every patch at the stop with
+>   produce to pick added its own copy, each naming its own crop, so four harvestable patches
+>   read as four leprechaun trips. GuideTracker.collapseDuplicateNotes now keeps only the
+>   first (the working patch's, naming the crop being harvested right now); the list is
+>   re-derived every tick, so if the pack is still full after following it, the next crop's
+>   note surfaces by itself. Collapsed BEFORE the skip filter, so skipping the visible note
+>   silences the notice instead of promoting the next patch's copy. Test added
+>   (LeprechaunErrandOrderTest.aFullPackNotesOnceNotPerPatch).
+> - The bottom-of-list notice before the pack is full is a different step doing its job:
+>   "note your crops before moving on" is the leaving errand, and the bottom is its place -
+>   the stop's checklist runs patch work first, packing up last. It moves up to join the
+>   visit only when something else (a compost withdrawal, a full-pack note) is already
+>   taking you to him. Flag it if the wording reads too much like the full-pack notice.
 
 okay, I just got a contract for poison ivy, I already had one planted though, and it was already "check-health"'d, and I was directed back to jane after harvesting it. Couldn't turn in the contract, I think you have to plant it after getting the contract on some patches but not others, do some research on this to determine the mechanics and impliment them. Going to be very difficult to test this in game, the odds are low that this happens tbh, but it has, so lets fix it.
+> RESOLVED. The mechanics, wiki-confirmed (Farming contracts page): completion is an EVENT,
+> not a state - check-health for bush/tree/fruit tree/cactus/celastrus/hespori, fully
+> harvested for everything else - and the event must fire while the contract is active.
+> Planted-before-assignment is fine ("already been planted but not checked or harvested...
+> will still count"); CHECKED-before-assignment is fatal ("they will need to plant a new
+> seed and wait for it to grow") - the check fires once per planting, and harvesting what
+> regrows changes nothing. So yes: on check-health patches you effectively must (re)plant
+> after taking the contract if the standing crop was already checked; on harvest-class
+> patches a standing crop always still counts, since its completion event empties the patch.
+> - THE BUG: contractToHandIn's patch-evidence fallback read the standing HARVESTABLE
+>   poison ivy as a completion nothing had recorded (recordCompleted!), deferred behind the
+>   berries, and after the harvest sent you to Jane - who won't take it. For check-health
+>   families HARVESTABLE only EXISTS after the check, a mid-contract check announces itself
+>   in the chatbox (captured), and the logged-out case the fallback exists for leaves the
+>   crop grown-but-UNCHECKED (a check needs a present player) - so a HARVESTABLE check-class
+>   crop with nothing awaiting is precisely the pre-checked dud. isGrownInGuild now splits
+>   the evidence by family: needsHealthCheck for check-class, HARVESTABLE for harvest-class.
+> - THE GUIDANCE: no new steps needed - with the false completion gone, the contract stays
+>   assigned, the contract group still claims the patch, the seed allocation names a fresh
+>   poison ivy for it (HARVESTABLE patches are already in the plantable set), and the
+>   existing bush machinery walks harvest -> dig up -> replant; the planner's
+>   wantsReplantClear keeps the stop alive on the contract group's derived selection. What
+>   WAS added is the why: a panel note + one-shot chat line ("...was health-checked before
+>   the contract was taken, so it can never count for it. Dig it up and plant a fresh...") -
+>   without it the dig-up step at a healthy producing bush reads as the guide malfunctioning.
+>   (missingContractSeed deliberately stays quiet - it treats crop-in-ground as seed-spent,
+>   which is exactly wrong for a dud - so the note's wording asks for the fresh seed.)
+> - HEALING EXISTING CORRUPTION (the false recordCompleted persists in config, and this
+>   account has it): reconcileAwaitingHandIn - which it turns out was documented into
+>   existence by the self-healing pass and NEVER WIRED ANYWHERE, so its deadlock heal had
+>   run zero times - is now called at plugin load and on Time Tracking's key changing. It
+>   also gained the specific heal: awaiting X while Time Tracking (enabled) STILL has X
+>   assigned is a contradiction - the completion message clears that key the moment it
+>   fires, and Jane never assigns the same crop twice running - so the awaiting record is
+>   cleared as corruption and the assignment survives. Your poison ivy contract will read
+>   as assigned-and-ungrown on next load, and the run will replant the patch.
+> - Tests: ContractHandInOrderTest (pre-checked dud raises no hand-in and records nothing;
+>   grown-unchecked still detected; harvest-class herb still detected; the dud note + one-
+>   shot chat line), ContractStateTest (reconcile: differing assignment clears, same-crop
+>   contradiction clears but keeps the assignment, disabled Time Tracking's stale key
+>   proves nothing).
 
 lets not jerk back the bank filtering on the player after they navigate away from it in the bank, its rude
+> RESOLVED. Clicking another tab (or your own Bank Tags tag) already deactivates our tag -
+> Bank Tags' own doing - but BankFilter kept believing it was open, so the next bank change
+> re-opened it through relayoutIfBankChanged, yanking the view back mid-browse. The tick
+> handler now asks Bank Tags whose tag is actually active: not ours means the player
+> navigated away, and the filter stands down for the REST OF THAT BANK - no closeBankTag
+> (their chosen view stays put), no re-open. Scoped to the bank session: closing and
+> reopening the bank starts filtered again, as does the next bank. Tests added
+> (BankFilterTest.navigatingAwayStandsTheFilterDownWithoutAFight, theNextBankOpensFilteredAgain).
 
 menu entry swap grimy herbs to 'use' instead of 'clean' when highlighting to give to lep
+> RESOLVED. While a NOTE_AT_LEPRECHAUN step is current, Use is promoted to a grimy herb's
+> left-click (GuideMenuSwap, same reorder-never-rename machinery as the others). Grimy herbs
+> are the one noted item whose left-click fights the step - everything else already defaults
+> to Use, and Clean-by-accident hands him a herb he won't note. Applies to ANY grimy herb,
+> not just the one the step names: the step points at the biggest stack, the visit notes them
+> all, and only the hovered item's own menu is ever reordered. Behind a new toggle
+> "Left-click Use grimy herbs at the leprechaun" (on by default); herbs clean normally
+> whenever no note step is current. The grimy set lives beside the names table in
+> NotableHarvests (isGrimyHerb), pinned by GuideMenuSwapTest. Verify the exact option
+> wording ("Use") in client with the rest.
+
+POH fairy ring issue still ongoing, is SP dropping it when you enter the house? it still suggests the ring code in the menu for the fairy ring so I know it knows about it. The infobox is inacurate too when you enter the POH, drops the fairy ring messaging.
+> RESOLVED (two real causes, both caught red-handed in client.log - and no, SP is not
+> dropping it; our stored route now survives house entry, the log proves it).
+> - The outline: at 22:16:10 the new unmatched-hops line fired with the router's exact
+>   words - hops [Teleport to House, Configure Fairy ring - C K Q], "None of Shortest
+>   Path's hops mapped to the furniture here". The route was intact INSIDE the house; the
+>   furniture NAME match failed. CORRECTED after the first write-up guessed a combined
+>   build (owner: it's a plain fairy ring): a plain "Fairy ring" name WOULD match that hop
+>   by containment, so the scan's name resolution for the ring itself is what failed -
+>   the jewellery box's old disease (an impostor-varied object reporting a placeholder
+>   name), caught in a second place. All three superior-garden teleport builds are now
+>   recognised BY ID with forced names (PlayerHouse.GARDEN_TELEPORT_IDS: POH_SPIRIT_TREE
+>   29227 "Spirit tree", POH_FAIRY_RING 29228 "Fairy ring", POH_SPIRIT_RING 29229 "Spirit
+>   tree & fairy ring" - wiki-checked ids), so scan and match no longer depend on what the
+>   scene calls them. The combined build's forced name splits on "&" in
+>   furnitureNamedByHop so each half claims its own hops, and fairy rings also match by
+>   kind (name has "fairy ring" + hop says "fairy ring" or is a code). If it STILL fails,
+>   the unmatched-hops log now prints the other half of the comparison - every scanned
+>   furniture as name#id - so the next occurrence is diagnosable on sight.
+>   Tests: PlaceNameMatchTest.aCombinedBuildAnswersForEachOfItsHalves.
+> - The infobox going quiet: the log's line 2789 shows a run REPLANNED from region 56001 -
+>   an instance's virtual area, i.e. from inside the house. Every retarget starts by wiping
+>   the route state, and the instance guard then refused to post the start-less request -
+>   so the wipe stood: no destination, no via-lines, nothing outlined, until you walked
+>   out. The guard now falls back to the FRONT DOOR as the start when you are standing in
+>   your own house (the same compromise routeFromTheFrontDoor makes); other instances stay
+>   silent as before. Test: RunPlannerTest.aPlanMadeInsideTheHouseRoutesFromTheFrontDoor.
+
+
+----------------
+Weird catherby step, heres the full text and the situation, when outside the POH
+
+"Farm run
+Travel to the next patches.
+15 stops left
+via Teleport to House
+via Enter Catherby Portal - Catherby Portal"
+
+Spell books and POH tele not highlighted
+
+After teleporting anyways text changes to
+
+"Farm Run
+Travel to the next patches.
+15 steps left."
+
+Nothing is highlighted in the POH
+> RESOLVED (three stacked, sharing parts with the fairy entry above).
+> - "Travel to the next patches" + nothing lit OUTSIDE: the tell is the missing
+>   destination. destinationStop only names a trip when it can do so without guessing, and
+>   travelHint(null) returned null OUTRIGHT - so an ambiguous leg travelled with hops on
+>   screen ("via Teleport to House") and no hint at all: no "Cast Teleport to House." line,
+>   no spellbook outline, no tablet highlight. The hint is now built from the route's hops
+>   whether or not the destination has a name; only the destination-keyed extras (nexus
+>   row, jewellery category) stay quiet on a nameless leg, and those overlays null-guard.
+>   Test: NamelessLegStillHintsTest.
+> - Everything vanishing INSIDE: the replan-from-inside-the-house wipe, fixed with the
+>   front-door fallback described in the fairy entry above.
+> - The Catherby Portal wording is SP imagining POH portals it cannot see (documented in
+>   the earlier Catherby entry); with the two fixes above the panel keeps its lines and the
+>   destination-based furniture match can still light the nexus/box that really serves it.
+
+----------------
+
+
+incorrectly highlighting for Al Kharid tasks on the ornate jewellery box, its meant to go to 1: Emir's Arena (what SP says), but instead its highlighting "R: Al Kharid" - clicking on "R: Al Kharid" results in getting routed back to to tele home, creating an infinate loop, because the other al kharid location is too far away from the patch, causing SP to navigate us.
+> RESOLVED. The row highlight was keyed on the DESTINATION name alone, and a jewellery box
+> can carry the stop's name verbatim on a row the router did not pick - "R: Al Kharid"
+> (glory) beside "1: Emir's Arena" (dueling), with the router having planned through the
+> arena row because it lands beside the patch. The overlay now asks the route's own words
+> first: every hop with a " - " names its row after it ("Teleport Menu Fancy Jewellery Box
+> - 1: Emir's Arena"), and those row names - the router's own choices, in path order - are
+> tried before the destination, which stays as the fallback (the nexus's model-less
+> destinations like Stony basalt are only findable that way). One widget walk per tick
+> shared by all the wants, same caching as before. GuideInventoryOverlay.rowNames/scanRows;
+> matcher facts pinned in PlaceNameMatchTest.aHopsOwnRowNameFindsExactlyItsRow. Verify the
+> right row lights in client - the fix rides on SP's hop wording carrying the row name.
+> STILL REPRODUCED after that fix, with the connecting clue reported alongside: the "via
+> Teleport Menu Basic Jewellery box - 1: Emir's Arena" line VANISHES on entering the POH -
+> and the row fix reads that hop for its row name, so when the hop dies the highlight falls
+> back to the stop's name and lights "R: Al Kharid" again. Same root, and it was the NEW
+> front-door retarget fallback (the fairy-entry fix) firing too broadly: on every in-house
+> retarget it re-routed from the front door, throwing away the through-the-box plan
+> mid-teleport. The old outright refusal had been quietly load-bearing for legs whose next
+> click is furniture INSIDE the house. Now scoped by the router's own origins: a live plan
+> that departs the POH keeps its route on every in-house retarget (routeFromTheFrontDoor
+> still owns the door-vs-furniture judgment); the door start serves only walk-out plans and
+> the dead no-plan state the fallback was built for. Test: RunPlannerTest
+> .aLiveRouteThroughTheHouseKeepsItsRouteInside.
+
+from the distance from the cactus patch and the lep in the farming guild, the lep doesn't highlight to note, but he does 6 tiles closer
+> RESOLVED. Not a distance cap on the highlight - the highlight scans the whole scene - but
+> the STEP vanishing: stopAt() matched the player's map region to the stop's EXACTLY, and
+> the guild's cactus patch sits close enough to its region's edge that standing on the far
+> side puts your region id one column over. Every region-keyed question then answered
+> "between stops" at once - step list emptied, note step gone, leprechaun dark - until you
+> walked ~6 tiles back over an invisible line. New GuideTracker.standingAt: a stop claims
+> its own region always, and a TOUCHING region within 10 tiles of one of its patches'
+> learned locations. Wired into stopAt (exact matches still win), the leaving-errands gate
+> (same hole, one report away: the errands vanished from across the line the moment the
+> stop completed) and the panel title's fallback. A patch with no learned location claims
+> nothing past its region - nothing to measure from also means no work to stand beside.
+> Tests: StopRegionEdgeTest.
+
+run has me trying to harvest a herb patch without a spade - I have them in my bank, and at the lep
+> RESOLVED. A wrong assumption in the guide's model, caught by the game itself: herb and
+> allotment crops need a SPADE to harvest (wiki: "a spade to harvest herbs"), and the
+> harvest branch fetched no tool at all - rake, dibber and the clearing spade all had their
+> addToolStep, the pick alone was assumed free-handed. With the spades in the bank and the
+> leprechaun's store, the guide said "Harvest the herb" at a patch the game refused to let
+> the player touch. New SPADE_HARVESTED set in GuidePlan (HERB + ALLOTMENT - flowers, hops
+> and the regrowing families pick by hand and are deliberately absent; extend on evidence):
+> the fetch step goes after the full-pack note (noting frees the slots, same trip to him)
+> and before the harvest. The bank half was already the loadout's job via ToolNeeds. Tests:
+> GuidePlanTest.aSpadelessHarvestFetchesTheSpadeFromTheLeprechaun / aCarriedSpadeLeavesTheHarvestAlone.
+
+al-kharid travel issue still on-going for emir's arena still going to "R: Al Kharid" and not "1: Emir's Arena", info box still incorrect as well, showing "Farm run - Al Kharid\n Travel to Al Kharid.\n 14 stops left"
+same for fairy ring, the step changes every time you enter the POH, is this a location bug? because the POH has a set of coordinates, are they re-rendering inside the house? maybe we need to cache that on home teles or something? Pull every text option that could display from this from the SP plugin and turn it into a test in our test suite, another one of these IS working, seems inconsistent. A L S works.
+
+notification should be only showing based on what you have checked for a farm run, not all patches enabled.
+
+seedbox orange highlighting not showing at all, ever
+> DIAGNOSIS PENDING - the gate's logic checks out, so the next run answers it.
+> - The highlight code is present and correct as far as tests can reach: while the current
+>   step is PLANT, the box lights when the step's seed resolves, the box holds plantable
+>   stock of it, and the pack holds less than a patch's worth. All four corners of that
+>   gate are now pinned by SeedBoxHighlightTest against a real store fed through the same
+>   container path the client uses - they pass.
+> - So "never" means one of the three inputs is not what it looks like on screen at the
+>   moment of planting. The overlay now logs the decision, once per distinct answer
+>   ("Seed box highlight at <patch>: ON/OFF - N in the box (plantable), M loose in the
+>   pack, patch takes K"), same spirit as the errand-bundle line. Next plant step with
+>   seeds boxed, grep client.log for "Seed box highlight" and the failing input names
+>   itself.
+> - (Also learned while looking: this source file trips grep's binary detection - some
+>   byte in it makes ordinary grep silently skip the whole file; use grep -a. Two rounds
+>   of "the code is missing!" were that.)
+
+I think we're going back too early on some h/o patches, bushes for example, not sure if this applys to all h/o types (research this) but from my understanding is they re grow in stages as well, we should only do these when they're maxed out on regrowth, otherwise yeild is lower and we're just wasting time
+> RESOLVED. Research confirmed the model (wiki, all regrowing families): produce refills
+> one unit per fixed tick - bush 4 berries @ ~20min, cactus 3 spines @ 25min, fruit tree
+> 6 @ 40min, calquat 6 @ 20min, potato cactus lives @ ~25min full - and NOTHING accumulates
+> past the cap, so a full plant is idle while a part-full one is still working. Visiting
+> early buys nothing and costs the trip; for bushes the wiki also ties the guaranteed-4 +
+> level-scaled yield to a FULLY regrown bush ("the minimum always being four unless
+> harvested again before it has regrown all berries"). Celastrus/seaweed do not regrow at
+> all (fixed harvest); herbs/allotments/flowers/hops clear on harvest - so the rule is
+> exactly the regrowing families, detected by the data (regrowTickrate), not by a list.
+> - RunPlanner.heldForRegrowth: on a HARVEST-ONLY run, a regrowing crop with stock but
+>   more still coming (hasProduceToPick && isRegrowing - the projection's regrowEstimate
+>   is 0 exactly at the cap) is held out of the plan. Full runs are untouched: they come
+>   to dig the plant out, and holding that trip hostage to berries the spade is about to
+>   destroy would be backwards.
+> - Planning-time only, wired beside clusterHeld at all three sites (planStops, the
+>   pricing counts, the estimate), NEVER completion: once you are there picking, the
+>   falling stock must not complete the stop under your feet at the first berry.
+> - The projection already climbs stock back up over elapsed time, so a bush seen
+>   half-full an hour ago and full by now is correctly included, and a never-observed
+>   patch has nothing to hold back.
+> - Test: RunPlannerTest.aRefillingBushWaitsForTheCapOnHarvestOnly (varbit-decoded states,
+>   not hard-coded values).
+
+notification should be only showing based on what you have checked for a farm run, not all patches enabled.
+> RESOLVED. The ready counter (top-left infobox) counted every AVAILABLE patch - the
+> panel's account-wide view - so unticked types inflated a number that exists to say "a
+> farm run is worth starting". It now asks the planner the run's own question first:
+> RunPlanner.selectedForRuns = ticked for a run (full or harvest-only, same test routing
+> uses) AND not held for regrowth - so a bush the run is deliberately letting refill does
+> not sit in the count either, and the number on screen agrees with what Start run would
+> do. The sidebar's own summary stays account-wide on purpose; it is the overview, the
+> infobox is the glanceable "go now" number. Ready/needs-attention lists in the tooltip
+> filter the same way. Test: RunPlannerTest.theReadyCounterOnlyCountsWhatARunWouldVisit.
+
+same for fairy ring, the step changes every time you enter the POH, is this a location bug? because the POH has a set of coordinates, are they re-rendering inside the house? maybe we need to cache that on home teles or something? Pull every text option that could display from this from the SP plugin and turn it into a test in our test suite, another one of these IS working, seems inconsistent. A L S works.
+> RESOLVED (the caching you suggested is exactly what the jewellery-box fix above built).
+> - "Step changes every time you enter": yes, a location bug of our own making - entering
+>   the house is an instance, and every in-house retarget used to either re-route from
+>   garbage (the old bug) or, after the front-door fallback, re-route from the door -
+>   throwing away the plan computed outside and re-answering from new coordinates each
+>   entry. The fix IS the cache: a live plan whose origins say it goes THROUGH the house
+>   (the router's own word, routeDepartsPoh) is now preserved untouched across entry and
+>   every in-house retarget. Computed outside once, kept inside.
+> - "Seems inconsistent, A L S works": explained by SP's own data model, and now pinned.
+>   fairy_rings.tsv (SP source, ground truth) has two row shapes: destination rows carry
+>   ONLY the code as display info ("A L S", "ZANARIS", chains like "A I R - D L R - D J Q
+>   - A J S"), origin rows carry ONLY objectInfo ("Configure Fairy ring <objectId>"),
+>   which readTransports id-strips and prefixes ("Configure Fairy ring - C K Q"). Which
+>   shape a plan produces depends on which edge the router used - both are normal, and the
+>   matcher must take every one.
+> - The full matrix is now a test: SpFairyWordingTest runs every composed shape from the
+>   TSV against furnitureNamedByHop for the plain ring AND the combined build, asserts no
+>   other furniture can claim a fairy shape, and pins the one oddball (a ring entered via
+>   "Enter Portal", varbit-gated) as correctly NOT claiming the garden ring. All pass
+>   against the current matcher - so with the by-id ring naming (POH_FAIRY_RING 29228,
+>   which is literally the id in SP's own POH row) and the preserved route, every known
+>   wording resolves. HopWordingTest also pins the 29228 id-strip.
+
+seedbox still not highlighting to fill, whats the full logic around that right now, we're missing something
+> RESOLVED - the missing something was the whole direction. The box's full logic was:
+> (1) the left-click swap (GuideMenuSwap.wantedBoxOption: Fill when the box is empty or
+> loose seeds fit, Empty when it holds seeds and nothing loose fits); (2) a highlight
+> while the current step is PLANT and the needed seeds are in the box - the TAKE-OUT
+> side, which is what all the earlier testing proved correct; and (3) for the fill side:
+> NOTHING. The fill steps were removed by request long ago (they hung patch outlines off
+> an inventory instruction) and the later re-added highlight covered only the planting
+> direction - so "never highlights to fill" was literally true by design, and the earlier
+> "not showing at all, ever" report was this, not a broken gate.
+> - NEW: an ambient fill highlight, bucket-style. While a run is on and any loose seed
+>   would actually go in - GuideMenuSwap.boxCanTakeLooseSeeds, the swap's own six-kinds
+>   rule, now shared so the two cannot drift - both box forms light in their own ORANGE
+>   (0xE88D1E): "when convenient", distinct from the bucket's red and from the guide
+>   colour's "this is the step". No new steps, no patch outlines, swap untouched.
+> - The plant-side highlight and its diagnostic log stay as they were; the fill rule is
+>   pinned through the swap's existing GuideMenuSwapTest cases (loose-fits, six-kinds-full,
+>   sapling-never-counts).
+
+with herb, allotment, flower patches checked, we shouldn't visit the areas with those 3 until all 3 are finished growing, its a waste of teles, we already did a pass at this and its not working.
+
+don't prompt to note logs on lep, thats not a thing, they won't note logs.

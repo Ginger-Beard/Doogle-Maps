@@ -187,6 +187,62 @@ public class ProtectionSelectionStore
 		return protect;
 	}
 
+	/**
+	 * Drops contract-scoped choices left over from contracts that have been settled.
+	 *
+	 * <p>The counterpart of {@code RunTypeStore.retargetContract}, with the opposite treatment,
+	 * because the two ticks mean different things. The run line means "do the contract" and
+	 * survives the crop changing; a protection choice is an answer <i>about one crop</i> — 25
+	 * coconuts for a magic tree is not an answer about a ranarr — so a stale entry is dropped
+	 * rather than renamed. The next contract then starts from the type's own standing answer,
+	 * which is exactly what the inheritance in {@link #isProtecting} was built to provide.
+	 *
+	 * <p>Left alone, a stale entry outlives its contract indefinitely — a
+	 * {@code CACTUS#contract|POTATO_CACTUS} was found weeks old in a live profile — waiting to
+	 * resurrect an old explicit choice the moment another contract of the same crop arrives,
+	 * over whatever the player has decided for the type since. The offs are the sharper half:
+	 * a stale off silently overrides the inheritance forever.
+	 *
+	 * @param liveKey the {@code group|seed} key of the contract now assigned, spared from the
+	 *                drop; null when the contract's crop has no plantable seed
+	 */
+	public void retargetContract(@javax.annotation.Nullable String liveKey)
+	{
+		boolean changed;
+		synchronized (this)
+		{
+			changed = dropStaleContractKeys(protecting, liveKey)
+				| dropStaleContractKeys(notProtecting, liveKey);
+			if (changed)
+			{
+				save();
+			}
+		}
+		if (!changed)
+		{
+			return;
+		}
+
+		log.debug("Dropped protection choices from settled contracts; {} stays", liveKey);
+		for (Runnable listener : changeListeners)
+		{
+			listener.run();
+		}
+	}
+
+	/** The {@code group|seed} key a contract's protection choice is stored under. */
+	public static String contractKey(PlantingGroup group, Seed seed)
+	{
+		return keyFor(group, seed);
+	}
+
+	private static boolean dropStaleContractKeys(Set<String> keys, @javax.annotation.Nullable String liveKey)
+	{
+		// Everything scoped to a contract group — the marker sits inside the group half of the
+		// key — except the assignment that is live right now.
+		return keys.removeIf(key -> key.contains("#contract") && !key.equals(liveKey));
+	}
+
 	public void load()
 	{
 		synchronized (this)

@@ -108,6 +108,18 @@ public enum GuideAction
 	RETURN_BUCKETS("Return empty buckets"),
 
 	/**
+	 * Fetch the contract's seed from the bank or seed vault at this stop.
+	 *
+	 * <p>The guild keeps both a short walk from Jane, and a contract seed sitting in one of
+	 * them is the difference between planting the contract this trip and watching the run walk
+	 * past its own highest priority. This existed only as a grey note — "withdraw it to plant
+	 * the contract this trip" — which could not be the current instruction and could not be
+	 * skipped; it sat under steps about lesser patches while the player stood beside the very
+	 * bank that would resolve it. Asked for from play.
+	 */
+	FETCH_SEED("Withdraw the seed"),
+
+	/**
 	 * Give Guildmaster Jane the crop she asked for, and take the reward.
 	 *
 	 * <p>Nothing has happened until you walk back to her. Forgetting is easy — the patch looks

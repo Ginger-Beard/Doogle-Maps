@@ -574,24 +574,52 @@ public class RunLoadout
 						- seeds.getOwnedPlantable(seed));
 				}
 
+				// The contract says *why* rather than only how many, because it is the one
+				// seed on this list the player did not choose — and the one whose absence is
+				// worth knowing about at the bank rather than at the patch, since arriving
+				// without it costs the whole reward for another growth cycle.
+				String reason = (group.isContract()
+					? "Guildmaster Jane's contract"
+					: patches + (patches == 1 ? " patch" : " patches") + " of "
+						+ type.getDisplayName().toLowerCase())
+					+ (needsPotting ? " - needs potting into a sapling first" : "");
+
+				// What is left to fetch: what the run wants, less what is already on you,
+				// and never more than you actually own. Owning fewer than the run wants is
+				// the ordinary case - the answer there is "take all of them", not the
+				// shortfall, which would send you to the bank for seeds that are not in it.
+				int outstanding = Math.max(0, Math.min(wanted, owned) - inPack);
+
+				// Split across the containers when neither alone covers it, bank first — the
+				// bank is where the rest of the run's items are. One container per row used to
+				// be the rule outright, and it sent a magic-sapling errand wholly to the vault
+				// while ONE of the two wanted sat in the bank being read at that moment — the
+				// bank's count then said "take 2" over a slot holding 1, which reads as the
+				// arithmetic being wrong rather than as a second container being involved.
+				// Reported from play. outstanding never exceeds bank+vault (owned is the cap),
+				// so the two takes always sum to exactly what is left to fetch.
+				int fromBank = Math.min(outstanding,
+					seeds.getCount(seed, SeedSource.BANK));
+				int fromVault = Math.min(outstanding - fromBank,
+					seeds.getCount(seed, SeedSource.SEED_VAULT));
+
+				if (fromBank > 0 && fromVault > 0)
+				{
+					items.add(new LoadoutItem(seed.getPlantedItemID(), displayName(seed),
+						LoadoutItem.Category.SEED, LoadoutItem.Need.WITHDRAW,
+						fromBank, fromBank, reason, LoadoutItem.From.BANK));
+					items.add(new LoadoutItem(seed.getPlantedItemID(), displayName(seed),
+						LoadoutItem.Category.SEED, LoadoutItem.Need.WITHDRAW,
+						fromVault, fromVault, reason, LoadoutItem.From.SEED_VAULT));
+					continue;
+				}
+
 				items.add(new LoadoutItem(seed.getPlantedItemID(), displayName(seed),
 					LoadoutItem.Category.SEED,
 					need(inPack >= wanted, owned > inPack, false),
 					Math.min(wanted, Math.max(owned, 1)),
-					// What is left to fetch: what the run wants, less what is already on you,
-					// and never more than you actually own. Owning fewer than the run wants is
-					// the ordinary case - the answer there is "take all of them", not the
-					// shortfall, which would send you to the bank for seeds that are not in it.
-					Math.max(0, Math.min(wanted, owned) - inPack),
-					// The contract says *why* rather than only how many, because it is the one
-					// seed on this list the player did not choose — and the one whose absence is
-					// worth knowing about at the bank rather than at the patch, since arriving
-					// without it costs the whole reward for another growth cycle.
-					(group.isContract()
-						? "Guildmaster Jane's contract"
-						: patches + (patches == 1 ? " patch" : " patches") + " of "
-							+ type.getDisplayName().toLowerCase())
-						+ (needsPotting ? " - needs potting into a sapling first" : ""),
+					outstanding,
+					reason,
 					fetchFrom(seed, wanted)));
 			}
 		}
@@ -842,68 +870,92 @@ public class RunLoadout
 	 *
 	 * <p>One entry per distinct payment across the run, because payments may be noted and a
 	 * noted stack is one inventory slot however many patches it covers.
+	 *
+	 * <h2>Counted off the allocation, like the seeds above</h2>
+	 *
+	 * This used to multiply every payment by every actionable patch in the group, which is only
+	 * right when one crop takes the whole group. With the patches split — five magics capped at
+	 * the one the coconuts afford, yews taking the rest — it asked for a full run's worth of
+	 * both payments, and the overstated coconut total then went <i>over</i> what the player
+	 * held, so the row fell off the withdraw list as MISSING entirely. Reported from play, as a
+	 * loadout that said to plant a magic and bring no coconuts, beside seventy spines for six
+	 * yews. The allocation already knows how many patches each crop actually gets — and it
+	 * capped the magics <i>because of</i> the coconuts — so the payments follow it the same way
+	 * the seed rows do, and the three lists cannot disagree.
+	 *
+	 * <p>Summed across crops and groups sharing an item, rather than first-crop-wins: coconuts
+	 * protect magics and dragonfruit both, and the old {@code seen} dedup silently dropped
+	 * whichever asked second.
 	 */
 	private void addPayments(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
-		Set<Integer> seen = new LinkedHashSet<>();
+		Map<Integer, Integer> wantedByItem = new LinkedHashMap<>();
+		Map<Integer, List<String>> protectsByItem = new LinkedHashMap<>();
+		Map<Integer, String> fallbackNames = new LinkedHashMap<>();
 
 		// Only for groups the player said they would pay for. Listing every possible payment was
 		// the old behaviour and it asked you to bank things you had no intention of using —
 		// which, on a tree run, is several stacks of fruit nobody wanted.
-		Map<PlantingGroup, Integer> actionable = planner.countActionableByGroup(types);
-		for (PlantingGroup group : actionable.keySet())
+		Map<PlantingGroup, List<FarmPatch>> actionable = planner.actionableByGroup(types);
+		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionable.entrySet())
 		{
+			PlantingGroup group = entry.getKey();
 			// Nothing is being planted here, so there is nothing to protect. See plantsNothing.
-			if (plantsNothing(group))
+			if (entry.getValue().isEmpty() || plantsNothing(group))
 			{
 				continue;
 			}
-			int patches = actionable.getOrDefault(group, 0);
-			for (Seed seed : selection.getSelectedFor(group))
+
+			for (Map.Entry<Seed, Integer> share
+				: allocate(group, entry.getValue()).counts().entrySet())
 			{
-				if (!protection.isProtecting(group, seed))
+				Seed seed = share.getKey();
+				int patches = share.getValue();
+				if (patches <= 0 || !protection.isProtecting(group, seed))
 				{
 					continue;
 				}
 
 				ProtectionPayment payment = ProtectionPayment.forSeed(seed);
-				if (payment == null || !seen.add(payment.getItemID()))
+				if (payment == null)
 				{
 					continue;
 				}
 
-				// Per patch, multiplied by them. The quantity was the payment for a *single*
-				// patch however many the run had, so a four-tree run asked for 25 coconuts and
-				// needed 100 — and you would find out at the fourth tree, having already
-				// travelled there.
-				//
-				// The slot count is still one: payments may be noted, and a noted stack is one
-				// slot whatever its size. That is why this is a quantity fix rather than an
-				// inventory one.
-				// Counting noted ones, because that is how anyone actually carries thirty
-				// spines - the gardener takes the note. Counting only the exact id left the
-				// row on the withdraw list with the payment already in the pack.
-				int wanted = payment.getQuantity() * patches;
-				int held = carried.getCountIncludingNoted(payment.getItemID())
-					+ bank.getCount(payment.getItemID());
-
-				// Named after the item to bring, not the crop it protects. This row said "Magic"
-				// when what you need is coconuts — the accessor is getProduce() on both halves of
-				// the payment, and it is the wrong half here.
-				items.add(new LoadoutItem(payment.getItemID(),
-					itemNames.get(payment.getItemID(), payment.getProduce().getName()),
-					LoadoutItem.Category.PAYMENT,
-					paymentNeed(payment, wanted, held), wanted,
-					// Against what is carried rather than what is held: held counts the bank
-					// too, and the bank is where you are about to take them from.
-					Math.max(0, wanted - carried.getCountIncludingNoted(payment.getItemID())),
-					held < wanted
-						? "Protects " + seed.getName().toLowerCase() + " - you have " + held
-							+ " of the " + wanted + " this run needs"
-						: "Protects " + seed.getName().toLowerCase()
-							+ " - noted is fine; the gardener takes the note",
-					LoadoutItem.From.BANK));
+				wantedByItem.merge(payment.getItemID(),
+					payment.getQuantity() * patches, Integer::sum);
+				protectsByItem.computeIfAbsent(payment.getItemID(), k -> new ArrayList<>())
+					.add(patches + " " + seed.getName().toLowerCase());
+				fallbackNames.putIfAbsent(payment.getItemID(), payment.getProduce().getName());
 			}
+		}
+
+		for (Map.Entry<Integer, Integer> entry : wantedByItem.entrySet())
+		{
+			int itemId = entry.getKey();
+			int wanted = entry.getValue();
+			// Counting noted ones, because that is how anyone actually carries thirty
+			// spines - the gardener takes the note. Counting only the exact id left the
+			// row on the withdraw list with the payment already in the pack.
+			int held = carried.getCountIncludingNoted(itemId) + bank.getCount(itemId);
+			String protects = String.join(" and ", protectsByItem.get(itemId));
+
+			// Named after the item to bring, not the crop it protects. This row said "Magic"
+			// when what you need is coconuts — the accessor is getProduce() on both halves of
+			// the payment, and it is the wrong half here.
+			items.add(new LoadoutItem(itemId,
+				itemNames.get(itemId, fallbackNames.get(itemId)),
+				LoadoutItem.Category.PAYMENT,
+				paymentNeed(wanted, held, itemId), wanted,
+				// Against what is carried rather than what is held: held counts the bank
+				// too, and the bank is where you are about to take them from.
+				Math.max(0, wanted - carried.getCountIncludingNoted(itemId)),
+				held < wanted
+					? "Protects " + protects + " - you have " + held
+						+ " of the " + wanted + " this run needs"
+					: "Protects " + protects
+						+ " - noted is fine; the gardener takes the note",
+				LoadoutItem.From.BANK));
 		}
 	}
 
@@ -1001,14 +1053,19 @@ public class RunLoadout
 	 * the bank. Withdrawing 60 of the 100 coconuts a run needs leaves you paying for two trees
 	 * and finding out about the other two on arrival — which is the wasted trip this whole
 	 * section exists to prevent. Saying so before you set off is the useful answer.
+	 *
+	 * <p>Now that {@code addPayments} counts off the allocation, this branch is a safety net
+	 * rather than the working path: the allocation caps a protected crop at what the payments
+	 * afford, so what is asked for is by construction affordable. It stays because the two
+	 * counts are computed from separate reads and a net under a claim like that is cheap.
 	 */
-	private LoadoutItem.Need paymentNeed(ProtectionPayment payment, int wanted, int held)
+	private LoadoutItem.Need paymentNeed(int wanted, int held, int itemId)
 	{
 		if (held < wanted)
 		{
 			return bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN;
 		}
-		return carried.getCountIncludingNoted(payment.getItemID()) >= wanted
+		return carried.getCountIncludingNoted(itemId) >= wanted
 			? LoadoutItem.Need.HAVE
 			: LoadoutItem.Need.WITHDRAW;
 	}

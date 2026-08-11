@@ -205,6 +205,60 @@ public class BankFilterTest
 		assertFalse(filter.isFiltering());
 	}
 
+	/**
+	 * The player clicking away from the filter is an answer, not a malfunction to correct.
+	 *
+	 * <h2>The jerk-back</h2>
+	 *
+	 * Their click on another tab already closed our view — Bank Tags deactivates the tag
+	 * itself — but the filter kept believing it was open, and the next bank change re-opened
+	 * the tag through the relayout while they were browsing. Reported from play as rude,
+	 * accurately. Standing down means three things at once: we are no longer filtering, we do
+	 * not close the view they chose out from under them, and we do not re-open ours for the
+	 * rest of this bank.
+	 */
+	@Test
+	public void navigatingAwayStandsTheFilterDownWithoutAFight()
+	{
+		filter.startUp();
+		aRunIsUnderWayAtAnOpenBank();
+		filter.onGameTick(new GameTick());
+		assertTrue("fixture: the filter is open", filter.isFiltering());
+
+		bankTags.activeTag = "the-players-own-tab";
+		filter.onGameTick(new GameTick());
+
+		assertFalse("their click already closed our view", filter.isFiltering());
+		assertEquals("the view they chose instead is left exactly where they put it",
+			0, bankTags.closeCalls);
+
+		filter.onGameTick(new GameTick());
+		filter.onGameTick(new GameTick());
+		assertEquals("and nothing re-opens ours for the rest of this bank",
+			1, bankTags.openCalls);
+	}
+
+	/** Leaving the filter is a statement about that bank, not the account: the next one filters. */
+	@Test
+	public void theNextBankOpensFilteredAgain()
+	{
+		filter.startUp();
+		aRunIsUnderWayAtAnOpenBank();
+		filter.onGameTick(new GameTick());
+		bankTags.activeTag = "the-players-own-tab";
+		filter.onGameTick(new GameTick());
+		assertEquals("fixture: navigated away, one open so far", 1, bankTags.openCalls);
+
+		when(client.getWidget(InterfaceID.Bankmain.ITEMS)).thenReturn(null);
+		filter.onGameTick(new GameTick());
+
+		aRunIsUnderWayAtAnOpenBank();
+		filter.onGameTick(new GameTick());
+
+		assertTrue(filter.isFiltering());
+		assertEquals(2, bankTags.openCalls);
+	}
+
 	/** Every other interface closing is none of this class's business. */
 	@Test
 	public void someOtherWidgetClosingSchedulesNothing()

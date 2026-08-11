@@ -64,13 +64,23 @@ public final class HouseTeleports
 	 * includes "gets you meaningfully closer" — a player standing in the box's menu wants the
 	 * least-bad button, not a judgement about whether they should have used the nexus. That
 	 * stricter question is {@link #furnitureFor}'s, from its own table.
-	 *
-	 * <p>The ring of dueling is deliberately absent: its one farming-adjacent destination,
-	 * the Fortis Colosseum, is locked behind the Colosseum's Hero title and lands across the
-	 * city from the Civitas patches anyway.
 	 */
 	enum JewelleryCategory
 	{
+		/**
+		 * Ring of dueling: Emir's Arena lands beside the Al Kharid cactus patch, which makes it
+		 * the router's own pick for that stop. This entry used to be deliberately absent, on the
+		 * belief that the ring's only farming-adjacent destination was the Fortis Colosseum —
+		 * wrong by one arena: with no DUELING category to claim the route's "1: Emir's Arena"
+		 * hop, the glory's button lit off the bare stop name "Al Kharid" instead, and the
+		 * highlight pointed at the palace end of town. Reported from play, more than once.
+		 * Castle Wars and Ferox are here so a route planned through them can claim the button
+		 * too; the stop-name side never matches them, which is correct — neither is anywhere's
+		 * best stand-in.
+		 */
+		DUELING(InterfaceID.PohJewelleryBox.DUELING, "emir's arena", "duel arena",
+			"castle wars", "ferox enclave"),
+
 		/** Skills necklace: the Farming Guild, a teleport into the guild itself. */
 		SKILLS(InterfaceID.PohJewelleryBox.SKILLS, "farming guild"),
 
@@ -230,17 +240,41 @@ public final class HouseTeleports
 		String name = furnitureName.toLowerCase().trim();
 		String said = hop.toLowerCase();
 
+		// A combined build — "Spirit tree & fairy ring" — is two furnitures in one object,
+		// and a hop only ever names the half it uses, so the whole name can never appear in
+		// the hop's text. Found from the field the hard way: the garden ring stayed dark for
+		// a route whose own hop said "Configure Fairy ring - C K Q", because the containment
+		// below was being asked about a name longer than the hop. Each half answers for
+		// itself.
+		if (name.contains("&"))
+		{
+			for (String part : name.split("&"))
+			{
+				if (furnitureNamedByHop(part.trim(), hop))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
 		if (!name.equals("portal") && !name.isEmpty() && said.contains(name))
 		{
 			return true;
 		}
 
-		// A fairy ring's hop can also be the bare CODE. Shortest Path's fairy data carries
-		// "A J P", "ZANARIS", or a chain like "A I R - D L R - D J Q" as the whole display
-		// info, with an empty objectInfo on the destination rows — nothing to prefix the
-		// line with, so nothing says "fairy ring". A hop that IS a code is a fairy ring's
-		// hop by construction.
-		return name.contains("fairy ring") && FAIRY_CODE.matcher(said.trim()).matches();
+		// The fairy clause, both wordings. Shortest Path's fairy hop is either prose that
+		// says "fairy ring" ("Configure Fairy ring - C K Q") or the bare CODE — its
+		// fairy_rings.tsv carries "A J P", "ZANARIS", or a chain like "A I R - D L R" as the
+		// whole display info, with an empty objectInfo on the destination rows. Matching the
+		// prose form by kind rather than by full-name containment is what lets a decorated
+		// or combined ring name still claim its own hop.
+		if (name.contains("fairy ring")
+			&& (said.contains("fairy ring") || FAIRY_CODE.matcher(said.trim()).matches()))
+		{
+			return true;
+		}
+		return false;
 	}
 
 	public static boolean furnitureServesHop(String furnitureName, String hop)
@@ -318,8 +352,8 @@ public final class HouseTeleports
 	/**
 	 * Whether two names refer to the same place, loosely enough to be useful.
 	 *
-	 * <p>Containment either way, lower-cased, plus the alias table. Requiring equality would mean
-	 * this almost never fired — the game says "Catherby Teleport" where the plugin says
+	 * <p>Containment either way, canonicalised, plus the alias table. Requiring equality would
+	 * mean this almost never fired — the game says "Catherby Teleport" where the plugin says
 	 * "Catherby".
 	 */
 	static boolean namesTheSamePlace(String a, String b)
@@ -329,8 +363,8 @@ public final class HouseTeleports
 			return true;
 		}
 
-		String left = a == null ? "" : a.toLowerCase().trim();
-		String right = b == null ? "" : b.toLowerCase().trim();
+		String left = canonical(a);
+		String right = canonical(b);
 		if (left.isEmpty() || right.isEmpty())
 		{
 			return false;
@@ -349,19 +383,37 @@ public final class HouseTeleports
 	 */
 	static boolean namesTheSamePlaceDirectly(String a, String b)
 	{
-		if (a == null || b == null)
-		{
-			return false;
-		}
-
-		String left = a.toLowerCase().trim();
-		String right = b.toLowerCase().trim();
+		String left = canonical(a);
+		String right = canonical(b);
 		if (left.isEmpty() || right.isEmpty())
 		{
 			return false;
 		}
 
 		return left.contains(right) || right.contains(left);
+	}
+
+	/**
+	 * A name reduced to the words that identify a place: interface tags stripped, lower-cased,
+	 * every run of punctuation and spacing collapsed to one space.
+	 *
+	 * <p>The tags are the half that cost a bug — twice, in the same session's logs. A jewellery
+	 * box row is really {@code <col=ccccff>1:</col> Emir's Arena}, so the router's own row name
+	 * "1: Emir's Arena" failed plain containment on the colour tag, and the match fell through
+	 * to the destination — which the <i>glory's</i> "R: Al Kharid" row carries verbatim. The
+	 * exact loop the hops-before-destination ordering was built to prevent, reintroduced by
+	 * markup. The nexus does it with spacing instead: its rows read {@code <col=ffffff>D</col>
+	 * :  Poison Waste}, colon outside the tag and two spaces deep, which no plain substring of
+	 * "D: Poison Waste" survives. Both reduce to the same canonical words.
+	 */
+	private static String canonical(@javax.annotation.Nullable String text)
+	{
+		if (text == null)
+		{
+			return "";
+		}
+		return net.runelite.client.util.Text.removeTags(text)
+			.toLowerCase().replaceAll("[^a-z0-9]+", " ").trim();
 	}
 
 	private static boolean matchesAlias(String pluginName, String gameName)

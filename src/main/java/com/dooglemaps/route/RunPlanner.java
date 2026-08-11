@@ -349,7 +349,8 @@ public class RunPlanner
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types))
+				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types)
+					|| heldForRegrowth(patch))
 				{
 					continue;
 				}
@@ -410,6 +411,21 @@ public class RunPlanner
 	}
 
 	/**
+	 * Whether a run started right now would care about this patch — ticked for a run, and
+	 * not being held for regrowth.
+	 *
+	 * <p>For the ready counter, whose number used to count every available patch: a bush at
+	 * three berries and a herb patch whose type was never ticked both inflated a count that
+	 * exists to say "a farm run is worth starting". Reported from play. Everything here is
+	 * lock-guarded store reads and pure projection arithmetic, so it is safe from the
+	 * counter's any-thread update path.
+	 */
+	public boolean selectedForRuns(FarmPatch patch)
+	{
+		return inTheRun(patch) && !heldForRegrowth(patch);
+	}
+
+	/**
 	 * Whether this patch is worth walking to right now.
 	 *
 	 * <p>A run is for patches that need something doing: ready to harvest, empty and waiting
@@ -435,7 +451,8 @@ public class RunPlanner
 				// Same questions planStops asks, and for the same reason: this prices the
 				// run the panel offers, so counting patches the run will not visit would quote a
 				// trip nobody asked for. See inTheRun and clusterHeld.
-				if (inTheRun(patch) && isActionable(patch) && !clusterHeld(patch, types))
+				if (inTheRun(patch) && isActionable(patch) && !clusterHeld(patch, types)
+					&& !heldForRegrowth(patch))
 				{
 					actionable++;
 				}
@@ -479,7 +496,8 @@ public class RunPlanner
 		{
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types))
+				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types)
+					|| heldForRegrowth(patch))
 				{
 					continue;
 				}
@@ -891,6 +909,44 @@ public class RunPlanner
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Whether a regrowing crop on a harvest-only run is still refilling, so the trip should
+	 * wait for the cap.
+	 *
+	 * <h2>Regrowth stops at the cap, which is what makes waiting free</h2>
+	 *
+	 * Wiki-checked across the regrowing families: a bush holds four berries, a cactus three
+	 * spines, a fruit tree and calquat six fruit — one unit regrows per fixed tick and
+	 * <b>nothing accumulates past the cap</b>, so a full plant produces nothing until picked
+	 * while a part-full one is still working. Visiting early therefore buys nothing and
+	 * costs a trip; for bushes the wiki additionally ties the guaranteed-four-plus-level
+	 * yield to a fully regrown bush ("the minimum always being four unless harvested again
+	 * before it has regrown all berries"). Reported from play as being routed back to
+	 * half-full bushes.
+	 *
+	 * <p>Harvest-only runs only: a full run is coming to dig the plant out and replant, and
+	 * holding that trip hostage to berries the spade is about to destroy would be backwards.
+	 *
+	 * <p>Planning-time only, like {@link #clusterHeld} and for the same reason: once the
+	 * player is standing there picking, the stock falls and more starts regrowing — a
+	 * completion filter would read "no longer full" as "not worth visiting" and finish the
+	 * stop under their feet at the first berry. The stop completes picked-clean, as always.
+	 *
+	 * <p>The projection climbs the stock back up over elapsed time, so a bush observed
+	 * half-full an hour ago and full by now is correctly included; a never-observed one has
+	 * no stock to hold back and passes through untouched.
+	 */
+	private boolean heldForRegrowth(FarmPatch patch)
+	{
+		if (!runOptions.isHarvestOnly(groups.groupFor(patch)))
+		{
+			return false;
+		}
+		PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
+		return projection != null && projection.regrows()
+			&& projection.hasProduceToPick() && projection.isRegrowing();
 	}
 
 	/** The patch types that share a plot at the classic locations, and so ripen as a group. */
@@ -2035,9 +2091,38 @@ public class RunPlanner
 		// flipped a Weiss run's destination to the Ardougne bushes the moment the house
 		// loaded. While instanced, only a request that SAYS where it starts is posted — the
 		// front-door reroute is exactly that — and leaving the instance retargets normally.
+		//
+		// The player's own house is the one instance with a knowable start: its front door.
+		// Refusing outright there left a replanned run DEAD until the player walked out —
+		// every retarget begins by wiping the route state, so a plan or replan made while
+		// standing in the POH showed "Travel to the next patches" with no destination, no
+		// via-lines and nothing outlined, and nothing ever asked the router again. Reported
+		// from play, from the house at a run replanned inside it (region 56001 in the log).
+		// The front-door start is the same compromise routeFromTheFrontDoor already makes;
+		// any other instance still stays silent.
 		if (start == null && isInstanced(playerLocation.getRegionId()))
 		{
-			return;
+			// ...but never over a live plan that goes THROUGH this house. The first version
+			// re-routed from the door on every in-house retarget, and entering the POH on a
+			// jewellery-box leg threw away the box hop mid-teleport - the via-line vanished
+			// and the row highlight, which reads the hop for its row name, fell back to the
+			// stop's name and lit "R: Al Kharid" over "1: Emir's Arena" again. Reported from
+			// play, twice. The router's own origins say whether the plan uses the house; a
+			// plan that does keeps its route (the next click is furniture in this room, and
+			// GuideTracker.routeFromTheFrontDoor owns any door-vs-furniture judgment), and
+			// the door start serves only plans that leave on foot or the dead no-plan state
+			// this fallback exists for.
+			if (router.isRouteDepartsPoh())
+			{
+				return;
+			}
+			start = frontDoorWhenInside.get();
+			if (start == null)
+			{
+				return;
+			}
+			log.debug("Retargeting from inside the house; routing from the front door at {}",
+				start);
 		}
 
 		if (isAtBankLeg())
@@ -2115,6 +2200,22 @@ public class RunPlanner
 	private static boolean isInstanced(int regionId)
 	{
 		return regionId >= 0 && (regionId >>> 8) >= 100;
+	}
+
+	/**
+	 * Where the player's house opens onto the overworld, when they are standing in it —
+	 * null anywhere else, including in every other kind of instance.
+	 *
+	 * <p>Handed in as a question rather than a dependency, the same arrangement
+	 * {@code ShortestPathIntegration} has for its instance and portal knowledge: the
+	 * answer lives in {@code PlayerHouse}, and the wiring is one line in the plugin.
+	 */
+	private java.util.function.Supplier<WorldPoint> frontDoorWhenInside = () -> null;
+
+	/** Told how to ask for the house's front door; see {@link #frontDoorWhenInside}. */
+	public void setHouseKnowledge(java.util.function.Supplier<WorldPoint> frontDoorWhenInside)
+	{
+		this.frontDoorWhenInside = frontDoorWhenInside;
 	}
 
 	/** Everything the run has left, for the panel's checklist. */

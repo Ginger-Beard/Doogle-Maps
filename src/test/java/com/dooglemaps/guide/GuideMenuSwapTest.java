@@ -120,6 +120,28 @@ public class GuideMenuSwapTest
 		assertEquals("Empty", GuideMenuSwap.wantedBoxOption(seeds));
 	}
 
+	/**
+	 * The herb-Use swap's data: grimy herbs are flagged, roots are not.
+	 *
+	 * <p>The swap promotes Use over Clean only for items in this set — everything else the
+	 * leprechaun notes already defaults to Use, and promoting Use on a root would be a no-op
+	 * worth not making. Pinned here because the set is hand-maintained beside the names table
+	 * in {@code NotableHarvests}, and a herb added to one and not the other would silently
+	 * miss the swap.
+	 */
+	@Test
+	public void grimyHerbsAreFlaggedForTheUseSwapAndRootsAreNot()
+	{
+		assertEquals(true, com.dooglemaps.data.NotableHarvests.isGrimyHerb(
+			net.runelite.api.gameval.ItemID.UNIDENTIFIED_RANARR));
+		assertEquals("a root's left-click is already Use", false,
+			com.dooglemaps.data.NotableHarvests.isGrimyHerb(
+				net.runelite.api.gameval.ItemID.YEW_ROOTS));
+		assertEquals("the flag never leaves the notable set", true,
+			com.dooglemaps.data.NotableHarvests.isNotable(
+				net.runelite.api.gameval.ItemID.UNIDENTIFIED_RANARR));
+	}
+
 	private void stock(SeedSource source, Seed seed, int quantity)
 	{
 		// Recorded cumulatively: a container event is the whole container, so each call has to

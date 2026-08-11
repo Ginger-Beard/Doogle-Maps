@@ -637,18 +637,25 @@ public class GuideOverlay extends Overlay
 	 * logger in {@code GuideInventoryOverlay}: make the game announce the vocabulary rather
 	 * than guessing at it.
 	 */
-	private void noteUnmatchedTransports(String destination, List<String> transports)
+	private void noteUnmatchedTransports(@Nullable String destination, List<String> transports)
 	{
-		if (transports.isEmpty() || destination.equals(loggedTransportMissFor))
+		// A hint can travel without a destination name now; the hops are still worth logging,
+		// keyed under a stand-in so the once-per-destination dedup keeps working.
+		String key = destination == null ? "(unnamed leg)" : destination;
+		if (transports.isEmpty() || key.equals(loggedTransportMissFor))
 		{
 			return;
 		}
-		loggedTransportMissFor = destination;
+		loggedTransportMissFor = key;
 
+		// Both halves of the failed comparison, because the hops alone were not enough: the
+		// fairy ring sat unmatched for two sessions while every guess about what the scan had
+		// called it went unverifiable. name#id, from the same scan the matching ran over.
 		log.info("None of Shortest Path's hops for \"{}\" mapped to the furniture here - "
-			+ "hops: {}. Nothing is outlined; if one of those hops should have picked a piece "
-			+ "of furniture, its wording or the furniture's destination list needs matching.",
-			destination, transports);
+			+ "hops: {}, furniture seen: {}. Nothing is outlined; if one of those hops should "
+			+ "have picked a piece of furniture, its wording or the furniture's destination "
+			+ "list needs matching.",
+			key, transports, house.furnitureNames());
 	}
 
 	/** The scene objects matching the route's first hop, re-scanned once a tick. */

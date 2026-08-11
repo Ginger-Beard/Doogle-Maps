@@ -284,6 +284,14 @@ public class DoogleMapsPlugin extends Plugin
 		if (contract != null)
 		{
 			runTypes.retargetContract(contract.getPatchImplementation());
+
+			// The protection store gets the opposite treatment — stale contract choices are
+			// dropped, not renamed — see its retargetContract for why the two differ.
+			com.dooglemaps.data.Seed seed = contracts.getContractSeed();
+			protectionSelection.retargetContract(seed == null ? null
+				: com.dooglemaps.state.ProtectionSelectionStore.contractKey(
+					com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation()),
+					seed));
 		}
 	}
 	private Instant lastIdleRefresh = Instant.EPOCH;
@@ -540,6 +548,9 @@ public class DoogleMapsPlugin extends Plugin
 		if (CONTRACT_CONFIG_GROUP.equals(event.getGroup())
 			&& CONTRACT_CONFIG_KEY.equals(event.getKey()))
 		{
+			// A fresh assignment from Time Tracking is proof the previous contract was
+			// settled, seen or not - the trigger reconcileAwaitingHandIn was written for.
+			contracts.reconcileAwaitingHandIn();
 			panel.structureChanged();
 			refresh();
 			return;
@@ -798,6 +809,10 @@ public class DoogleMapsPlugin extends Plugin
 			int region = playerLocation.getRegionId();
 			return region >= 0 && (region >>> 8) >= 100;
 		});
+		// The house's front door, so a retarget made while standing in the POH can route from
+		// where the journey out actually begins instead of going silent - see RunPlanner.retarget.
+		runPlanner.setHouseKnowledge(() ->
+			playerHouse.isInside() ? playerHouse.frontDoor() : null);
 		availability.load();
 		seedStore.load();
 		// The remembered bank, so the loadout, the withdraw list and the filter start informed
@@ -900,6 +915,12 @@ public class DoogleMapsPlugin extends Plugin
 			refresh();
 		});
 		interactionTracker.reset();
+		// The awaiting-hand-in record is squared against Time Tracking before anything reads
+		// it. This call was documented into existence by the self-healing pass and never
+		// actually wired anywhere - the deadlock heal it carries ran zero times. Here, and on
+		// every Time Tracking key change (onConfigChanged), which are the two moments its
+		// evidence can newly contradict ours.
+		contracts.reconcileAwaitingHandIn();
 		// Said outright, once, because a contract that never appears has three possible causes —
 		// Time Tracking switched off, nothing assigned, or one already handed in — and from the
 		// sidebar all three look identical to the feature not working.

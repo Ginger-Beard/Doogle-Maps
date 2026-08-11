@@ -277,6 +277,26 @@ public interface DoogleMapsConfig extends Config
 		return true;
 	}
 
+	/**
+	 * The same arrangement again, for the one noted item whose left-click fights the step.
+	 *
+	 * <p>Everything else the leprechaun notes defaults to Use; a grimy herb's left-click is
+	 * Clean, and cleaned herbs are ones he will not note.
+	 */
+	@ConfigItem(
+		keyName = "herbUseLeftClick",
+		name = "Left-click Use grimy herbs at the leprechaun",
+		description = "While a step is asking you to note your crops with the tool leprechaun, "
+			+ "make Use a grimy herb's left-click option instead of Clean. Only reorders the "
+			+ "menu, and only for that moment - herbs clean normally the rest of the time.",
+		position = 41,
+		section = guideSection
+	)
+	default boolean herbUseLeftClick()
+	{
+		return true;
+	}
+
 	@ConfigItem(
 		keyName = "resurrectCropsReminder",
 		name = "Resurrect Crops reminder",

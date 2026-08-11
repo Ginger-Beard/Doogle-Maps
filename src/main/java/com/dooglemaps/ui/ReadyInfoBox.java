@@ -69,6 +69,16 @@ public class ReadyInfoBox extends InfoBox
 			{
 				continue;
 			}
+			// Only what a run would actually visit: the count exists to say "a farm run is
+			// worth starting", and a patch whose type is unticked — or a bush the run is
+			// deliberately letting refill — is not a reason to go. Reported from play as the
+			// counter showing every enabled patch. The sidebar's own summary deliberately
+			// stays account-wide; this is the glanceable in-game number, and it should agree
+			// with what Start run would do.
+			if (!planner.selectedForRuns(projection.getPatch()))
+			{
+				continue;
+			}
 
 			String label = projection.getPatch().getDisplayName() + " - " + projection.getProduce().getName();
 			if (projection.getConfidence() == Confidence.NEEDS_ACTION)

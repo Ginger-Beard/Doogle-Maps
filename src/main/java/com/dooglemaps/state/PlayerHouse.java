@@ -52,6 +52,23 @@ public class PlayerHouse
 		37520)); // Ornate
 
 	/**
+	 * The superior garden's teleport builds, by id, each with the name the matching runs on.
+	 *
+	 * <p>The jewellery box's disease, caught in a second place: a route through the garden
+	 * fairy ring — a plain built ring, wiki object 29228 — matched no furniture at all in the
+	 * field, while the portals in the same house matched fine. Whatever its scene object
+	 * resolves its name to, it is not something the name path can rely on, so all three
+	 * builds this hotspot takes are recognised by id. The combined build's forced name
+	 * carries both halves, which {@code HouseTeleports.furnitureNamedByHop} splits on the
+	 * "&" so each half can claim its own hops.
+	 */
+	private static final java.util.Map<Integer, String> GARDEN_TELEPORT_IDS =
+		java.util.Map.of(
+			net.runelite.api.gameval.ObjectID.POH_SPIRIT_TREE, "Spirit tree",
+			net.runelite.api.gameval.ObjectID.POH_FAIRY_RING, "Fairy ring",
+			net.runelite.api.gameval.ObjectID.POH_SPIRIT_RING, "Spirit tree & fairy ring");
+
+	/**
 	 * Words identifying teleport furniture, whatever tier it was built at.
 	 *
 	 * <p>Everything a house can teleport you with: the nexus, the jewellery box, the mounted
@@ -238,23 +255,48 @@ public class PlayerHouse
 		List<TileObject> found = new ArrayList<>();
 		for (TileObject object : teleports)
 		{
-			String name;
-			if (JEWELLERY_BOX_IDS.contains(object.getId()))
-			{
-				name = "jewellery box";
-			}
-			else
-			{
-				ObjectComposition definition = resolve(object.getId());
-				name = definition == null ? null : definition.getName();
-			}
-
+			String name = furnitureName(object);
 			if (name != null && nameTest.test(name))
 			{
 				found.add(object);
 			}
 		}
 		return found;
+	}
+
+	/** The name the matching runs on: forced for the known-id builds, resolved otherwise. */
+	@Nullable
+	private String furnitureName(TileObject object)
+	{
+		if (JEWELLERY_BOX_IDS.contains(object.getId()))
+		{
+			return "jewellery box";
+		}
+		String garden = GARDEN_TELEPORT_IDS.get(object.getId());
+		if (garden != null)
+		{
+			return garden;
+		}
+		ObjectComposition definition = resolve(object.getId());
+		return definition == null ? null : definition.getName();
+	}
+
+	/**
+	 * Every scanned teleport as {@code name#id}, for the unmatched-hops log.
+	 *
+	 * <p>Exists because "none of the hops matched the furniture here" cannot be acted on
+	 * without knowing what the furniture said its names were — the fairy ring sat unmatched
+	 * for two sessions while the log named only the hops' half of the comparison. Client
+	 * thread only, like every furniture question.
+	 */
+	public List<String> furnitureNames()
+	{
+		List<String> names = new ArrayList<>();
+		for (TileObject object : teleports)
+		{
+			names.add(furnitureName(object) + "#" + object.getId());
+		}
+		return names;
 	}
 
 	/**
@@ -394,7 +436,7 @@ public class PlayerHouse
 
 	private boolean isTeleportFurniture(int objectId)
 	{
-		if (JEWELLERY_BOX_IDS.contains(objectId))
+		if (JEWELLERY_BOX_IDS.contains(objectId) || GARDEN_TELEPORT_IDS.containsKey(objectId))
 		{
 			return true;
 		}

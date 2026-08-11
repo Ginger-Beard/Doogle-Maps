@@ -60,6 +60,7 @@ public class RunPlannerTest
 	private com.dooglemaps.state.SeedInventoryStore seedInventory;
 	private BankLocationStore banks;
 	private RunPlanner planner;
+	private ShortestPathIntegration router;
 	private com.dooglemaps.state.PlantingGroups groups;
 	private com.dooglemaps.bank.ToolNeeds tools;
 	private net.runelite.api.Client client;
@@ -126,7 +127,7 @@ public class RunPlannerTest
 			return null;
 		}).when(clientThread).invokeLater(any(Runnable.class));
 
-		ShortestPathIntegration router = construct(ShortestPathIntegration.class, eventBus, clientThread);
+		router = construct(ShortestPathIntegration.class, eventBus, clientThread);
 
 		stateStore.load();
 		availability.load();
@@ -757,6 +758,178 @@ public class RunPlannerTest
 
 		assertTrue("a route from instance coordinates would start from nowhere",
 			lastTargets().isEmpty());
+	}
+
+	/**
+	 * The player's own house is the one instance with a knowable start: its front door.
+	 *
+	 * <p>Refusing outright there left a replanned run <b>dead</b> — every retarget begins by
+	 * wiping the route state, so a run planned or replanned while standing in the POH showed
+	 * no destination, no via-lines and nothing outlined, and never asked the router again
+	 * until the player walked out. Reported from play, replanned inside the house. Same
+	 * compromise {@code routeFromTheFrontDoor} makes; other instances still stay silent, as
+	 * the test above pins.
+	 */
+	@Test
+	public void aPlanMadeInsideTheHouseRoutesFromTheFrontDoor()
+	{
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+		stockInventory(com.dooglemaps.data.Seed.RANARR, 10);
+		standingIn((100 << 8) | 80);
+		WorldPoint door = new WorldPoint(2953, 3224, 0);
+		planner.setHouseKnowledge(() -> door);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		assertFalse("the run still gets a route", lastTargets().isEmpty());
+		assertEquals("planned from where the house opens onto the overworld",
+			door, lastStart());
+	}
+
+	/**
+	 * A live plan through the house is never re-routed from the front door.
+	 *
+	 * <p>The fallback above exists for the dead no-plan state; its first version fired on
+	 * <b>every</b> in-house retarget, so entering the POH on a jewellery-box leg threw away
+	 * the box hop mid-teleport — the via-line vanished, and the row highlight (which reads
+	 * the hop for its row name) fell back to the stop's name and lit "R: Al Kharid" over
+	 * "1: Emir's Arena". Reported from play, twice. The router's own origins say the plan
+	 * uses the house, and such a plan keeps its route.
+	 */
+	@Test
+	public void aLiveRouteThroughTheHouseKeepsItsRouteInside()
+	{
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+		stockInventory(com.dooglemaps.data.Seed.RANARR, 10);
+		standingIn(12894);
+		planner.setHouseKnowledge(() -> new WorldPoint(2953, 3224, 0));
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertFalse("fixture: a route was asked for", lastTargets().isEmpty());
+
+		// The router's answer: the second hop departs the POH — house furniture by its own
+		// word (a jewellery box, say), whatever it is called.
+		Map<String, Object> data = new HashMap<>();
+		data.put("origin", java.util.Arrays.asList(
+			new WorldPoint(3222, 3218, 0), new WorldPoint(1928, 5731, 0)));
+		data.put("destination", java.util.Arrays.asList(new WorldPoint(1923, 5709, 0)));
+		router.onPluginMessage(new PluginMessage("shortestpath", "transports", data));
+
+		int posts = posted.size();
+		standingIn((100 << 8) | 80);   // teleported into the house
+		planner.retarget();
+
+		assertEquals("the next click is furniture in this room; the route must survive",
+			posts, posted.size());
+	}
+
+	/** The start in the most recent path message, or null when none was carried. */
+	private WorldPoint lastStart()
+	{
+		for (int i = posted.size() - 1; i >= 0; i--)
+		{
+			PluginMessage message = posted.get(i);
+			if (message.getData() != null && message.getData().get("start") != null)
+			{
+				return (WorldPoint) message.getData().get("start");
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * A part-full bush on a harvest-only run waits for the cap; a full one goes in.
+	 *
+	 * <h2>Regrowth stops at the cap</h2>
+	 *
+	 * Wiki-checked: the regrowing families refill one unit per fixed tick and never past
+	 * their cap, so a full plant is idle while a part-full one is still working — visiting
+	 * early buys nothing and costs the trip, and for bushes also forfeits the level-scaled
+	 * yield the wiki ties to full regrowth. Reported from play as being routed back to
+	 * half-full bushes. Planning-time only, like the cluster hold: once you are there
+	 * picking, the falling stock must not complete the stop under your feet.
+	 */
+	@Test
+	public void aRefillingBushWaitsForTheCapOnHarvestOnly()
+	{
+		FarmPatch bush = FarmingWorldData.getPatches(PatchImplementation.BUSH).get(0);
+		availability.setAvailable(bush, true);
+		when(runOptions.isHarvestOnly(any())).thenReturn(true);
+
+		int partial = bushValueWhere(bush, true);
+		int full = bushValueWhere(bush, false);
+		assertTrue("fixture: the varbit table has both a refilling and a full state",
+			partial >= 0 && full >= 0);
+
+		ProduceState refilling = bush.getImplementation().forVarbitValue(partial);
+		stateStore.recordVarbit(bush, partial, refilling);
+		assertTrue("still refilling - the trip can wait",
+			planner.start(EnumSet.of(PatchImplementation.BUSH)).isEmpty());
+
+		ProduceState capped = bush.getImplementation().forVarbitValue(full);
+		stateStore.recordVarbit(bush, full, capped);
+		assertFalse("at the cap the plant is idle - now the trip pays",
+			planner.start(EnumSet.of(PatchImplementation.BUSH)).isEmpty());
+	}
+
+	/**
+	 * The ready counter's question: would a run started right now visit this patch?
+	 *
+	 * <p>The counter used to count every available patch — an unticked type and a refilling
+	 * bush both inflated a number that exists to say "a farm run is worth starting".
+	 */
+	@Test
+	public void theReadyCounterOnlyCountsWhatARunWouldVisit()
+	{
+		FarmPatch bush = FarmingWorldData.getPatches(PatchImplementation.BUSH).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.BUSH);
+		when(groups.groupFor(bush)).thenReturn(group);
+
+		int full = bushValueWhere(bush, false);
+		stateStore.recordVarbit(bush, full, bush.getImplementation().forVarbitValue(full));
+		assertFalse("unticked is not a reason to go, however ready it is",
+			planner.selectedForRuns(bush));
+
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.harvestOnly(group)))
+			.thenReturn(true);
+		when(runOptions.isHarvestOnly(any())).thenReturn(true);
+		assertTrue("ticked and full - a run would go", planner.selectedForRuns(bush));
+
+		int partial = bushValueWhere(bush, true);
+		stateStore.recordVarbit(bush, partial, bush.getImplementation().forVarbitValue(partial));
+		assertFalse("ticked but still refilling - the run is deliberately waiting",
+			planner.selectedForRuns(bush));
+	}
+
+	/**
+	 * A bush varbit value that projects to stock with (or without) more on the way, or -1.
+	 *
+	 * <p>Found by decoding rather than hard-coded, the same way {@link #grownUncheckedValue}
+	 * works, so the test keeps meaning something if the generated tables move.
+	 */
+	private int bushValueWhere(FarmPatch patch, boolean stillRegrowing)
+	{
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+			if (decoded == null || decoded.getProduce() == null || !decoded.getProduce().isCrop())
+			{
+				continue;
+			}
+			stateStore.recordVarbit(patch, value, decoded);
+			com.dooglemaps.timer.PatchProjection projection =
+				timer.project(patch, stateStore.get(patch));
+			if (projection != null && projection.hasProduceToPick()
+				&& projection.isRegrowing() == stillRegrowing)
+			{
+				return value;
+			}
+		}
+		return -1;
 	}
 
 	/** The crop's grown-but-unchecked varbit value, or -1 when the data has none. */

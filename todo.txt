@@ -1,0 +1,3 @@
+Need to model compost runs, what crops/items create what compost, this is going to involve a lot of bank trips, also volcanic ash mechanics and things like that, research this.
+
+Also need to model seaweed runs, mushroom runs, belladona runs, calquat, celastrus, and coral runs, I don't do these frequently so again, heavy research on these mechanics, I know we'll need flippers(optional) and diving helm/cape for the underwater ones. Maybe a boat for coral, I've literally never done it.

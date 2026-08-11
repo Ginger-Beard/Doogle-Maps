@@ -336,6 +336,75 @@ public class ContractStateTest
 		assertTrue(reloaded.isProtecting(PlantingGroup.of(PatchImplementation.CACTUS), Seed.CACTUS));
 	}
 
+	/**
+	 * A fresh Time Tracking assignment clears an awaiting record for a different crop.
+	 *
+	 * <p>Jane does not assign while a reward is uncollected, so a new assignment is proof the
+	 * old contract was settled unseen. This is the heal {@code reconcileAwaitingHandIn} was
+	 * written for — and it had never actually been called from anywhere until the poison ivy
+	 * report; wired now at plugin load and on the Time Tracking key changing.
+	 */
+	@Test
+	public void aDifferentAssignmentProvesTheHandInHappened()
+	{
+		assignInTimeTracking(Produce.POISON_IVY);
+		contracts.recordCompleted();
+		assertEquals(Produce.POISON_IVY, contracts.getAwaitingHandIn());
+
+		assignInTimeTracking(Produce.RANARR);
+		contracts.reconcileAwaitingHandIn();
+
+		assertNull("the hand-in happened while nothing was watching",
+			contracts.getAwaitingHandIn());
+	}
+
+	/**
+	 * An awaiting record contradicted by Time Tracking still holding the SAME crop is corruption.
+	 *
+	 * <h2>The poison ivy report</h2>
+	 *
+	 * The completion message clears Time Tracking's key the moment it fires, and Jane never
+	 * assigns the same crop twice running — so its key still holding the crop we think is
+	 * awaiting means no completion message ever came. The old patch-evidence fallback wrote
+	 * exactly this state when it mistook a bush health-checked <i>before</i> the contract for a
+	 * completion, and the record persists in config; this is what heals installs that already
+	 * carry it.
+	 */
+	@Test
+	public void anAwaitingRecordTimeTrackingContradictsIsCleared()
+	{
+		assignInTimeTracking(Produce.POISON_IVY);
+		// What the buggy fallback did: recorded a completion no message ever announced, so
+		// Time Tracking's key was never cleared.
+		contracts.recordCompleted();
+		assertEquals(Produce.POISON_IVY, contracts.getAwaitingHandIn());
+
+		contracts.reconcileAwaitingHandIn();
+
+		assertNull("no completion message ever fired, so nothing is awaiting",
+			contracts.getAwaitingHandIn());
+		assertEquals("and the assignment itself survives - the contract is still to grow",
+			Produce.POISON_IVY, contracts.getContract());
+	}
+
+	/**
+	 * With Time Tracking switched off its key merely goes stale, and a stale key holding the
+	 * crop is exactly what a real completion looks like — so nothing is cleared.
+	 */
+	@Test
+	public void aStaleKeyFromADisabledTimeTrackingIsNotContradiction()
+	{
+		when(configManager.getConfiguration("runelite", "timetrackingplugin"))
+			.thenReturn("false");
+		assignInTimeTracking(Produce.POISON_IVY);
+		contracts.recordCompleted();
+
+		contracts.reconcileAwaitingHandIn();
+
+		assertEquals("the reward really is waiting - a disabled plugin's key proves nothing",
+			Produce.POISON_IVY, contracts.getAwaitingHandIn());
+	}
+
 	/** Exactly what Time Tracking writes: the harvested item's id, as a string. */
 	private void assignInTimeTracking(Produce produce)
 	{

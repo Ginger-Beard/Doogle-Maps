@@ -71,6 +71,58 @@ public class PlaceNameMatchTest
 	}
 
 	/**
+	 * A route hop's own row name finds its row, and only its row.
+	 *
+	 * <h2>The Al Kharid loop</h2>
+	 *
+	 * The row highlight used to be keyed on the destination alone, and a jewellery box can
+	 * carry the stop's name verbatim on a row the router did not pick: an Al Kharid trip
+	 * planned through "1: Emir's Arena" lit "R: Al Kharid" instead, and following the
+	 * highlight landed somewhere the router immediately re-planned around — teleport home,
+	 * box again, forever. Reported from play. The overlay now asks the hops' own row names
+	 * first ({@code GuideInventoryOverlay.rowNames}); these are the matcher facts that
+	 * ordering rests on.
+	 */
+	@Test
+	public void aHopsOwnRowNameFindsExactlyItsRow() throws Exception
+	{
+		assertTrue("the row the router planned through matches its own name",
+			matches("1: Emir's Arena", "1: Emir's Arena"));
+		assertFalse("and the stop-named row does not match the hop's row name",
+			matches("R: Al Kharid", "1: Emir's Arena"));
+	}
+
+	/**
+	 * The rows as the game actually writes them, markup and all.
+	 *
+	 * <h2>How the Al Kharid loop came back</h2>
+	 *
+	 * The test above pinned the ordering with clean text, and the live rows are not clean: a
+	 * jewellery box row is {@code <col=ccccff>1:</col> Emir's Arena}, so the hop's row name
+	 * failed containment on the colour tag, the match fell through to the destination — and the
+	 * glory's {@code <col=ccccff>R:</col> Al Kharid} row carries that verbatim. Same bug, third
+	 * report, reintroduced by markup the tests never exercised. The nexus's variant is spacing:
+	 * {@code <col=ffffff>D</col> :  Poison Waste}, colon outside the tag and two spaces deep —
+	 * the session log showed exactly that row failing to match "D: Poison Waste". These are the
+	 * game's own strings, copied from the log, so the matcher is tested against reality rather
+	 * than against what reality ought to look like.
+	 */
+	@Test
+	public void theGamesOwnMarkupDoesNotBreakTheMatch() throws Exception
+	{
+		assertTrue("a colour-tagged box row still matches the hop's row name",
+			matches("<col=ccccff>1:</col> Emir's Arena", "1: Emir's Arena"));
+		assertTrue("a tag-split nexus row still matches, spacing and all",
+			matches("<col=ffffff>D</col> :  Poison Waste", "D: Poison Waste"));
+		assertTrue("and the plain destination still finds its tagged row",
+			matches("<col=ccccff>R:</col> Al Kharid", "Al Kharid"));
+		assertFalse("but a tagged row is still not every row",
+			matches("<col=ccccff>R:</col> Al Kharid", "1: Emir's Arena"));
+		assertTrue("the nexus's own Catherby row, as the log printed it",
+			matches("<col=ffffff>4</col> :  Catherby", "Catherby"));
+	}
+
+	/**
 	 * The nexus list is player-ordered, so nothing may key off position or shortcut number.
 	 *
 	 * <p>Players reorder their own nexus, so "the third row" and "option 4" mean different things
@@ -139,6 +191,38 @@ public class PlaceNameMatchTest
 			HouseTeleports.furnitureServesHop("Portal Nexus", "A J P"));
 		assertFalse("and a worded hop is not a code",
 			HouseTeleports.furnitureServesHop("Fairy ring", "Varrock Teleport"));
+	}
+
+	/**
+	 * A combined build is both furnitures at once, and a hop only ever names one half.
+	 *
+	 * <p>"Spirit tree &amp; fairy ring" is the name {@code PlayerHouse} forces onto the
+	 * combined garden build (wiki object 29229) — the garden teleports are matched by id,
+	 * their scene names having failed in the field — and it is <i>longer than either hop</i>,
+	 * so plain containment could never say yes for either half. Split on the "&amp;", each
+	 * half answers for itself; a decorated ring name is matched by kind as well.
+	 */
+	@Test
+	public void aCombinedBuildAnswersForEachOfItsHalves()
+	{
+		assertTrue("the ring half claims the worded fairy hop",
+			HouseTeleports.furnitureNamedByHop(
+				"Spirit tree & fairy ring", "Configure Fairy ring - C K Q"));
+		assertTrue("and the bare code",
+			HouseTeleports.furnitureNamedByHop("Spirit tree & fairy ring", "A J P"));
+		assertTrue("the tree half claims a spirit tree hop",
+			HouseTeleports.furnitureNamedByHop(
+				"Spirit tree & fairy ring", "Travel Spirit tree - 6: Prifddinas"));
+		assertTrue("and its destination list still serves through the combined name",
+			HouseTeleports.furnitureServesHop("Spirit tree & fairy ring", "Gnome Stronghold"));
+		// Not "Varrock Teleport": the tree half genuinely serves that one, through its Grand
+		// Exchange destination and the varrock<->grand exchange alias.
+		assertFalse("no half of it claims an unrelated hop",
+			HouseTeleports.furnitureServesHop("Spirit tree & fairy ring", "Trollheim Teleport"));
+
+		assertTrue("a decorated ring name is matched by kind, not by full-name containment",
+			HouseTeleports.furnitureNamedByHop(
+				"Fairy ring (Superior Garden)", "Configure Fairy ring - C K Q"));
 	}
 
 	/**

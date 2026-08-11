@@ -325,7 +325,7 @@ public class BankHighlightOverlay extends Overlay
 				highlight(graphics, item, config.guideHighlightColour());
 				// The same count the bank gets. A seed is a seed wherever it is stored, and the
 				// vault is where the expensive ones live.
-				drawWithdrawCount(graphics, item);
+				drawWithdrawCount(graphics, item, vaultWithdrawCounts());
 				if (mouse != null && items.getBounds().contains(mouse.getX(), mouse.getY())
 					&& item.getBounds().contains(mouse.getX(), mouse.getY()))
 				{
@@ -395,7 +395,7 @@ public class BankHighlightOverlay extends Overlay
 				// The route's own item in cyan - the router picked it, so it outranks the
 				// run's ordinary mark. Everything else keeps the configured colour.
 				highlight(graphics, item, route ? COUNT_COLOUR : config.guideHighlightColour());
-				drawWithdrawCount(graphics, item);
+				drawWithdrawCount(graphics, item, withdrawCounts());
 
 				// Hovering says why. A mark tells you to take something; the reason it is on the
 				// list — which patch, which teleport, what the payment is for — is the part you
@@ -445,7 +445,7 @@ public class BankHighlightOverlay extends Overlay
 				{
 					highlight(graphics, item, COUNT_COLOUR);
 				}
-				drawWithdrawCount(graphics, item);
+				drawWithdrawCount(graphics, item, withdrawCounts());
 				if (mouse != null && container.getBounds().contains(mouse.getX(), mouse.getY())
 					&& item.getBounds().contains(mouse.getX(), mouse.getY()))
 				{
@@ -487,7 +487,8 @@ public class BankHighlightOverlay extends Overlay
 	 * twenty-seven on the icon, and putting them back puts it to thirty again — the pack is what
 	 * it is measured against, and {@code CarriedItems} is watching that live.
 	 */
-	private void drawWithdrawCount(Graphics2D graphics, Widget item)
+	private void drawWithdrawCount(Graphics2D graphics, Widget item,
+		Map<Integer, Integer> counts)
 	{
 		// Not on a placeholder. An empty slot has nothing to withdraw, so a count over it is
 		// an instruction that cannot be followed - reported as "1"s over placeholder
@@ -504,7 +505,7 @@ public class BankHighlightOverlay extends Overlay
 			return;
 		}
 
-		Integer left = withdrawCounts().get(item.getItemId());
+		Integer left = counts.get(item.getItemId());
 		if (left == null || left <= 0)
 		{
 			return;
@@ -546,43 +547,67 @@ public class BankHighlightOverlay extends Overlay
 	private static final Color COUNT_COLOUR = new Color(0x00, 0xFF, 0xFF);
 
 	/**
-	 * How many of each marked item the run wants, rebuilt once a tick.
+	 * How many of each marked item to take from the <b>bank</b>, rebuilt once a tick.
 	 *
 	 * <p>Keyed by every bank form, for the reason the filter is: the loadout names the planted
 	 * form and a tree crop sits in the bank as a seed, so keying on the loadout's own id alone
 	 * would silently put no number on exactly the items that are expensive enough to count.
+	 *
+	 * <p>Split by the row's own container, like the marks already were. One shared map painted
+	 * a vault row's count onto the bank's slot: two magic saplings wanted, four of them in the
+	 * seed vault, and the bank's single sapling wore a cyan "2" — an instruction the slot
+	 * cannot satisfy. Reported from play. The vault's own list gets its own map below.
 	 */
 	private Map<Integer, Integer> withdrawCounts()
 	{
-		int tick = client.getTickCount();
-		if (tick != countsTick)
-		{
-			countsTick = tick;
-			Map<Integer, Integer> counts = new java.util.HashMap<>();
-			for (LoadoutItem item : loadoutThisTick())
-			{
-				// The one shared rule for whether a number is an instruction — see
-				// LoadoutItem.getWithdrawCount, which the withdraw list uses too, so the slot
-				// and the list can never disagree.
-				int count = item.getWithdrawCount();
-				if (count <= 0)
-				{
-					continue;
-				}
-				for (int form : RunLoadout.bankFormsOf(item.getItemId()))
-				{
-					// Summed rather than replaced. Two picked seeds can share a bank form only in
-					// contrived cases, but a payment shared by two crops is ordinary — protecting
-					// magic and yew both want coconuts, and the run needs the total.
-					counts.merge(form, count, Integer::sum);
-				}
-			}
-			withdrawCounts = counts;
-		}
+		refreshCounts();
 		return withdrawCounts;
 	}
 
+	/** The same, for the seed vault's rows. See {@link #withdrawCounts()}. */
+	private Map<Integer, Integer> vaultWithdrawCounts()
+	{
+		refreshCounts();
+		return vaultWithdrawCounts;
+	}
+
+	private void refreshCounts()
+	{
+		int tick = client.getTickCount();
+		if (tick == countsTick)
+		{
+			return;
+		}
+		countsTick = tick;
+
+		Map<Integer, Integer> bank = new java.util.HashMap<>();
+		Map<Integer, Integer> vault = new java.util.HashMap<>();
+		for (LoadoutItem item : loadoutThisTick())
+		{
+			// The one shared rule for whether a number is an instruction — see
+			// LoadoutItem.getWithdrawCount, which the withdraw list uses too, so the slot
+			// and the list can never disagree.
+			int count = item.getWithdrawCount();
+			if (count <= 0)
+			{
+				continue;
+			}
+			Map<Integer, Integer> target =
+				item.getFrom() == LoadoutItem.From.SEED_VAULT ? vault : bank;
+			for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+			{
+				// Summed rather than replaced. Two picked seeds can share a bank form only in
+				// contrived cases, but a payment shared by two crops is ordinary — protecting
+				// magic and yew both want coconuts, and the run needs the total.
+				target.merge(form, count, Integer::sum);
+			}
+		}
+		withdrawCounts = bank;
+		vaultWithdrawCounts = vault;
+	}
+
 	private Map<Integer, Integer> withdrawCounts = Collections.emptyMap();
+	private Map<Integer, Integer> vaultWithdrawCounts = Collections.emptyMap();
 	private int countsTick = -1;
 
 	/**

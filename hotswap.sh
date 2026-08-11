@@ -23,14 +23,16 @@ fi
 
 windows_root="$(wslpath -w "$repo_root")"
 build_dir="$repo_root/build-windows"
-class_dirs=("$build_dir/classes/java/main" "$build_dir/classes/java/test")
+# Main classes only. The test tree holds the launcher and the unit tests, which the running
+# client never loads mid-session - swapping them was 30 extra redefines of noise per run.
+class_dirs=("$build_dir/classes/java/main")
 pending_file="$build_dir/.hotswap-pending"
 
 # 1. Recompile into the build directory the running client loaded from. `classes` also
 # runs processResources, so edited resources are picked up the next time the plugin's
 # classloader reads them.
 before=$(date +%s)
-cmd.exe /c "pushd ${windows_root} && gradlew.bat classes testClasses --project-cache-dir .gradle-windows -PbuildSuffix=windows"
+cmd.exe /c "pushd ${windows_root} && gradlew.bat classes --project-cache-dir .gradle-windows -PbuildSuffix=windows"
 
 # 2. Collect what that compile rewrote — Gradle only rewrites class files whose sources
 # recompiled, so "newer than the compile started" is exactly the changed set. The one-second
@@ -81,7 +83,11 @@ echo "Swapping ${#classes[@]} class(es): ${classes[*]}"
 
 # 4. Attach and redefine. quit only detaches — the client keeps running and the port goes
 # back to listening for the next swap.
-out="$(cmd.exe /c "jdb -attach 127.0.0.1:5005 < ${windows_root}\\build-windows\\hotswap-commands.txt" 2>&1)" || true
+#
+# The explicit SocketAttach connector, not -attach: on Windows, jdb's default transport is
+# shared memory, so "-attach 127.0.0.1:5005" was read as a shmem address name and died with
+# "shmemBase_attach failed" without ever touching the port.
+out="$(cmd.exe /c "jdb -connect com.sun.jdi.SocketAttach:hostname=127.0.0.1,port=5005 < ${windows_root}\\build-windows\\hotswap-commands.txt" 2>&1)" || true
 
 if grep -qiE 'unable to attach|connection refused|handshake failed' <<< "$out"; then
 	printf '%s\n' "${changed[@]}" | awk '!seen[$0]++' > "$pending_file"

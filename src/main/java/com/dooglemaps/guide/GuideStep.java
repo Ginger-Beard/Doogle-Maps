@@ -62,9 +62,14 @@ public class GuideStep
 		//
 		// The pick-up step's target is the crops on the ground, drawn from DroppedProduce's
 		// record — same one-click-one-target rule.
+		//
+		// Fetching the contract seed happens at the bank, which the step model cannot outline;
+		// lighting the patch would point away from the click. The bank filter takes over the
+		// moment the bank is open — the seed is already on the withdraw list.
 		return !isAtLeprechaun() && !isAtGuildmaster()
 			&& action != GuideAction.PAY_FARMER
-			&& action != GuideAction.PICK_UP_DROPS;
+			&& action != GuideAction.PICK_UP_DROPS
+			&& action != GuideAction.FETCH_SEED;
 	}
 
 	/** Whether this step happens in front of Guildmaster Jane rather than at a patch. */

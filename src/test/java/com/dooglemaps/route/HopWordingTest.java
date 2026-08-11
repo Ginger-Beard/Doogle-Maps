@@ -26,6 +26,11 @@ public class HopWordingTest
 			ShortestPathIntegration.objectName("Enter Annakarl Portal 29341"));
 		assertEquals("Edgeville Amulet of Glory",
 			ShortestPathIntegration.objectName("Edgeville Amulet of Glory 13523"));
+		// The POH garden ring's own row in fairy_rings.tsv - the id is the same one
+		// PlayerHouse recognises the ring by, and SpFairyWordingTest takes the composed
+		// wording from here.
+		assertEquals("Configure Fairy ring",
+			ShortestPathIntegration.objectName("Configure Fairy ring 29228"));
 	}
 
 	/**

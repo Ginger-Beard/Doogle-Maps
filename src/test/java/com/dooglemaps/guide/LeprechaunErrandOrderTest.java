@@ -334,6 +334,53 @@ public class LeprechaunErrandOrderTest
 			GuideAction.NOTE_AT_LEPRECHAUN, steps.get(1).getAction());
 	}
 
+	/**
+	 * A full pack says "note with the leprechaun" once, not once per patch.
+	 *
+	 * <h2>What it looked like</h2>
+	 *
+	 * Every patch at the stop with produce to pick raises its own full-pack note step, each
+	 * naming its own crop — and the panel listed the notice under every harvest at the stop,
+	 * four patches reading as four trips. Reported from play. The first copy is the working
+	 * patch's, which names the crop being harvested right now; the rest go.
+	 */
+	@Test
+	public void aFullPackNotesOnceNotPerPatch() throws Exception
+	{
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN, somePatch(),
+			Produce.LIMPWURT.getItemID(), null, "Your inventory is full - note the limpwurt."));
+		steps.add(GuideStep.of(GuideAction.HARVEST, somePatch(), "Harvest the limpwurt."));
+		steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN, otherPatch(),
+			Produce.WATERMELON.getItemID(), null,
+			"Your inventory is full - note the watermelon."));
+		steps.add(GuideStep.of(GuideAction.HARVEST, otherPatch(), "Harvest the watermelon."));
+
+		collapse(steps);
+
+		assertEquals("one trip, said once", 1, steps.stream()
+			.filter(step -> step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+			.count());
+		assertEquals("and the surviving copy is the working patch's",
+			Produce.LIMPWURT.getItemID(), steps.get(0).getItemId());
+		assertEquals("the other patch keeps its harvest",
+			GuideAction.HARVEST, steps.get(2).getAction());
+	}
+
+	private static void collapse(List<GuideStep> steps) throws Exception
+	{
+		Method method = GuideTracker.class.getDeclaredMethod(
+			"collapseDuplicateNotes", List.class);
+		method.setAccessible(true);
+		method.invoke(null, steps);
+	}
+
+	private static FarmPatch otherPatch()
+	{
+		return FarmingWorldData.getPatches(
+			com.dooglemaps.data.PatchImplementation.ALLOTMENT).get(0);
+	}
+
 	/** Puts the stop's patch into the grown-but-unchecked state. */
 	private void checkPending()
 	{
