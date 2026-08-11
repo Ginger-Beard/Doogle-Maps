@@ -80,4 +80,58 @@ public class PatchLocationStoreTest
 			assertTrue(patch + " has a nonsense location", fallback.getX() > 0 && fallback.getY() > 0);
 		}
 	}
+
+	/**
+	 * Route targets ring the patch rather than standing on it.
+	 *
+	 * <p>Shortest Path only finishes a search on a tile it can step onto, and a bush or tree
+	 * patch's own tile is blocked — so the targets have to be the tiles beside it. The ring
+	 * sits exactly one tile outside the learned footprint.
+	 */
+	@Test
+	public void routeTargetsRingTheLearnedFootprint()
+	{
+		PatchLocationStore store = freshStore();
+		FarmPatch patch = FarmingWorldData.getAllPatches().iterator().next();
+		store.record(patch, new WorldPoint(3004, 3308, 0), 3, 3);
+
+		java.util.List<WorldPoint> targets = store.getRouteTargets(patch);
+
+		// A 3x3 footprint centred on (3004,3308) spans 3003-3005 x 3307-3309; the ring is the
+		// 16-tile perimeter one step outside that, and the centre rides along for the
+		// families whose patch is walkable ground.
+		assertEquals(17, targets.size());
+		assertTrue("centre kept", targets.contains(new WorldPoint(3004, 3308, 0)));
+		assertTrue("ring corner", targets.contains(new WorldPoint(3002, 3306, 0)));
+		assertTrue("ring corner", targets.contains(new WorldPoint(3006, 3310, 0)));
+		assertTrue("no tile of the footprint itself except the centre",
+			!targets.contains(new WorldPoint(3003, 3307, 0)));
+	}
+
+	/** A patch never seen still gets a ring, around its seeded or region-centre point. */
+	@Test
+	public void routeTargetsExistBeforeThePatchIsEverSeen()
+	{
+		PatchLocationStore store = freshStore();
+		FarmPatch patch = FarmingWorldData.getAllPatches().iterator().next();
+
+		java.util.List<WorldPoint> targets = store.getRouteTargets(patch);
+
+		assertEquals("assumed 3x3 footprint: 16-tile ring plus the centre", 17, targets.size());
+		assertTrue(targets.contains(store.getLocation(patch)));
+	}
+
+	private static PatchLocationStore freshStore()
+	{
+		try
+		{
+			return com.dooglemaps.Construct.construct(PatchLocationStore.class,
+				org.mockito.Mockito.mock(net.runelite.client.config.ConfigManager.class),
+				new com.google.gson.Gson());
+		}
+		catch (Exception e)
+		{
+			throw new RuntimeException(e);
+		}
+	}
 }

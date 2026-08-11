@@ -60,6 +60,10 @@ writing a contact sheet to `build/farmers.png`.
 `localhost:5005`; in IntelliJ that is a "Remote JVM Debug" configuration. Recompile, then "Reload
 Changed Classes", and the running client picks the change up.
 
+No IDE needed: `./hotswap.sh` does the same from the terminal — it recompiles on the Windows side,
+works out which classes the compile rewrote, and feeds `redefine` commands to `jdb` on the debug
+port. If the client is not up yet, the changed classes are remembered and swapped on the next run.
+
 The limit is worth knowing before relying on it: stock HotSwap replaces **method bodies only**.
 Adding or removing a field or a method, changing a signature, or editing an enum needs a relaunch —
 which, in a codebase with this much generated data, is a lot of changes. The JetBrains Runtime

@@ -39,9 +39,10 @@ import net.runelite.client.plugins.banktags.tabs.LayoutManager;
  * <p>What changed is two facts about it. <b>Being off proved undiscoverable</b>: the filter was
  * reported as broken when it had simply never been switched on, and {@link #openIfWanted} was
  * saying exactly that at INFO, once per bank, in a log nobody standing at a bank reads. And
- * <b>less is hidden than there was</b> — the tag is opened with
- * {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM}, so anything the layout has no room for appears
- * below the grid rather than being dropped.
+ * <b>less is hidden than there was</b> — {@link BankLayout#build} now spills what a region
+ * cannot hold into the map's empty slots, and the tag is still opened with
+ * {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM} as a last resort for a grid that is entirely
+ * full (though that append can silently stop short, which is why the spill exists).
  *
  * <p>It still narrows the bank to the run, which is its whole job, and it is still one switch
  * away from off.

@@ -202,7 +202,25 @@ public final class HouseTeleports
 	 *   <li>the furniture's kind has a destination list here and the hop names one of them.</li>
 	 * </ul>
 	 */
-	public static boolean furnitureServesHop(String furnitureName, String hop)
+	/**
+	 * What a fairy ring's hop looks like: a code of three single letters — "a j p" — or
+	 * "zanaris", or several codes chained with dashes, exactly as Shortest Path's
+	 * fairy_rings.tsv writes its display info. Lowercased input; see the fairy clause below.
+	 */
+	private static final java.util.regex.Pattern FAIRY_CODE = java.util.regex.Pattern.compile(
+		"(zanaris|[a-z](\\s[a-z]){2})(\\s*-\\s*(zanaris|[a-z](\\s[a-z]){2}))*");
+
+	/**
+	 * Whether a hop names this furniture <b>explicitly</b> — the router planned through it.
+	 *
+	 * <p>The strong half of {@link #furnitureServesHop}, split out because the two kinds of
+	 * "serves" carry different weight. A hop that says "Configure Fairy ring" or "Portal
+	 * Nexus" is the route going through that furniture; a hop that merely lands somewhere on
+	 * the furniture's destination list may be coincidence — the Prifddinas nexus "served" a
+	 * route that never used it, which is what {@code doorIsTheWay} exists to overrule. An
+	 * explicit plan must not be overruled by it. See {@code GuideTracker.routeFromTheFrontDoor}.
+	 */
+	public static boolean furnitureNamedByHop(String furnitureName, String hop)
 	{
 		if (furnitureName == null || hop == null)
 		{
@@ -213,6 +231,29 @@ public final class HouseTeleports
 		String said = hop.toLowerCase();
 
 		if (!name.equals("portal") && !name.isEmpty() && said.contains(name))
+		{
+			return true;
+		}
+
+		// A fairy ring's hop can also be the bare CODE. Shortest Path's fairy data carries
+		// "A J P", "ZANARIS", or a chain like "A I R - D L R - D J Q" as the whole display
+		// info, with an empty objectInfo on the destination rows — nothing to prefix the
+		// line with, so nothing says "fairy ring". A hop that IS a code is a fairy ring's
+		// hop by construction.
+		return name.contains("fairy ring") && FAIRY_CODE.matcher(said.trim()).matches();
+	}
+
+	public static boolean furnitureServesHop(String furnitureName, String hop)
+	{
+		if (furnitureName == null || hop == null)
+		{
+			return false;
+		}
+
+		String name = furnitureName.toLowerCase().trim();
+		String said = hop.toLowerCase();
+
+		if (furnitureNamedByHop(furnitureName, hop))
 		{
 			return true;
 		}

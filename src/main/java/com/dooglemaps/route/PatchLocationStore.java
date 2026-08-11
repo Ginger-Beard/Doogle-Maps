@@ -41,7 +41,15 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 	/** Regions are 64x64 tiles, so their centre is 32 in from the corner. */
 	private static final int REGION_SIZE = 64;
 
-	/** Patch key to {x, y, plane}. */
+	/**
+	 * The footprint assumed when only a point is known — a wiki seed, a region centre, or a
+	 * position learned before footprints were recorded. Three tiles square covers the small
+	 * patch families (herb, flower, bush); a bigger real footprint only means the ring lands
+	 * inside the patch, which for the big families (allotments) is walkable anyway.
+	 */
+	private static final int ASSUMED_FOOTPRINT = 3;
+
+	/** Patch key to {x, y, plane} or {x, y, plane, sizeX, sizeY}; the point is the centre. */
 	private final Map<String, int[]> learned = new HashMap<>();
 
 	@Inject
@@ -77,6 +85,54 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 	}
 
 	/**
+	 * Where to send the router for this patch: the tiles <b>around</b> it, plus the centre.
+	 *
+	 * <h2>Why a ring, when one point was routable</h2>
+	 * Shortest Path only ever finishes a search by stepping <i>onto</i> a target tile — there
+	 * is no "adjacent counts" — and the one point this store used to hand out is the patch
+	 * object's own tile. For the walkable families (allotments, herbs) that is fine; a bush or
+	 * a tree <b>is</b> the blockage, so its path could never terminate. The search then runs
+	 * to Shortest Path's no-progress cutoff — three seconds by default — before a line appears,
+	 * and every recalculation (the player straying {@code recalculateDistance} tiles from the
+	 * drawn path, or a re-post of ours) starts the grind over with nothing drawn in between.
+	 * Reported from play as the route line barely ever existing on a bush run until the
+	 * patches were nearly in sight.
+	 *
+	 * <p>The ring sits one tile outside the learned footprint, so the first walkable tile
+	 * beside the patch ends the search instantly — which is also exactly where the player
+	 * wants to be stood. The centre is kept in the set for the walkable families, and a
+	 * blocked centre is harmless: an unreachable member of a target set merely never wins.
+	 */
+	public synchronized java.util.List<WorldPoint> getRouteTargets(FarmPatch patch)
+	{
+		int[] exact = learned.get(patch.getKey());
+		WorldPoint centre = getLocation(patch);
+		int sizeX = exact != null && exact.length >= 5 ? exact[3] : ASSUMED_FOOTPRINT;
+		int sizeY = exact != null && exact.length >= 5 ? exact[4] : ASSUMED_FOOTPRINT;
+
+		// The footprint's south-west corner, from its centre the way RuneLite derives the
+		// centre from the corner: minus half the size, rounding down.
+		int swX = centre.getX() - (sizeX - 1) / 2;
+		int swY = centre.getY() - (sizeY - 1) / 2;
+
+		java.util.List<WorldPoint> targets = new java.util.ArrayList<>();
+		targets.add(centre);
+		for (int x = swX - 1; x <= swX + sizeX; x++)
+		{
+			for (int y = swY - 1; y <= swY + sizeY; y++)
+			{
+				boolean onRing = x == swX - 1 || x == swX + sizeX
+					|| y == swY - 1 || y == swY + sizeY;
+				if (onRing)
+				{
+					targets.add(new WorldPoint(x, y, centre.getPlane()));
+				}
+			}
+		}
+		return targets;
+	}
+
+	/**
 	 * The middle of a map region.
 	 *
 	 * <p>A region id packs its own coordinates: the top byte is the region's x in units of
@@ -89,27 +145,36 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 		return new WorldPoint(x + (REGION_SIZE / 2), y + (REGION_SIZE / 2), 0);
 	}
 
-	/** Records where a patch really is, having seen its game object. */
-	public void record(FarmPatch patch, WorldPoint location)
+	/**
+	 * Records where a patch really is, having seen its game object.
+	 *
+	 * @param sizeX the object's footprint width in tiles, for {@link #getRouteTargets};
+	 *              anything below 1 records the position alone
+	 * @param sizeY the footprint height, same rule
+	 */
+	public void record(FarmPatch patch, WorldPoint location, int sizeX, int sizeY)
 	{
 		if (location == null)
 		{
 			return;
 		}
 
+		boolean sized = sizeX >= 1 && sizeY >= 1;
+		int[] value = sized
+			? new int[]{location.getX(), location.getY(), location.getPlane(), sizeX, sizeY}
+			: new int[]{location.getX(), location.getY(), location.getPlane()};
+
 		synchronized (this)
 		{
-			int[] existing = learned.get(patch.getKey());
-			if (existing != null && existing[0] == location.getX()
-				&& existing[1] == location.getY() && existing[2] == location.getPlane())
+			if (java.util.Arrays.equals(learned.get(patch.getKey()), value))
 			{
 				return;
 			}
 
-			learned.put(patch.getKey(), new int[]{location.getX(), location.getY(), location.getPlane()});
+			learned.put(patch.getKey(), value);
 			save();
 		}
-		log.debug("Learned location {} for {}", location, patch);
+		log.debug("Learned location {} ({}x{}) for {}", location, sizeX, sizeY, patch);
 	}
 
 	/** Forgets every learned patch position, falling back to the seeded coordinates. */
@@ -133,7 +198,10 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 		{
 			loaded.forEach((key, value) ->
 			{
-				if (value != null && value.length == 3 && FarmingWorldData.getPatch(key) != null)
+				// Three values is a position learned before footprints were recorded; it
+				// still routes, through the assumed footprint.
+				if (value != null && (value.length == 3 || value.length == 5)
+					&& FarmingWorldData.getPatch(key) != null)
 				{
 					learned.put(key, value);
 				}

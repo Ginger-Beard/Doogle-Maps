@@ -53,7 +53,10 @@ public class PatchLocationCapture
 			{
 				if (patch.getVarbit() == definition.getVarbitId())
 				{
-					locations.record(patch, location);
+					// The footprint travels with the position: the router is sent the ring of
+					// tiles AROUND the patch, and the ring is only exact once the size is known.
+					// See PatchLocationStore.getRouteTargets.
+					locations.record(patch, location, object.sizeX(), object.sizeY());
 					return;
 				}
 			}

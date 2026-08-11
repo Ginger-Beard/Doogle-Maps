@@ -91,11 +91,17 @@ public class SeedCapture
 		}
 	}
 
-	/** Every form of the seed box: the plain one, the open one, and the Farming Guild one. */
+	/**
+	 * Both forms of the seed box: closed and open.
+	 *
+	 * <p>NOT {@code ItemID.SEEDBOX}. The gameval names are the cache's internal ones, and
+	 * 22993 "SEEDBOX" is the <b>Seed pack</b> — the farming contract reward — not a box form.
+	 * It sat in this list as "the Farming Guild one" and made every seed-box treatment apply
+	 * to seed packs; reported from play as packs lighting up with the box highlight.
+	 */
 	private static boolean isSeedBox(int itemId)
 	{
 		return itemId == ItemID.SEED_BOX
-			|| itemId == ItemID.SEEDBOX
 			|| itemId == ItemID.SEED_BOX_OPEN;
 	}
 

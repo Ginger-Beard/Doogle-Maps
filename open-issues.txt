@@ -391,3 +391,284 @@ weird bug with routing: at the GE the panel kept saying "Cast Teleport to House 
 > earlier in this file has probably never lit anything. The fix is a suffix match, and it wants
 > deciding on rather than assuming: a plain suffix rule makes "Enter Annakarl Portal" match any
 > object named "Portal", and a POH is full of them.
+
+Bushes aren't getting prompted to be cleared after harvesting them
+> RESOLVED. A regrowing crop never empties - picked clean it sits HARVESTABLE with a stock of
+> zero - and two layers both read that as "finished": GuidePlan fell through to the
+> growing-leave-it-alone branch (no dig step), and RunPlanner.isActionable's regrowing
+> exception dropped the stop from the run entirely. Both now special-case the families a
+> spade digs straight out (new hand-written data/SpadeClearedCrops: BUSH and CACTUS - fruit
+> trees stay "finished when stripped" since the chop-and-stump flow isn't modelled):
+> - GuidePlan: a stripped bush/cactus with the chosen seed AT HAND gets a spade fetch plus
+>   "Dig up the picked-clean X so a new one can be planted." With no seed at hand it stays
+>   silent (clearing a producing bush with nothing to replace it is worse than leaving it),
+>   and the usual skip-wording/exemption path lets the stop complete.
+> - isActionable: the stop stays in the run when a selected seed for the group is OWNED
+>   anywhere (bank counts - the supply leg exists to fetch it), so the loadout and pricing
+>   pick the bush seeds up too. Tests added in GuidePlanTest and RunPlannerTest.
+
+theres something really wrong with SP line drawing, and it seems specific to our plugin,
+don't have this issue when I just use this on the game map, but drawing seems to only occur
+like 10-20 tiles away from the patch area, any further than that and I get nothing.
+> RESOLVED (our half) + upstream (the start half). Verified against SP's source:
+> - Our half: SP only ever finishes a search by stepping ONTO a target tile (there is no
+>   "adjacent counts" - Pathfinder terminates on targets.contains(expandedNode)), and we were
+>   handing it the patch object's own tile, which is BLOCKED for bushes/trees. Every
+>   computation therefore ran to SP's no-progress cutoff (5 ticks = 3s by default) instead of
+>   arriving, and every recalculation (player >recalculateDistance from the drawn path, or a
+>   re-post of ours) threw the line away and started the grind over - so the line barely
+>   existed mid-journey and only stabilised near the patches, where searches are tiny. Manual
+>   map targets don't hit this because a map click naturally lands on walkable ground.
+>   FIX: PatchLocationStore.getRouteTargets - the router now gets the ring of tiles one step
+>   OUTSIDE the patch footprint (plus the centre), so the first walkable tile beside the
+>   patch ends the search instantly, which is also where the player wants to stand.
+>   PatchLocationCapture now records the object's footprint (sizeX/sizeY) alongside the
+>   position; older 3-value entries fall back to an assumed 3x3. Tests added.
+> - Upstream half (the "nothing at all" when legs start at the POH): the plugin-message API
+>   defaults a missing start from the RAW getLocalPlayer().getWorldLocation() - garbage
+>   inside any instance - where SP's own set-target uses fromLocalInstance. And a garbage
+>   start never self-heals: isNearPath() short-circuits to "near" when the path is EMPTY, so
+>   the dead pathfinder sits there drawing nothing until our next re-post (often the region
+>   change right before the patches - hence "only 10-20 tiles out"). Same family as the
+>   already-logged non-sticky start. The PR is ~three lines in ShortestPathPlugin
+>   .onPluginMessage: use fromLocalInstance for the defaulted start, and set startPointSet
+>   when an explicit start arrives (clearing it on the next start-less message).
+
+seedbox not getting filtered into the gear section of bank filtering - its ending at 7 rows,
+if I remove an item it shows up
+> RESOLVED. The gear region was full (12 slots in the default map), the seed box was the
+> thirteenth gear item, and BankLayout deliberately left region overflow to Bank Tags'
+> OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM - which turns out not to keep its promise. Verified in
+> core's LayoutManager: the bottom-append starts after the layout's last item and walks the
+> bank widget pool, but BREAKS (not skips) at the first child it cannot use (null, or a
+> non-item-height widget), so an unplaced item can simply never draw. Freeing a gear slot
+> gave the box a real layout slot again, which is why removing an item brought it back.
+> FIX: BankLayout.build now spills what a region cannot hold into the map's own empty slots -
+> unclaimed dots first, so overflow cannot be mistaken for part of another letter's region,
+> then any still-empty region slots. Only a genuinely full 8x8 grid falls through to Bank
+> Tags' append. Tests added (13th gear item lands in the D1 gutter; a 70-item run fills all
+> 64 slots).
+
+still to collect isn't working right, none of those seeds are in my inv (run-planned line
+showed Toadflax/Snapdragon/Snape grass at inv 0, box 0 with still-to-collect []; Avantoe 169,
+Ranarr 27, Watermelon 320, Limpwurt 699 all attributed to the seed box)
+> DIAGNOSIS PENDING - needs one more run on the new build; the log itself was the blocker.
+> - Given the store's data the decision was consistent: still-to-collect only lists a source
+>   when a seed short of at-hand (inv+box) has stock in the BANK or VAULT caches. The three
+>   0/0 seeds therefore read as "owned nowhere" - nothing to collect, patch worded as a skip.
+>   Whether that is truth or corruption turns entirely on the bank/vault counts, and the
+>   run-planned line didn't print them (asked from play: "why isn't bank/vault listed?").
+> - FIXED the line: every picked seed now shows all four sources (inv/box/bank/vault), plus a
+>   per-source freshness summary ("sources read: inventory 2s ago, bank 3h ago, vault never
+>   read...") - a zero from a source read a minute ago and a zero from one never read mean
+>   different things and the line now says which.
+> - Two suspects for the underlying data, distinguishable from the new line next run:
+>   1. Phantom box counts (the 169/320/699 look like bank stacks): a box Fill/Empty delta
+>      misattributed at a bank would inflate the box AND leave the bank correct - next line
+>      would show the same seed large in both box and bank.
+>   2. A zeroed/stale bank cache: bank shows 0 for seeds genuinely owned - next line would
+>      show bank 0 with a suspicious "bank last read" age, or a wipe from a spurious empty
+>      bank container event.
+> - NOT related to the seed-box bank-layout issue above (that was drawing only).
+> RESOLVED (suspect 1 confirmed by the new line): Avantoe/Ranarr/Watermelon/Limpwurt all read
+> box == bank TO THE SEED (169/169, 27/27, 320/320, 699/699) - the box's contents were
+> emptied into the bank and never debited, so the store kept counting them twice: "at hand"
+> in the box (no withdraw asked) and again in owned totals (skewing the allocation - which is
+> why only Cotton was fetched: phantom-rich seeds soaked up every herb patch).
+> - THE CAUSE, in applyPendingSeedBoxAction: the armed Empty was consumed by WHICHEVER of
+>   inventory/bank changed first. The bank interface can refresh the pack container with a
+>   zero delta in the same window, which ate the click; the box's stacks then landed in the
+>   bank container a tick later with nobody owed - bank recorded truth, box kept its phantom.
+>   FIX: the pending action is now only consumed by an event that actually moved seeds; a
+>   click that never meets its delta still expires on schedule, which also still feeds the
+>   Empty-moved-nothing box-proved-empty heal. Test added (PersistenceTest
+>   .anUnrelatedRefreshDoesNotStealTheEmptysBankDelta).
+> - HEALING THE EXISTING CORRUPTION (it persists in config): click Empty on the seed box once
+>   with a free pack slot - the expiry heal zeroes the phantom - or just open the box so its
+>   real container overwrites the count. Withdraws and allocation right themselves after.
+> - The user's ask "list the steps with this": run start now also logs the full loadout at
+>   INFO ("Loadout for [HERB, ...]: Avantoe seed=CARRIED, Cotton seed=WITHDRAW x4 from BANK,
+>   ...") - every item's verdict, not just the fetches, beside the Run planned line.
+> - STILL OPEN, seen on the same line: "sources read: inventory never read" while logged in.
+>   Should be impossible - SeedCapture.onGameTick reconciles the inventory every tick and is
+>   registered (the bank read proves the object receives events). Watch whether it persists
+>   on the next run; if so, check client.log for a startUp abort at plugin load.
+>   20:00 UPDATE: persisted 3h into the session, and it is not cosmetic - the Empty-moved-
+>   nothing box heal lives INSIDE relearnInventoryFromClient, so a dead reconcile also means
+>   the phantom box cannot heal by the Empty click (which is why the run still only asks for
+>   cotton). Ruled out: SeedInventoryStore not being a @Singleton (it is). The method now
+>   counts its own progress and the run-planned line prints it ("inventory reconcile: X
+>   ticks, Y logged in, Z stored"): 0 ticks = the tick handler never runs (registration /
+>   event delivery); ticks but 0 logged in = game-state gate; logged in but 0 stored =
+>   getItemContainer(INV) returning null; stored but "never read" = a reading bug. The box
+>   can still heal WITHOUT the reconcile by opening the seed box itself (its container event
+>   overwrites the counts through record()).
+
+a while back we removed the highlighting on the seedbox when its time to plant a seed thats
+in it, lets re-add that, our menu swapping checkbox should be unaffected by that
+> RESOLVED. Highlight only, deliberately none of what the old removal removed: no FILL/EMPTY
+> steps return, no step is hung on a patch (the stray-outline bug that caused the removal
+> cannot recur), and GuideMenuSwap with its seedBoxLeftClick toggle is untouched.
+> GuideInventoryOverlay: while the current step is PLANT and the box holds plantable seeds of
+> that crop AND the pack has fewer than a patch's worth, all three seed box forms are
+> highlighted alongside the seed's own highlight (both light up when a partial stack is
+> loose). Tree saplings can't be boxed, so tree steps are quietly unaffected.
+
+I've got a cactus in the farming guild thats set as H/O in my run right now, its currently
+"Check-health" and the plan is skipping it now that the rest of the farming guild tasks are
+done, but it shouldn't, I should check-health if its available and then harvest, even on H/O
+> RESOLVED. RunPlanner.isActionable's harvest-only branch asked only hasProduceToPick(),
+> and a grown-unchecked crop is still GROWING - nothing to pick YET - so the run walked
+> past the one click that makes the picking (and the crop's real experience) available.
+> Now hasProduceToPick() || needsHealthCheck(). The guide side never had the gap:
+> GuidePlan's check-health branch sits above its harvest-only gate, so the step and the
+> patch highlight appear as soon as the stop stays routable. After the check the cactus
+> reads HARVESTABLE with stock and the harvest step follows; picked clean, the stop
+> completes exactly as harvest-only always has. Test added (RunPlannerTest
+> .aGrownUncheckedCropStillCountsOnHarvestOnly).
+
+lol seedpacks are getting highlighted with that
+> RESOLVED - and it unmasked a data trap sitting in four places. gameval ItemID names are
+> the cache's INTERNAL names: SEEDBOX (22993) is the Seed pack - the farming contract
+> reward - not a seed box form at all (the real pair is SEED_BOX 13639 / SEED_BOX_OPEN
+> 24482). An earlier fix adopted it as "the third seed box id / the Farming Guild one", so
+> every seed-box treatment applied to seed packs: the new plant-step highlight lit them
+> (the report), and in RunLoadout owning a contract reward passed for owning a seed box.
+> SEEDBOX removed from all four id sets (SeedCapture, GuideMenuSwap, RunLoadout,
+> GuideInventoryOverlay), each now carrying a warning comment. The docs/NOTES entry about
+> "the third seed box id" fix is thereby superseded.
+
+standing outside my POH - being asked to do a weiss protected patch run by tele'ing to
+house, however once I tele into my house, both the jewelery box and nexus are highlighted.
+And the destination changes as soon as the POH loads, prompting me to now go to the
+ardougne monistary for a bush H/O run. Thats weird
+> RESOLVED (both symptoms, one root). Entering the house made the route recompute from
+> garbage: a path request with no explicit start defaults, upstream, to the RAW player
+> position - virtual-area coordinates inside an instance - so Shortest Path re-picked the
+> "cheapest" stop from nowhere, the destination naming flipped (Weiss -> Ardougne bushes),
+> and the furniture highlights followed the garbage route's hops (hence jewellery box AND
+> nexus lit at once). Two feeders, both closed:
+> - Our own posts: RunPlanner.retarget now refuses to post a START-LESS request while the
+>   player's region is an instance's virtual area (x-part >= 100). The front-door reroute
+>   still goes through - it says where it starts - and leaving the instance retargets
+>   normally. This also stops garbage supply-leg posts from inside the house.
+> - SP's own recomputes: it re-paths from the instance-template position every tick it
+>   judges the player off-path, posting a transports message per recompute, and we read
+>   every one. ShortestPathIntegration now ignores transports while the player is instanced
+>   UNLESS we are awaiting an answer we asked for (the door-start reroute still lands).
+> Net effect: teleport to the POH and the route display keeps the plan that was computed
+> outside - destination stays Weiss, and only the furniture serving that plan's hops lights.
+> Test added (RunPlannerTest.noStartlessRouteIsPostedFromInsideAnInstance). The full fix
+> for in-house routing remains the upstream PR (sticky start + fromLocalInstance).
+
+lets make drop bucket a non required step, and change its highlighting to a transparent red
+> RESOLVED (scoped after a correction: the leprechaun hand-back step and its toggle stay
+> exactly as they were). The drop-mode ambient bucket highlight - the one drawn for the
+> whole run when "Drop empty buckets" is on - was painted in the guide colour, so the one
+> highlight that means "whenever you like" read as the required next click. It now draws in
+> its own transparent red (0xC43B3B, the sidebar's shortfall red, over the same FILL_ALPHA
+> wash), so drop-when-convenient can't be mistaken for the step. GuideMenuSwap untouched.
+
+Troll Stronghold step via POH is having me take the exit portal instead of stony basalt in
+my nexus, however the text on the nexus is highlighted, the nexus itself is not, but the
+POH exit portal is. Also while scrolling in the list of teles in the nexus the highlight
+box moves around and lags behind a lot
+> RESOLVED (both halves).
+> - The contradiction: the nexus ROW lights by DESTINATION matching, but the furniture
+>   outline judged only by the route's HOPS - and Shortest Path's model has no nexus, so a
+>   destination the player's own furniture genuinely reaches (Troll Stronghold via the
+>   added Stony basalt) can be absent from every hop. Hops matched nothing, the exit-portal
+>   fallback won, and the two matchers disagreed on screen. The destination now gets a say
+>   before the way out does: GuideOverlay tries destination-based furniture matching
+>   (HouseTeleports.furnitureServesHop with the destination as the text) before falling
+>   back to exit portals, and GuideTracker.furnitureServesTheRoute mirrors it so the travel
+>   hint cannot contradict the outline.
+> - The scroll lag: matchingRows cached the matched ROW RECTANGLES once a tick ("a menu
+>   does not reshuffle between frames" - but a scrolling list does), so the box trailed the
+>   moving row by up to 600ms. The scan (expensive) stays per tick; the measuring (cheap)
+>   is now per frame from the live widgets, clipped to the list as before.
+
+fairy ring step via POH fairy ring to Aldarin is doing something similar, highlighting the
+exit portal, instead of the fairy ring. [After rebuild:] before entering it shows the fairy
+ring code, its definitely there, however it goes away upon entering the POH, just says
+"Travel to Aldarin" and the exit portal gets highlighted
+> RESOLVED. Confirmed against SP's fairy_rings.tsv: a fairy hop's display info is the BARE
+> CODE ("A J P", "ZANARIS", or a dash-chain like "A I R - D L R - D J Q"), and the
+> destination rows' objectInfo column is EMPTY - so the composed hop line never contains
+> the words "fairy ring". The garden ring failed furnitureServesHop on all three clauses,
+> routeFromTheFrontDoor read the house as serving nothing, and its door-start reroute
+> replaced the fairy plan - the walk-only answer cleared the via-lines (hence "Travel to
+> Aldarin" with no hops) and handed the overlay to the exit portal. Every observed detail
+> follows from that one wording gap.
+> FIX: furnitureServesHop gains a fairy clause - furniture named "fairy ring" serves any
+> hop that IS a code (regex: triplet of single letters, ZANARIS, or a dash-chain of them).
+> With it, served=true, the door reroute stands down, the via-lines keep the code, and the
+> garden ring outlines. Tests added (PlaceNameMatchTest.aFairyRingServesItsCodeShapedHops),
+> including that no other furniture may claim a code.
+> STILL REPRODUCING after that fix, with new evidence: the outside plan's hop is worded
+> "Configure Fairy ring - C K Q" - which contains "fairy ring" and so matched clause 1 on
+> EVERY build; the code-shaped-hop clause was solving a wording this leg does not use. The
+> via-lines vanishing on entry therefore points at either (a) routeFromTheFrontDoor's
+> doorIsTheWay override rerouting DESPITE the furniture serving (it deliberately beats
+> "served"), or (b) the client running a pre-freeze build. Two changes to settle and fix it:
+> - furnitureServesHop split: furnitureNamedByHop (hop contains the furniture's name, or is
+>   a fairy code) is the STRONG half - the router explicitly routing THROUGH the furniture.
+>   routeFromTheFrontDoor now lets a strong serve beat doorIsTheWay: the override exists for
+>   destination-list coincidences (the Prifddinas nexus), not for a plan that names the
+>   garden ring. Weak serves still lose to the door, preserving the Prifddinas behaviour.
+> - The stay-put branch now logs at INFO once per visit ("House furniture serves the route
+>   [...] - keeping the drawn path (explicitly named: X, door is the way: Y)"); the reroute
+>   branch always logged. Whichever line appears at the next house entry ends the guessing;
+>   NEITHER line appearing while the via-lines still vanish means the transports were
+>   cleared by something outside routeFromTheFrontDoor (and points hard at a stale build).
+> Tests: PlaceNameMatchTest.namedFurnitureOutranksADestinationCoincidence.
+> THE REAL FIX (user's insight: "does SP have any navigation for that in its code?"): it
+> does, and we were throwing it away. SP models the POH as a real place - a reserved map
+> area (x 1856-2047, y 5696-5767, its own isInsidePoh), one canonical landing tile
+> (1923,5709) every house teleport remaps to, and every house-furniture transport (portals,
+> jewellery box, mounted items, garden spirit tree and fairy ring) anchored INSIDE it. And
+> the transports message carries a per-hop ORIGIN list we never read. So the question every
+> wording heuristic was guessing at has a data answer: a hop whose origin is inside that
+> area is house furniture, by the router's own word.
+> - ShortestPathIntegration now reads the origin list; isPohArea mirrors SP's bounds;
+>   routeDepartsPoh is true when any hop departs the house (cleared with the route).
+> - routeFromTheFrontDoor: a through-the-house plan counts as served AND strongly served -
+>   never rerouted out the front door, even when no furniture NAME matched.
+> - The travel hint's furnitureServesTheRoute asks the origins first.
+> - GuideOverlay: the exit-portal fallback never fires while the plan departs the house;
+>   when the furniture cannot be named, nothing lights and the unmatched hops are logged.
+> Name/destination matching remains only for choosing WHICH furniture to outline.
+> Tests: RouteOriginsTest (bounds + message flow, both directions).
+
+
+when you run out of seeds, our seed inventory should keep them listed in the planner, right now it doesn't, and you can't reset the order. But maybe I don't want to reset the order, maybe I want to start back on those other seeds as I gather new ones, so just, if you've seen a seed on this account, ever. List it, but maybe dull it out so its clear by eye that you don't have any
+> RESOLVED. The list was ownership-gated (PlantableResolver skipped owned==0), so running out
+> delisted the seed - taking its picked state and its place in the fixed level-order grid
+> with it, invisibly (the selection store never pruned it; you just couldn't see or untick it).
+> - SeedInventoryStore now keeps a persisted "ever seen" set (seedsEverSeen, per profile):
+>   any seed id observed with a nonzero count in any source, ever, grown-only. Backfilled on
+>   load from the current persisted counts so existing profiles start with what they hold.
+>   Cleared by profile reset. hasEverSeen checks seed+sapling forms like getCount.
+> - PlantableResolver lists ever-seen seeds at owned 0; they draw dulled (isUsable false),
+>   keep their fixed level-order slot, and keep their selected border + priority digit.
+> - ZERO CLICKS to rejoin (clarified from play): the selection sticks through zero stock, the
+>   allocation rebuilds per tick from selection x owned, so a restocked seed re-enters the
+>   run by itself. Also: toggling is now gated on Farming level alone, not stock, so a
+>   run-out seed can be picked/unpicked while empty (picking-ahead is planning, and the
+>   allocator ignores an empty pick by itself). Tooltip explains the dulled state.
+> - Tests: PlantableResolverTest (run-out stays listed dulled, never-held stays hidden),
+>   PersistenceTest (ever-seen survives reload; never-held doesn't leak in).
+> FOLLOW-UP (reported from play): snape grass was picked at position 1 with none owned and
+> none on record, and stayed invisible - the ever-seen memory only reaches back to this
+> plugin's own first sighting, so a pre-existing pick predating it had no witness. A picked
+> seed now ALWAYS lists: SeedSelectorPanel hands the group's selection to
+> PlantableResolver.forPatchType(type, includeUnowned, alwaysListed), and being picked is
+> itself proof of belonging. Visible means untickable/reorderable again. Test added.
+
+when having to note an item on lep when your inventory is full, the infobox freaks out and puts the notice under each of the steps. Also before your inventory is full it puts that at the bottom of the list?
+
+okay, I just got a contract for poison ivy, I already had one planted though, and it was already "check-health"'d, and I was directed back to jane after harvesting it. Couldn't turn in the contract, I think you have to plant it after getting the contract on some patches but not others, do some research on this to determine the mechanics and impliment them. Going to be very difficult to test this in game, the odds are low that this happens tbh, but it has, so lets fix it.
+
+lets not jerk back the bank filtering on the player after they navigate away from it in the bank, its rude
+
+menu entry swap grimy herbs to 'use' instead of 'clean' when highlighting to give to lep

@@ -444,9 +444,12 @@ class SeedSelectorPanel extends JPanel
 			return;
 		}
 
+		// The selection rides along so a picked seed is always on the grid — without it, a
+		// seed picked before the ever-seen memory existed was invisible while still holding
+		// its place in the planting order. See PlantableResolver.forPatchType.
 		List<Plantable> plantables = group.isContract()
 			? contractPlantables()
-			: resolver.forPatchType(type, false);
+			: resolver.forPatchType(type, false, selection.getSelectedFor(group));
 		if (plantables.isEmpty())
 		{
 			message.setText(group.isContract()
@@ -606,7 +609,12 @@ class SeedSelectorPanel extends JPanel
 		// list to that patch's seeds and the contract narrows it to one. It simply must not be
 		// clickable: there is no other answer to offer, and a click that silently did nothing
 		// would read as the tab being broken.
-		if (usable && !group.isContract())
+		//
+		// Toggleable on the level alone, not on stock. A run-out seed stays listed exactly so
+		// its picked state survives — it has to be unpickable too, and picking a seed you are
+		// about to restock is planning, not an error. The allocation ignores an empty pick by
+		// itself, and the moment stock returns the seed rejoins the run with no click at all.
+		if (plantable.isLevelMet() && !group.isContract())
 		{
 			icon.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
 			icon.addMouseListener(new MouseAdapter()
@@ -687,6 +695,13 @@ class SeedSelectorPanel extends JPanel
 			text.append("<br><i>").append(unpotted)
 				.append(unpotted == 1 ? " seed still needs" : " seeds still need")
 				.append(" potting into a sapling</i>");
+		}
+		else if (plantable.isLevelMet() && plantable.getOwned() == 0)
+		{
+			// Why a seed with none owned is on the list at all — and that leaving it picked
+			// costs nothing: it rejoins the run by itself when stock returns.
+			text.append("<br><i>You have none right now. It stays listed - and stays picked - ")
+				.append("so it rejoins the run as you restock.</i>");
 		}
 		else if (plantable.isLevelMet() && plantable.getPlantable() < perPatch)
 		{

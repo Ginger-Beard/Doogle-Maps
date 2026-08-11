@@ -8,6 +8,7 @@ import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProtectionPayment;
+import com.dooglemaps.data.SpadeClearedCrops;
 import com.dooglemaps.timer.DiseaseRisk;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.BarbarianFarming;
@@ -243,6 +244,28 @@ public final class GuidePlan
 		if (projection.getCropState() == CropState.DISEASED)
 		{
 			addCureSteps(steps, projection, carried, leprechaun);
+			return steps;
+		}
+
+		// 2.7 A bush or cactus picked clean, on a run that replants it. A regrowing crop never
+		//     empties — picked clean it sits HARVESTABLE with a stock of zero — so it fell
+		//     through to the growing-leave-it-alone branch below and the guide never said the
+		//     one thing a replant needs first: dig it out. Reported from play, at bushes.
+		//
+		//     Only the families a spade takes straight out. A fruit tree in the same state is
+		//     chop-then-stump, which the guide does not model, and digging up a healthy fruit
+		//     tree is exactly what the old behaviour existed to avoid — those still read as
+		//     finished. Gated on the replant actually being possible this trip (a seed chosen
+		//     and at hand), because clearing a producing bush with nothing to put in its place
+		//     is strictly worse than leaving it.
+		if (SpadeClearedCrops.isSpadeCleared(patch.getImplementation())
+			&& projection.getCropState() == CropState.HARVESTABLE
+			&& chosen != null && seedAtHand(chosen, seeds))
+		{
+			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
+			steps.add(GuideStep.of(GuideAction.CLEAR, patch,
+				"Dig up the picked-clean " + projection.getProduce().getName().toLowerCase()
+					+ " so a new one can be planted."));
 			return steps;
 		}
 

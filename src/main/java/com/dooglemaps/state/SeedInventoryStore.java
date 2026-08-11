@@ -44,6 +44,7 @@ import net.runelite.client.config.ConfigManager;
 public class SeedInventoryStore
 {
 	private static final String SEEDS_KEY = "seeds";
+	private static final String EVER_SEEN_KEY = "seedsEverSeen";
 	private static final String FARMING_LEVEL_KEY = "farmingLevel";
 
 	/**
@@ -69,6 +70,10 @@ public class SeedInventoryStore
 	{
 	}.getType();
 
+	private static final Type EVER_SEEN_TYPE = new TypeToken<java.util.HashSet<Integer>>()
+	{
+	}.getType();
+
 	/** One remembered container. */
 	private static class SourceCache
 	{
@@ -81,6 +86,18 @@ public class SeedInventoryStore
 	private final Gson gson;
 
 	private final Map<SeedSource, SourceCache> cached = new EnumMap<>(SeedSource.class);
+
+	/**
+	 * Every seed item this account has ever been seen holding, anywhere, as raw item ids.
+	 *
+	 * <p>Counts go to zero and their entries disappear — that is what running out is — but the
+	 * seed <b>selector</b> wants the longer memory: a seed you have grown before stays listed,
+	 * dulled, so your pick order survives running out and the seed is one click from rejoining
+	 * the run as stock comes back. Asked from play, in exactly those words. Persisted, grown
+	 * only (nothing ever leaves except a profile reset), and cheap: it changes a handful of
+	 * times per account lifetime.
+	 */
+	private final java.util.Set<Integer> everSeen = new java.util.HashSet<>();
 
 	/** A Fill or Empty just clicked, waiting for the container change it caused. */
 	private SeedBoxAction pendingSeedBoxAction;
@@ -248,10 +265,10 @@ public class SeedInventoryStore
 			}
 
 			action = pendingSeedBoxAction;
-			pendingSeedBoxAction = null;
 		}
 
 		Map<Integer, Integer> box;
+		boolean moved = false;
 		synchronized (this)
 		{
 			SourceCache previous = cached.get(source);
@@ -268,32 +285,47 @@ public class SeedInventoryStore
 			if (action == SeedBoxAction.FILL)
 			{
 				// Whatever left the inventory on a Fill went into the box.
-				previous.counts.forEach((itemId, before) ->
+				for (Map.Entry<Integer, Integer> entry : previous.counts.entrySet())
 				{
-					int moved = before - incoming.getOrDefault(itemId, 0);
-					if (moved > 0)
+					int delta = entry.getValue() - incoming.getOrDefault(entry.getKey(), 0);
+					if (delta > 0)
 					{
-						box.merge(itemId, moved, Integer::sum);
+						box.merge(entry.getKey(), delta, Integer::sum);
+						moved = true;
 					}
-				});
+				}
 			}
 			else
 			{
 				// Whatever appeared here on an Empty came out of the box.
-				incoming.forEach((itemId, now) ->
+				for (Map.Entry<Integer, Integer> entry : incoming.entrySet())
 				{
-					int moved = now - previous.counts.getOrDefault(itemId, 0);
-					if (moved > 0)
+					int delta = entry.getValue() - previous.counts.getOrDefault(entry.getKey(), 0);
+					if (delta > 0)
 					{
-						box.merge(itemId, -moved, Integer::sum);
+						box.merge(entry.getKey(), -delta, Integer::sum);
+						moved = true;
 					}
-				});
+				}
 				// Clamped rather than trusted below zero: a box count that was already
 				// stale-low must not go negative and poison the totals.
 				box.values().removeIf(count -> count <= 0);
 			}
+
+			// Consumed only by the event that carried its seeds. An Empty at a bank can be
+			// followed by an unrelated inventory refresh in the same window, and consuming
+			// the click against that zero delta left the REAL delta — the box's stacks
+			// landing in the bank container a tick later — unclaimed. The box then kept
+			// everything it had just poured out, exactly mirroring the new bank stacks.
+			// Reported from play: four seeds at box == bank to the seed. A click that never
+			// meets its delta still expires on schedule, which is also what feeds the
+			// box-proved-empty heal in relearnInventoryFromClient.
+			if (moved)
+			{
+				pendingSeedBoxAction = null;
+			}
 		}
-		return store(SeedSource.SEED_BOX, box);
+		return moved && store(SeedSource.SEED_BOX, box);
 	}
 
 	/**
@@ -328,10 +360,17 @@ public class SeedInventoryStore
 	 */
 	public void relearnInventoryFromClient()
 	{
+		// The reconcile's own pulse, for the run-planned diagnostic. "Inventory never read"
+		// showed up in play with container events demonstrably flowing, which this method's
+		// design says cannot happen — so it now counts its own progress, and the log line can
+		// separate "never called" (registration/tick problem) from "called but blocked"
+		// (game state, missing container) from "storing fine" (a reading bug downstream).
+		reconcileCalls++;
 		if (client.getGameState() != net.runelite.api.GameState.LOGGED_IN)
 		{
 			return;
 		}
+		reconcileLoggedIn++;
 
 		// Hands off while a box action is in flight. This reconcile goes through record(),
 		// which is also where a pending Fill/Empty gets cashed in — and on the click's own
@@ -371,7 +410,20 @@ public class SeedInventoryStore
 		if (container != null)
 		{
 			record(SeedSource.INVENTORY.getContainerId(), container);
+			reconcileStores++;
 		}
+	}
+
+	/** See the counters in {@link #relearnInventoryFromClient}; volatile, read from the EDT. */
+	private volatile int reconcileCalls;
+	private volatile int reconcileLoggedIn;
+	private volatile int reconcileStores;
+
+	/** The reconcile's progress as words, for the run-planned line. */
+	public String describeReconcile()
+	{
+		return reconcileCalls + " ticks, " + reconcileLoggedIn + " logged in, "
+			+ reconcileStores + " stored";
 	}
 
 	/** Whether the live inventory has an open slot. Client thread only. */
@@ -495,6 +547,7 @@ public class SeedInventoryStore
 			changed = !entry.counts.equals(counts);
 			entry.counts = counts;
 			entry.lastSeen = Instant.now().getEpochSecond();
+			rememberSeen(counts);
 			if (changed && source.isPersisted())
 			{
 				save();
@@ -654,6 +707,38 @@ public class SeedInventoryStore
 	}
 
 	/**
+	 * Whether this account has ever held this seed, in any form, anywhere.
+	 *
+	 * <p>Outlives the counts on purpose — see {@link #everSeen}. Both forms are checked the
+	 * way {@link #getCount} counts them: the sapling is the same crop as its seed, and having
+	 * grown a maple from either form means maples belong in your list.
+	 */
+	public synchronized boolean hasEverSeen(Seed seed)
+	{
+		return everSeen.contains(seed.getItemID())
+			|| (seed.isSapling() && everSeen.contains(seed.getSaplingItemID()))
+			|| everSeen.contains(seed.getPlantedItemID());
+	}
+
+	/** Grows the ever-seen set from freshly read counts. Caller holds the lock. */
+	private void rememberSeen(Map<Integer, Integer> counts)
+	{
+		boolean grew = false;
+		for (Map.Entry<Integer, Integer> entry : counts.entrySet())
+		{
+			if (entry.getValue() > 0 && everSeen.add(entry.getKey()))
+			{
+				grew = true;
+			}
+		}
+		if (grew)
+		{
+			configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, EVER_SEEN_KEY,
+				gson.toJson(everSeen));
+		}
+	}
+
+	/**
 	 * Whether any storage has ever been read.
 	 *
 	 * <p>Drives the panel's first-run prompt: with nothing cached we cannot tell "you own
@@ -742,6 +827,39 @@ public class SeedInventoryStore
 					log.warn("Discarding unreadable seed cache", e);
 				}
 			}
+
+			// The long memory, cleared and re-read like the persisted counts — it is per
+			// profile, so another account's list must not leak in. Then backfilled from
+			// whatever counts just loaded: a profile from before this key existed starts with
+			// everything it currently holds, rather than an empty history.
+			everSeen.clear();
+			String seen = configManager.getRSProfileConfiguration(DoogleMapsConfig.GROUP,
+				EVER_SEEN_KEY);
+			if (seen != null && !seen.isEmpty())
+			{
+				try
+				{
+					java.util.Set<Integer> loaded = gson.fromJson(seen, EVER_SEEN_TYPE);
+					if (loaded != null)
+					{
+						loaded.forEach(id ->
+						{
+							if (id != null)
+							{
+								everSeen.add(id);
+							}
+						});
+					}
+				}
+				catch (JsonSyntaxException e)
+				{
+					log.warn("Discarding unreadable ever-seen seed list", e);
+				}
+			}
+			for (SourceCache entry : cached.values())
+			{
+				rememberSeen(entry.counts);
+			}
 		}
 		fireChanged();
 	}
@@ -764,7 +882,9 @@ public class SeedInventoryStore
 		synchronized (this)
 		{
 			cached.clear();
+			everSeen.clear();
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, SEEDS_KEY);
+			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, EVER_SEEN_KEY);
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_LEVEL_KEY);
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FARMING_XP_KEY);
 		}

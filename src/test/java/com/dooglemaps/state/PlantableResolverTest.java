@@ -71,6 +71,59 @@ public class PlantableResolverTest
 	}
 
 	/**
+	 * Running out does not delist a seed — it dulls it.
+	 *
+	 * <p>The list is the player's rotation: a seed vanishing at zero took its picked state
+	 * and its place in the order with it, and restocking meant re-picking. Asked from play:
+	 * "if you've seen a seed on this account, ever - list it, but dull it out".
+	 */
+	@Test
+	public void aSeedYouRanOutOfStaysListedDulled()
+	{
+		own(Seed.RANARR);
+		// The bank empties: every ranarr planted or sold.
+		ownItems();
+
+		List<PlantableResolver.Plantable> listed =
+			resolver.forPatchType(PatchImplementation.HERB, false);
+
+		assertEquals(1, listed.size());
+		assertEquals(Seed.RANARR, listed.get(0).getSeed());
+		assertEquals("none owned, so it draws dulled", 0, listed.get(0).getOwned());
+		assertFalse(listed.get(0).isUsable());
+	}
+
+	/**
+	 * A picked seed is always on the grid, with no stock and no history at all.
+	 *
+	 * <p>The ever-seen memory starts at this plugin's own first sighting, so a seed picked
+	 * before it existed was invisible while still holding position 1 in the planting order —
+	 * unviewable and untickable. The selection rides along as its own proof of belonging.
+	 */
+	@Test
+	public void aPickedSeedIsAlwaysListed()
+	{
+		List<PlantableResolver.Plantable> listed = resolver.forPatchType(
+			PatchImplementation.ALLOTMENT, false,
+			java.util.Collections.singleton(Seed.SNAPE_GRASS));
+
+		assertTrue(listed.stream().anyMatch(
+			p -> p.getSeed() == Seed.SNAPE_GRASS && p.getOwned() == 0));
+	}
+
+	/** The long memory is for seeds you have had — never-held seeds stay off the list. */
+	@Test
+	public void aSeedNeverHeldStaysHidden()
+	{
+		own(Seed.RANARR);
+
+		List<PlantableResolver.Plantable> listed =
+			resolver.forPatchType(PatchImplementation.HERB, false);
+
+		assertTrue(listed.stream().noneMatch(p -> p.getSeed() == Seed.SNAPDRAGON));
+	}
+
+	/**
 	 * A tree patch is planted with a sapling, so a bank full of saplings has to show up.
 	 *
 	 * <p>Reported as "saplings are missing from tree patch seed lists", and that is exactly

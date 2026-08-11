@@ -73,21 +73,38 @@ public class GuideInventoryOverlay extends Overlay
 		}
 	}
 
+	/**
+	 * The drop-when-convenient red for ambient empty buckets — deliberately not the guide
+	 * colour, so it cannot be mistaken for the current step. The same red the sidebar uses
+	 * for shortfalls, so the plugin keeps one meaning per hue.
+	 */
+	private static final Color DROP_BUCKET_RED = new Color(0xC4, 0x3B, 0x3B);
+
+	/** Both forms of the seed box, the same pair {@code SeedCapture} watches. Not SEEDBOX —
+	 * that gameval name is the Seed pack, and the packs lit up. See SeedCapture.isSeedBox. */
+	private static final int[] SEED_BOX_IDS = {
+		net.runelite.api.gameval.ItemID.SEED_BOX,
+		net.runelite.api.gameval.ItemID.SEED_BOX_OPEN,
+	};
+
 	private final Client client;
 	private final GuideTracker tracker;
 	private final DoogleMapsConfig config;
 	private final ItemManager itemManager;
 	private final CarriedItems carried;
+	private final com.dooglemaps.state.SeedInventoryStore seeds;
 
 	@Inject
 	GuideInventoryOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
-		ItemManager itemManager, CarriedItems carried)
+		ItemManager itemManager, CarriedItems carried,
+		com.dooglemaps.state.SeedInventoryStore seeds)
 	{
 		this.client = client;
 		this.tracker = tracker;
 		this.config = config;
 		this.itemManager = itemManager;
 		this.carried = carried;
+		this.seeds = seeds;
 
 		setPosition(OverlayPosition.DYNAMIC);
 		setLayer(OverlayLayer.ABOVE_WIDGETS);
@@ -107,9 +124,16 @@ public class GuideInventoryOverlay extends Overlay
 		// always lit while a run is under way, Drop always their left-click (GuideMenuSwap),
 		// and no place in the step list. Drawn before the step handling so a bucket stays
 		// marked whatever else the guide is saying.
+		//
+		// In its own red, not the guide colour. Painted like the step's item it READ as the
+		// step — the required next click — when it is the one highlight in the plugin that
+		// means "whenever you like". Asked from play: a non-required look for a non-required
+		// action. The wash is already transparent (ItemHighlight.FILL_ALPHA); only the hue
+		// changes.
 		if (config.dropEmptyBuckets() && tracker.getStatus().isRunning())
 		{
-			highlightInInventory(graphics, net.runelite.api.gameval.ItemID.BUCKET_EMPTY, colour);
+			highlightInInventory(graphics, net.runelite.api.gameval.ItemID.BUCKET_EMPTY,
+				DROP_BUCKET_RED);
 		}
 
 		GuideStep step = tracker.getCurrentStep();
@@ -166,8 +190,41 @@ public class GuideInventoryOverlay extends Overlay
 		{
 			highlightInInventory(graphics, step.getItemId(), colour,
 				step.getAction() == GuideAction.PAY_FARMER);
+
+			// The box, when it is where the planting's seeds actually are. A plant step names
+			// the seed, the seed is in the box, and nothing in the pack lit up — the player
+			// stood at the patch with the instruction pointing at an item they could not see.
+			// Re-added by request as a highlight only: no step, no patch outline, and the
+			// left-click swap (GuideMenuSwap, its own toggle) is untouched — it reads the box,
+			// not this. Drawn alongside the seed's own highlight, not instead: with a partial
+			// stack loose in the pack, both are true and both light up.
+			if (step.getAction() == GuideAction.PLANT && boxHoldsNeededSeeds(step.getItemId()))
+			{
+				for (int boxId : SEED_BOX_IDS)
+				{
+					highlightInInventory(graphics, boxId, colour);
+				}
+			}
 		}
 		return null;
+	}
+
+	/**
+	 * Whether the current planting still needs seeds that are sitting in the seed box.
+	 *
+	 * <p>Both halves matter: the box holding some, and the pack holding too few — a pack
+	 * already carrying a patch's worth needs no box trip, however full the box is. Tree
+	 * saplings can never be boxed, so this is quietly false for every tree step.
+	 */
+	private boolean boxHoldsNeededSeeds(int plantedItemId)
+	{
+		com.dooglemaps.data.Seed seed = com.dooglemaps.data.Seed.forItemId(plantedItemId);
+		if (seed == null)
+		{
+			return false;
+		}
+		return seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.SEED_BOX) > 0
+			&& carried.getInventoryCount(plantedItemId) < seed.getSeedsPerPatch();
 	}
 
 	/**
@@ -357,28 +414,61 @@ public class GuideInventoryOverlay extends Overlay
 	private java.util.List<Rectangle> matchingRows(String destination)
 	{
 		int tick = client.getTickCount();
-		if (tick == scannedRowTick && destination.equals(scannedRowFor))
+		if (tick != scannedRowTick || !destination.equals(scannedRowFor))
 		{
-			return scannedRows;
+			scannedRowTick = tick;
+			scannedRowFor = destination;
+			scannedRows = scanRows(destination);
 		}
 
-		scannedRowTick = tick;
-		scannedRowFor = destination;
-
+		// The search is once a tick; the MEASURING is every frame. These lists scroll, and a
+		// rectangle captured at scan time trailed the moving row by up to 600ms — reported
+		// from play as the nexus highlight lagging the scroll. Finding the row is the
+		// expensive half; measuring the one or two matched widgets is not, so the box now
+		// rides the widget's live bounds.
+		//
 		// Clipped to the list each row was found in, because a scrolling list draws only a
 		// window of itself while the rows keep their full laid-out bounds — so the outline for
 		// a row near the edge spilled past the nexus's frame onto the interface around it.
 		// Reported from play, as cosmetic, which is exactly what an unclipped rectangle looks
 		// like. A row reachable from two scanned containers — the nexus universe and its rows
 		// layer overlap by construction — keeps the tightest rectangle it got.
-		//
-		// Direct matches and aliased ones are kept apart, and the direct rows win when any
-		// exist. The alias is a stand-in for the row that lands at the destination, not a
-		// second answer: a nexus can hold both "Troll Stronghold" (beside the patch) and
-		// "Trollheim" (up the mountain), and lighting both told the player the plugin could
-		// not choose. Only when no direct row exists does the aliased one carry the highlight.
-		Map<Widget, Rectangle> found = new HashMap<>();
-		Map<Widget, Rectangle> aliased = new HashMap<>();
+		Map<Widget, Rectangle> merged = new HashMap<>();
+		for (MatchedRow match : scannedRows)
+		{
+			if (match.row.isHidden())
+			{
+				continue;
+			}
+			Rectangle clipped = textBounds(match.row).intersection(match.list.getBounds());
+			Rectangle already = merged.get(match.row);
+			merged.put(match.row, already == null ? clipped : already.intersection(clipped));
+		}
+
+		java.util.List<Rectangle> rows = new java.util.ArrayList<>();
+		for (Rectangle bounds : merged.values())
+		{
+			if (!bounds.isEmpty())
+			{
+				rows.add(bounds);
+			}
+		}
+		return rows;
+	}
+
+	/**
+	 * Finds the widgets whose rows name the destination, in whichever list is open.
+	 *
+	 * <p>Direct matches and aliased ones are kept apart, and the direct rows win when any
+	 * exist. The alias is a stand-in for the row that lands at the destination, not a
+	 * second answer: a nexus can hold both "Troll Stronghold" (beside the patch) and
+	 * "Trollheim" (up the mountain), and lighting both told the player the plugin could
+	 * not choose. Only when no direct row exists does the aliased one carry the highlight.
+	 */
+	private java.util.List<MatchedRow> scanRows(String destination)
+	{
+		java.util.List<MatchedRow> found = new java.util.ArrayList<>();
+		java.util.List<MatchedRow> aliased = new java.util.ArrayList<>();
 		java.util.List<String> seen = new java.util.ArrayList<>();
 		for (int listId : HouseTeleports.DESTINATION_LISTS)
 		{
@@ -400,12 +490,7 @@ public class GuideInventoryOverlay extends Overlay
 				boolean direct = HouseTeleports.namesTheSamePlaceDirectly(text, destination);
 				if (direct || HouseTeleports.namesTheSamePlace(text, destination))
 				{
-					Map<Widget, Rectangle> into = direct ? found : aliased;
-					Rectangle clipped = textBounds(row).intersection(list.getBounds());
-					Rectangle already = into.get(row);
-					into.put(row, already == null
-						? clipped
-						: already.intersection(clipped));
+					(direct ? found : aliased).add(new MatchedRow(row, list));
 				}
 			}
 		}
@@ -414,24 +499,27 @@ public class GuideInventoryOverlay extends Overlay
 		{
 			found = aliased;
 		}
-
-		scannedRows = new java.util.ArrayList<>();
-		for (Rectangle bounds : found.values())
-		{
-			if (!bounds.isEmpty())
-			{
-				scannedRows.add(bounds);
-			}
-		}
-
 		if (!seen.isEmpty() && found.isEmpty())
 		{
 			noteUnmatched(destination, seen);
 		}
-		return scannedRows;
+		return found;
 	}
 
-	private java.util.List<Rectangle> scannedRows = new java.util.ArrayList<>();
+	/** A destination row and the list it was found in, which its outline is clipped to. */
+	private static final class MatchedRow
+	{
+		final Widget row;
+		final Widget list;
+
+		MatchedRow(Widget row, Widget list)
+		{
+			this.row = row;
+			this.list = list;
+		}
+	}
+
+	private java.util.List<MatchedRow> scannedRows = new java.util.ArrayList<>();
 	private String scannedRowFor = "";
 	private int scannedRowTick = -1;
 

@@ -133,6 +133,16 @@ public class RunStop
 		return locations.getLocation(patches.get(0));
 	}
 
+	/**
+	 * The same place as {@link #getLocation}, phrased so the router can actually arrive:
+	 * the tiles around the patch rather than the patch's own — often blocked — tile.
+	 * See {@link PatchLocationStore#getRouteTargets}.
+	 */
+	public java.util.List<WorldPoint> getRouteTargets(PatchLocationStore locations)
+	{
+		return locations.getRouteTargets(patches.get(0));
+	}
+
 	@Override
 	public String toString()
 	{

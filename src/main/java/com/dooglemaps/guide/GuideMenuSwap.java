@@ -205,11 +205,10 @@ public class GuideMenuSwap
 		return false;
 	}
 
-	/** Same three ids {@code SeedCapture} watches: closed, Farming Guild's, and open. */
+	/** The same two ids {@code SeedCapture} watches: closed and open. Not SEEDBOX — see there. */
 	private static boolean isSeedBox(int itemId)
 	{
 		return itemId == ItemID.SEED_BOX
-			|| itemId == ItemID.SEEDBOX
 			|| itemId == ItemID.SEED_BOX_OPEN;
 	}
 }

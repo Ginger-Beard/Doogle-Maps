@@ -130,7 +130,7 @@ public class ProfileResetTest
 
 		availability.setAvailable(patch, false);
 		selection.toggle(Seed.RANARR);
-		patchLocations.record(patch, new WorldPoint(3050, 3300, 0));
+		patchLocations.record(patch, new WorldPoint(3050, 3300, 0), 3, 3);
 		bankLocations.record(new WorldPoint(3185, 3436, 0));
 		stored.put("dooglemaps.hasFarmingCape", "true");
 

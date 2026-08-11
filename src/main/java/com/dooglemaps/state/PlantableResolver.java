@@ -70,13 +70,36 @@ public class PlantableResolver
 	 */
 	public List<Plantable> forPatchType(PatchImplementation type, boolean includeUnowned)
 	{
+		return forPatchType(type, includeUnowned, java.util.Collections.emptySet());
+	}
+
+	/**
+	 * As {@link #forPatchType(PatchImplementation, boolean)}, listing these seeds no matter what.
+	 *
+	 * <p>For the selection: a picked seed <b>must</b> be visible, whatever the stock records
+	 * say. The ever-seen memory only reaches back as far as this plugin's own observations, so
+	 * a seed picked before it existed — position 1 in the queue, none owned, none on record —
+	 * was invisible: still shaping the run's order, with no way to see it or untick it.
+	 * Reported from play, for snape grass. Being picked is itself the account's word that the
+	 * seed belongs on the list.
+	 *
+	 * @param alwaysListed seeds listed regardless of stock or history — the group's selection
+	 */
+	public List<Plantable> forPatchType(PatchImplementation type, boolean includeUnowned,
+		java.util.Set<Seed> alwaysListed)
+	{
 		int farmingLevel = seeds.getFarmingLevel();
 
 		List<Plantable> result = new ArrayList<>();
 		for (Seed seed : Seed.forPatchType(type))
 		{
 			int owned = seeds.getOwned(seed);
-			if (owned == 0 && !includeUnowned)
+			// Running out does not delist a seed you have grown before. The list is the
+			// player's rotation, and a seed vanishing at zero took its picked state and its
+			// place in the order with it — restocking should be zero clicks, not a re-pick.
+			// It stays, dulled, and only a seed this account has never held is left off.
+			if (owned == 0 && !includeUnowned && !seeds.hasEverSeen(seed)
+				&& !alwaysListed.contains(seed))
 			{
 				continue;
 			}

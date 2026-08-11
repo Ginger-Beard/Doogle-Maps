@@ -271,6 +271,21 @@ public class GuideTracker
 			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)))
 			.isEmpty();
 
+		// An EXPLICIT plan through the furniture is a stronger claim than "serves". The weak
+		// serve is a destination-list coincidence — the Prifddinas nexus "served" a route
+		// that never used it, which is what doorIsTheWay below exists to overrule. But a hop
+		// that names the furniture ("Configure Fairy ring - C K Q") is the router routing
+		// THROUGH it, and overruling that walked the player out the exit portal past the
+		// garden ring their own route had picked. Reported from play, Aldarin.
+		//
+		// The router's own origins outrank both readings: a hop departing from inside the
+		// POH area is house furniture by the router's word, whatever it is called. That is
+		// the strongest evidence there is, and it needs no wording to match.
+		boolean stronglyServed = planner.routeUsesHouseFurniture()
+			|| !house.matchingFurniture(name ->
+			transports.stream().anyMatch(hop -> HouseTeleports.furnitureNamedByHop(name, hop)))
+			.isEmpty();
+
 		// Serving furniture normally settles it — the route is followable from this room and
 		// the drawn path is left alone. Not when the front door opens into the destination's
 		// own neighbourhood: a Prifddinas house *is* the way to the Prifddinas patches, and the
@@ -282,9 +297,19 @@ public class GuideTracker
 		RunStop heading = destinationStop(planner.getRemaining());
 		boolean doorIsTheWay = door != null && heading != null
 			&& regionsTouch(door.getRegionID(), heading.getRegion().getRegionId());
-		if (served && !doorIsTheWay)
+		// A route through the house counts as served even when no furniture NAME matched -
+		// the origins say the plan uses this room, and a wording gap must not walk the
+		// player out the front door past it.
+		if ((served || planner.routeUsesHouseFurniture()) && (stronglyServed || !doorIsTheWay))
 		{
 			houseStartPosted = true;
+			// At INFO, once per visit (the latch above), because which way this decision went
+			// has now been guessed at from symptoms twice. The reroute branch below has
+			// always logged; the stay-put branch was silent, so a cleared hop list could not
+			// be told apart from a reroute whose answer was walk-only.
+			log.info("House furniture serves the route {} - keeping the drawn path "
+				+ "(explicitly named: {}, door is the way: {})",
+				transports, stronglyServed, doorIsTheWay);
 			return;
 		}
 
@@ -882,6 +907,25 @@ public class GuideTracker
 	 */
 	public boolean withdrawListOutstanding(java.util.Set<PatchImplementation> types)
 	{
+		// The other half of RunPlanner's "Run planned" line, at the same moment and the same
+		// level: that line says which seed sources the run trusts, this one says what the
+		// loadout concluded from them — every item with its verdict, not just the fetches. A
+		// bank leg that asks for the wrong things can only be judged with both halves, and
+		// "what is it asking me to fetch" was being retyped from the panel by hand.
+		java.util.List<String> verdicts = new java.util.ArrayList<>();
+		for (com.dooglemaps.bank.LoadoutItem item : loadout.forRun(types))
+		{
+			StringBuilder verdict = new StringBuilder(item.getName()).append('=')
+				.append(item.getNeed());
+			if (item.getNeed() == com.dooglemaps.bank.LoadoutItem.Need.WITHDRAW)
+			{
+				verdict.append(" x").append(item.getWithdrawCount())
+					.append(" from ").append(item.getFrom());
+			}
+			verdicts.add(verdict.toString());
+		}
+		log.info("Loadout for {}: {}", types, verdicts);
+
 		return loadout.anythingLeftToWithdraw(types);
 	}
 
@@ -1513,13 +1557,39 @@ public class GuideTracker
 	 * overlay outlines by and {@link #routeFromTheFrontDoor} judges by, asked here so the
 	 * travel hint cannot contradict what is being outlined. Client thread only, like every
 	 * furniture question.
+	 *
+	 * <p>The destination counts as well as the hops, mirroring the overlay's own fallback:
+	 * the router's model has no nexus, so furniture that genuinely reaches this leg's
+	 * destination can be absent from every hop — and the hint then named a route item while
+	 * the overlay outlined the nexus, which is the contradiction this method exists to
+	 * prevent. Reported from play, Stony basalt in the nexus.
 	 */
-	private boolean furnitureServesTheRoute()
+	private boolean furnitureServesTheRoute(@Nullable String destination)
 	{
+		// The router's own origins first: a hop departing from inside the POH area is house
+		// furniture by its word, no wording required. See RunPlanner.routeUsesHouseFurniture.
+		if (planner.routeUsesHouseFurniture())
+		{
+			return true;
+		}
 		java.util.Collection<String> transports = planner.getCurrentTransports();
-		return !transports.isEmpty() && !house.matchingFurniture(name ->
+		if (!transports.isEmpty() && !house.matchingFurniture(name ->
 			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)))
-			.isEmpty();
+			.isEmpty())
+		{
+			return true;
+		}
+		return destination != null && !house.matchingFurniture(name ->
+			HouseTeleports.furnitureServesHop(name, destination)).isEmpty();
+	}
+
+	/**
+	 * Whether the router's plan goes through the house, for the overlay's exit-portal
+	 * decision. Live from the planner, like {@link #liveTransports}.
+	 */
+	public boolean routeDepartsTheHouse()
+	{
+		return planner.routeUsesHouseFurniture();
 	}
 
 	/**
@@ -2127,7 +2197,7 @@ public class GuideTracker
 		// nexus: two contradictory instructions, with the nexus the one the player actually
 		// wanted. Reported from play. A destination-only hint keeps the furniture the answer,
 		// and still lights the right row once the nexus is open.
-		if (inHouse && furnitureServesTheRoute())
+		if (inHouse && furnitureServesTheRoute(destination))
 		{
 			return new TravelHint(-1, null, destination, TravelHint.Where.UNOWNED);
 		}

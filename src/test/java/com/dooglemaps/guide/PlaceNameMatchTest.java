@@ -118,6 +118,52 @@ public class PlaceNameMatchTest
 	}
 
 	/**
+	 * A fairy ring's hop is its code, and nothing else.
+	 *
+	 * <p>Shortest Path's fairy data puts the bare code in the display info — "A J P",
+	 * "ZANARIS", or a dash-chain — with no object name to prefix, so the hop never contains
+	 * the words "fairy ring". The garden ring failed to match its own hop, the front-door
+	 * reroute read the house as serving nothing, and a fairy-ring plan was replaced with a
+	 * walk out the exit portal. Reported from play, Aldarin via the POH ring.
+	 */
+	@Test
+	public void aFairyRingServesItsCodeShapedHops()
+	{
+		assertTrue("a bare code is a fairy ring's hop",
+			HouseTeleports.furnitureServesHop("Fairy ring", "A J P"));
+		assertTrue("the main ring's Zanaris hop too",
+			HouseTeleports.furnitureServesHop("Fairy ring", "ZANARIS"));
+		assertTrue("and a chained multi-code journey",
+			HouseTeleports.furnitureServesHop("Fairy ring", "A I R - D L R - D J Q - A J S"));
+		assertFalse("no other furniture may claim a code",
+			HouseTeleports.furnitureServesHop("Portal Nexus", "A J P"));
+		assertFalse("and a worded hop is not a code",
+			HouseTeleports.furnitureServesHop("Fairy ring", "Varrock Teleport"));
+	}
+
+	/**
+	 * Explicitly-named furniture is a stronger claim than a destination-list serve.
+	 *
+	 * <p>The distinction decides whether {@code doorIsTheWay} may overrule the furniture:
+	 * a nexus whose destination list happens to carry the place is a coincidence the door
+	 * may beat; a hop that names the furniture is the router routing through it, and the
+	 * door must not walk the player past it. Reported from play: "Configure Fairy ring -
+	 * C K Q" overruled out the exit portal.
+	 */
+	@Test
+	public void namedFurnitureOutranksADestinationCoincidence()
+	{
+		assertTrue("the hop names the ring, so the claim is explicit",
+			HouseTeleports.furnitureNamedByHop("Fairy ring", "Configure Fairy ring - C K Q"));
+		assertTrue("a bare code names the ring too - it is how SP words these",
+			HouseTeleports.furnitureNamedByHop("Fairy ring", "C K Q"));
+		assertFalse("a destination the nexus reaches does not NAME the nexus",
+			HouseTeleports.furnitureNamedByHop("Portal Nexus", "Trollheim Teleport"));
+		assertTrue("...though it still serves it, weakly",
+			HouseTeleports.furnitureServesHop("Portal Nexus", "Trollheim Teleport"));
+	}
+
+	/**
 	 * An alias is a stand-in, not a synonym.
 	 *
 	 * <p>A nexus can hold both "Trollheim" and "Troll Stronghold" — the second attuned with

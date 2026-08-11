@@ -790,6 +790,14 @@ public class DoogleMapsPlugin extends Plugin
 			com.dooglemaps.ui.Locations.isEnabled(config, patch));
 		// What the house actually holds, so the router stops imagining portals - see PlayerHouse.
 		router.setHousePortalKnowledge(playerHouse::hasPortalRoomPortals);
+		// Whether the player is instanced, so the router's own in-instance recomputes - made
+		// from template coordinates that mean nothing - are not read as the route. Instances
+		// live at x >= 6400; the region id carries x in its top byte in units of 64 tiles.
+		router.setInstanceKnowledge(() ->
+		{
+			int region = playerLocation.getRegionId();
+			return region >= 0 && (region >>> 8) >= 100;
+		});
 		availability.load();
 		seedStore.load();
 		// The remembered bank, so the loadout, the withdraw list and the filter start informed

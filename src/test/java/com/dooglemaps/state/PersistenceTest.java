@@ -531,6 +531,68 @@ public class PersistenceTest
 		assertEquals(16, seeds.getOwned(com.dooglemaps.data.Seed.RANARR));
 	}
 
+	/**
+	 * A zero-delta refresh between the Empty and its seeds must not consume the click.
+	 *
+	 * <p>The bank interface can fire an inventory container event in the same window as an
+	 * Empty-to-bank, with nothing moved in it. Consuming the armed Empty against that zero
+	 * delta left the real one — the box's stacks landing in the bank container a tick later —
+	 * unclaimed, so the box kept everything it had just poured out. Reported from play as
+	 * four seeds reading box == bank to the seed, and a supply leg that fetched nothing.
+	 */
+	@Test
+	public void anUnrelatedRefreshDoesNotStealTheEmptysBankDelta() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class, client, configManager, gson);
+		seeds.load();
+
+		int ranarr = com.dooglemaps.data.Seed.RANARR.getItemID();
+		seeds.record(SeedSource.SEED_BOX.getContainerId(), container(ranarr, 6));
+		seeds.record(SeedSource.BANK.getContainerId(), container(ranarr, 10));
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container());
+
+		seeds.noteSeedBoxAction(SeedBoxAction.EMPTY);
+		// The pack refreshes first, unchanged - this event is not the Empty's.
+		seeds.record(SeedSource.INVENTORY.getContainerId(), container());
+		// The seeds land in the bank a moment later; the click must still be armed for it.
+		seeds.record(SeedSource.BANK.getContainerId(), container(ranarr, 16));
+
+		assertEquals("the box kept the seeds it poured into the bank",
+			0, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.SEED_BOX));
+		assertEquals(16, seeds.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.BANK));
+		assertEquals(16, seeds.getOwned(com.dooglemaps.data.Seed.RANARR));
+	}
+
+	/**
+	 * A seed the account has held once is remembered after running out, across restarts.
+	 *
+	 * <p>The seed selector lists your rotation, not your stock — a seed at zero stays on the
+	 * list, dulled, so its picked state and place in the order survive. That memory has to
+	 * outlive both the counts (which rightly go to zero) and the session.
+	 */
+	@Test
+	public void aSeedSeenOnceIsRememberedAcrossReloads() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		SeedInventoryStore seeds = construct(SeedInventoryStore.class, client, configManager, gson);
+		seeds.load();
+
+		int ranarr = com.dooglemaps.data.Seed.RANARR.getItemID();
+		seeds.record(SeedSource.BANK.getContainerId(), container(ranarr, 5));
+		// All of them planted or sold: the count is honestly zero...
+		seeds.record(SeedSource.BANK.getContainerId(), container());
+		assertEquals(0, seeds.getOwned(com.dooglemaps.data.Seed.RANARR));
+
+		// ...but a fresh store on the same profile still knows ranarr belongs to this account.
+		SeedInventoryStore reloaded =
+			construct(SeedInventoryStore.class, client, configManager, gson);
+		reloaded.load();
+		assertTrue(reloaded.hasEverSeen(com.dooglemaps.data.Seed.RANARR));
+		assertFalse("never held, never listed",
+			reloaded.hasEverSeen(com.dooglemaps.data.Seed.SNAPDRAGON));
+	}
+
 	/** Seeds leaving the inventory for any other reason must not be credited to the box. */
 	@Test
 	public void plantingSeedsDoesNotPutThemInTheSeedBox() throws Exception

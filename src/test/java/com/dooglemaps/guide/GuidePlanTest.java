@@ -1016,6 +1016,52 @@ public class GuidePlanTest
 		assertEquals("treated soil takes the seed", GuideAction.PLANT, plant.getAction());
 	}
 
+	/**
+	 * A picked-clean bush on a replant run is dug up, not left alone.
+	 *
+	 * <p>A regrowing crop never empties — stripped, it sits {@code HARVESTABLE} with a stock
+	 * of zero — so it fell through to the growing-leave-it-alone branch and the guide never
+	 * asked for the dig the replant needs first. Reported from play.
+	 */
+	@Test
+	public void aPickedCleanBushIsDugUpWhenReplanting()
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.BUSH).get(0);
+		stockInventory(Seed.REDBERRIES, 10);
+		recordValue(patch, 10);   // redberries, harvestable, nothing left on it
+
+		GuideStep step = firstStep(patch, Seed.REDBERRIES);
+		assertEquals(GuideAction.CLEAR, step.getAction());
+		assertTrue(step.getText(), step.getText().toLowerCase().contains("dig up"));
+	}
+
+	/** With berries still on it, the pick leads — the dig waits until the bush is stripped. */
+	@Test
+	public void aLadenBushIsPickedBeforeAnyDigging()
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.BUSH).get(0);
+		stockInventory(Seed.REDBERRIES, 10);
+		recordValue(patch, 14);   // redberries, harvestable, four berries on it
+
+		assertEquals(GuideAction.HARVEST, firstStep(patch, Seed.REDBERRIES).getAction());
+	}
+
+	/**
+	 * Without the replacement seed at hand, a stripped bush is left standing.
+	 *
+	 * <p>Clearing a producing bush with nothing to put in its place is strictly worse than
+	 * leaving it — the berries come back on their own.
+	 */
+	@Test
+	public void aStrippedBushWithoutASeedIsLeftStanding()
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.BUSH).get(0);
+		recordValue(patch, 10);
+
+		assertTrue("no seed at hand, so nothing to say",
+			steps(patch, Seed.REDBERRIES).isEmpty());
+	}
+
 	private List<GuideStep> steps(FarmPatch patch, Seed chosen)
 	{
 		return steps(patch, chosen, group(patch));

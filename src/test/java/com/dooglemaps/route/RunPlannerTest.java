@@ -54,6 +54,7 @@ public class RunPlannerTest
 	private Map<String, String> stored;
 	private ConfigManager configManager;
 	private PatchStateStore stateStore;
+	private GrowthTimer timer;
 	private AvailabilityProfile availability;
 	private com.dooglemaps.state.SeedSelectionStore selection;
 	private com.dooglemaps.state.SeedInventoryStore seedInventory;
@@ -115,7 +116,7 @@ public class RunPlannerTest
 		availability = construct(AvailabilityProfile.class, configManager, gson, stateStore);
 		PatchLocationStore locations = construct(PatchLocationStore.class, configManager, gson);
 		banks = construct(BankLocationStore.class, configManager, gson);
-		GrowthTimer timer = construct(GrowthTimer.class, configManager);
+		timer = construct(GrowthTimer.class, configManager);
 		// Run queued client-thread work immediately, so the test sees what was posted.
 		net.runelite.client.callback.ClientThread clientThread =
 			Mockito.mock(net.runelite.client.callback.ClientThread.class);
@@ -675,6 +676,113 @@ public class RunPlannerTest
 		assertTrue("there is nothing on it to pick", planner.getRemaining().isEmpty());
 	}
 
+	/**
+	 * A stripped bush is still worth travelling to when the run replants it.
+	 *
+	 * <p>The regrowing exception used to read every picked-clean regrowing crop as finished,
+	 * which is right for a fruit tree — the fruit comes back and the guide does not model the
+	 * chop — but wrong for a bush a spade digs straight out: the run walked past patches whose
+	 * whole remaining job was dig-and-replant. Reported from play.
+	 */
+	@Test
+	public void aPickedCleanBushStillCountsWhenReplanting()
+	{
+		FarmPatch bush = FarmingWorldData.getPatches(PatchImplementation.BUSH).get(0);
+		selection.toggle(com.dooglemaps.data.Seed.REDBERRIES);
+		stockBank(com.dooglemaps.data.Seed.REDBERRIES, 10);
+
+		record(bush.getKey(), 10);   // redberries, harvestable, nothing left on it
+		availability.setAvailable(bush, true);
+		planner.start(EnumSet.of(PatchImplementation.BUSH));
+
+		assertEquals("the dig-and-replant is real work", 1, planner.getRemaining().size());
+	}
+
+	/** With no replacement seed owned anywhere, a stripped bush really is finished. */
+	@Test
+	public void aPickedCleanBushWithNoSeedOwnedIsFinished()
+	{
+		FarmPatch bush = FarmingWorldData.getPatches(PatchImplementation.BUSH).get(0);
+
+		record(bush.getKey(), 10);
+		availability.setAvailable(bush, true);
+		planner.start(EnumSet.of(PatchImplementation.BUSH));
+
+		assertTrue("nothing to pick and nothing to plant", planner.getRemaining().isEmpty());
+	}
+
+	/**
+	 * A grown-but-unchecked crop still counts on a harvest-only run.
+	 *
+	 * <p>A cactus or fruit tree finishes growing into a state the game still calls GROWING —
+	 * only the player's health check makes it harvestable — so asking only hasProduceToPick
+	 * walked a harvest-only run past the one click that makes the picking (and the crop's
+	 * real experience) available. Reported from play: a guild cactus at check-health, skipped
+	 * the moment the rest of the guild was done.
+	 */
+	@Test
+	public void aGrownUncheckedCropStillCountsOnHarvestOnly()
+	{
+		when(runOptions.isHarvestOnly(any())).thenReturn(true);
+
+		FarmPatch fruit = patch(CATHERBY_FRUIT);
+		int unchecked = grownUncheckedValue(fruit);
+		assertTrue("no grown-unchecked varbit found for the fixture", unchecked >= 0);
+		record(CATHERBY_FRUIT, unchecked);
+		availability.setAvailable(fruit, true);
+		planner.start(EnumSet.of(PatchImplementation.FRUIT_TREE));
+
+		assertEquals("the check is the click that makes the picking available",
+			1, planner.getRemaining().size());
+	}
+
+	/**
+	 * No start-less route is posted while the player is inside an instance.
+	 *
+	 * <p>A request with no explicit start defaults, upstream, to the raw player position —
+	 * garbage inside an instance — and the recomputed route lands on an arbitrary stop.
+	 * Reported from play: teleporting to the POH flipped a Weiss run's destination to the
+	 * Ardougne bushes as the house loaded. Leaving the instance retargets normally.
+	 */
+	@Test
+	public void noStartlessRouteIsPostedFromInsideAnInstance()
+	{
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+		stockInventory(com.dooglemaps.data.Seed.RANARR, 10);
+		standingIn((100 << 8) | 80);   // an instance's virtual area: region x-part >= 100
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		assertTrue("a route from instance coordinates would start from nowhere",
+			lastTargets().isEmpty());
+	}
+
+	/** The crop's grown-but-unchecked varbit value, or -1 when the data has none. */
+	private int grownUncheckedValue(FarmPatch patch)
+	{
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+			if (decoded == null || decoded.getProduce() == null
+				|| !decoded.getProduce().isCrop()
+				|| decoded.getCropState() != com.dooglemaps.data.CropState.GROWING
+				|| decoded.getStage() != decoded.getProduce().getStages() - 1)
+			{
+				continue;
+			}
+			stateStore.recordVarbit(patch, value, decoded);
+			com.dooglemaps.timer.PatchProjection projection =
+				timer.project(patch, stateStore.get(patch));
+			if (projection != null && projection.needsHealthCheck())
+			{
+				return value;
+			}
+		}
+		return -1;
+	}
+
 	/** Puts the local player somewhere in the given map region. */
 	private void standingIn(int regionId)
 	{
@@ -751,6 +859,23 @@ public class RunPlannerTest
 		ProduceState decoded = p.getImplementation().forVarbitValue(varbitValue);
 		assertNotNull("varbit " + varbitValue + " does not decode for " + key, decoded);
 		stateStore.recordVarbit(p, varbitValue, decoded);
+	}
+
+	/**
+	 * The map regions the most recent path message routes to — one per stop.
+	 *
+	 * <p>Counted by region rather than by tile because a stop no longer posts a single
+	 * point: the router is handed the ring of tiles around the patch, so the patch can be
+	 * arrived <i>beside</i> rather than stood on. See PatchLocationStore.getRouteTargets.
+	 */
+	private Set<Integer> regionsTargeted()
+	{
+		Set<Integer> regions = new java.util.HashSet<>();
+		for (WorldPoint target : lastTargets())
+		{
+			regions.add(target.getRegionID());
+		}
+		return regions;
 	}
 
 	/** Targets in the most recent path message, or empty if the last message was a clear. */
@@ -1063,7 +1188,7 @@ public class RunPlannerTest
 		service(ARDOUGNE_HERB);
 
 		assertEquals("Catherby is the only thing left, so route to it",
-			1, lastTargets().size());
+			1, regionsTargeted().size());
 	}
 
 	/** The deferred trip is not forgotten — it happens once the work here is done. */
@@ -1214,7 +1339,7 @@ public class RunPlannerTest
 
 		assertTrue(planner.getSupplySources().isEmpty());
 		assertFalse("nothing to collect, so go straight to the patches", planner.isAtBankLeg());
-		assertEquals("one outstanding stop", 1, lastTargets().size());
+		assertEquals("one outstanding stop", 1, regionsTargeted().size());
 	}
 
 	@Test
@@ -1227,7 +1352,7 @@ public class RunPlannerTest
 		planner.leaveBank();
 
 		assertFalse(planner.isAtBankLeg());
-		assertEquals("one outstanding stop, one target", 1, lastTargets().size());
+		assertEquals("one outstanding stop, one place targeted", 1, regionsTargeted().size());
 	}
 
 	/**
@@ -1297,11 +1422,11 @@ public class RunPlannerTest
 
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 		planner.leaveBank();
-		assertEquals(2, lastTargets().size());
+		assertEquals(2, regionsTargeted().size());
 
 		service(FALADOR_HERB);
 
-		assertEquals("the serviced stop should stop being a target", 1, lastTargets().size());
+		assertEquals("the serviced stop should stop being a target", 1, regionsTargeted().size());
 		assertEquals(1, planner.getRemaining().size());
 	}
 

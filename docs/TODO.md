@@ -3,6 +3,19 @@
 Open work only. Everything learned and every closed post-mortem is in `docs/NOTES.md`; the
 in-client checks are in `docs/TESTING.md`.
 
+## Before publishing to the Hub
+
+- **Remove the resource-monitor dev wiring.** Two pieces, added 2026-08-10 so both unpublished
+  plugins could run in one dev client: the source-set block in `build.gradle` that folds
+  `../resource-monitor/src/main/java` into this project's test compile (with its lombok test
+  dependencies), and the `Class.forName("com.resourcemonitor.ResourceMonitorPlugin")` load in
+  `DoogleMapsPluginTest`. Both degrade gracefully when the sibling repo is absent — Hub CI
+  would pass with them in — but they are cross-repo dev coupling and should not outlive the
+  need. Once both plugins are published, delete both pieces and let each repo stand alone.
+  Every line to delete is tagged: `grep -rn "REMOVE BEFORE PUBLISHING" build.gradle src/`
+  lists all of it, and the one line that reverts instead of deletes (the `loadBuiltin` call)
+  says so in its tag.
+
 ## Blocked on testing in the client
 
 These are written and unverified. `docs/TESTING.md` has the full plan, with a fail signature for

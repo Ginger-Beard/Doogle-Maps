@@ -302,11 +302,13 @@ public class RunPlanner
 		// Tools are on it for the same reason: they are now one of the things that can send you
 		// to a bank, so leaving them off would put the line back to being half an answer.
 		log.info("Run planned: {} stops {}; you are in region {} which is {}{}; "
-				+ "seeds picked for this run: {}; still to collect: {}; tools: {} -> {}",
+				+ "seeds picked for this run: {}; sources read: {}; still to collect: {}; "
+				+ "tools: {} -> {}",
 			stops.size(), stopRegions(), playerLocation.getRegionId(),
 			here ? "a stop on this run" : "not a stop on this run",
 			canBankHere ? " and has a supply point in it" : "",
-			describeSelectedForThisRun(), getSupplySources(), describeTools(),
+			describeSelectedForThisRun(), describeSeedSourceAges(), getSupplySources(),
+			describeTools(),
 			atBankLeg ? "starting at a bank" : "starting where you are");
 
 		// Outside the lock, deliberately, and for the same reason markServiced and leaveBank
@@ -792,9 +794,16 @@ public class RunPlanner
 		// "harvestable" — grown, with a stock of zero — so this stayed true after the player had
 		// stripped it, the stop never stopped being actionable, and a harvest-only run could not
 		// finish a stop at all. See PatchProjection.hasProduceToPick.
+		//
+		// The health check counts too. A grown cactus or fruit tree is still GROWING until the
+		// player checks it, so it has nothing to pick YET — and asking only hasProduceToPick
+		// walked the run past the one click that makes the picking (and the crop's real
+		// experience) available. Reported from play: a guild cactus at check-health, skipped
+		// the moment the rest of the guild was done. The guide's check step never gated on
+		// harvest-only; it was only this routing test that did.
 		if (runOptions.isHarvestOnly(groups.groupFor(patch)))
 		{
-			return projection.hasProduceToPick();
+			return projection.hasProduceToPick() || projection.needsHealthCheck();
 		}
 
 		// Finished growing counts, even while the varbit still says GROWING. A tree that is fully
@@ -814,9 +823,16 @@ public class RunPlanner
 			// Narrowed to HARVESTABLE deliberately. A fruit tree that has finished growing but not
 			// been health-checked also regrows and also has no fruit — and it very much does want
 			// something doing, which is the check itself.
+			//
+			// Narrower still since the bushes: a stripped bush or cactus on a run that REPLANTS
+			// it is not finished — a spade takes it straight out and the chosen seed goes in, and
+			// treating it as done meant the guide never asked for the dig. Reported from play.
+			// Owned stock counts here (the supply leg can fetch a banked seed); whether it is at
+			// hand is the guide's stricter question, and when it says no the idle report unblocks
+			// the stop the same way it does for any other missing seed.
 			if (projection.regrows() && projection.getCropState() == CropState.HARVESTABLE)
 			{
-				return projection.hasProduceToPick();
+				return projection.hasProduceToPick() || wantsReplantClear(patch);
 			}
 			return true;
 		}
@@ -844,6 +860,37 @@ public class RunPlanner
 				// Weeds mean an empty patch, whatever the crop state says.
 				return projection.isEmpty();
 		}
+	}
+
+	/**
+	 * Whether a stripped bush or cactus is due a dig-and-replant this run.
+	 *
+	 * <p>The route-planning half of {@code GuidePlan}'s picked-clean branch, asked with the
+	 * planner's looser stock test: seeds owned anywhere count, because the supply leg exists
+	 * exactly to fetch the banked ones. Harvest-only groups never reach this — the caller
+	 * answers them before the regrowing exception does.
+	 */
+	private boolean wantsReplantClear(FarmPatch patch)
+	{
+		if (!com.dooglemaps.data.SpadeClearedCrops.isSpadeCleared(patch.getImplementation()))
+		{
+			return false;
+		}
+		// The same null-guard actionableByGroup carries: a grouper with no answer must not
+		// turn a grouping question into an NPE.
+		PlantingGroup group = groups.groupFor(patch);
+		if (group == null)
+		{
+			group = PlantingGroup.of(patch.getImplementation());
+		}
+		for (Seed seed : selection.getSelectedFor(group))
+		{
+			if (seedInventory.getOwnedPlantable(seed) >= seed.getSeedsPerPatch())
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** The patch types that share a plot at the classic locations, and so ripen as a group. */
@@ -1228,7 +1275,15 @@ public class RunPlanner
 		return named.toString();
 	}
 
-	/** What the run thinks you picked, for the diagnostic. */
+	/**
+	 * What the run thinks you picked, for the diagnostic.
+	 *
+	 * <p>All four sources, not just the two on the player. "Still to collect" is decided off
+	 * the bank and vault counts, so a line without them was half an answer for exactly the
+	 * report it exists to settle — an empty collect list with seeds nowhere in the pack reads
+	 * as a bug, and whether it is one turns entirely on what the store believes the bank
+	 * holds. Reported from play, from this very line.
+	 */
 	private String describeSelectedForThisRun()
 	{
 		List<String> named = new ArrayList<>();
@@ -1236,9 +1291,53 @@ public class RunPlanner
 		{
 			named.add(seed.getName() + " x" + seed.getSeedsPerPatch()
 				+ " (inv " + seedInventory.getCount(seed, SeedSource.INVENTORY)
-				+ ", box " + seedInventory.getCount(seed, SeedSource.SEED_BOX) + ")");
+				+ ", box " + seedInventory.getCount(seed, SeedSource.SEED_BOX)
+				+ ", bank " + seedInventory.getCount(seed, SeedSource.BANK)
+				+ ", vault " + seedInventory.getCount(seed, SeedSource.SEED_VAULT) + ")");
 		}
 		return named.isEmpty() ? "none" : named.toString();
+	}
+
+	/**
+	 * How stale each seed source's counts are, for the same diagnostic.
+	 *
+	 * <p>A count of zero means two very different things from a source read a minute ago and
+	 * one never read at all, and the decision above cannot tell them apart — but the reader
+	 * of the log can, if the line says which.
+	 */
+	private String describeSeedSourceAges()
+	{
+		List<String> ages = new ArrayList<>();
+		long now = java.time.Instant.now().getEpochSecond();
+		for (SeedSource source : SeedSource.values())
+		{
+			long seen = seedInventory.getLastSeen(source);
+			ages.add(source.name().toLowerCase() + " "
+				+ (seen <= 0 ? "never read" : describeAge(now - seen)));
+		}
+		// The reconcile's pulse rides along because "inventory never read" appeared in play
+		// with events demonstrably flowing — which of its stages is failing is the question,
+		// and the counters answer it. See SeedInventoryStore.relearnInventoryFromClient.
+		return String.join(", ", ages)
+			+ "; inventory reconcile: " + seedInventory.describeReconcile();
+	}
+
+	/** A duration in the units a log reader thinks in: "40s ago", "12m ago", "3h ago", "2d ago". */
+	private static String describeAge(long seconds)
+	{
+		if (seconds < 60)
+		{
+			return seconds + "s ago";
+		}
+		if (seconds < 3600)
+		{
+			return (seconds / 60) + "m ago";
+		}
+		if (seconds < 86400)
+		{
+			return (seconds / 3600) + "h ago";
+		}
+		return (seconds / 86400) + "d ago";
 	}
 
 	/**
@@ -1929,6 +2028,18 @@ public class RunPlanner
 	 */
 	public void retarget(@Nullable WorldPoint start)
 	{
+		// No start-less requests from inside an instance. A request with no explicit start
+		// defaults, upstream, to the RAW player position — which in an instance is the
+		// virtual-area coordinates, garbage to the router — so the route recomputes from
+		// nowhere and lands on an arbitrary stop. Reported from play: teleporting to the POH
+		// flipped a Weiss run's destination to the Ardougne bushes the moment the house
+		// loaded. While instanced, only a request that SAYS where it starts is posted — the
+		// front-door reroute is exactly that — and leaving the instance retargets normally.
+		if (start == null && isInstanced(playerLocation.getRegionId()))
+		{
+			return;
+		}
+
 		if (isAtBankLeg())
 		{
 			// Recorded as it is posted, so the leg can tell later whether the answer has moved on
@@ -1980,12 +2091,30 @@ public class RunPlanner
 			}
 		}
 
+		// Each stop contributes the ring of tiles around its patch, not the patch's own tile.
+		// Shortest Path only finishes a search by stepping ONTO a target, and a bush or tree
+		// patch tile is blocked — so the old single-tile target made every route end in its
+		// no-progress cutoff instead of an arrival, and the line spent most of a journey being
+		// recalculated rather than drawn. See PatchLocationStore.getRouteTargets.
 		List<WorldPoint> targets = new ArrayList<>();
 		for (RunStop stop : remaining)
 		{
-			targets.add(stop.getLocation(locations));
+			targets.addAll(stop.getRouteTargets(locations));
 		}
 		router.setTargets(targets, false, start);
+	}
+
+	/**
+	 * Whether this map region is an instance's virtual area rather than the overworld.
+	 *
+	 * <p>Instances live at x ≥ 6400, and a region id carries its x in the top byte in units
+	 * of 64 tiles — so the boundary is region x-part 100. Unknown (-1) is <b>not</b> treated
+	 * as instanced: before the first tick of a session there is no evidence either way, and
+	 * the router's own defaulting has always covered that case.
+	 */
+	private static boolean isInstanced(int regionId)
+	{
+		return regionId >= 0 && (regionId >>> 8) >= 100;
 	}
 
 	/** Everything the run has left, for the panel's checklist. */
@@ -2015,6 +2144,17 @@ public class RunPlanner
 	public Collection<String> getCurrentTransports()
 	{
 		return router.getCurrentTransports();
+	}
+
+	/**
+	 * Whether the router's own plan goes through the player's house — any hop departing from
+	 * inside the POH area, by the origins it reports. The honest version of every furniture
+	 * question the guide used to answer from hop wording; see
+	 * {@link ShortestPathIntegration#isRouteDepartsPoh}.
+	 */
+	public boolean routeUsesHouseFurniture()
+	{
+		return router.isRouteDepartsPoh();
 	}
 
 	/** The object the route's first hop goes through — "Spirit tree" — or null. */

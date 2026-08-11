@@ -352,6 +352,61 @@ public class BankLayoutTest
 			java.util.Arrays.stream(layout).anyMatch(id -> id == displaced));
 	}
 
+	/**
+	 * A full region spills into the map's empty slots rather than losing items.
+	 *
+	 * <p>Bank Tags' items-not-in-layout-at-bottom append can silently stop short, so an item
+	 * with no slot may never draw — which is how a full gear region swallowed the seed box.
+	 * Reported from play. The thirteenth gear item must land in an unclaimed slot instead.
+	 */
+	@Test
+	public void aFullRegionSpillsIntoEmptySlotsInsteadOfDroppingItems()
+	{
+		List<LoadoutItem> run = new ArrayList<>();
+		// The default gear region is 12 slots; the thirteenth used to vanish.
+		for (int i = 0; i < 13; i++)
+		{
+			run.add(item(9000 + i, LoadoutItem.Category.GEAR));
+		}
+
+		int[] layout = BankLayout.build(run, BankLayout.DEFAULT_MAP);
+
+		Set<Integer> placed = new LinkedHashSet<>();
+		for (int slot : layout)
+		{
+			if (slot != -1)
+			{
+				placed.add(slot);
+			}
+		}
+		assertEquals("every gear item has a slot somewhere", 13, placed.size());
+		assertEquals("the overflow lands in the first unclaimed slot",
+			9012, layout[at('D', 1)]);
+	}
+
+	/** A grid with genuinely no room left still keeps everything it can. */
+	@Test
+	public void aCompletelyFullGridPlacesExactlySixtyFourItems()
+	{
+		List<LoadoutItem> run = new ArrayList<>();
+		for (int i = 0; i < 70; i++)
+		{
+			run.add(item(9000 + i, LoadoutItem.Category.GEAR));
+		}
+
+		int[] layout = BankLayout.build(run, BankLayout.DEFAULT_MAP);
+
+		int filled = 0;
+		for (int slot : layout)
+		{
+			if (slot != -1)
+			{
+				filled++;
+			}
+		}
+		assertEquals(BankLayout.ROWS * BankLayout.COLUMNS, filled);
+	}
+
 	private static int at(char column, int row)
 	{
 		return (row - 1) * BankLayout.COLUMNS + (column - 'A');

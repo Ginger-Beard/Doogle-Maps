@@ -70,7 +70,9 @@ public class RunLoadout
 	};
 
 	/** Both forms of the seed box, closed and open. */
-	private static final int[] SEED_BOX = {ItemID.SEED_BOX, ItemID.SEEDBOX, ItemID.SEED_BOX_OPEN};
+	// Closed and open. Not ItemID.SEEDBOX, which is the Seed pack (22993) wearing the cache's
+	// internal name — with it here, owning a contract reward passed for owning a seed box.
+	private static final int[] SEED_BOX = {ItemID.SEED_BOX, ItemID.SEED_BOX_OPEN};
 
 	/**
 	 * The forestry basket first: it <i>is</i> a log basket (combined with the forestry kit),

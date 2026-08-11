@@ -43,10 +43,12 @@ import java.util.Set;
  * {@code row * 8 + column}, so the columns are A to H and there is no ninth. Rows past the eighth
  * are reachable only by scrolling, so the default uses all eight and no more.
  *
- * <p>It once stopped at seven, to keep the last row clear for overflow. That was unnecessary:
- * anything the map has no room for is placed by Bank Tags <i>after</i> the whole layout, under
- * {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM}, rather than in the first free slot — so reserving
- * a row bought nothing and cost eight slots of the only screen that matters.
+ * <p>It once stopped at seven, to keep the last row clear for overflow. That was unnecessary —
+ * but not for the reason first recorded here. Bank Tags' {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM}
+ * was believed to place anything the map had no room for after the layout; in practice its append
+ * walks the bank widget pool and stops at the first child it cannot use, so an overflowing item
+ * can fail to draw at all (the vanishing seed box). Overflow is now placed by {@link #build} into
+ * the map's own empty slots, which a layout is guaranteed to draw.
  *
  * <p>A map that does not parse is <b>ignored with a warning</b> rather than half-applied. A
  * half-read layout would put items in places nobody asked for, and the failure would look like a
@@ -213,11 +215,8 @@ public final class BankLayout
 	 * The layout array for a run, as Bank Tags wants it: {@code -1} for an empty slot.
 	 *
 	 * <p>Each group fills its own region left to right, top to bottom, in the order
-	 * {@code RunLoadout} produced it. Anything that does not fit its region is deliberately
-	 * <b>left out</b> rather than spilled somewhere else — Bank Tags puts unplaced items after the
-	 * layout when opened with {@code OPTION_ITEMS_NOT_IN_LAYOUT_AT_BOTTOM}, so an overflowing run
-	 * still shows everything. It just stops being a tidy grid, which is the honest outcome when you
-	 * own more than fits.
+	 * {@code RunLoadout} produced it. What a region cannot hold spills into the map's empty
+	 * slots — see the note at the spill below for why it is no longer left to Bank Tags.
 	 *
 	 * @param map a map as described on this class; falls back to {@link #DEFAULT_MAP} if unusable
 	 */
@@ -246,7 +245,21 @@ public final class BankLayout
 		int[] layout = new int[ROWS * COLUMNS];
 		Arrays.fill(layout, NO_ITEM);
 
+		// What each region had no room for, in group order. These used to be left to Bank
+		// Tags' items-not-in-layout-at-bottom behaviour, on the theory that overflow "still
+		// shows everything" — but its append walks the bank widget pool from the layout's
+		// last item and simply STOPS at the first child it cannot use, so an overflowing
+		// item can fail to draw at all. Reported from play: a full gear region swallowed the
+		// seed box, and freeing one slot brought it back.
+		List<Integer> overflow = new ArrayList<>();
+
 		Map<Character, List<Integer>> regions = regionsIn(map);
+		Set<Integer> claimed = new LinkedHashSet<>();
+		for (List<Integer> slots : regions.values())
+		{
+			claimed.addAll(slots);
+		}
+
 		for (Map.Entry<Character, Set<LoadoutItem.Category>> group : GROUPS.entrySet())
 		{
 			List<Integer> slots = regions.get(group.getKey());
@@ -256,9 +269,33 @@ public final class BankLayout
 			}
 
 			List<Integer> ids = itemsIn(items, group.getValue(), banked);
-			for (int i = 0; i < ids.size() && i < slots.size(); i++)
+			for (int i = 0; i < ids.size(); i++)
 			{
-				layout[slots.get(i)] = ids.get(i);
+				if (i < slots.size())
+				{
+					layout[slots.get(i)] = ids.get(i);
+				}
+				else
+				{
+					overflow.add(ids.get(i));
+				}
+			}
+		}
+
+		// Overflow goes into the map's unclaimed slots first — the dots — so it cannot be
+		// mistaken for part of another letter's region, and into any still-empty region slot
+		// after that. That stops the grid being tidy, which is the honest outcome when you
+		// own more than fits; a letter's worth of items quietly missing is not. Only when the
+		// whole grid is full does anything fall through to Bank Tags' own bottom-append.
+		int next = 0;
+		for (boolean unclaimedOnly : new boolean[]{true, false})
+		{
+			for (int slot = 0; slot < layout.length && next < overflow.size(); slot++)
+			{
+				if (layout[slot] == NO_ITEM && (claimed.contains(slot) != unclaimedOnly))
+				{
+					layout[slot] = overflow.get(next++);
+				}
 			}
 		}
 		return layout;

@@ -760,11 +760,32 @@ public class GuideOverlay extends Overlay
 		List<TileObject> furniture = house.matchingFurniture(name ->
 			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)));
 
+		// The destination gets a say before the way out does. The route's hops are Shortest
+		// Path's plan, and its model has no nexus — so a destination the player's own
+		// furniture genuinely reaches can be absent from every hop, and judging by hops alone
+		// contradicted the row matcher: "Troll Stronghold" lit inside the open nexus while
+		// the nexus itself stayed dark and the exit portal lit as the answer. Reported from
+		// play, with Stony basalt sitting in the nexus. Furniture that reaches where this leg
+		// is going is the instruction, whatever the router planned around not knowing it.
+		if (furniture.isEmpty() && house.isInside() && hint.getDestination() != null)
+		{
+			String destination = hint.getDestination();
+			furniture = house.matchingFurniture(name ->
+				HouseTeleports.furnitureServesHop(name, destination));
+		}
+
 		// justEntered guards the arrival tick, where this overlay's live isInside() is a tick
 		// ahead of the tracker's route — the stale hops matched no furniture and the exit
 		// portal flashed lit for the ~600ms until the tracker retargeted. Reported from play.
+		//
+		// And never while the router's own origins say the plan goes THROUGH this house. The
+		// exit portal is the answer when the route continues outside; a plan departing from
+		// inside the POH area is house furniture by the router's word, and pointing at the
+		// way out because no NAME matched walked the player past the garden ring their own
+		// route had picked. Reported from play, Aldarin. When the furniture cannot be named,
+		// nothing is lit and the unmatched hops are logged below instead.
 		if (furniture.isEmpty() && house.isInside() && !house.justEntered()
-			&& !tracker.routeAnswerPending())
+			&& !tracker.routeAnswerPending() && !tracker.routeDepartsTheHouse())
 		{
 			// Nothing in the house serves the route, and you are standing in the house — so the
 			// route continues outside it, and the way out is the exit portal. The common case is

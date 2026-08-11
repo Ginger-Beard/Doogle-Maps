@@ -49,6 +49,30 @@ test {
 	systemProperty 'dooglemaps.renderOut', System.getProperty('dooglemaps.renderOut', 'build/panel.png')
 }
 
+// REMOVE BEFORE PUBLISHING — this whole block; see docs/TODO.md "Before publishing to the Hub".
+//
+// The sibling resource-monitor plugin rides along in the same dev client, so the two can be
+// exercised together before either is published. Its main sources join THIS project's test
+// compile — the sourceset the launcher runs from — whenever the repo is checked out beside
+// this one; the launcher then loads its plugin class by name if it is present, and simply
+// starts a single-plugin client when it is not. A relative path, deliberately: run-client.sh
+// executes the Windows-side Gradle from the C: checkout, and ../resource-monitor is the same
+// place from both sides. Publishing is untouched — the Plugin Hub builds main sources only.
+def resourceMonitorSources = file('../resource-monitor/src/main/java') // REMOVE BEFORE PUBLISHING
+if (resourceMonitorSources.exists()) { // REMOVE BEFORE PUBLISHING
+	sourceSets.test.java.srcDir resourceMonitorSources // REMOVE BEFORE PUBLISHING
+	def resourceMonitorResources = file('../resource-monitor/src/main/resources') // REMOVE BEFORE PUBLISHING
+	if (resourceMonitorResources.exists()) { // REMOVE BEFORE PUBLISHING
+		sourceSets.test.resources.srcDir resourceMonitorResources // REMOVE BEFORE PUBLISHING
+	} // REMOVE BEFORE PUBLISHING
+	dependencies { // REMOVE BEFORE PUBLISHING
+		// Lombok for the guest sources (@Slf4j and friends); this project's own tests
+		// never needed it, so the test sourceset had no processor until now.
+		testCompileOnly 'org.projectlombok:lombok:1.18.30' // REMOVE BEFORE PUBLISHING
+		testAnnotationProcessor 'org.projectlombok:lombok:1.18.30' // REMOVE BEFORE PUBLISHING
+	} // REMOVE BEFORE PUBLISHING
+} // REMOVE BEFORE PUBLISHING
+
 task runClient(type: JavaExec) {
 	group = 'application'
 	description = 'Run RuneLite with the plugin'

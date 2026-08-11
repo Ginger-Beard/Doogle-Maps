@@ -65,6 +65,36 @@ public class ShortestPathIntegration
 	private static final String KEY_DISPLAY_INFO = "displayInfo";
 	private static final String KEY_OBJECT_INFO = "objectInfo";
 	private static final String KEY_DESTINATION = "destination";
+	private static final String KEY_ORIGIN = "origin";
+
+	/**
+	 * Shortest Path's own player-owned-house area, mirrored exactly.
+	 *
+	 * <p>Its model makes the POH a real place on the map: every transport into a house lands
+	 * at one canonical tile in this area, and every house-furniture transport — the imagined
+	 * portals, the jewellery box, the mounted items, the garden's spirit tree and fairy ring
+	 * — departs from inside it ({@code ShortestPathPlugin.isInsidePoh}, bounds copied from
+	 * its source; the x minimum excludes the Daddy's Home area, their note). A hop whose
+	 * origin is in here is therefore, by the router's own word, a click on house furniture.
+	 */
+	static boolean isPohArea(@Nullable WorldPoint point)
+	{
+		return point != null
+			&& point.getX() >= 1856 && point.getX() <= 2047
+			&& point.getY() >= 5696 && point.getY() <= 5767;
+	}
+
+	/**
+	 * Whether any hop of the current route departs from inside the house.
+	 *
+	 * <p>The message's {@code origin} list, previously left unread, is the honest version of
+	 * every "does the route go through this house" question the guide used to answer by
+	 * matching hop wording against furniture names: the router publishes where each hop
+	 * happens, and a hop anchored in the POH area is house furniture whatever it is called.
+	 * See {@link #isPohArea}. False while no route of ours has been answered.
+	 */
+	@Getter
+	private volatile boolean routeDepartsPoh;
 
 	private static final String CONFIG_POST_TRANSPORTS = "postTransports";
 	private static final String CONFIG_INCLUDE_BANK_PATH = "includeBankPath";
@@ -84,6 +114,18 @@ public class ShortestPathIntegration
 	public void setHousePortalKnowledge(java.util.function.Supplier<Boolean> housePortals)
 	{
 		this.housePortals = housePortals;
+	}
+
+	/**
+	 * Whether the player is currently inside an instance, or false while unknown. Handed in
+	 * as a supplier the same way the house's portal answer is; see the wiring in the plugin.
+	 */
+	private java.util.function.Supplier<Boolean> playerInInstance = () -> false;
+
+	/** Told how to ask whether the player is instanced; see {@link #onPluginMessage}. */
+	public void setInstanceKnowledge(java.util.function.Supplier<Boolean> playerInInstance)
+	{
+		this.playerInInstance = playerInInstance;
 	}
 
 	/**
@@ -227,6 +269,7 @@ public class ShortestPathIntegration
 		currentTransports = new ArrayList<>();
 		currentDestinations = new HashSet<>();
 		firstTransportObject = null;
+		routeDepartsPoh = false;
 		// ...and the gap itself is now a stated fact, because empty-while-waiting and
 		// empty-as-the-answer mean different things: "no transports" as an *answer* is what
 		// sends the overlay to the exit portal, and jumping there during the wait lit the
@@ -278,6 +321,7 @@ public class ShortestPathIntegration
 		// reading a dead route's landing points indefinitely. The stalest of the reported
 		// "area mismatch" generators.
 		currentDestinations = new HashSet<>();
+		routeDepartsPoh = false;
 		awaitingRoute = false;
 		routeRequested = false;
 		routeGeneration++;
@@ -358,9 +402,34 @@ public class ShortestPathIntegration
 			return;
 		}
 
+		// And not the router's own recomputes while the player is instanced. Shortest Path
+		// re-paths from the player's instance-template position every tick it judges the
+		// player "off the path" — from coordinates that mean nothing — and each recompute
+		// posts a transports message. Reading those replaced a real route's hops and landing
+		// points with an arbitrary stop's: teleporting to the POH flipped a Weiss run's
+		// destination to the Ardougne bushes as the house loaded, and the furniture
+		// highlights followed the garbage route. Reported from play. An answer we are
+		// actually waiting on — the front-door reroute, which posts an explicit start — is
+		// still read; it is the unsolicited ones that carry nothing worth knowing.
+		if (!awaitingRoute && Boolean.TRUE.equals(playerInInstance.get()))
+		{
+			return;
+		}
+
 		List<WorldPoint> landings = readPoints(event, KEY_DESTINATION);
 		currentTransports = readTransports(event);
 		firstTransportObject = readFirstObject(event);
+
+		boolean departsPoh = false;
+		for (WorldPoint origin : readPoints(event, KEY_ORIGIN))
+		{
+			if (isPohArea(origin))
+			{
+				departsPoh = true;
+				break;
+			}
+		}
+		routeDepartsPoh = departsPoh;
 
 		// Insertion-ordered, so iterating reaches the path's last landing last — the closest
 		// thing the message has to "where this route ends", which the destination naming
