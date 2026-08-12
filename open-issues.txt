@@ -1150,3 +1150,25 @@ SP is trying to have me use the ardougne cloak 3 to go to ardougne farm right no
 >   already the thing that would feed it.
 > Tests: DailyTeleportsTest, TeleportChargeCaptureTest, SpentTeleportIsNotTheHintTest,
 > RouteItemTest.aTeleportTheGameHasRefusedTodayIsSkipped.
+
+"No seed picked for compost bin" - when any of the items are selected
+> RESOLVED. The run panel's warning line walks every ticked type and asks the SEED selection
+> what will go in it (RunPanel.nothingToPlantIn -> SeedSelectionStore). A compost bin has no
+> seeds at all - Seed.forPatchType(COMPOST) is empty by design, which is also why the bin tab
+> shows a fill selector instead of a seed list - so the answer was always "none" and the line
+> fired however full the tab above it was. The fill lives in CompostRunStore, which nothing
+> here was asking.
+> - Bins are now skipped in that loop and asked separately, in their own words: "No fill
+>   picked for the compost bins." It is a second sentence rather than a rewrite, so a run with
+>   both an unpicked seed and an unpicked fill says both.
+> - NOT simply silenced, deliberately: a bin the run could fill with nothing chosen to fill it
+>   with is worth saying, because an empty bin still routes (owner's call) and the guide then
+>   has nothing to offer there.
+> - But gated on there actually BEING a fillable bin. Emptying finished compost is a complete
+>   bin run on its own - buckets from the leprechaun, no produce involved - so someone whose
+>   bins are all sitting full would otherwise be permanently nagged about a fill that trip
+>   never wanted, which is how a warning line stops being read.
+> - Both sizes count under the one tick, the same fold RunTypeStore.getSelected makes: the
+>   checkboxes only ever carry the normal bin's type, so a fillable big bin alone still earns
+>   the line.
+> Tests: CompostBinWarningTest (all four cases).

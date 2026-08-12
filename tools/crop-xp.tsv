@@ -79,3 +79,16 @@ hardwood	Ironwood	80	145	20380	20525	plant,check,total
 hardwood	Rosewood	92	252	23100	23352	plant,check,total
 cactus	Cactus	55	66.5	374	25	plant,check,harvest
 cactus	Potato cactus	64	68	230	68	plant,check,harvest
+seaweed	Seaweed spore	23	19	21		plant,harvest
+mushroom	Mushroom spore	53	61.5	57.7		plant,harvest
+belladonna	Belladonna seed	63	91	512		plant,harvest
+calquat	Calquat tree seed	72	129.5	12096	48.5	plant,check,harvest
+celastrus	Celastrus seed	85	200	14130	23.5	plant,check,harvest
+coral	Elkhorn frag	28	20.5	24		plant,harvest
+coral	Pillar frag	52	52	60		plant,harvest
+coral	Umbral frag	77	136	159		plant,harvest
+grapes	Grape	36	31.5	625	40	plant,check,harvest
+crystal	Crystal acorn	74	126	13240		plant,check
+anima	Attas	76	100			plant
+anima	Iasor	76	100			plant
+anima	Kronos	76	100			plant

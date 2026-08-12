@@ -160,13 +160,18 @@ class RunPanel extends JPanel
 	/** Told what the guide is asking for, and how to wave it past. */
 	private final com.dooglemaps.guide.GuideTracker guideTracker;
 
+	/** The bin run's fill choice, which is a compost bin's answer to "what will you plant". */
+	private final com.dooglemaps.state.CompostRunStore compostRun;
+
 	RunPanel(PanelLayoutStore layout, PlantingGroups groups,
 		ProtectionSelectionStore protection, BankContents bank,
 		CarriedItems carried, RunPlanner planner,
 		SeedSelectionStore selection, SeedInventoryStore seeds,
 		RunTypeStore runTypes, FarmingBonusStore bonuses, CompostSelectionStore compost,
-		com.dooglemaps.DoogleMapsConfig config, com.dooglemaps.guide.GuideTracker guideTracker)
+		com.dooglemaps.DoogleMapsConfig config, com.dooglemaps.guide.GuideTracker guideTracker,
+		com.dooglemaps.state.CompostRunStore compostRun)
 	{
+		this.compostRun = compostRun;
 		this.guideTracker = guideTracker;
 		this.config = config;
 		this.layout = layout;
@@ -806,6 +811,14 @@ class RunPanel extends JPanel
 		List<String> unpicked = new ArrayList<>();
 		for (PatchImplementation type : types)
 		{
+			// A compost bin has no seed to pick, and asking the seed selection about one gave
+			// the answer "none" however full the tab was — reported from play as "No seed
+			// picked for compost bin" with a fill plainly selected. Its equivalent lives in
+			// CompostRunStore and is asked for separately below.
+			if (com.dooglemaps.data.CompostBin.forType(type) != null)
+			{
+				continue;
+			}
 			// A type in the run only for its harvest needs no seed, so saying one is missing is
 			// telling the player to fix something that is not wrong.
 			if (onlyHarvestedFor(type))
@@ -818,11 +831,52 @@ class RunPanel extends JPanel
 			}
 		}
 
-		noSeeds.setVisible(!unpicked.isEmpty());
+		List<String> sentences = new ArrayList<>();
 		if (!unpicked.isEmpty())
 		{
-			noSeeds.setText("No seed picked for: " + String.join(", ", unpicked) + ".");
+			sentences.add("No seed picked for: " + String.join(", ", unpicked) + ".");
 		}
+		if (binsWantAFill(types))
+		{
+			sentences.add("No fill picked for the compost bins.");
+		}
+
+		noSeeds.setVisible(!sentences.isEmpty());
+		if (!sentences.isEmpty())
+		{
+			noSeeds.setText(String.join(" ", sentences));
+		}
+	}
+
+	/**
+	 * Whether the run will reach a bin it could fill and has nothing to fill it with.
+	 *
+	 * <p>Gated on there actually being a fillable bin, which the seed half of this line has no
+	 * equivalent of and does not need. Emptying finished compost is a complete bin run on its
+	 * own — the buckets come from the leprechaun and no produce is involved — so someone whose
+	 * bins are all sitting full would otherwise be told to fix something they never wanted.
+	 * The warning is worth making when it is true, though: with no fill picked the run still
+	 * routes to an empty bin (the owner's call) and the guide then has nothing to say there.
+	 */
+	private boolean binsWantAFill(Set<PatchImplementation> types)
+	{
+		if (compostRun.hasFill())
+		{
+			return false;
+		}
+
+		// Both sizes, because the tick covers both — the checkboxes only ever carry the normal
+		// bin's type. See RunTypeStore.getSelected, which widens the same way.
+		Set<PatchImplementation> bins = EnumSet.noneOf(PatchImplementation.class);
+		for (PatchImplementation type : types)
+		{
+			if (com.dooglemaps.data.CompostBin.forType(type) != null)
+			{
+				bins.add(PatchImplementation.COMPOST);
+				bins.add(PatchImplementation.BIG_COMPOST);
+			}
+		}
+		return !bins.isEmpty() && planner.binWork(bins).fillableBins > 0;
 	}
 
 	/**

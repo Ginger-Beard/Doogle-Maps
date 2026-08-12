@@ -63,6 +63,9 @@ class PatchTypePanel extends JPanel
 	private final FarmingBonusStore bonuses;
 	private final SeedSelectorPanel seedSelector;
 
+	/** The compost tab's run controls, or null on every other tab. See CompostBinPanel. */
+	private final CompostBinPanel binPanel;
+
 	/** A step lighter than ColorScheme.DARK_GRAY_COLOR, which the sidebar already uses. */
 
 	private final JPanel rowContainer = new JPanel();
@@ -83,7 +86,8 @@ class PatchTypePanel extends JPanel
 		com.dooglemaps.state.ProtectionSelectionStore protection,
 		com.dooglemaps.bank.BankContents bank, com.dooglemaps.guide.CarriedItems carried,
 		com.dooglemaps.data.ItemNames itemNames,
-		com.dooglemaps.state.ContractState contracts)
+		com.dooglemaps.state.ContractState contracts,
+		com.dooglemaps.state.CompostRunStore compostRun)
 	{
 		// Nothing goes in a compost bin but buckets and weeds, so a "seeds you own" list under
 		// one was simply wrong. Derived from the seed table rather than named here.
@@ -98,6 +102,12 @@ class PatchTypePanel extends JPanel
 		this.seedSelector = PatchTabs.isPlantable(type)
 			? new SeedSelectorPanel(layout, group, resolver, seeds, selection, itemManager, compost,
 				protection, bank, carried, itemNames, contracts)
+			: null;
+		// The one tab with no seeds gets the bin run's controls instead - what fills the
+		// bins, and whether the ash upgrade is on. Same footer slot, same reasoning: the
+		// choice belongs on the tab that shows the thing it configures.
+		this.binPanel = type == PatchImplementation.COMPOST
+			? new CompostBinPanel(compostRun, bank, carried, itemManager, itemNames)
 			: null;
 		this.members = PatchTabs.membersOf(type);
 		this.stateStore = stateStore;
@@ -150,6 +160,10 @@ class PatchTypePanel extends JPanel
 		if (seedSelector != null)
 		{
 			footer.add(seedSelector, BorderLayout.CENTER);
+		}
+		if (binPanel != null)
+		{
+			footer.add(binPanel, BorderLayout.SOUTH);
 		}
 
 		add(body, BorderLayout.NORTH);
@@ -336,6 +350,11 @@ class PatchTypePanel extends JPanel
 	 */
 	void refresh()
 	{
+		if (binPanel != null)
+		{
+			binPanel.refresh();
+		}
+
 		List<FarmPatch> patches = availablePatches();
 
 		List<PatchProjection> projections = new ArrayList<>(patches.size());

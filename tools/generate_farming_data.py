@@ -1343,6 +1343,17 @@ def emit_crop_yield(rows):
 # Wiki seed names that do not fall out of the enum name automatically.
 XP_NAME_OVERRIDES = {
     "Acorn": "OAK",
+    # The spores, frags and named tree seeds: the guessing rule below works off the seed's
+    # own name, and these are the ones whose Seed constant is named for the CROP instead.
+    "Seaweed spore": "SEAWEED",
+    "Mushroom spore": "MUSHROOM",
+    "Belladonna seed": "BELLADONNA",
+    "Calquat tree seed": "CALQUAT",
+    "Celastrus seed": "CELASTRUS",
+    "Elkhorn frag": "ELKHORN_CORAL",
+    "Pillar frag": "PILLAR_CORAL",
+    "Umbral frag": "UMBRAL_CORAL",
+    "Crystal acorn": "CRYSTAL_TREE",
     "Redberry": "REDBERRIES",
     "Cadavaberry": "CADAVABERRIES",
     "Dwellberry": "DWELLBERRIES",

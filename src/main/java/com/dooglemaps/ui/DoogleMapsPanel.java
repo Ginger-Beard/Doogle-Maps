@@ -97,6 +97,9 @@ public class DoogleMapsPanel extends PluginPanel
 	private final com.dooglemaps.guide.CarriedItems carriedItems;
 	private final com.dooglemaps.data.ItemNames itemNames;
 	private final com.dooglemaps.state.ContractState contracts;
+
+	/** The bin run's fill and ash choices, for the compost tab's controls. */
+	private final com.dooglemaps.state.CompostRunStore compostRun;
 	private final RunPanel runPanel;
 	private final HarvestStatsPanel statsPanel;
 
@@ -150,10 +153,13 @@ public class DoogleMapsPanel extends PluginPanel
 		com.dooglemaps.bank.BankContents bankContents,
 		com.dooglemaps.guide.CarriedItems carriedItems, com.dooglemaps.data.ItemNames itemNames,
 		com.dooglemaps.state.ContractState contracts,
-		com.dooglemaps.guide.GuideTracker guideTracker)
+		com.dooglemaps.guide.GuideTracker guideTracker,
+		com.dooglemaps.state.CompostRunStore compostRun)
 	{
 		// Wrapped, so a long list of patches scrolls rather than being clipped.
 		super(true);
+
+		this.compostRun = compostRun;
 
 		this.stateStore = stateStore;
 		this.availability = availability;
@@ -173,7 +179,8 @@ public class DoogleMapsPanel extends PluginPanel
 		this.itemNames = itemNames;
 		this.contracts = contracts;
 		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems,
-			runPlanner, selection, seeds, runTypes, bonuses, compost, config, guideTracker);
+			runPlanner, selection, seeds, runTypes, bonuses, compost, config, guideTracker,
+			compostRun);
 		this.statsPanel = new HarvestStatsPanel(harvestStats, harvestHistory, diseaseStats, seeds,
 			availability, compost, bonuses, itemPrices);
 
@@ -497,7 +504,7 @@ public class DoogleMapsPanel extends PluginPanel
 		PatchTypePanel panel = new PatchTypePanel(
 			layout, groups, group, stateStore, availability, growthTimer, itemManager, config,
 			resolver, seeds, selection, bonuses, compost, protection, bankContents, carriedItems,
-			itemNames, contracts);
+			itemNames, contracts, compostRun);
 		tabPanels.put(group.getKey(), panel);
 
 		MaterialTab tab = new MaterialTab(new ImageIcon(), tabGroup, panel);

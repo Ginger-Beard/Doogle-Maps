@@ -406,6 +406,16 @@ public class RunPlanner
 	 */
 	private boolean inTheRun(FarmPatch patch)
 	{
+		// Both bins answer to the one compost line, the same fold the tab strip and
+		// RunTypeStore.getSelected make - see PlantingGroups.addBinRun. Asked before groupFor
+		// because groupFor honestly reports the big bin's own type, and the honest answer's
+		// key is one no line ever stores.
+		if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) != null)
+		{
+			return runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+				PlantingGroup.of(PatchImplementation.COMPOST)));
+		}
+
 		PlantingGroup group = groups.groupFor(patch);
 		if (group == null)
 		{
@@ -839,6 +849,15 @@ public class RunPlanner
 			return true;
 		}
 
+		// Compost bins first, because every test below asks a crop question a bin cannot
+		// answer - isReady would promote a composting bin off its clock, and the generated
+		// data marks bins health-check-required, which would hand them to a branch about
+		// checking trees. See binActionable.
+		if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) != null)
+		{
+			return binActionable(projection);
+		}
+
 		// Harvest-only: something to pick counts and nothing else does. An empty bush patch is not a
 		// reason to travel when the player has said they are not replanting, and a laden one is
 		// precisely what they came for — so this narrows the trip rather than merely changing what
@@ -913,6 +932,138 @@ public class RunPlanner
 			default:
 				// Weeds mean an empty patch, whatever the crop state says.
 				return projection.isEmpty();
+		}
+	}
+
+	/**
+	 * Whether a compost bin wants a visit.
+	 *
+	 * <p>Empty or collectable, off the crop state the varbit machinery already decodes —
+	 * settled with the owner:
+	 *
+	 * <ul>
+	 *   <li><b>HARVESTABLE</b> - finished compost sitting in it. The emptying needs only
+	 *       buckets, and the leprechaun beside the bin stores a thousand.</li>
+	 *   <li><b>EMPTY or FILLING</b> - room for produce. Routed whether or not a fill has been
+	 *       chosen on the compost tab: the bin is beside patches the run is passing anyway,
+	 *       and someone with a pack full of pineapples should not need a selection to be shown
+	 *       the bin. With nothing chosen and nothing carried the guide simply stays quiet and
+	 *       the idle report completes the stop, like any patch whose seed was left behind.</li>
+	 *   <li><b>GROWING</b> - closed and composting. Worth the trip only once the clock says it
+	 *       must have finished ({@code isReady} reads the projection's done estimate); before
+	 *       that there is nothing at the bin but a lid.</li>
+	 * </ul>
+	 */
+	private boolean binActionable(PatchProjection projection)
+	{
+		switch (projection.getCropState())
+		{
+			case HARVESTABLE:
+			case EMPTY:
+			case FILLING:
+				return true;
+			case GROWING:
+				return projection.isReady();
+			default:
+				return false;
+		}
+	}
+
+	/**
+	 * What the run's compost bins add up to, for the loadout's rows.
+	 *
+	 * <p>One synchronized walk rather than several getters, for the same reason
+	 * {@code countActionableByGroup} is: the loadout reads from the Swing thread and every
+	 * public method here takes the planner's monitor, so the answer should be one lock trip.
+	 *
+	 * <p>The counts split by what the loadout needs to say. Ready bins want buckets (and say
+	 * how many are left in them, which the snapshot's stage carries); ready bins of
+	 * <b>supercompost</b> want ash, and only those, because ash upgrades nothing else - the
+	 * decode names the product even while a closed bin is still composting. Fillable bins want
+	 * the chosen produce, less whatever a part-filled bin already holds. A bin never seen
+	 * counts as an empty one, exactly as {@code isActionable} treats it as worth a look.
+	 */
+	public synchronized BinWork binWork(Set<PatchImplementation> types)
+	{
+		int readyBins = 0;
+		int readyBuckets = 0;
+		int ashNeeded = 0;
+		int fillableBins = 0;
+		int fillItems = 0;
+
+		for (PatchImplementation type : types)
+		{
+			com.dooglemaps.data.CompostBin bin = com.dooglemaps.data.CompostBin.forType(type);
+			if (bin == null)
+			{
+				continue;
+			}
+			for (FarmPatch patch : availability.getAvailablePatches(type))
+			{
+				if (!inTheRun(patch))
+				{
+					continue;
+				}
+				com.dooglemaps.state.PatchSnapshot snapshot = stateStore.get(patch);
+				PatchProjection projection = growthTimer.project(patch, snapshot);
+				if (projection == null)
+				{
+					fillableBins++;
+					fillItems += bin.getCapacity();
+					continue;
+				}
+
+				boolean ready = projection.getCropState() == CropState.HARVESTABLE
+					|| (projection.getCropState() == CropState.GROWING && projection.isReady());
+				if (ready)
+				{
+					readyBins++;
+					readyBuckets += projection.getCropState() == CropState.HARVESTABLE
+						? snapshot.getStage() + 1
+						: bin.getCapacity();
+					if (projection.getProduce() == Produce.SUPERCOMPOST
+						|| projection.getProduce() == Produce.BIG_SUPERCOMPOST)
+					{
+						ashNeeded += bin.ashNeeded();
+					}
+					continue;
+				}
+				if (projection.getCropState() == CropState.EMPTY)
+				{
+					fillableBins++;
+					fillItems += bin.getCapacity();
+				}
+				else if (projection.getCropState() == CropState.FILLING)
+				{
+					fillableBins++;
+					fillItems += Math.max(0, bin.getCapacity() - (snapshot.getStage() + 1));
+				}
+			}
+		}
+		return new BinWork(readyBins, readyBuckets, ashNeeded, fillableBins, fillItems);
+	}
+
+	/** The bin counts {@link #binWork} hands the loadout. */
+	public static final class BinWork
+	{
+		/** Bins with finished compost in them, or closed ones the clock says are done. */
+		public final int readyBins;
+		/** Compost left across the ready bins - the number of buckets emptying them takes. */
+		public final int readyBuckets;
+		/** Volcanic ash to upgrade every ready bin of supercompost, at each bin's own price. */
+		public final int ashNeeded;
+		/** Bins that are empty or part-filled, so the run could put produce in. */
+		public final int fillableBins;
+		/** Items those bins have room for, part-filled ones counted at their remainder. */
+		public final int fillItems;
+
+		BinWork(int readyBins, int readyBuckets, int ashNeeded, int fillableBins, int fillItems)
+		{
+			this.readyBins = readyBins;
+			this.readyBuckets = readyBuckets;
+			this.ashNeeded = ashNeeded;
+			this.fillableBins = fillableBins;
+			this.fillItems = fillItems;
 		}
 	}
 

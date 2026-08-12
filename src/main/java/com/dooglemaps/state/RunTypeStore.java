@@ -71,6 +71,16 @@ public class RunTypeStore extends ProfileJsonStore
 				types.add(type);
 			}
 		}
+
+		// The compost line is one tick for two implementations — the guild's big bin is "the
+		// compost bin over there" at a different size, the same fold the sidebar's tab makes.
+		// Widened here because this is where a tick becomes types: the planner iterates these
+		// to find patches, and without the big one the guild's bin would be unreachable by any
+		// tick at all. The reverse never happens — nothing stores a BIG_COMPOST key.
+		if (types.contains(PatchImplementation.COMPOST))
+		{
+			types.add(PatchImplementation.BIG_COMPOST);
+		}
 		return types;
 	}
 

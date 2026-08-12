@@ -100,6 +100,9 @@ public class GuideTracker
 	/** Which daily teleports the game has said are spent, so none is offered as the way there. */
 	private final com.dooglemaps.state.DailyTeleports dailyTeleports;
 
+	/** The bin run's fill and ash choices, for the compost-bin steps. */
+	private final com.dooglemaps.state.CompostRunStore compostRun;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -111,8 +114,10 @@ public class GuideTracker
 		net.runelite.client.chat.ChatMessageManager chat,
 		com.dooglemaps.bank.RouteItem routeItem, net.runelite.api.Client client,
 		DroppedProduce droppedProduce, com.dooglemaps.route.BankLocationStore bankLocations,
-		com.dooglemaps.state.DailyTeleports dailyTeleports)
+		com.dooglemaps.state.DailyTeleports dailyTeleports,
+		com.dooglemaps.state.CompostRunStore compostRun)
 	{
+		this.compostRun = compostRun;
 		this.dailyTeleports = dailyTeleports;
 		this.bankLocations = bankLocations;
 		this.droppedProduce = droppedProduce;
@@ -2277,6 +2282,18 @@ public class GuideTracker
 		if (projection == null)
 		{
 			return new ArrayList<>();
+		}
+
+		// A compost bin shares nothing with a patch but the varbit machinery - no seed, no
+		// group allocation, no protection - so it branches off before any of that is asked.
+		// Off the snapshot rather than the projection, for the two counts only the snapshot
+		// carries; see CompostBinPlan's class note.
+		com.dooglemaps.data.CompostBin bin =
+			com.dooglemaps.data.CompostBin.forType(patch.getImplementation());
+		if (bin != null)
+		{
+			return CompostBinPlan.forBin(bin, patch, patches.get(patch), compostRun, carried,
+				leprechaun);
 		}
 
 		PatchSnapshot snapshot = patches.get(patch);

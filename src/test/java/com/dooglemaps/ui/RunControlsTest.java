@@ -70,7 +70,8 @@ public class RunControlsTest
 			Mockito.mock(com.dooglemaps.state.FarmingBonusStore.class),
 			Mockito.mock(com.dooglemaps.state.CompostSelectionStore.class),
 			config,
-			tracker);
+			tracker,
+			Mockito.mock(com.dooglemaps.state.CompostRunStore.class));
 	}
 
 	/** Before a run there is one decision, so the button takes the whole row. */

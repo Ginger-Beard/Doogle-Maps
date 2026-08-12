@@ -71,6 +71,12 @@ public class RunLoadoutTest
 
 	/** Stubbed per test where a farming contract is in play. */
 	private com.dooglemaps.state.ContractState contracts;
+
+	/** Stubbed per test where the bin run's fill or ash choice matters. */
+	private com.dooglemaps.state.CompostRunStore compostRun;
+
+	/** The planner's own run-options mock, so a test can tick the compost line for routing. */
+	private com.dooglemaps.state.RunTypeStore plannerRunOptions;
 	private SeedInventoryStore seeds;
 	private com.dooglemaps.DoogleMapsConfig config;
 
@@ -123,7 +129,7 @@ public class RunLoadoutTest
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
-			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			plannerRunOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
 			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 
 		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
@@ -170,7 +176,7 @@ public class RunLoadoutTest
 
 		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
 			toolNeeds, leprechaun, protection, itemNames, config, tickingClient(), runTypes,
-			contracts);
+			contracts, compostRun = Mockito.mock(com.dooglemaps.state.CompostRunStore.class));
 	}
 
 	/**
@@ -612,6 +618,182 @@ public class RunLoadoutTest
 		assertNotNull("a fresh sapling has to be watered before it grows", can);
 		assertEquals(LoadoutItem.Need.WITHDRAW, can.getNeed());
 		assertEquals("a unit thing still to fetch counts as one", 1, can.getWithdrawCount());
+	}
+
+	/** A bin at a chosen varbit, ticked into the run so the planner's binWork can see it. */
+	private void binAt(int varbitValue)
+	{
+		FarmPatch bin = null;
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.COMPOST))
+		{
+			bin = patch;
+			break;
+		}
+		assertNotNull("no compost bin in the generated world data", bin);
+		ProduceState decoded = bin.getImplementation().forVarbitValue(varbitValue);
+		assertNotNull("varbit " + varbitValue + " decodes to nothing for a bin", decoded);
+		patches.recordVarbit(bin, varbitValue, decoded);
+		availability.setAvailable(bin, true);
+
+		when(plannerRunOptions.isSelected(
+			com.dooglemaps.data.RunOption.full(
+				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
+	}
+
+	private static final Set<PatchImplementation> BINS = EnumSet.of(PatchImplementation.COMPOST);
+
+	/**
+	 * An empty bin with a fill chosen banks the fill, counted un-noted and by capacity.
+	 *
+	 * <p>The quantity doubles as the pack-space warning: fifteen un-noted items is most of an
+	 * inventory, and the row is where that gets said before the trip rather than at the bin.
+	 */
+	@Test
+	public void anEmptyBinBanksItsFill()
+	{
+		binAt(0);
+		when(compostRun.getFillItem()).thenReturn(ItemID.PINEAPPLE);
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 40);
+
+		LoadoutItem fill = itemNamed(BINS, "Pineapple");
+		assertNotNull("the fill is what the bin trip is for", fill);
+		assertEquals(LoadoutItem.Need.WITHDRAW, fill.getNeed());
+		assertEquals("a normal bin takes fifteen", 15, fill.getQuantity());
+		assertEquals(LoadoutItem.Category.COMPOST, fill.getCategory());
+	}
+
+	/** With no fill chosen there is no fill row - and no guessing at one. */
+	@Test
+	public void noFillChosenMeansNoFillRow()
+	{
+		binAt(0);
+		when(compostRun.getFillItem())
+			.thenReturn(com.dooglemaps.state.CompostRunStore.NO_FILL);
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 40);
+
+		assertNull(itemNamed(BINS, "Pineapple"));
+	}
+
+	/**
+	 * A ready bin of supercompost banks the ash when the upgrade is ticked - 25, the bin's
+	 * whole price, not the two-per-bucket one.
+	 */
+	@Test
+	public void aReadyBinOfSupercompostBanksTheAshWhenTicked()
+	{
+		binAt(62);
+		when(compostRun.isAshing()).thenReturn(true);
+		bankHolds(com.dooglemaps.data.CompostBin.VOLCANIC_ASH, 100);
+
+		LoadoutItem ash = itemNamed(BINS, "Volcanic ash");
+		assertNotNull("the upgrade was asked for", ash);
+		assertEquals("the bin price, while everything is still in it", 25, ash.getQuantity());
+		assertEquals(LoadoutItem.Need.WITHDRAW, ash.getNeed());
+	}
+
+	/** Unticked, the ash stays out of the list however much of it the bank holds. */
+	@Test
+	public void ashStaysOffTheListWhenNotTicked()
+	{
+		binAt(62);
+		when(compostRun.isAshing()).thenReturn(false);
+		bankHolds(com.dooglemaps.data.CompostBin.VOLCANIC_ASH, 100);
+
+		assertNull(itemNamed(BINS, "Volcanic ash"));
+	}
+
+	/** A ready bin's buckets come from the leprechaun beside it, not from a bank. */
+	@Test
+	public void bucketsForAReadyBinAreCollectedAtTheLeprechaun()
+	{
+		binAt(62);
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+
+		LoadoutItem buckets = itemNamed(BINS, "Empty bucket");
+		assertNotNull("fifteen compost need fifteen buckets", buckets);
+		assertEquals(LoadoutItem.Need.AT_LEPRECHAUN, buckets.getNeed());
+		assertEquals("one per compost in the bin", 15, buckets.getQuantity());
+	}
+
+	/** A bottomless compost bucket replaces the fifteen ordinary ones outright. */
+	@Test
+	public void aBottomlessBucketReplacesTheEmpties()
+	{
+		binAt(62);
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+		bankHolds(ItemID.BOTTOMLESS_COMPOST_BUCKET, 1);
+
+		assertNotNull(itemNamed(BINS, "Bottomless compost bucket"));
+		assertNull("no ordinary buckets beside it", itemNamed(BINS, "Empty bucket"));
+	}
+
+	/**
+	 * The vinery needs a gardening trowel, without which its saltpetre cannot be applied.
+	 *
+	 * <p>The loadout banked twelve patches' worth of fertiliser and nothing to spread it
+	 * with: "players will need to use saltpetre on the patches with a gardening trowel in
+	 * order to treat the soil before planting", and no other patch family prepares its soil,
+	 * so nothing else had ever asked for one.
+	 */
+	@Test
+	public void aGrapeRunCarriesTheTrowelItsSaltpetreNeeds()
+	{
+		readyPatchOf(PatchImplementation.GRAPES);
+		bankHolds(ItemID.GARDENING_TROWEL, 1);
+
+		Set<PatchImplementation> vinery = EnumSet.of(PatchImplementation.GRAPES);
+		LoadoutItem trowel = itemNamed(vinery, "Gardening trowel");
+		assertNotNull("no trowel, no soil treatment, no planting", trowel);
+		assertEquals(LoadoutItem.Need.WITHDRAW, trowel.getNeed());
+	}
+
+	/** ...and no other family asks for one: potting a sapling happens at a bank. */
+	@Test
+	public void aTreeRunDoesNotAskForTheTrowel()
+	{
+		readyPatchOf(PatchImplementation.TREE);
+		bankHolds(ItemID.GARDENING_TROWEL, 1);
+
+		assertNull(itemNamed(EnumSet.of(PatchImplementation.TREE), "Gardening trowel"));
+	}
+
+	/**
+	 * A coral run's tool list matches the nursery's own menus: no rake (the empty state
+	 * merely decodes as weeds - "Coral nursery[Inspect,Guide]", no Rake option), no dibber
+	 * (a frag is placed), secateurs in (diseased coral is pruned), and the spade stays for
+	 * the dead-coral Clear.
+	 */
+	@Test
+	public void aCoralRunCarriesTheNurserysOwnTools()
+	{
+		readyPatchOf(PatchImplementation.CORAL);
+		selection.toggle(com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL),
+			Seed.ELKHORN_CORAL);
+		bankHolds(ItemID.RAKE, 1);
+		bankHolds(ItemID.DIBBER, 1);
+		bankHolds(ItemID.SECATEURS, 1);
+
+		Set<PatchImplementation> coral = EnumSet.of(PatchImplementation.CORAL);
+		assertNull("a nursery is never raked", itemNamed(coral, "Rake"));
+		assertNull("a frag is placed, not dibbed", itemNamed(coral, "Seed dibber"));
+		assertNotNull("diseased coral is pruned", itemNamed(coral, "Secateurs"));
+		assertNotNull("dead coral still clears with a spade", itemNamed(coral, "Spade"));
+	}
+
+	/** A bin-only run wants no ground tools at all - two lidded boxes need no rake or spade. */
+	@Test
+	public void aBinOnlyRunNeedsNoGroundTools()
+	{
+		binAt(0);
+		bankHolds(ItemID.RAKE, 1);
+		bankHolds(ItemID.SPADE, 1);
+
+		assertNull(itemNamed(BINS, "Rake"));
+		assertNull(itemNamed(BINS, "Spade"));
+		assertNull(itemNamed(BINS, "Seed dibber"));
 	}
 
 	private LoadoutItem itemNamed(Set<PatchImplementation> types, String name)
@@ -1386,9 +1568,9 @@ public class RunLoadoutTest
 		assertNotNull("no apparatus, no dive", itemNamed(types, "Diving apparatus"));
 	}
 
-	/** The medallion reaches the reef alone, so a coral-only run with one needs no suit. */
+	/** The medallion is breathing apparatus on its own, so a run with one needs no suit. */
 	@Test
-	public void theMedallionSpareTheSuitForACoralOnlyRun()
+	public void theMedallionSparesTheSuitForACoralOnlyRun()
 	{
 		readyPatchOf(PatchImplementation.CORAL);
 		carrying(net.runelite.api.gameval.ItemID.MEDALLION_OF_THE_DEEP, 1);
@@ -1398,6 +1580,29 @@ public class RunLoadoutTest
 		assertNotNull("the medallion is the whole requirement",
 			itemNamed(types, "Medallion of the deep"));
 		assertNull("so the suit is not asked for", itemNamed(types, "Fishbowl helmet"));
+	}
+
+	/**
+	 * ...and on a seaweed run too, which it did not used to.
+	 *
+	 * <p>The medallion reached only the reef when this was written, so a seaweed leg fell
+	 * through to the two-piece suit. That changed in <b>May 2026</b> — it "now functions as
+	 * breathing apparatus throughout the Fossil Island underwater areas" — and until this test
+	 * existed, someone who had assembled one was still being sent to a bank for a fishbowl
+	 * helmet they had replaced.
+	 */
+	@Test
+	public void theMedallionSparesTheSuitOnASeaweedRunAsWell()
+	{
+		readyPatchOf(PatchImplementation.SEAWEED);
+		carrying(net.runelite.api.gameval.ItemID.MEDALLION_OF_THE_DEEP, 1);
+		bankHolds(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_HELMET, 1);
+		bankHolds(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_BACKPACK, 1);
+
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.SEAWEED);
+		assertNotNull("Fossil Island counts now", itemNamed(types, "Medallion of the deep"));
+		assertNull("so neither piece is asked for", itemNamed(types, "Fishbowl helmet"));
+		assertNull(itemNamed(types, "Diving apparatus"));
 	}
 
 	/** A calquat clears with a spade alone, like a bush - the wiki is plain. No axe, ever. */

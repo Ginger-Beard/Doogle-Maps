@@ -107,3 +107,131 @@ back") and the three compost tiers, and LeprechaunStore reads all four counts ev
 So the step order at a bin: apply ash if ticked and it is supercompost -> take empty buckets
 from the leprechaun -> empty the bin -> deposit the filled buckets with him -> fill with the
 chosen item -> close the lid.
+
+--- Compost runs: what is built, and what is next (2026-08-11) ---
+
+DONE, with tests (CompostablesTest):
+- Compostables - the supercompostable table, wiki-scraped, insertion-ordered for a selector.
+  Grimy herbs are in and their gameval names are UNIDENTIFIED_*, not anything with "grimy".
+  White lily is deliberately absent: the flower has no harvested item, so there is nothing to
+  put in a bin. The tomato trap is a method of its own.
+- CompostBin - the per-size arithmetic: 15/30 capacity, 25/50 ash, one compost potion dose for
+  either size, and the bucket and ash item ids. The test pins ash-in-the-bin as cheaper than
+  two-per-bucket, which is the fact the step order exists to protect.
+
+ALL BUILT (2026-08-11, second pass) - the list below was the plan and every line landed:
+1. A fill selection store, keyed like SeedSelectionStore, over Compostables.superCompostables()
+   filtered by what the bank actually holds.
+2. An ash checkbox alongside the protection controls (ProtectionSelectionStore is the shape to
+   copy - it is already a per-group boolean the panel renders).
+3. Loadout rows: capacity x bins of the chosen fill, ash x bins when ticked, and empty buckets -
+   which come from the leprechaun, so they are AT_LEPRECHAUN rather than a withdrawal whenever
+   his store has them (LeprechaunStore already reads EMPTY_BUCKET and the three compost tiers).
+4. The run option itself. NOT via PlantingGroups.RUNNABLE: that path assumes a seed, and
+   Seed.forPatchType(COMPOST) is empty, so a bin would break the seed selector and the
+   harvest-only derivation. It wants a RunOption whose group is a bin rather than a planting
+   group, which is the one structural change in the whole feature.
+5. Guide steps at a bin, in the order the owner specified: ash if ticked and it is supercompost
+   -> empty buckets from the leprechaun -> empty the bin -> deposit the filled buckets with him
+   -> fill with the chosen item -> close the lid. PatchRules already decodes every state this
+   needs, including how many items are in a part-filled bin.
+
+--- Compost runs: BUILT (2026-08-11) ---
+
+The whole feature is in, tests green (830 tests):
+- CompostRunStore: fill choice + ash toggle, per RS profile, validated against Compostables in
+  both directions so a stale id can never fill bins with the wrong thing. Deliberately not in
+  ProfileReset - both values are choices, which the reset's doctrine keeps.
+- Run option: one "Compost bin" line pinned before the contract (PlantingGroups.addBinRun); the
+  tick widens to the guild's big bin in RunTypeStore.getSelected, the same fold the tab makes.
+  RunPlanner.inTheRun folds bins onto that line; binActionable routes to bins that are empty
+  or collectable (owner's call) - only a closed bin still composting is skipped, until the
+  clock says it must be done.
+- Loadout (RunLoadout.addCompostBinSupplies off RunPlanner.binWork): fill x remaining capacity
+  (un-noted, with the pack-space warning), ash x 25/50 for ready SUPERCOMPOST bins when ticked,
+  and the carriers - bottomless bucket outright when owned, otherwise empties AT_LEPRECHAUN.
+- Guide (CompostBinPlan, branched from GuideTracker.stepsFor before any seed machinery): reads
+  the SNAPSHOT, not the projection - the projection flattens both bin counts (FILLING count not
+  carried, HARVESTABLE count only as livesRemaining). Order is the owner's: APPLY_ASH first
+  while everything is still in the bin, then withdraw empties, EMPTY_BIN, DEPOSIT_COMPOST
+  (full buckets to the lep, before the fill needs the slots), FILL_BIN, CLOSE_BIN. Bottomless
+  bucket short-circuits the whole dance. Rotten tomatoes come out by hand with a "this fill
+  made no compost" step. New GuideActions ride the existing leprechaun two-pane machinery
+  (DEPOSIT_COMPOST joins RETURN_BUCKETS on your side of his store).
+- UI: CompostBinPanel on the compost tab's footer (the slot the seed selector fills elsewhere) -
+  owned supercompostables as bank-style icons, click to pick with the seed list's green tint,
+  ash checkbox with the owned count in its tooltip.
+- Tests: CompostRunStoreTest, CompostBinPlanTest (step order incl. ash-before-buckets and the
+  tomato trap), RunPlannerTest.binsRouteWhenEmptyOrCollectable, six RunLoadoutTest rows.
+
+Not modelled, on purpose: compost potions (only matter for a bin filled with junk, which the
+fill validation prevents); mid-run partial-empty pack juggling beyond the re-derive (the pure-
+function step model already handles it - fewer buckets just means another round).
+
+
+--- Seaweed and coral runs: BUILT (2026-08-11, same pass) ---
+
+Research first, and the ground truth turned out to be in RuneLite core's own menu-option
+comments (the decode's provenance strings), which beat the wiki for mechanics:
+- Seaweed is a CONVENTIONAL patch underwater: "Seaweed patch[Rake]", "Seaweed[Pick]",
+  "Diseased seaweed[Cure]" (plant cure), "Dead seaweed[Clear]". Every generic guide branch
+  was already right; seaweed needed NOTHING beyond what the RUNNABLE addition gave it.
+- The coral nursery is NOT: its empty state (varbit 0-3) decodes as fully-weedy WEEDS but the
+  menu is "Coral nursery[Inspect,Guide]" - no Rake option at all; grown coral (8/19/30) is
+  "[Collect]" with no HARVESTABLE decode (the projection's promotion covers routing); diseased
+  coral is "[Prune]" - secateurs, not a plant cure; a frag is PLACED, no dibber; no compost
+  (already handled); "a spade is not required to harvest".
+
+What changed:
+- GuidePlan: CORAL joins GRAPES in the rake exclusion; CORAL joins PRUNED_HEALTHY; the sow
+  branch skips the dibber for frags; "Place the X frag on the nursery" / "Collect the X from
+  the nursery" wording. Plus one GLOBAL guard the nursery exposed: the harvest branch now
+  refuses WEEDS outright - the projection promotes a fully-weedy patch to HARVESTABLE, the
+  rake branch used to mask it, and coral (rake-exempt) fell through to "harvest the weeds".
+- ToolNeeds: requiredFor drops bin types first (a bin-only run was told to carry a rake and
+  spade for two lidded boxes - live wart from the compost work, fixed here); the rake needs a
+  rakeable type on the run (GRAPES/CORAL never are); anythingWeedy exempts CORAL like GRAPES;
+  plantsAnySeed skips frags; secateurs added for CORAL runs (prune is the only cure there).
+- TeleportItems: Digsite pendant (all five charges) -> Seaweed region 15008, and in the
+  defaults. The coral nurseries get no row on purpose: the route is Sailing (charter to
+  Deepfin Point + rowboat), which no bankable item the table could name performs.
+- Diving gear/medallion loadout rows were already right from the earlier pass; DiseaseRisk
+  already knows both are protectable (Mernia 200 numulite / Chet 5-of-the-tier-below);
+  coral's no-compost was already in CropYieldModel.TAKES_NO_COMPOST.
+Tests: GuidePlanTest x5 (placement-not-rake, prune, Collect, seaweed keeps its rake, dead
+coral clears), RunLoadoutTest x2 (coral tool list, bin-only run needs no ground tools).
+
+--- The last runnable patch types: researched, three built, two rejected (2026-08-11) ---
+
+Researched whether people actually RUN each of the five that were left:
+- GRAPES - yes, genuinely. Twelve patches in one place (Hosidius Vinery), 35-minute growth,
+  level 36, seeds from Tithe Farm, farmed for Zamorak/Saradomin wines. A real circuit.
+- ANIMA - one Farming Guild patch that produces NOTHING (100 xp on planting, no check, no
+  harvest). Its value is the global buff on every other run: attas +5% harvest saves, iasor
+  -80% disease, kronos stage skips. Dies after ~3.5 days and must be replanted.
+- CRYSTAL_TREE - one patch, Prifddinas, level 74 (NOT 94; several third-party guides say 94
+  and are wrong). 8h growth, chopped with an axe, 13,240 check xp, 28-32 shards with ultra.
+  Cannot be diseased. Harvested and removed together - no stump, patch empty immediately.
+- REDWOOD - NO. Plant once at 90; after that you chop it for logs and it REGROWS by itself.
+  Only ever revisited if disease kills it.
+- SPIRIT_TREE - NO. A grown one is a permanent teleport hub, never harvested. Planting is the
+  entire interaction.
+- HESPORI - skipped by the owner: it grows a demi-boss to fight, not a crop to service.
+
+Built (grapes as a full run, the other two as single-patch lines that route when the patch
+wants something - RunPlanner's generic isReady/isEmpty path already covered both):
+- crop-xp rows: grape 31.5/625/40, crystal acorn 126/13240/-, attas+iasor+kronos 100/-/-.
+  "Crystal acorn" needed an XP_NAME_OVERRIDES entry (its Seed constant is CRYSTAL_TREE).
+- GRAPES/CRYSTAL_TREE/ANIMA into PlantingGroups.RUNNABLE, with the exclusions written down.
+- ToolNeeds: a GARDENING_TROWEL for the vinery. The loadout already banked its saltpetre and
+  nothing to spread it with - no other family prepares its soil, so nothing had asked before.
+- PatchProjection.isChoppable + RunLoadout.NEEDS_AN_AXE take CRYSTAL_TREE: its harvest IS the
+  chop, so an axeless trip collects no shards. Worded "the patch is left empty" because there
+  is genuinely no stump to come back for.
+- GuidePlan 0.8, the real gap: a spent ANIMA plant reached NO branch. Every anima state
+  decodes as GROWING (core walks "Attas plant" -> "Withering" -> "Dead Attas plant[Clear]"
+  without the crop state moving), so the dead one missed the DEAD branch, missed the harvest,
+  and fell into growing-leave-it-alone. The run routed there and the guide said nothing. Now
+  the last stage gets a spade step; a withering plant is still working and is left alone.
+Tests: GuidePlanTest x3 (spent anima dug up, live anima left alone, crystal chopped for
+shards), RunLoadoutTest x2 (vinery trowel, and no other family asking for one).

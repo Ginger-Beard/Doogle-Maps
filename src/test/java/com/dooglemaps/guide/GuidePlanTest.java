@@ -1236,6 +1236,172 @@ public class GuidePlanTest
 			steps(patch, Seed.REDBERRIES).isEmpty());
 	}
 
+	/**
+	 * An empty coral nursery gets the placement, never the rake.
+	 *
+	 * <p>The nursery's empty state decodes as fully weedy - core's stand-in for "empty" - but
+	 * its menu has no Rake option at all ("Coral nursery[Inspect,Guide]"). The rake branch
+	 * fired on the decode and told the player to rake a patch the game will not let them
+	 * touch, forever, with the placement never reached.
+	 */
+	@Test
+	public void anEmptyCoralNurseryGetsThePlacementNotARake() throws Exception
+	{
+		FarmPatch nursery = coralNursery(0);
+		stockInventory(Seed.ELKHORN_CORAL, 1);
+		carrying(Seed.ELKHORN_CORAL.getPlantedItemID(), 1);
+		leprechaun = leprechaunHolding(FarmingTool.RAKE, FarmingTool.SEED_DIBBER);
+
+		List<GuideStep> steps = steps(nursery, Seed.ELKHORN_CORAL);
+		assertFalse("the nursery wants its frag", steps.isEmpty());
+		for (GuideStep step : steps)
+		{
+			assertFalse("a nursery is never raked: " + step.getText(),
+				step.getText().toLowerCase().contains("rake"));
+			assertFalse("and a frag is placed, not dibbed: " + step.getText(),
+				step.getItemId() == FarmingTool.SEED_DIBBER.getItemID());
+		}
+		GuideStep place = steps.get(steps.size() - 1);
+		assertEquals(GuideAction.PLANT, place.getAction());
+		assertTrue("worded as a placement: " + place.getText(),
+			place.getText().startsWith("Place the elkhorn"));
+	}
+
+	/**
+	 * Diseased coral is pruned, like a bush - "Diseased elkhorn coral[Prune,...]" is core's
+	 * own record of the menu - so the plant-cure wording named a click that does not exist.
+	 */
+	@Test
+	public void diseasedCoralIsPrunedNotPotioned()
+	{
+		FarmPatch nursery = coralNursery(9);
+		carrying();
+
+		GuideStep step = firstStep(nursery, null);
+		assertEquals(GuideAction.CURE, step.getAction());
+		assertTrue("pruned with secateurs: " + step.getText(),
+			step.getText().contains("Prune"));
+	}
+
+	/** Grown coral's menu says Collect, and no tool is needed - the wiki is explicit. */
+	@Test
+	public void grownCoralSaysCollect()
+	{
+		FarmPatch nursery = coralNursery(8);
+		carrying();
+
+		GuideStep step = firstStep(nursery, null);
+		assertEquals(GuideAction.HARVEST, step.getAction());
+		assertTrue(step.getText(), step.getText().startsWith("Collect the elkhorn"));
+	}
+
+	/** Seaweed is the underwater patch that DOES rake - "Seaweed patch[Rake,...]". */
+	@Test
+	public void aWeedySeaweedPatchStillWantsTheRake() throws Exception
+	{
+		FarmPatch patch = seaweedPatch(0);
+		carrying();
+		leprechaun = leprechaunHolding(FarmingTool.RAKE);
+
+		List<GuideStep> steps = steps(patch, Seed.SEAWEED);
+		assertEquals("fetch the rake, then rake", 2, steps.size());
+		assertEquals(GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
+		assertEquals(GuideAction.CLEAR, steps.get(1).getAction());
+	}
+
+	/** The one coral state a spade does touch: dead coral's menu is Clear. */
+	@Test
+	public void deadCoralStillClears()
+	{
+		FarmPatch nursery = coralNursery(12);
+		carrying();
+
+		GuideStep step = firstStep(nursery, null);
+		assertEquals(GuideAction.CLEAR, step.getAction());
+	}
+
+	/**
+	 * A spent anima plant gets the dig-up, which nothing used to say.
+	 *
+	 * <p>Every anima state decodes as GROWING - core walks "Attas plant" through "Withering"
+	 * to "Dead Attas plant[Clear]" without the crop state ever changing - so the dead one
+	 * reached no branch: not DEAD, not the harvest, and the growing-leave-it-alone fallback
+	 * swallowed it. The run routed there and the guide said nothing.
+	 */
+	@Test
+	public void aSpentAnimaPlantIsDugUp() throws Exception
+	{
+		FarmPatch anima = animaPatch(16);   // ATTAS at its ninth and final stage: dead
+		carrying();
+		leprechaun = leprechaunHolding(FarmingTool.SPADE);
+
+		List<GuideStep> steps = steps(anima, Seed.ATTAS);
+		assertEquals("fetch the spade, then dig", 2, steps.size());
+		assertEquals(GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
+		assertEquals(GuideAction.CLEAR, steps.get(1).getAction());
+		assertTrue("says why it matters: " + steps.get(1).getText(),
+			steps.get(1).getText().contains("other patches"));
+	}
+
+	/** A working anima is left alone - only the last stage is the dead one. */
+	@Test
+	public void aLiveAnimaPlantIsLeftAlone()
+	{
+		FarmPatch anima = animaPatch(10);   // ATTAS, stage 2 of 8: still buffing
+		carrying();
+
+		assertTrue("a plant still doing its job wants nothing",
+			steps(anima, Seed.ATTAS).isEmpty());
+	}
+
+	/** The crystal tree's harvest IS the chop, and it leaves no stump behind. */
+	@Test
+	public void aGrownCrystalTreeIsChoppedForItsShards()
+	{
+		FarmPatch crystal = crystalPatch(15);   // Crystal tree[Chop-down]
+		carrying();
+
+		GuideStep step = firstStep(crystal, Seed.CRYSTAL_TREE);
+		assertEquals(GuideAction.CHOP, step.getAction());
+		assertTrue("the shards are the point: " + step.getText(),
+			step.getText().contains("shards"));
+		assertTrue("and there is no stump to come back for: " + step.getText(),
+			step.getText().contains("left empty"));
+	}
+
+	private FarmPatch animaPatch(int varbitValue)
+	{
+		FarmPatch anima = FarmingWorldData.getPatches(PatchImplementation.ANIMA).get(0);
+		assertNotNull(anima);
+		recordValue(anima, varbitValue);
+		return anima;
+	}
+
+	private FarmPatch crystalPatch(int varbitValue)
+	{
+		FarmPatch crystal =
+			FarmingWorldData.getPatches(PatchImplementation.CRYSTAL_TREE).get(0);
+		assertNotNull(crystal);
+		recordValue(crystal, varbitValue);
+		return crystal;
+	}
+
+	private FarmPatch coralNursery(int varbitValue)
+	{
+		FarmPatch nursery = FarmingWorldData.getPatches(PatchImplementation.CORAL).get(0);
+		assertNotNull(nursery);
+		recordValue(nursery, varbitValue);
+		return nursery;
+	}
+
+	private FarmPatch seaweedPatch(int varbitValue)
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.SEAWEED).get(0);
+		assertNotNull(patch);
+		recordValue(patch, varbitValue);
+		return patch;
+	}
+
 	private List<GuideStep> steps(FarmPatch patch, Seed chosen)
 	{
 		return steps(patch, chosen, group(patch));

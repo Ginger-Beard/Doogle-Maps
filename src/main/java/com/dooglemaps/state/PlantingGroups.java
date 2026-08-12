@@ -213,9 +213,37 @@ public class PlantingGroups
 	/**
 	 * Patch types worth offering as a run.
 	 *
-	 * <p>The rest are one-offs you visit deliberately — and the compost bins, which have no seed
-	 * at all. See {@code docs/TODO.md}: this list wants to be everything eventually, and the gap is
-	 * experience data rather than anything structural.
+	 * <h2>What kept the second group out until now</h2>
+	 *
+	 * Experience data, exactly as the old note here said — a runnable type with no row in
+	 * {@code crop-xp.tsv} prices the whole trip at zero, which is worse than not offering it.
+	 * The rows exist now (wiki-scraped per seed page; see {@code tools/crop-xp.tsv}), so the
+	 * six specialist patches join the list.
+	 *
+	 * <p>The compost bins are still absent and are a different shape of thing: they take
+	 * buckets and produce rather than a seed, so they get their own run rather than a place
+	 * here. See {@code CompostBinRun}.
+	 *
+	 * <p>Two of these are underwater and cannot be reached without the gear on your back —
+	 * see the diving rows in {@code RunLoadout}, which is what makes them safe to offer
+	 * rather than a run that routes you to a place you cannot enter.
+	 *
+	 * <h2>What stays out, and why it is not an oversight</h2>
+	 *
+	 * <ul>
+	 *   <li><b>Redwood</b> and <b>spirit tree</b> — planted once and then left. A farmed
+	 *       redwood <i>regrows</i> after every chop, so the patch is never replanted, and a
+	 *       grown spirit tree is a permanent teleport that is never harvested at all. The only
+	 *       revisit either wants is a clearing after disease kills it, which is not a run.</li>
+	 *   <li><b>Hespori</b> — grows a demi-boss to fight rather than a crop to service.</li>
+	 *   <li><b>The compost bins</b> — buckets and produce rather than a seed, so they get
+	 *       their own line instead of a place here. See {@link #addBinRun}.</li>
+	 * </ul>
+	 *
+	 * <p>The crystal tree and the anima patch are single patches rather than circuits, and
+	 * are here anyway: both want replanting on a timer, both sit where a run already goes
+	 * (Prifddinas, the Farming Guild), and the anima's whole value is that it buffs every
+	 * <i>other</i> run — so a dead one is a quiet loss on every patch you own.
 	 */
 	private static final java.util.Set<PatchImplementation> RUNNABLE = java.util.EnumSet.of(
 		PatchImplementation.HERB,
@@ -226,7 +254,16 @@ public class PlantingGroups
 		PatchImplementation.TREE,
 		PatchImplementation.FRUIT_TREE,
 		PatchImplementation.HARDWOOD_TREE,
-		PatchImplementation.CACTUS);
+		PatchImplementation.CACTUS,
+		PatchImplementation.GRAPES,
+		PatchImplementation.CRYSTAL_TREE,
+		PatchImplementation.ANIMA,
+		PatchImplementation.SEAWEED,
+		PatchImplementation.MUSHROOM,
+		PatchImplementation.BELLADONNA,
+		PatchImplementation.CALQUAT,
+		PatchImplementation.CELASTRUS,
+		PatchImplementation.CORAL);
 
 	/**
 	 * Types whose crops regrow, so picking them clean is a run in its own right.
@@ -297,8 +334,28 @@ public class PlantingGroups
 			options.add(com.dooglemaps.data.RunOption.harvestOnly(PlantingGroup.of(type)));
 		}
 
+		addBinRun(options);
 		addContractRun(options);
 		return options;
+	}
+
+	/**
+	 * The compost bins' line, after the patch types and before the contract.
+	 *
+	 * <p>One line for both sizes, exactly as the sidebar's tab already folds them — "the same
+	 * thing at two sizes", see {@code PatchTabs}. The line carries the normal bin's group and
+	 * {@code RunTypeStore.getSelected} widens the tick to cover the guild's big one, so a
+	 * single tick means "do my bins" the way a single tab means "show my bins".
+	 *
+	 * <p>Deliberately <b>not</b> in {@code RUNNABLE}, although the bins are now runnable in
+	 * every ordinary sense. That path assumes a seed — the harvest-only derivation, the seed
+	 * selector, the estimate all walk {@code Seed.forPatchType} — and a bin takes buckets and
+	 * produce instead. Everything seed-shaped stays structurally unable to see it.
+	 */
+	private void addBinRun(java.util.List<com.dooglemaps.data.RunOption> options)
+	{
+		options.add(com.dooglemaps.data.RunOption.full(
+			PlantingGroup.of(PatchImplementation.COMPOST)));
 	}
 
 	/**

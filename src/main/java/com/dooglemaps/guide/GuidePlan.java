@@ -105,8 +105,14 @@ public final class GuidePlan
 		// deliberately treats WEEDS as empty. Only the un-raked case needs an instruction, and
 		// without it the guide said "treat the patch" and "plant the seed" on ground the game
 		// would not accept either on. Never seen in play because autoweed was on.
+		// The vinery and the coral nurseries are excluded for the same reason: their empty
+		// states merely DECODE as weeds. Core's own menu comments are the provenance - an
+		// empty nursery is "Coral nursery[Inspect,Guide]", no Rake option at all - so the
+		// step would name a click the menu does not offer, forever. The state falls through
+		// to isEmpty below, which is what it really is.
 		if (projection.getProduce() == Produce.WEEDS && projection.getStage() > 0
-			&& patch.getImplementation() != PatchImplementation.GRAPES)
+			&& patch.getImplementation() != PatchImplementation.GRAPES
+			&& patch.getImplementation() != PatchImplementation.CORAL)
 		{
 			addToolStep(steps, patch, FarmingTool.RAKE, carried, leprechaun);
 			steps.add(GuideStep.of(GuideAction.CLEAR, patch, "Rake the weeds."));
@@ -189,7 +195,34 @@ public final class GuidePlan
 		if (projection.isChoppable() && !harvestOnly)
 		{
 			steps.add(GuideStep.of(GuideAction.CHOP, patch,
-				"Chop down the " + projection.getProduce().getName().toLowerCase() + "."));
+				patch.getImplementation() == PatchImplementation.CRYSTAL_TREE
+					// Not "and then dig the stump": there is not one, and the shards are the
+					// point of the click rather than a by-product of clearing.
+					? "Chop down the crystal tree for its shards - the patch is left empty."
+					: "Chop down the " + projection.getProduce().getName().toLowerCase() + "."));
+			return steps;
+		}
+
+		// 0.8 A spent anima plant. Its whole life is one GROWING run of nine stages — core's own
+		//     comments walk "Attas plant" to "Withering Attas plant" to "Dead Attas plant[Clear]"
+		//     and decode every one of them as GROWING — so the dead state reached no branch here
+		//     at all: not the DEAD one below (the crop state never says so), not the harvest one
+		//     (there is nothing to pick), and the growing-leave-it-alone fallback swallowed it.
+		//
+		//     The patch was correctly routed to, and the guide had nothing to say about the one
+		//     thing it wanted. That matters more than a single patch usually would: an anima's
+		//     value is the buff it puts on every OTHER patch you own — attas +5% harvest saves,
+		//     iasor −80% disease — so a dead one is a quiet loss on the whole account until it
+		//     is noticed. The last stage is the dead one; a withering plant is still working, so
+		//     it is deliberately left alone.
+		if (patch.getImplementation() == PatchImplementation.ANIMA
+			&& !projection.isEmpty()
+			&& projection.getStage() >= projection.getStages() - 1)
+		{
+			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
+			steps.add(GuideStep.of(GuideAction.CLEAR, patch,
+				"Dig up the spent " + projection.getProduce().getName().toLowerCase()
+					+ " plant - its bonus has stopped applying to your other patches."));
 			return steps;
 		}
 
@@ -200,7 +233,12 @@ public final class GuidePlan
 		//    fired forever and said "harvest the papaya" at a tree with no papayas. It also
 		//    returns, so the patch produced that one impossible step and nothing else — which is
 		//    what left harvest-only stops unable to finish. See PatchProjection.hasProduceToPick.
-		if (projection.hasProduceToPick())
+		// Weeds are never a harvest, wherever the projection has promoted them to. Ordinarily
+		// the rake branch above returns first, so the promotion hazard its comment describes
+		// stays invisible - but the coral nursery skips that branch (its "weeds" are the empty
+		// state), and its fully-weedy decode arrived here as "harvest the weeds". The guard is
+		// global because the sentence is absurd everywhere, not only underwater.
+		if (projection.hasProduceToPick() && projection.getProduce() != Produce.WEEDS)
 		{
 			// Gated on what he will take, not merely on the pack being full: a tree patch's
 			// Produce item is its LOGS, and he refuses every kind of log (wiki), so a full pack
@@ -375,7 +413,12 @@ public final class GuidePlan
 		{
 			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
 		}
-		else if (!barbarianFarming.isUnlocked())
+		// A coral frag is PLACED on the nursery, not dibbed in - "one frag can be placed on
+		// each nursery", and the nursery has none of the ordinary patch tooling (no rake, no
+		// spade to harvest). Asking for a dibber would send someone to fetch a tool the click
+		// never uses.
+		else if (!barbarianFarming.isUnlocked()
+			&& patch.getImplementation() != PatchImplementation.CORAL)
 		{
 			addToolStep(steps, patch, FarmingTool.SEED_DIBBER, carried, leprechaun);
 		}
@@ -429,16 +472,20 @@ public final class GuidePlan
 	 * The families whose diseased crop is pruned back to health with secateurs.
 	 *
 	 * <p>Wiki-checked: trees, fruit trees, spirit trees, bushes and calquats are pruned
-	 * (either kind of secateurs; it can take a few attempts). Everything else takes a plant
-	 * cure — herbs, flowers, allotments, hops, hardwoods, celastrus, belladonna, cactus,
-	 * mushroom — and the Lunar Cure Plant spell stands in for either.
+	 * (either kind of secateurs; it can take a few attempts). Coral too, and the provenance
+	 * there is core's own menu comments — "Diseased elkhorn coral[Prune,Inspect,Guide]" —
+	 * so telling its grower to use a plant cure named a click the menu does not offer.
+	 * Everything else takes a plant cure — herbs, flowers, allotments, hops, hardwoods,
+	 * celastrus, belladonna, cactus, mushroom, seaweed ("Diseased seaweed[Cure,...]") — and
+	 * the Lunar Cure Plant spell stands in for either.
 	 */
 	private static final java.util.Set<PatchImplementation> PRUNED_HEALTHY = java.util.EnumSet.of(
 		PatchImplementation.TREE,
 		PatchImplementation.FRUIT_TREE,
 		PatchImplementation.SPIRIT_TREE,
 		PatchImplementation.BUSH,
-		PatchImplementation.CALQUAT);
+		PatchImplementation.CALQUAT,
+		PatchImplementation.CORAL);
 
 	/**
 	 * The cure, with the fetch for its tool in front of it when the leprechaun holds one.
@@ -494,6 +541,10 @@ public final class GuidePlan
 				return "Chop the bark from the celastrus tree - it takes an axe.";
 			case BELLADONNA:
 				return "Harvest the belladonna wearing gloves - bare hands take damage.";
+			case CORAL:
+				// The menu's own word - "Elkhorn coral[Collect,...]" - and no tool at all:
+				// the wiki is explicit that no spade is needed here.
+				return "Collect the " + crop + " from the nursery.";
 			default:
 				return "Harvest the " + crop + ".";
 		}
@@ -590,6 +641,14 @@ public final class GuidePlan
 
 	private static String plantText(Seed seed, int perPatch)
 	{
+		// A frag is placed, not planted - the nursery has no dibber, no hole, no "seed".
+		// Worded from the wiki's own sentence: "one frag can be placed on each nursery".
+		Produce produce = seed.getProduce();
+		if (produce != null && produce.getPatchImplementation() == PatchImplementation.CORAL)
+		{
+			return "Place the " + seed.getName().toLowerCase() + " frag on the nursery.";
+		}
+
 		String noun = seed.isSapling() ? "sapling" : "seed";
 		return perPatch == 1
 			? "Plant the " + seed.getName().toLowerCase() + " " + noun + "."

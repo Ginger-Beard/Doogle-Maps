@@ -1863,4 +1863,41 @@ public class RunPlannerTest
 		assertTrue("nothing left to route to", planner.getRemaining().isEmpty());
 		assertEquals("the path should be cleared", Collections.emptySet(), lastTargets());
 	}
+
+	/**
+	 * A compost bin routes when it is empty or collectable, and only then.
+	 *
+	 * <p>Ready compost is worth the trip and so is an empty bin — settled with the owner: no
+	 * fill selection is needed to be shown a bin with room in it, since the guide simply stays
+	 * quiet when there is nothing to say. A closed bin still composting is the one state with
+	 * nothing at it but a lid. The tick itself is the one line both bins answer to; see
+	 * PlantingGroups.addBinRun.
+	 */
+	@org.junit.Test
+	public void binsRouteWhenEmptyOrCollectable()
+	{
+		com.dooglemaps.data.FarmPatch bin = com.dooglemaps.data.FarmingWorldData
+			.getPatches(PatchImplementation.COMPOST).get(0);
+		availability.setAvailable(bin, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
+		java.util.Set<PatchImplementation> types = EnumSet.of(PatchImplementation.COMPOST);
+
+		stateStore.recordVarbit(bin, 62, bin.getImplementation().forVarbitValue(62));
+		org.junit.Assert.assertEquals("finished compost is worth the trip",
+			1, planner.previewStops(types).size());
+
+		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
+		org.junit.Assert.assertEquals("an empty bin routes with no fill chosen at all",
+			1, planner.previewStops(types).size());
+
+		stateStore.recordVarbit(bin, 40, bin.getImplementation().forVarbitValue(40));
+		org.junit.Assert.assertEquals("a part-filled bin still has room, so it routes too",
+			1, planner.previewStops(types).size());
+
+		stateStore.recordVarbit(bin, 31, bin.getImplementation().forVarbitValue(31));
+		org.junit.Assert.assertEquals("a closed bin still composting is the one that does not",
+			0, planner.previewStops(types).size());
+	}
 }

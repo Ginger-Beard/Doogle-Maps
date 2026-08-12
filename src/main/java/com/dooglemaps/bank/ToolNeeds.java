@@ -147,8 +147,15 @@ public class ToolNeeds
 	 */
 	public Set<FarmingTool> requiredFor(Set<PatchImplementation> types)
 	{
+		// Only the types that are ground with crops in it. The compost bins reached here the
+		// moment they became runnable, and every rule below is about soil - a bin-only run was
+		// told to carry a rake and a spade for two lidded boxes. Nothing else changes for a
+		// mixed run: the bins ride along and the ground types still answer for themselves.
+		Set<PatchImplementation> ground = EnumSet.copyOf(types);
+		ground.removeIf(type -> com.dooglemaps.data.CompostBin.forType(type) != null);
+
 		Set<FarmingTool> tools = EnumSet.noneOf(FarmingTool.class);
-		if (types.isEmpty())
+		if (ground.isEmpty())
 		{
 			return tools;
 		}
@@ -160,7 +167,12 @@ public class ToolNeeds
 		// patch that was already weedy when it was bought, or one first reached afterwards, is
 		// still weedy and still needs the rake. Reported from play: a weedy patch with the run
 		// carrying nothing to clear it with, going straight to the compost step.
-		if (!growthTimer.isAutoweedEnabled() || anythingWeedy(types))
+		//
+		// Only when something on the run can actually BE weedy: a coral nursery's empty state
+		// decodes as weeds but its menu has no Rake at all, and the vinery is the same - so a
+		// run over only those two never wants the rake whatever auto-weed says.
+		if (anythingRakeable(ground)
+			&& (!growthTimer.isAutoweedEnabled() || anythingWeedy(ground)))
 		{
 			tools.add(FarmingTool.RAKE);
 		}
@@ -171,21 +183,50 @@ public class ToolNeeds
 
 		// A dibber, if anything on this run is planted from a seed. Saplings go in by hand, so a
 		// pure tree run genuinely does not want one — and neither does anyone with Barbarian
-		// Farming, which removes the requirement outright.
-		if (plantsAnySeed(types) && !barbarianFarming.isUnlocked())
+		// Farming, which removes the requirement outright. A coral frag is placed rather than
+		// dibbed, so its selection does not count; see GuidePlan's sow branch.
+		if (plantsAnySeed(ground) && !barbarianFarming.isUnlocked())
 		{
 			tools.add(FarmingTool.SEED_DIBBER);
 		}
 
-		// Secateurs for the families that get pruned. Either pair does the job here; the magic
-		// ones are handled separately by the loadout, where the point is the +10% rather than
-		// being able to act at all.
-		if (types.contains(PatchImplementation.BUSH) || types.contains(PatchImplementation.FRUIT_TREE))
+		// Secateurs for the families whose diseased crop is pruned back to health. Either pair
+		// does the job; the magic ones are handled separately by the loadout, where the point
+		// is the +10% rather than being able to act at all. Coral is in the list off core's
+		// own menu comment - "Diseased elkhorn coral[Prune]" - and matters more than the
+		// bushes do, because there is no plant cure alternative underwater to fall back on.
+		if (ground.contains(PatchImplementation.BUSH)
+			|| ground.contains(PatchImplementation.FRUIT_TREE)
+			|| ground.contains(PatchImplementation.CORAL))
 		{
 			tools.add(FarmingTool.SECATEURS);
 		}
 
+		// A gardening trowel for the vinery, which is the one patch family whose SOIL needs
+		// preparing: "players will need to use saltpetre on the patches with a gardening
+		// trowel in order to treat the soil before planting". The loadout already banks the
+		// saltpetre; without the trowel it is twelve patches' worth of fertiliser and no way
+		// to apply it. (The trowel's other use, potting saplings, happens at a bank rather
+		// than at a patch, so it is deliberately not asked for by the tree families.)
+		if (ground.contains(PatchImplementation.GRAPES))
+		{
+			tools.add(FarmingTool.GARDENING_TROWEL);
+		}
+
 		return tools;
+	}
+
+	/** The types this run covers that a rake can ever touch; see the rake rule above. */
+	private static boolean anythingRakeable(Set<PatchImplementation> types)
+	{
+		for (PatchImplementation type : types)
+		{
+			if (type != PatchImplementation.GRAPES && type != PatchImplementation.CORAL)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -204,9 +245,11 @@ public class ToolNeeds
 	{
 		for (PatchImplementation type : types)
 		{
-			if (type == PatchImplementation.GRAPES)
+			if (type == PatchImplementation.GRAPES || type == PatchImplementation.CORAL)
 			{
-				// A vinery is never raked; its empty states merely decode as weeds.
+				// Neither is ever raked; their empty states merely decode as weeds. For the
+				// nursery that is core's own menu comment: "Coral nursery[Inspect,Guide]",
+				// no Rake option.
 				continue;
 			}
 			for (com.dooglemaps.data.FarmPatch patch : availability.getAvailablePatches(type))
@@ -235,6 +278,12 @@ public class ToolNeeds
 	{
 		for (PatchImplementation type : types)
 		{
+			if (type == PatchImplementation.CORAL)
+			{
+				// A frag is placed on the nursery by hand, so its selection is not a reason
+				// to carry a dibber.
+				continue;
+			}
 			for (Seed seed : selection.getSelectedFor(type))
 			{
 				if (!seed.isSapling())

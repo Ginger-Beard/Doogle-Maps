@@ -92,7 +92,8 @@ public class GuideStep
 		return action == GuideAction.NOTE_AT_LEPRECHAUN
 			|| action == GuideAction.WITHDRAW_COMPOST
 			|| action == GuideAction.WITHDRAW_TOOL
-			|| action == GuideAction.RETURN_BUCKETS;
+			|| action == GuideAction.RETURN_BUCKETS
+			|| action == GuideAction.DEPOSIT_COMPOST;
 	}
 
 	/**
@@ -121,7 +122,8 @@ public class GuideStep
 	{
 		return action == GuideAction.WITHDRAW_COMPOST
 			|| action == GuideAction.WITHDRAW_TOOL
-			|| action == GuideAction.RETURN_BUCKETS;
+			|| action == GuideAction.RETURN_BUCKETS
+			|| action == GuideAction.DEPOSIT_COMPOST;
 	}
 
 	/**
@@ -145,7 +147,10 @@ public class GuideStep
 	 */
 	public boolean itemIsOnYourSideOfTheStore()
 	{
-		return action == GuideAction.RETURN_BUCKETS;
+		// Depositing filled compost buckets is the same click as handing back empties: your
+		// column of his interface, not his. See the class note above on the two panes.
+		return action == GuideAction.RETURN_BUCKETS
+			|| action == GuideAction.DEPOSIT_COMPOST;
 	}
 
 	static GuideStep of(GuideAction action, FarmPatch patch, String text)

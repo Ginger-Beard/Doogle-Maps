@@ -172,6 +172,20 @@ public final class TeleportItems
 		add(ItemID.LUMBRIDGE_RING_ELITE, "Explorer's ring 4", 12083);
 
 		add(ItemID.TELETAB_HARMONY, "Harmony Island teleport tablet", 15148);
+
+		// The wiki's route to the underwater seaweed patches: pendant to Fossil Island's
+		// House on the Hill, rowboat at the north beach, dive. Every charge form, the way
+		// the skills necklace lists its own - the bank could hold any of them. The coral
+		// nurseries get no row on purpose: their route is Sailing (a charter to Deepfin
+		// Point and a rowboat), which no bankable item this table could name performs.
+		for (int pendant : new int[]{
+			ItemID.NECKLACE_OF_DIGSITE_5, ItemID.NECKLACE_OF_DIGSITE_4,
+			ItemID.NECKLACE_OF_DIGSITE_3, ItemID.NECKLACE_OF_DIGSITE_2,
+			ItemID.NECKLACE_OF_DIGSITE_1,
+		})
+		{
+			add(pendant, "Digsite pendant", 15008);
+		}
 		add(ItemID.XERIC_TALISMAN, "Xeric's talisman", 6967);
 		add(ItemID.STRONGHOLD_TELEPORT_BASALT, "Stony basalt", 11321);
 		add(ItemID.WEISS_TELEPORT_BASALT, "Icy basalt", 11325);
@@ -322,6 +336,7 @@ public final class TeleportItems
 			"Explorer's ring 4",
 			"Farming cape",
 			"Farming cape (t)",
+			"Digsite pendant",
 			"Harmony Island teleport tablet",
 			"Teleport to house tablet",
 			"Book of the dead");

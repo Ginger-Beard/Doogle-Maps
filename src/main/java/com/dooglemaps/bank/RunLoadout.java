@@ -124,8 +124,10 @@ public class RunLoadout
 		LeprechaunStore leprechaun, ProtectionSelectionStore protection,
 		com.dooglemaps.data.ItemNames itemNames, com.dooglemaps.DoogleMapsConfig config,
 		net.runelite.api.Client client, com.dooglemaps.state.RunTypeStore runTypes,
-		com.dooglemaps.state.ContractState contracts)
+		com.dooglemaps.state.ContractState contracts,
+		com.dooglemaps.state.CompostRunStore compostRun)
 	{
+		this.compostRun = compostRun;
 		this.contracts = contracts;
 		this.runTypes = runTypes;
 		this.client = client;
@@ -334,6 +336,7 @@ public class RunLoadout
 		addCompost(items, types);
 		addPayments(items, types);
 		addSaltpetre(items, types);
+		addCompostBinSupplies(items, types);
 		addTools(items, types);
 		addGear(items);
 		addAxe(items, types);
@@ -361,7 +364,10 @@ public class RunLoadout
 		PatchImplementation.FRUIT_TREE,
 		PatchImplementation.HARDWOOD_TREE,
 		PatchImplementation.REDWOOD,
-		PatchImplementation.CELASTRUS);
+		PatchImplementation.CELASTRUS,
+		// The crystal tree for the same reason celastrus is here rather than as a clearing:
+		// chopping it down IS the harvest, so an axeless trip collects no shards at all.
+		PatchImplementation.CRYSTAL_TREE);
 
 	/**
 	 * The best axe you own and can actually swing.
@@ -963,11 +969,20 @@ public class RunLoadout
 	 * The diving gear, without which the underwater patches are not so much far as sealed.
 	 *
 	 * <p>Giant seaweed grows under Fossil Island and the coral nurseries under the Great
-	 * Conch, and both areas want the fishbowl helmet and diving apparatus worn to enter —
-	 * except the reef, which the Medallion of the deep reaches on its own. A coral-only run
-	 * with the medallion in hand is therefore asked for nothing else; every other underwater
-	 * run gets the two-piece suit as rows, in the same category as the axe because the trip
-	 * genuinely cannot proceed without them.
+	 * Conch, and the fishbowl helmet and diving apparatus are worn for both. What they do
+	 * differs, and the rows say so rather than repeating one sentence: the nurseries cannot be
+	 * entered without them at all, while Fossil Island lets anyone dive and drains an oxygen
+	 * bar until they drown. Either way the run is held for them — a seaweed trip that washes
+	 * you up on the surface half-way through the second patch is the wasted leg this list
+	 * exists to prevent — which is why both are in the axe's category.
+	 *
+	 * <h2>The medallion now settles either</h2>
+	 *
+	 * It used to settle only a coral-only run, on the wiki's word that the reef was the one
+	 * place it reached. That stopped being true in <b>May 2026</b>: it "now functions as
+	 * breathing apparatus throughout the Fossil Island underwater areas". So someone who
+	 * assembled one was still being sent to a bank for a fishbowl helmet they had replaced,
+	 * on a run this plugin could have said nothing about.
 	 */
 	private void addDivingGear(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
@@ -978,28 +993,32 @@ public class RunLoadout
 			return;
 		}
 
-		// The medallion covers the reef alone, so it only settles a run with no seaweed leg.
-		if (!seaweed && (carried.has(ItemID.MEDALLION_OF_THE_DEEP)
-			|| bank.has(ItemID.MEDALLION_OF_THE_DEEP)))
+		// One item in place of two, wherever the run is going. See the class note above.
+		if (carried.has(ItemID.MEDALLION_OF_THE_DEEP) || bank.has(ItemID.MEDALLION_OF_THE_DEEP))
 		{
 			items.add(new LoadoutItem(ItemID.MEDALLION_OF_THE_DEEP, "Medallion of the deep",
 				LoadoutItem.Category.TOOL,
 				need(carried.has(ItemID.MEDALLION_OF_THE_DEEP),
 					bank.has(ItemID.MEDALLION_OF_THE_DEEP), false), 0,
-				"Reaches the coral nurseries without the diving suit"));
+				"Breathing apparatus for every underwater patch, on its own - no suit needed"));
 			return;
 		}
 
+		// Both pieces or neither: they only keep the oxygen bar full together, so a row saying
+		// the helmet is sorted while the apparatus is silently missing would read as done.
+		String reason = coral
+			? "Worn to dive - the coral nurseries cannot be entered without it, and it keeps "
+				+ "your oxygen at 100% once you are down"
+			: "Worn to dive - anyone can enter, but without it your oxygen drains and you "
+				+ "drown part-way through the patches";
 		items.add(new LoadoutItem(ItemID.HUNDRED_PIRATE_DIVING_HELMET, "Fishbowl helmet",
 			LoadoutItem.Category.TOOL,
 			need(carried.has(ItemID.HUNDRED_PIRATE_DIVING_HELMET),
-				bank.has(ItemID.HUNDRED_PIRATE_DIVING_HELMET), false), 0,
-			"Worn to dive to the underwater patches - there is no other way in"));
+				bank.has(ItemID.HUNDRED_PIRATE_DIVING_HELMET), false), 0, reason));
 		items.add(new LoadoutItem(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK, "Diving apparatus",
 			LoadoutItem.Category.TOOL,
 			need(carried.has(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK),
-				bank.has(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK), false), 0,
-			"Worn to dive to the underwater patches - there is no other way in"));
+				bank.has(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK), false), 0, reason));
 	}
 
 	/**
@@ -1044,6 +1063,107 @@ public class RunLoadout
 			"One per grape patch - the vinery soil is treated with saltpetre before every "
 				+ "planting",
 			LoadoutItem.From.BANK));
+	}
+
+	/** The bin run's fill and ash choices. See {@code CompostRunStore}. */
+	private final com.dooglemaps.state.CompostRunStore compostRun;
+
+	/**
+	 * What a compost-bin run takes to the bank: the fill, the ash, and something to carry the
+	 * compost out in.
+	 *
+	 * <p>All three are {@link LoadoutItem.Category#COMPOST}, which is in
+	 * {@code CANNOT_PROCEED_WITHOUT} - a bin stop reached without its fill achieves nothing
+	 * there, the same shape of wasted trip as a seedless patch.
+	 *
+	 * <p>The fill is counted <b>un-noted in the pack</b>, deliberately: a bin takes no notes,
+	 * so noted produce in the inventory is no closer to usable than produce in the bank. That
+	 * also makes the quantity an honest warning about pack space - fifteen items is most of an
+	 * inventory, and the tooltip says so rather than letting the stop reveal it.
+	 */
+	private void addCompostBinSupplies(List<LoadoutItem> items, Set<PatchImplementation> types)
+	{
+		com.dooglemaps.route.RunPlanner.BinWork work = planner.binWork(types);
+		if (work.readyBins == 0 && work.fillableBins == 0)
+		{
+			return;
+		}
+
+		int fill = compostRun.getFillItem();
+		if (fill != com.dooglemaps.state.CompostRunStore.NO_FILL && work.fillItems > 0)
+		{
+			int carriedCount = carried.getInventoryCount(fill);
+			int held = bank.getCount(fill) + carriedCount;
+			items.add(new LoadoutItem(fill,
+				itemNames.get(fill, "Bin fill"), LoadoutItem.Category.COMPOST,
+				carriedCount >= work.fillItems ? LoadoutItem.Need.HAVE
+					: held > 0 ? LoadoutItem.Need.WITHDRAW
+					: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
+				work.fillItems,
+				Math.max(0, Math.min(work.fillItems, held) - carriedCount),
+				"Fills " + work.fillableBins
+					+ (work.fillableBins == 1 ? " compost bin" : " compost bins")
+					+ " - un-noted, so it is " + work.fillItems + " pack slots",
+				LoadoutItem.From.BANK));
+		}
+
+		if (compostRun.isAshing() && work.ashNeeded > 0)
+		{
+			int ash = com.dooglemaps.data.CompostBin.VOLCANIC_ASH;
+			int carriedAsh = carried.getInventoryCount(ash);
+			int heldAsh = bank.getCount(ash) + carriedAsh;
+			items.add(new LoadoutItem(ash, "Volcanic ash", LoadoutItem.Category.COMPOST,
+				carriedAsh >= work.ashNeeded ? LoadoutItem.Need.HAVE
+					: heldAsh > 0 ? LoadoutItem.Need.WITHDRAW
+					: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
+				work.ashNeeded,
+				Math.max(0, Math.min(work.ashNeeded, heldAsh) - carriedAsh),
+				"Upgrades the ready bins of supercompost to ultracompost - 25 a bin, 50 for "
+					+ "the big one, and only while the compost is still in the bin",
+				LoadoutItem.From.BANK));
+		}
+
+		if (work.readyBuckets > 0)
+		{
+			addCompostCarriers(items, work);
+		}
+	}
+
+	/**
+	 * Something to carry the finished compost out in: the bottomless bucket when the account
+	 * owns one, the leprechaun's empties otherwise.
+	 *
+	 * <p>The bottomless wins outright - one slot for a whole bin against fifteen - and someone
+	 * who owns one gets no bucket row at all, because the empties would be dead weight beside
+	 * it. Without one, the buckets are the leprechaun's problem: he stores a thousand and
+	 * stands beside every bin, so the row only sends anyone to a bank when his store has none.
+	 */
+	private void addCompostCarriers(List<LoadoutItem> items,
+		com.dooglemaps.route.RunPlanner.BinWork work)
+	{
+		boolean bottomlessCarried = carried.hasAny(ItemID.BOTTOMLESS_COMPOST_BUCKET,
+			ItemID.BOTTOMLESS_COMPOST_BUCKET_FILLED);
+		boolean bottomlessBanked = bank.has(ItemID.BOTTOMLESS_COMPOST_BUCKET)
+			|| bank.has(ItemID.BOTTOMLESS_COMPOST_BUCKET_FILLED);
+		if (bottomlessCarried || bottomlessBanked)
+		{
+			items.add(new LoadoutItem(ItemID.BOTTOMLESS_COMPOST_BUCKET,
+				"Bottomless compost bucket", LoadoutItem.Category.COMPOST,
+				bottomlessCarried ? LoadoutItem.Need.HAVE : LoadoutItem.Need.WITHDRAW, 0,
+				"Empties a whole bin into one slot - no ordinary buckets needed"));
+			return;
+		}
+
+		int emptiesCarried = carried.getInventoryCount(ItemID.BUCKET_EMPTY);
+		items.add(new LoadoutItem(ItemID.BUCKET_EMPTY, "Empty bucket",
+			LoadoutItem.Category.COMPOST,
+			emptiesCarried >= work.readyBuckets ? LoadoutItem.Need.HAVE
+				: leprechaun.has(FarmingTool.EMPTY_BUCKET) ? LoadoutItem.Need.AT_LEPRECHAUN
+				: need(false, bank.has(ItemID.BUCKET_EMPTY), false),
+			work.readyBuckets,
+			"One per compost coming out of the ready "
+				+ (work.readyBins == 1 ? "bin" : (work.readyBins + " bins"))
+				+ " - the leprechaun beside the bin stores them, so they are collected there"));
 	}
 
 	/**

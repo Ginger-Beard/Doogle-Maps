@@ -108,6 +108,50 @@ public enum GuideAction
 	RETURN_BUCKETS("Return empty buckets"),
 
 	/**
+	 * Use volcanic ash on a ready bin of supercompost, turning the whole thing to ultracompost.
+	 *
+	 * <p>Its place in the order is the entire reason it exists as a step: 25 ash (50 in the big
+	 * bin) upgrades every compost still <b>in</b> the bin, where a filled bucket costs 2 ash on
+	 * its own — so the ash has to go on before the first bucket comes out, and a step is how a
+	 * guide says "now, not later". See {@code CompostBinPlan}.
+	 */
+	APPLY_ASH("Add volcanic ash"),
+
+	/**
+	 * Take the finished compost out of the bin, into empty buckets or the bottomless one.
+	 *
+	 * <p>Not {@link #HARVEST}: a bin is not picked, the click needs containers in the pack, and
+	 * what it leaves behind is an empty bin to refill rather than an empty patch to plant.
+	 */
+	EMPTY_BIN("Empty the bin"),
+
+	/**
+	 * Hand the <b>filled</b> compost buckets to the leprechaun, into his store.
+	 *
+	 * <p>The other direction from {@link #WITHDRAW_COMPOST}, and the companion of
+	 * {@link #RETURN_BUCKETS}: he stores a thousand of each tier, every farming area has him
+	 * standing by, and compost carried onward is slots spent on something he hands back
+	 * anywhere. Happens in his interface, on your side of it, like the bucket return.
+	 */
+	DEPOSIT_COMPOST("Store the compost"),
+
+	/**
+	 * Put the chosen produce into the bin — fifteen items, thirty in the big one.
+	 *
+	 * <p>Un-noted, which is the game's rule and the reason the loadout warns about pack space:
+	 * a bin's fill is most of an inventory on its own.
+	 */
+	FILL_BIN("Fill the bin"),
+
+	/**
+	 * Close a full bin's lid, which is what starts the composting.
+	 *
+	 * <p>A step of its own because forgetting it is the classic bin mistake: a full open bin
+	 * composts nothing, forever, and looks exactly like one that is working.
+	 */
+	CLOSE_BIN("Close the bin"),
+
+	/**
 	 * Fetch the contract's seed from the bank or seed vault at this stop.
 	 *
 	 * <p>The guild keeps both a short walk from Jane, and a contract seed sitting in one of

@@ -129,6 +129,16 @@ The generator prints the counts it parsed; they should match the client sources:
 grep -c 'new FarmingPatch(' /tmp/rl-src/net/runelite/client/plugins/timetracking/farming/FarmingWorld.java
 ```
 
+**Two of the generated files have been edited by hand since, and the generator drops those edits
+silently** — `Produce.java` carries `isNotable()` and the ANYHERB display-name choice, and
+`PatchImplementation.java` around ninety lines more. The build still compiles without them. So
+after regenerating, keep only the file you meant to change:
+
+```bash
+git checkout HEAD -- src/main/java/com/dooglemaps/data/{Produce,PatchImplementation}.java
+git diff --stat src/main/java/com/dooglemaps/data/   # only the intended file should differ
+```
+
 `FarmingDataTest` asserts those counts and the shape of the tables, so a parsing regression fails
 the build rather than shipping. When a RuneLite update genuinely adds patches, that test fails on
 purpose — check the counts, then update the expected numbers.

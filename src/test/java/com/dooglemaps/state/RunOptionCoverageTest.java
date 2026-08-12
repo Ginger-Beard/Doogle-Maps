@@ -106,6 +106,20 @@ public class RunOptionCoverageTest
 		int firstPaired = -1;
 		for (int i = 0; i < options.size(); i++)
 		{
+			// The pinned tail is exempt: the compost bins and the contract are deliberately
+			// after every patch type — they are jobs rather than types, so they must not be
+			// found by scanning the type list. Everything after the first pinned line must be
+			// pinned too, or the tail has stopped being a tail.
+			if (isPinnedTail(options.get(i)))
+			{
+				for (int j = i; j < options.size(); j++)
+				{
+					assertTrue("a patch-type line after the pinned tail began: "
+						+ options.get(j).getLabel(), isPinnedTail(options.get(j)));
+				}
+				break;
+			}
+
 			boolean paired = regrows.contains(options.get(i).getType());
 			if (paired && firstPaired < 0)
 			{
@@ -116,6 +130,13 @@ public class RunOptionCoverageTest
 		}
 
 		assertTrue("no paired types at all", firstPaired > 0);
+	}
+
+	/** The lines pinned after the patch types: the compost bins, then the contract. */
+	private static boolean isPinnedTail(RunOption option)
+	{
+		return option.getGroup().isContract()
+			|| com.dooglemaps.data.CompostBin.forType(option.getType()) != null;
 	}
 
 	/** And nothing that does not regrow offers one — harvesting a herb once is just a run. */

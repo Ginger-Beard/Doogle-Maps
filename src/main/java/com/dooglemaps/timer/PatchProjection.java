@@ -168,7 +168,12 @@ public class PatchProjection
 			&& !stump
 			&& !isEmpty()
 			&& (patch.getImplementation() == PatchImplementation.TREE
-				|| patch.getImplementation() == PatchImplementation.HARDWOOD_TREE);
+				|| patch.getImplementation() == PatchImplementation.HARDWOOD_TREE
+				// The crystal tree's harvest IS the chop - core records its grown menu as
+				// "Crystal tree[Chop-down]" - and it is the one tree that leaves nothing
+				// behind: "harvested and removed at the same time; no stump remains", so the
+				// patch is empty on the next tick and the stump branch never fires.
+				|| patch.getImplementation() == PatchImplementation.CRYSTAL_TREE);
 	}
 
 	/**
