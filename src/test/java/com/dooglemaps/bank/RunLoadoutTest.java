@@ -77,6 +77,9 @@ public class RunLoadoutTest
 
 	/** The planner's own run-options mock, so a test can tick the compost line for routing. */
 	private com.dooglemaps.state.RunTypeStore plannerRunOptions;
+
+	/** The boats' cargo holds, empty until a test stows something. */
+	private com.dooglemaps.bank.BoatHolds boatHolds;
 	private SeedInventoryStore seeds;
 	private com.dooglemaps.DoogleMapsConfig config;
 
@@ -176,7 +179,8 @@ public class RunLoadoutTest
 
 		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
 			toolNeeds, leprechaun, protection, itemNames, config, tickingClient(), runTypes,
-			contracts, compostRun = Mockito.mock(com.dooglemaps.state.CompostRunStore.class));
+			contracts, compostRun = Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
+			boatHolds = construct(com.dooglemaps.bank.BoatHolds.class, configManager, gson));
 	}
 
 	/**
@@ -653,7 +657,8 @@ public class RunLoadoutTest
 	public void anEmptyBinBanksItsFill()
 	{
 		binAt(0);
-		when(compostRun.getFillItem()).thenReturn(ItemID.PINEAPPLE);
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
 		names.put(ItemID.PINEAPPLE, "Pineapple");
 		bankHolds(ItemID.PINEAPPLE, 40);
 
@@ -661,7 +666,77 @@ public class RunLoadoutTest
 		assertNotNull("the fill is what the bin trip is for", fill);
 		assertEquals(LoadoutItem.Need.WITHDRAW, fill.getNeed());
 		assertEquals("a normal bin takes fifteen", 15, fill.getQuantity());
-		assertEquals(LoadoutItem.Category.COMPOST, fill.getCategory());
+		assertEquals("bulk produce the trip is for, so it lays out with the seeds",
+			LoadoutItem.Category.BIN_FILL, fill.getCategory());
+	}
+
+	/**
+	 * The fill row asks for one pack-load, never the run's whole total.
+	 *
+	 * <p>Bins take their fill un-noted and nothing supercompostable stacks, so the item count
+	 * IS the slot count - and a run over every empty bin wants far more than an inventory
+	 * holds. It asked for all of it, which drove the bank highlight's withdraw count too.
+	 */
+	@Test
+	public void theFillNeverExceedsOnePackLoad()
+	{
+		binAt(0);
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 500);
+
+		LoadoutItem fill = itemNamed(BINS, "Pineapple");
+		assertNotNull(fill);
+		assertTrue("asked for " + fill.getQuantity() + ", which no inventory holds",
+			fill.getQuantity() <= com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE);
+		assertTrue("and the withdraw count follows it",
+			fill.getWithdrawCount() <= com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE);
+	}
+
+	/**
+	 * The guild's big bin can be supplied, even though no pack holds a full fill.
+	 *
+	 * <p>The reported dead end: a compost-only run at the Farming Guild, whose ONLY bin is the
+	 * big one at thirty un-noted items against twenty-eight slots. Rounding the ask down to
+	 * whole bins gave zero every time, so the row went MISSING, the supply leg it gates never
+	 * completed, and the run stood at the bank being told to fetch what it could not hold.
+	 */
+	@Test
+	public void theBigBinIsSuppliableEvenThoughAPackCannotHoldAFullFill()
+	{
+		bigBinAt(0);
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 500);
+
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.BIG_COMPOST);
+		LoadoutItem fill = itemNamed(bins, "Pineapple");
+		assertNotNull("the big bin still wants supplying", fill);
+		assertEquals("not missing - it is a withdrawal a pack can actually make",
+			LoadoutItem.Need.WITHDRAW, fill.getNeed());
+		assertTrue("and it asks for a packful: " + fill.getQuantity(),
+			fill.getQuantity() > 0
+				&& fill.getQuantity() <= com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE);
+		assertTrue("saying why it takes two trips: " + fill.getReason(),
+			fill.getReason().contains("two trips"));
+	}
+
+	/** A bin at a chosen varbit in the guild, ticked into the run. */
+	private void bigBinAt(int varbitValue)
+	{
+		FarmPatch bin = FarmingWorldData.getPatches(PatchImplementation.BIG_COMPOST).get(0);
+		assertNotNull("no big compost bin in the generated world data", bin);
+		ProduceState decoded = bin.getImplementation().forVarbitValue(varbitValue);
+		assertNotNull(decoded);
+		patches.recordVarbit(bin, varbitValue, decoded);
+		availability.setAvailable(bin, true);
+
+		when(plannerRunOptions.isSelected(
+			com.dooglemaps.data.RunOption.full(
+				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
 	}
 
 	/** With no fill chosen there is no fill row - and no guessing at one. */
@@ -669,8 +744,7 @@ public class RunLoadoutTest
 	public void noFillChosenMeansNoFillRow()
 	{
 		binAt(0);
-		when(compostRun.getFillItem())
-			.thenReturn(com.dooglemaps.state.CompostRunStore.NO_FILL);
+		when(compostRun.getFills()).thenReturn(java.util.Collections.emptyList());
 		names.put(ItemID.PINEAPPLE, "Pineapple");
 		bankHolds(ItemID.PINEAPPLE, 40);
 
@@ -1580,6 +1654,60 @@ public class RunLoadoutTest
 		assertNotNull("the medallion is the whole requirement",
 			itemNamed(types, "Medallion of the deep"));
 		assertNull("so the suit is not asked for", itemNamed(types, "Fishbowl helmet"));
+	}
+
+	/**
+	 * Diving gear stowed on a boat is owned, not missing.
+	 *
+	 * <p>The reported false alarm: "skipping fishbowl helmet, diving apparatus - you have none"
+	 * to a player whose gear was in a cargo hold. A hold stores diving gear taking <b>no space
+	 * at all</b> and it is then "accessible from all boats when stored in any of them", so a
+	 * hold is exactly where a sailing player leaves it — and the loadout was looking only in
+	 * the bank and the pack.
+	 */
+	@Test
+	public void divingGearInACargoHoldIsNotReportedMissing()
+	{
+		readyPatchOf(PatchImplementation.CORAL);
+		stowOnBoat(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_HELMET);
+		stowOnBoat(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_BACKPACK);
+
+		Set<PatchImplementation> coral = EnumSet.of(PatchImplementation.CORAL);
+		LoadoutItem helmet = itemNamed(coral, "Fishbowl helmet");
+		assertNotNull(helmet);
+		assertEquals("it is on the boat, which is where it needs to be",
+			LoadoutItem.Need.ON_BOAT, helmet.getNeed());
+		assertEquals(LoadoutItem.Need.ON_BOAT,
+			itemNamed(coral, "Diving apparatus").getNeed());
+	}
+
+	/** With nothing stowed and a bank that has been read, missing is still the honest answer. */
+	@Test
+	public void divingGearNowhereIsStillMissing()
+	{
+		readyPatchOf(PatchImplementation.CORAL);
+		bankHolds(ItemID.RAKE, 1);   // so the bank counts as seen
+
+		assertEquals(LoadoutItem.Need.MISSING,
+			itemNamed(EnumSet.of(PatchImplementation.CORAL), "Fishbowl helmet").getNeed());
+	}
+
+	/** Carried still beats stowed - there is nothing to collect if it is already on you. */
+	@Test
+	public void carriedDivingGearOutranksTheHold()
+	{
+		readyPatchOf(PatchImplementation.CORAL);
+		stowOnBoat(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_HELMET);
+		carrying(net.runelite.api.gameval.ItemID.HUNDRED_PIRATE_DIVING_HELMET, 1);
+
+		assertEquals(LoadoutItem.Need.HAVE,
+			itemNamed(EnumSet.of(PatchImplementation.CORAL), "Fishbowl helmet").getNeed());
+	}
+
+	/** Puts an item in a boat's cargo hold, through the store's own recording path. */
+	private void stowOnBoat(int itemId)
+	{
+		boatHolds.record(containerOf(itemId, 1));
 	}
 
 	/**

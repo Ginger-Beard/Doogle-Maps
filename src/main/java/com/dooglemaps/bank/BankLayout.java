@@ -104,13 +104,18 @@ public final class BankLayout
 	 * the secateurs, the outfit and the seed box are one handful of things you either have or go
 	 * and get. Compost is in with them because it usually comes from the leprechaun and only
 	 * appears here at all when he is out of it.
+	 *
+	 * <p>A compost bin's <b>fill</b> is not compost and does not go there. Fifteen pineapples are
+	 * bulk produce the trip is for, in a quantity, exactly as a seed is — so they sit with the
+	 * seeds. See {@link LoadoutItem.Category#BIN_FILL}.
 	 */
 	private static final Map<Character, Set<LoadoutItem.Category>> GROUPS = new LinkedHashMap<>();
 
 	static
 	{
 		GROUPS.put('T', EnumSet.of(LoadoutItem.Category.TELEPORT));
-		GROUPS.put('S', EnumSet.of(LoadoutItem.Category.SEED));
+		GROUPS.put('S', EnumSet.of(LoadoutItem.Category.SEED,
+			LoadoutItem.Category.BIN_FILL));
 		GROUPS.put('P', EnumSet.of(LoadoutItem.Category.PAYMENT));
 		GROUPS.put('G', EnumSet.of(LoadoutItem.Category.TOOL, LoadoutItem.Category.GEAR,
 			LoadoutItem.Category.STORAGE, LoadoutItem.Category.COMPOST));
@@ -260,6 +265,13 @@ public final class BankLayout
 			claimed.addAll(slots);
 		}
 
+		// An item genuinely can belong to two regions at once — poison ivy berries fill a
+		// compost bin AND pay the calquat gardener, and a run doing both wants it in both
+		// places. Bank Tags supports that outright: its own layouts have a "Duplicate item"
+		// menu option, Layout.count(id) exists precisely to spot ids placed more than once,
+		// and its drawItem renders every slot from the bank's own count — which is how a
+		// combat layout shows the same food in several places. So no cross-region
+		// deduplication happens here.
 		for (Map.Entry<Character, Set<LoadoutItem.Category>> group : GROUPS.entrySet())
 		{
 			List<Integer> slots = regions.get(group.getKey());
@@ -408,8 +420,17 @@ public final class BankLayout
 	/**
 	 * The item ids in these categories, in loadout order and without repeats.
 	 *
-	 * <p>Deduplicated because the same id in two slots is not a layout Bank Tags can honour — the
-	 * second placement wins and the first becomes a hole.
+	 * <p>Deduplicated <b>within a region</b> only, so one purpose cannot claim two slots for the
+	 * same thing — two payment rows naming the same berry are one slot's worth of berries.
+	 *
+	 * <p>Deliberately NOT deduplicated across regions, and the comment here used to say the
+	 * opposite: that "the same id in two slots is not a layout Bank Tags can honour". That is
+	 * untrue. Bank Tags has a <i>Duplicate item</i> menu option for putting one id in a layout
+	 * repeatedly, {@code Layout.count(id)} exists to find ids placed more than once, and its
+	 * {@code drawItem} fills every slot from the bank's own count — which is how a combat
+	 * layout shows the same food in several places. An item that is both a bin fill and a
+	 * protection payment therefore appears under both headings, which is what a player doing
+	 * both wants to see.
 	 *
 	 * @param banked the bank's contents, or null to place every item regardless of whether it is
 	 *               there; see {@link #build(List, String, Set)}

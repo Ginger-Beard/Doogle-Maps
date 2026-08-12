@@ -44,6 +44,58 @@ public class CompostablesTest
 		}
 	}
 
+	/**
+	 * The ordinary list carries what the super one deliberately excludes.
+	 *
+	 * <p>The cut-off is the interesting claim on both sides: a guam makes ordinary compost
+	 * however many go in, and the panel offers it because an account with no pineapples still
+	 * has a hundred of them.
+	 */
+	@Test
+	public void theOrdinaryListPicksUpWhereTheSuperOneStops()
+	{
+		for (int item : new int[]{ItemID.GUAM_LEAF, ItemID.UNIDENTIFIED_GUAM, ItemID.POTATO,
+			ItemID.ONION, ItemID.CABBAGE, ItemID.BARLEY, ItemID.MARIGOLD, ItemID.LEAVES})
+		{
+			assertTrue(item + " should make ordinary compost",
+				Compostables.isOrdinaryCompostable(item));
+			assertFalse(item + " is not supercompostable",
+				Compostables.isSuperCompostable(item));
+		}
+	}
+
+	/** Two items that read as though they ought to be super, and are not. */
+	@Test
+	public void giantSeaweedAndPotatoCactusAreOnlyOrdinary()
+	{
+		for (int item : new int[]{ItemID.GIANT_SEAWEED, ItemID.CACTUS_POTATO})
+		{
+			assertTrue(Compostables.isOrdinaryCompostable(item));
+			assertFalse("high-level produce, ordinary compost",
+				Compostables.isSuperCompostable(item));
+		}
+	}
+
+	/** Nothing is on both lists, or the panel would draw it twice. */
+	@Test
+	public void theTwoListsDoNotOverlap()
+	{
+		for (int item : Compostables.superCompostables())
+		{
+			assertFalse(item + " is on both lists",
+				Compostables.isOrdinaryCompostable(item));
+		}
+	}
+
+	/** Either tier counts as compostable; a scimitar counts as neither. */
+	@Test
+	public void compostableCoversBothTiersAndNothingElse()
+	{
+		assertTrue(Compostables.isCompostable(ItemID.PINEAPPLE));
+		assertTrue(Compostables.isCompostable(ItemID.POTATO));
+		assertFalse(Compostables.isCompostable(ItemID.RUNE_SCIMITAR));
+	}
+
 	/** Fifteen tomatoes give fifteen rotten tomatoes and no compost at all. */
 	@Test
 	public void theTomatoTrapIsKnownAbout()
@@ -52,6 +104,8 @@ public class CompostablesTest
 		assertFalse("and it is the only one", Compostables.isRottenTomatoTrap(ItemID.CABBAGE));
 		assertFalse("a tomato is not supercompostable either",
 			Compostables.isSuperCompostable(ItemID.TOMATO));
+		assertTrue("but it IS ordinary-compostable - only an all-tomato bin is wasted",
+			Compostables.isOrdinaryCompostable(ItemID.TOMATO));
 	}
 
 	/** A selector built off this needs a stable order and no duplicates. */

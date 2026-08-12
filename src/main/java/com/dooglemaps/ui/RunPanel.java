@@ -409,57 +409,53 @@ class RunPanel extends JPanel
 	}
 
 	/**
-	 * Lays the run options out two across, with each pair on its own row.
+	 * Lays the run lines out in two columns, read <b>down</b> rather than across.
 	 *
-	 * <h2>Why the grid needs help</h2>
+	 * <h2>Column order, because that is how an alphabetical list is read</h2>
 	 *
-	 * A {@code GridLayout} fills row by row, so a list containing three pairs and seven singles
-	 * puts them wherever the count happens to land — "Fruit tree" ended up in the left column with
-	 * "Fruit tree (H/O)" in the right of the <i>same</i> row only by luck, while "Bush" and
-	 * "Bush (H/O)" straddled a row break. The two halves of one decision read as unrelated
-	 * entries.
+	 * A {@code GridLayout} fills row by row, so the alphabet ran Allotment, Anima across the
+	 * first row and Belladonna, Bush across the second — the names went sideways while the eye
+	 * went down, which makes a sorted list no faster to search than an unsorted one. The
+	 * components are therefore placed transposed: the left column holds the first half of the
+	 * list top to bottom, the right column the second.
 	 *
-	 * <p>So a pair is pushed to the start of a row, padding the gap it leaves. It rarely has to:
-	 * {@code PlantingGroups.runOptions} now groups the paired types at the end of the list, so the
-	 * singles fill whole rows ahead of them and there is at most one gap to pad. The padding stays
-	 * because the layout must not depend on that ordering holding — switching a patch type off in
-	 * the settings changes how many singles there are.
+	 * <h2>And it removes the gaps</h2>
+	 *
+	 * The previous version started a fresh row for every full-and-harvest-only pair so the two
+	 * halves sat side by side, padding the hole with an empty cell — which is the blank the
+	 * owner spotted beside Belladonna. Down a column a pair is naturally adjacent, one directly
+	 * under the other, so the padding is gone and with it every mid-list gap. At most one cell
+	 * is ever empty now: the bottom of the right column, when the count is odd.
 	 */
 	private void buildTypeBoxes()
 	{
 		List<RunOption> options = offeredOptions();
-		int column = 0;
-
-		for (RunOption option : options)
+		if (options.isEmpty())
 		{
-			// A harvest-only line is drawn as part of its pair, when the full line reaches it.
-			if (option.isHarvestOnly())
-			{
-				continue;
-			}
+			return;
+		}
 
-			RunOption paired = hasHarvestOnly(options, option)
-				? RunOption.harvestOnly(option.getGroup())
-				: null;
+		// Half the list, rounded up, so an odd count leaves the shorter column on the right.
+		int rows = (options.size() + 1) / 2;
 
-			// Start a fresh row for a pair, so the two halves are side by side rather than
-			// wrapped across the break. The contract gets one for the same reason a pair does —
-			// it is the one line that is not a patch type, and sharing a row with the tail of the
-			// list is what makes it read as another of them.
-			if ((paired != null || option.getGroup().isContract()) && column == 1)
-			{
-				typeSelection.add(filler());
-				column = 0;
-			}
+		// ...unless the split would land between a pair, which puts the full run at the foot of
+		// the left column and its harvest-only line at the head of the right. That is the one
+		// arrangement the pairing exists to prevent: two lines about the same patches, as far
+		// apart as the grid can put them. One extra row keeps them together, and costs at most
+		// one more blank cell. Found by the hidden-types test rather than by inspection — with
+		// bushes and cactus switched off, the boundary fell exactly between the fruit trees.
+		if (rows < options.size() && options.get(rows).isHarvestOnly())
+		{
+			rows++;
+		}
+		for (int row = 0; row < rows; row++)
+		{
+			typeSelection.add(optionBox(options.get(row)));
 
-			addOptionBox(option);
-			column = (column + 1) % 2;
-
-			if (paired != null)
-			{
-				addOptionBox(paired);
-				column = (column + 1) % 2;
-			}
+			int second = row + rows;
+			typeSelection.add(second < options.size()
+				? optionBox(options.get(second))
+				: filler());
 		}
 	}
 
@@ -492,13 +488,34 @@ class RunPanel extends JPanel
 		return offered;
 	}
 
-	/** Whether this full-run line has a harvest-only counterpart on offer. */
-	private static boolean hasHarvestOnly(List<RunOption> options, RunOption full)
+
+	/** The sidebar's ordinary text colour, for a line that is part of the run. */
+	private static final java.awt.Color TICKED_TEXT = new java.awt.Color(0xDC, 0xDC, 0xDC);
+
+	/** Dimmed, but deliberately still readable — an unticked line is what you click. */
+	private static final java.awt.Color UNTICKED_TEXT = new java.awt.Color(0x8A, 0x8A, 0x8A);
+
+	/**
+	 * Greys a line that is not part of the run.
+	 *
+	 * <h2>Why the list needs it now and did not before</h2>
+	 *
+	 * Every patch type is runnable, so the list is long and mostly unticked for any one player
+	 * — a tree rotation and a herb circuit are different weeks. Drawn at one weight the ticked
+	 * lines had to be found by reading the boxes, which is exactly the scan the alphabetical
+	 * order was meant to remove. Dimming makes the run readable at a glance and leaves the
+	 * unticked lines legible rather than hidden, which matters because they are what you click
+	 * to change it.
+	 *
+	 * <p>Re-applied on every toggle as well as at build time, so a line lightens the moment it
+	 * is ticked rather than at the next rebuild.
+	 */
+	private static void dimIfUnticked(JCheckBox box)
 	{
-		return options.contains(RunOption.harvestOnly(full.getGroup()));
+		box.setForeground(box.isSelected() ? TICKED_TEXT : UNTICKED_TEXT);
 	}
 
-	/** An empty cell, so the next pair starts a row. */
+	/** An empty cell, for the odd one out at the foot of the right column. */
 	private JPanel filler()
 	{
 		JPanel blank = new JPanel();
@@ -506,7 +523,7 @@ class RunPanel extends JPanel
 		return blank;
 	}
 
-	private void addOptionBox(RunOption option)
+	private JCheckBox optionBox(RunOption option)
 	{
 		{
 			// Ticked from the saved run, so the same circuit does not have to be re-entered
@@ -515,6 +532,7 @@ class RunPanel extends JPanel
 			box.setBackground(getBackground());
 			Controls.styleCheckBox(box);
 			box.setFont(FontManager.getRunescapeSmallFont());
+			dimIfUnticked(box);
 			// The label is abbreviated to fit two columns, so the tooltip carries the meaning
 			// rather than merely elaborating on it.
 			box.setToolTipText(option.isHarvestOnly()
@@ -523,6 +541,7 @@ class RunPanel extends JPanel
 				: null);
 			box.addActionListener(e ->
 			{
+				dimIfUnticked(box);
 				if (box.isSelected())
 				{
 					untick(counterpartOf(option));
@@ -534,7 +553,7 @@ class RunPanel extends JPanel
 				refresh();
 			});
 			optionBoxes.put(option, box);
-			typeSelection.add(box);
+			return box;
 		}
 	}
 
@@ -563,6 +582,13 @@ class RunPanel extends JPanel
 		if (other != null && other.isSelected())
 		{
 			other.setSelected(false);
+			// And re-dim it by hand, because setSelected does NOT fire an ActionListener —
+			// only the box the player actually clicked runs the handler that recolours it. So
+			// the counterpart went grey-less: unticked and still drawn bright. Reported from
+			// play as "Bush and Cactus always stay bright when unchecked", which named the
+			// mechanism without meaning to: the paired types are the only ones this method is
+			// ever called for.
+			dimIfUnticked(other);
 		}
 	}
 
@@ -723,7 +749,11 @@ class RunPanel extends JPanel
 				selected.add(option.getType());
 			}
 		});
-		return selected;
+		// A checkbox carries one type and the compost line means two, so the set the panel
+		// hands the planner — for the preview, the destination list, and the run it starts —
+		// has to be widened exactly as the store's own does. See
+		// CompostBin.coveredByTheBinTick, which exists because this copy was missing.
+		return com.dooglemaps.data.CompostBin.coveredByTheBinTick(selected);
 	}
 
 	private void toggleRun()
@@ -865,18 +895,19 @@ class RunPanel extends JPanel
 			return false;
 		}
 
-		// Both sizes, because the tick covers both — the checkboxes only ever carry the normal
-		// bin's type. See RunTypeStore.getSelected, which widens the same way.
 		Set<PatchImplementation> bins = EnumSet.noneOf(PatchImplementation.class);
 		for (PatchImplementation type : types)
 		{
 			if (com.dooglemaps.data.CompostBin.forType(type) != null)
 			{
-				bins.add(PatchImplementation.COMPOST);
-				bins.add(PatchImplementation.BIG_COMPOST);
+				bins.add(type);
 			}
 		}
-		return !bins.isEmpty() && planner.binWork(bins).fillableBins > 0;
+		// Widened for the same reason the panel's own type set is: the guild's bin is the big
+		// one, and asking only about the type the checkbox carries misses it.
+		return !bins.isEmpty()
+			&& planner.binWork(com.dooglemaps.data.CompostBin.coveredByTheBinTick(bins))
+				.fillableBins > 0;
 	}
 
 	/**

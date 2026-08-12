@@ -2074,7 +2074,7 @@ public class RunPlanner
 		}
 
 		Produce wanted = groups.contractCrop();
-		if (wanted == null)
+		if (wanted == null || !contractIsInTheRun(wanted))
 		{
 			return;
 		}
@@ -2126,6 +2126,35 @@ public class RunPlanner
 		{
 			collectForTheContract();
 		}
+	}
+
+	/**
+	 * Whether this run was actually asked to do the farming contract.
+	 *
+	 * <h2>The one contract path that never consulted the tick</h2>
+	 *
+	 * Everything else asks {@link #inTheRun}, which reads the contract group's own run option —
+	 * so a contract nobody ticked contributes no stops and no patches. {@link #reviewContract}
+	 * bypasses that entirely by design, because its job is to <b>adopt</b> a patch the plan did
+	 * not have: it tests the group and whether the patch is actionable, and neither of those
+	 * knows what the player asked for.
+	 *
+	 * <p>So a compost-only run at the Farming Guild adopted the guild's bush patch for an
+	 * assigned poison ivy contract, widened the run's types to match, and sent the player to a
+	 * supply point to collect a seed they had not asked to plant — "Contract needs collecting
+	 * for; routing to a supply point" in the log, on a run whose seed list was empty. Reported
+	 * from play, twice.
+	 *
+	 * <p>The contract's line only exists while one is assigned and its patch belongs to this
+	 * account, so an unticked answer covers both "there is no contract" and "there is one and
+	 * the player is ignoring it". {@code GuideTracker} gates its guild hold-back on the same
+	 * question.
+	 */
+	private boolean contractIsInTheRun(Produce wanted)
+	{
+		PatchImplementation type = wanted.getPatchImplementation();
+		return type != null && runOptions.isSelected(
+			com.dooglemaps.data.RunOption.full(PlantingGroup.contract(type)));
 	}
 
 	/**
@@ -2518,9 +2547,36 @@ public class RunPlanner
 		List<WorldPoint> targets = new ArrayList<>();
 		for (RunStop stop : remaining)
 		{
-			targets.addAll(stop.getRouteTargets(locations));
+			targets.addAll(routeTargetsFor(stop));
 		}
 		router.setTargets(targets, false, start);
+	}
+
+	/**
+	 * Where to send the router for one stop, diverting to a landward approach when it needs one.
+	 *
+	 * <h2>Only while the player is not already down there</h2>
+	 *
+	 * The coral nurseries are on the seabed and nothing can path to them, so the run asks for
+	 * the steps on the dock instead — see {@code UnderwaterApproach}. Kept as the target after
+	 * the dive, though, the router does exactly as it is told and plots a course back UP to the
+	 * dock, fairy rings and all. Reported from play. So the divert is asked of the player's
+	 * position too: on the dock it stands, and once they are underwater the patch speaks for
+	 * itself — at which point they are standing on it and no route is needed anyway.
+	 */
+	private java.util.List<WorldPoint> routeTargetsFor(RunStop stop)
+	{
+		for (FarmPatch patch : stop.getPatches())
+		{
+			com.dooglemaps.data.UnderwaterApproach.Approach approach =
+				com.dooglemaps.data.UnderwaterApproach.forPatch(patch);
+			if (com.dooglemaps.data.UnderwaterApproach.stillWanted(
+				approach, playerLocation.getRegionId()))
+			{
+				return java.util.Collections.singletonList(approach.getPoint());
+			}
+		}
+		return stop.getRouteTargets(locations);
 	}
 
 	/**

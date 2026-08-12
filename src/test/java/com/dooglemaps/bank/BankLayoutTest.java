@@ -30,6 +30,9 @@ public class BankLayoutTest
 	private static final int SEED_B = 5300;
 	private static final int PAYMENT = 5974;
 	private static final int GEAR = 5343;
+	private static final int FILL = 2114;
+	/** Stands in for poison ivy berries: a bin fill that is also a calquat payment. */
+	private static final int SHARED = 6018;
 
 	/** The default map puts each group where the class javadoc says it does. */
 	@Test
@@ -410,6 +413,63 @@ public class BankLayoutTest
 	private static int at(char column, int row)
 	{
 		return (row - 1) * BankLayout.COLUMNS + (column - 'A');
+	}
+
+	/**
+	 * A bin fill lays out with the seeds, not with the gear.
+	 *
+	 * <p>Fifteen pineapples are bulk produce the trip is for, in a quantity — the same shape
+	 * as a seed. Filed under {@code COMPOST} they landed in the gear block beside the axe and
+	 * the buckets, which is where the reported "compostable items in the gear section" came
+	 * from.
+	 */
+	@Test
+	public void aBinFillLaysOutWithTheSeeds()
+	{
+		List<LoadoutItem> items = loadout();
+		items.add(item(FILL, LoadoutItem.Category.BIN_FILL));
+
+		int[] layout = BankLayout.build(items, BankLayout.DEFAULT_MAP);
+
+		assertEquals("after the two seeds, still in the seed block",
+			FILL, layout[at('G', 1)]);
+	}
+
+	/**
+	 * An item that is both a bin fill and a protection payment appears under both.
+	 *
+	 * <p>Poison ivy berries fill a bin and pay the calquat gardener, and a run doing both
+	 * wants to see them in both places. Bank Tags supports an id appearing in a layout more
+	 * than once — it has a "Duplicate item" option of its own, {@code Layout.count} to find
+	 * such ids, and a {@code drawItem} that fills every slot from the bank's count, which is
+	 * how a combat layout shows the same food several times.
+	 */
+	@Test
+	public void anItemServingTwoPurposesAppearsInBothBlocks()
+	{
+		List<LoadoutItem> items = loadout();
+		items.add(item(SHARED, LoadoutItem.Category.BIN_FILL));
+		items.add(item(SHARED, LoadoutItem.Category.PAYMENT));
+
+		int[] layout = BankLayout.build(items, BankLayout.DEFAULT_MAP);
+
+		assertEquals("as a fill, with the seeds", SHARED, layout[at('G', 1)]);
+		assertEquals("and again as a payment, in the payment block",
+			SHARED, layout[at('F', 4)]);
+	}
+
+	/** Within one purpose it still takes a single slot - two payment rows, one lot of berries. */
+	@Test
+	public void oneItemTwiceForOnePurposeStillTakesOneSlot()
+	{
+		List<LoadoutItem> items = loadout();
+		items.add(item(SHARED, LoadoutItem.Category.PAYMENT));
+		items.add(item(SHARED, LoadoutItem.Category.PAYMENT));
+
+		int[] layout = BankLayout.build(items, BankLayout.DEFAULT_MAP);
+
+		assertEquals(SHARED, layout[at('F', 4)]);
+		assertEquals("not a second time in the same block", -1, layout[at('G', 4)]);
 	}
 
 	private static List<LoadoutItem> loadout()

@@ -105,6 +105,7 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 	 */
 	public synchronized java.util.List<WorldPoint> getRouteTargets(FarmPatch patch)
 	{
+
 		int[] exact = learned.get(patch.getKey());
 		WorldPoint centre = getLocation(patch);
 		int sizeX = exact != null && exact.length >= 5 ? exact[3] : ASSUMED_FOOTPRINT;

@@ -784,9 +784,29 @@ public class GuideTracker
 	private List<FarmPatch> contractComesFirst(RunStop stop, List<FarmPatch> ordered)
 	{
 		if (!config.guideFarmingContracts()
-			|| stop.getRegion().getRegionId() != ContractState.FARMING_GUILD_REGION)
+			|| stop.getRegion().getRegionId() != ContractState.FARMING_GUILD_REGION
+			// ...and only for a run that is actually doing the contract. The hold-back exists
+			// to stop an ordinary crop being planted in ground the contract needs, which is
+			// nobody's problem on a run that never ticked the contract line. With none
+			// assigned it went further and held back the WHOLE guild — a compost-only run
+			// stood at the guild bank and was offered nothing at all, because the guild was
+			// being kept clear for a contract the player had not asked for. Reported from play.
+			|| !contractIsInTheRun())
 		{
 			return ordered;
+		}
+
+		// A compost bin is never held back, whatever the contract is doing. Jane cannot assign
+		// one, so it competes for no ground — and it is the one thing at the guild worth doing
+		// first regardless, because emptying it frees the pack and restocks the compost. See
+		// binsFirst.
+		List<FarmPatch> bins = new ArrayList<>();
+		for (FarmPatch patch : ordered)
+		{
+			if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) != null)
+			{
+				bins.add(patch);
+			}
 		}
 
 		List<FarmPatch> claimed = new ArrayList<>();
@@ -803,7 +823,7 @@ public class GuideTracker
 		// contract she gives out has its patch still free to plant in.
 		if (claimed.isEmpty())
 		{
-			return contracts.hasContract() ? ordered : java.util.Collections.emptyList();
+			return contracts.hasContract() ? ordered : bins;
 		}
 
 		// A contract patch with work left, or a reward still to collect, is the only thing on
@@ -816,6 +836,7 @@ public class GuideTracker
 
 		if (!outstanding)
 		{
+			// (the bins are added back below whichever way this goes)
 			// Said out loud, once per state, because this branch firing wrongly is invisible
 			// from in front of the client: the guild simply offers its herbs, and a contract
 			// patch that still wants chopping reads as the plugin having wandered off.
@@ -839,8 +860,97 @@ public class GuideTracker
 			logOnce("Contract business is settled here, so the guild is open to every patch: "
 				+ held);
 		}
-		return outstanding ? claimed : ordered;
+		if (!outstanding)
+		{
+			return ordered;
+		}
+
+		// The contract's own patches, plus any bin, which is never withheld - see above.
+		List<FarmPatch> offered = new ArrayList<>(bins);
+		for (FarmPatch patch : claimed)
+		{
+			if (!offered.contains(patch))
+			{
+				offered.add(patch);
+			}
+		}
+		return offered;
 	}
+
+	/**
+	 * Whether this run is actually doing the farming contract.
+	 *
+	 * <p>The contract's run line only exists while one is assigned and its patch belongs to
+	 * this account, so "not ticked" covers both "there is no contract" and "there is one and
+	 * the player is ignoring it". Either way the guild has no reason to be kept clear.
+	 */
+	private boolean contractIsInTheRun()
+	{
+		com.dooglemaps.data.PatchImplementation type = contracts.getActiveContractType();
+		return type != null && runTypes.isSelected(
+			com.dooglemaps.data.RunOption.full(
+				com.dooglemaps.data.PlantingGroup.contract(type)));
+	}
+
+	/**
+	 * Says, once per tier, that the run has fallen back to weaker compost.
+	 *
+	 * <h2>Why it is worth a line rather than a silent substitution</h2>
+	 *
+	 * Which bucket gets spent is a decision the player made on the tab, and a run quietly
+	 * spending a different one is the plugin overriding them without saying so. Running out of
+	 * ultracompost mid-run is ordinary — it is the tier people hoard and the one a bin cannot
+	 * make without volcanic ash — so the substitution is worth doing, and precisely because it
+	 * is worth doing it has to be visible.
+	 *
+	 * <p>The other half of the message is the fix: the bins are what make more, and a downgrade
+	 * is the moment that is worth knowing.
+	 *
+	 * <p>Once per tier rather than per patch. A herb run treats a dozen patches from one stack,
+	 * and a dozen identical lines is the shape of a spam bug.
+	 */
+	private void noteCompostDowngrade(PlantingGroup group, CompostTier wanted, CompostTier using)
+	{
+		if (!config.downgradeCompost() || wanted == null || using == wanted
+			|| using == CompostTier.NONE)
+		{
+			downgradedTo = null;
+			return;
+		}
+
+		String key = group.getKey() + "#" + wanted + "#" + using;
+		if (key.equals(announcedDowngrade))
+		{
+			return;
+		}
+		announcedDowngrade = key;
+		downgradedTo = using;
+
+		chat.queue(net.runelite.client.chat.QueuedMessage.builder()
+			.type(net.runelite.api.ChatMessageType.GAMEMESSAGE)
+			.runeLiteFormattedMessage(new net.runelite.client.chat.ChatMessageBuilder()
+				.append(java.awt.Color.ORANGE,
+					"Out of " + wanted.getDisplayName().toLowerCase() + " - treating with "
+						+ using.getDisplayName().toLowerCase()
+						+ " instead. Worth a compost bin run.")
+				.build())
+			.build());
+	}
+
+	/** The downgrade in force, for the infobox, or null when the run is using what was picked. */
+	@Nullable
+	private volatile CompostTier downgradedTo;
+
+	/** The tier the infobox should say the run has fallen back to, or null. */
+	@Nullable
+	public CompostTier compostDowngrade()
+	{
+		return config.downgradeCompost() ? downgradedTo : null;
+	}
+
+	/** The downgrade last announced, as {@code group#wanted#using}, so it is said once. */
+	@Nullable
+	private String announcedDowngrade;
 
 	/** The last thing said about the contract patch, so it is said once and not every tick. */
 	private String lastContractDiagnostic;
@@ -1941,6 +2051,35 @@ public class GuideTracker
 		return false;
 	}
 
+	/**
+	 * The landward steps for an underwater stop the run still has left, or null.
+	 *
+	 * <p>For the overlay. Answered from the planner's remaining stops rather than from the
+	 * current step, because there is no step for this: the router is routing to a shore and
+	 * the click that follows is a piece of travel, so it has to be markable on a travel leg.
+	 *
+	 * <p>Any remaining underwater stop counts, not the nearest — a run with one is a run
+	 * heading there eventually, and the steps only exist in the scene when the player is
+	 * already standing on the right shore, so an early outline is impossible anyway.
+	 */
+	@Nullable
+	public com.dooglemaps.data.UnderwaterApproach.Approach underwaterApproach()
+	{
+		for (RunStop stop : planner.getRemaining())
+		{
+			for (FarmPatch patch : stop.getPatches())
+			{
+				com.dooglemaps.data.UnderwaterApproach.Approach approach =
+					com.dooglemaps.data.UnderwaterApproach.forPatch(patch);
+				if (approach != null)
+				{
+					return approach;
+				}
+			}
+		}
+		return null;
+	}
+
 	/** The object the route's first hop goes through, or null. Live, like the transports. */
 	@Nullable
 	public String routeObjectName()
@@ -2328,6 +2467,12 @@ public class GuideTracker
 			? chosen
 			: Seed.forProduce(projection.getProduce());
 		boolean alreadyPaid = snapshot != null && snapshot.isPatchProtected();
+		// The tier the plan will actually use, asked here so the downgrade can be announced
+		// once rather than from inside a pure function called per patch per tick.
+		CompostTier wantedTier = compost.get(group);
+		noteCompostDowngrade(group, wantedTier,
+			GuidePlan.usableCompost(wantedTier, carried, leprechaun));
+
 		return GuidePlan.forPatch(projection,
 			snapshot == null ? null : snapshot.getCompost(),
 			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
@@ -2854,6 +2999,7 @@ public class GuideTracker
 		List<FarmPatch> ordered = new ArrayList<>(stop.getPatches());
 		ordered.sort((a, b) -> Integer.compare(distance(player, a), distance(player, b)));
 		contractFirst(ordered);
+		binsFirst(ordered);
 		return ordered;
 	}
 
@@ -2869,6 +3015,26 @@ public class GuideTracker
 	 * keeps the nearest-first order it had, and two contract patches — the guild's two allotments
 	 * are the only case — stay in distance order relative to each other.
 	 */
+	/**
+	 * Moves a compost bin to the very front of its stop.
+	 *
+	 * <p>Applied <b>after</b> {@link #contractFirst}, so it outranks even the contract, and the
+	 * owner's reasoning is about inventory rather than priority: emptying a bin frees the pack
+	 * and restocks the compost every other patch at that stop is about to want. Doing it last
+	 * means arriving at the herbs with fifteen slots of produce still in hand and no
+	 * ultracompost, which is the trip the bin was on the run to prevent.
+	 *
+	 * <p>It also costs nothing to be wrong about. A bin cannot be a contract's patch — Jane
+	 * never assigns one — and its work shares no tool, seed or payment with anything else at
+	 * the stop, so putting it first can never take a click away from another patch.
+	 */
+	private void binsFirst(List<FarmPatch> ordered)
+	{
+		ordered.sort((a, b) -> Boolean.compare(
+			com.dooglemaps.data.CompostBin.forType(b.getImplementation()) != null,
+			com.dooglemaps.data.CompostBin.forType(a.getImplementation()) != null));
+	}
+
 	private void contractFirst(List<FarmPatch> ordered)
 	{
 		// A finished contract still owns its patch. Guarding on hasContract() alone dropped the

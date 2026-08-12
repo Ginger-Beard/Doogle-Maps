@@ -113,7 +113,8 @@ public class ProfileResetTest
 		dailyTeleports = construct(DailyTeleports.class, configManager);
 
 		reset = construct(ProfileReset.class, patches, seeds, bonuses, patchLocations,
-			bankLocations, barbarianFarming, dailyTeleports);
+			bankLocations, barbarianFarming, dailyTeleports,
+			construct(com.dooglemaps.bank.BoatHolds.class, configManager, gson));
 	}
 
 	private static String key(InvocationOnMock invocation)

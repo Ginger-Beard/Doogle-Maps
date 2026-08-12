@@ -34,6 +34,17 @@ public class LoadoutItem
 		 */
 		AT_LEPRECHAUN,
 
+		/**
+		 * Stowed in a boat's cargo hold, so there is nothing to fetch from a bank.
+		 *
+		 * <p>{@link #AT_LEPRECHAUN}'s counterpart for the one pair of items that live at sea.
+		 * A hold stores diving gear taking no space at all and it is then reachable from every
+		 * boat you own, so a suit in a hold is as good as carried for a trip that sails — and
+		 * reporting it as missing, which is what looking only in the bank did, sent players
+		 * hunting for a helmet that was already where it needed to be.
+		 */
+		ON_BOAT,
+
 		/** Wanted, but nowhere we can see. Worth saying so rather than silently omitting. */
 		MISSING,
 
@@ -52,6 +63,19 @@ public class LoadoutItem
 	public enum Category
 	{
 		SEED("Seeds"),
+
+		/**
+		 * Produce going into a compost bin, as opposed to compost coming out of one.
+		 *
+		 * <p>Apart from {@link #COMPOST} because the two belong in different halves of a bank.
+		 * A bucket of ultracompost is gear — it comes from the leprechaun and sits with the
+		 * tools — while fifteen pineapples are what the trip is <i>for</i>, in the same sense a
+		 * seed is: bulk produce you go and get, in a quantity, that the stop achieves nothing
+		 * without. Filed under {@code COMPOST} they were laid out in the gear block, which is
+		 * where the reported "compostable items in the gear section" came from.
+		 */
+		BIN_FILL("Compost bin fill"),
+
 		COMPOST("Compost"),
 		PAYMENT("Protection payments"),
 		TOOL("Tools"),

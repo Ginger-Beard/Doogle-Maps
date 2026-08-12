@@ -1172,3 +1172,420 @@ SP is trying to have me use the ardougne cloak 3 to go to ardougne farm right no
 >   checkboxes only ever carry the normal bin's type, so a fillable big bin alone still earns
 >   the line.
 > Tests: CompostBinWarningTest (all four cases).
+
+scheduled a run for compost bins only, and only enabled the farming guild, and its telling me
+there isn't anything in this run, while standing at the farming guild (at the bank)
+> RESOLVED. The Farming Guild has NO ordinary compost bin - its only one is the BIG bin - and
+> the fold that turns the single "Compost bin" tick into both implementations existed in one
+> place only, RunTypeStore.getSelected. RunPanel builds its own type set straight from the
+> checkboxes (getSelectedTypes), so the preview, the destination list AND planner.start all
+> planned over COMPOST alone, which matches no patch anywhere in the guild. Everything read as
+> an empty run while the bin was standing in front of the player.
+> - The fold now lives on the data as CompostBin.coveredByTheBinTick, and both the store and
+>   the panel call it. Two copies of a rule like that drift, and the failure when they do is
+>   exactly this silent one.
+> - RunPanel.binsWantAFill (the "no fill picked" warning) used a third hand-rolled copy; it
+>   uses the shared one now too.
+> Test: RunPlannerTest.aGuildOnlyBinRunFindsTheBigBin pins both halves - the raw tick matching
+> nothing, and the widened set finding the bin.
+
+we're going to need to be a little smarter with our compost runs, we only have 28 inventory
+slots, they can't be noted
+> RESOLVED. Researched first, and one of the two assumptions was wrong: volcanic ash IS
+> stackable, so 25 or 50 of it is one slot and was never the problem. The fill produce is the
+> problem - a bin refuses notes and nothing on the supercompostable list stacks, so the item
+> count IS the slot count.
+> - Consequence worth writing down: THE BIG BIN CANNOT BE FILLED IN ONE TRIP. Thirty un-noted
+>   items against twenty-eight slots. (The wiki's one-trip trick, six baskets of apples, makes
+>   ORDINARY compost, so it does not help a supercompost fill.) CompostBin.fitsOneInventory
+>   states it and a test pins it.
+> - The loadout asked for the run's whole total - nine empty bins is 150 pineapples, an
+>   instruction nobody could follow, and it drove the bank highlight's withdraw count too. It
+>   now asks for one pack-load (the inventory less a slot for the ash when the upgrade is on)
+>   and says so: "As many as one trip holds ... your N bins want X items and a pack holds Y.
+>   The rest needs another load."
+> - The buckets are deliberately NOT reserved out of that budget. Emptying and depositing
+>   happen in turns against whatever room is going - CompostBinPlan already takes as many
+>   buckets as there are free slots and hands the compost straight back to the leprechaun - so
+>   the produce never has to share the pack with them.
+> - The guide's fill step no longer says "fill the bin" to someone holding ten: it says what
+>   can go in and how far short that leaves them, since a part-filled bin is a fine place to
+>   stop and the count is what says you are coming back.
+> Tests: CompostBinPlanTest.aShortFillSaysHowShortItIs / theBigBinCannotBeFilledInOneTrip,
+> RunLoadoutTest.theFillNeverExceedsOnePackLoad.
+
+those colapsable lists buttons themselves are not rendering right, they're like, locked to the
+middle, left aligned, they should be full width
+> RESOLVED. The two section headings were stacked in a vertical BoxLayout, which lays its
+> children out at their MAXIMUM width and centres them on their alignmentX - both defaulting to
+> "as wide as I asked for, in the middle". So the buttons rendered at their text width, floating
+> mid-panel, exactly as described.
+> - Rebuilt as nested BorderLayouts, which is the shape SeedSelectorPanel already uses: NORTH
+>   and CENTER are stretched to the container's full width with no alignmentX or maximum-size
+>   fiddling to keep in step as the grids' contents change. The footer (tomato note + ash box)
+>   had the same latent problem and was converted with it.
+> - The codebase's other idiom for this is setAlignmentX(LEFT_ALIGNMENT) plus a maximumSize of
+>   (Integer.MAX_VALUE, preferredHeight) - see PatchTypePanel.row and PageLayout.cap. That works
+>   but has to be re-applied whenever the preferred height moves, which for a grid that gains and
+>   loses rows on every refresh is a standing liability. BorderLayout has no such upkeep.
+> Test: CompostBinPanelLayoutTest lays the panel out at the sidebar's real 225px and asserts each
+> heading spans it and starts at x=0. Verified it FAILS against the old BoxLayout version
+> ("Supercompost (0) is only 109px of 225"), because a layout test that was never seen to fail
+> proves nothing - and nothing else in the suite paints this panel.
+
+the seed style ordering for multiple selections also doesn't work here, it should, and does
+volcanic ash apply to regular compost?
+> BOTH ANSWERED.
+> ASH: no. Wiki-checked - ultracompost is made by using volcanic ash ON SUPERCOMPOST, in the
+> bucket or in the bin, and there is no ash route from ordinary compost at all. The way across
+> that gap is a compost potion, one dose of which turns a finished bin of ordinary compost into
+> supercompost. The model was already right (the ash step is gated on the bin's decoded produce
+> being SUPERCOMPOST); what was missing was saying so, which the ash checkbox's tooltip now
+> does when a picked fill makes ordinary compost.
+> ORDERING: implemented, mirroring the seed grid exactly - insertion-order queue, the 1/2/3
+> digit drawn top-right in the game's own font, re-picking sends an item to the back.
+> - CompostRunStore holds an ordered list now, stored comma-separated. A single stored id is
+>   what the one-pick version wrote and still parses as a queue of one, so an existing profile
+>   keeps its choice.
+> - The spill is PER BIN, not within one, and that is the one place this differs from seeds. A
+>   bin filled with a mixture that is not entirely supercompostable makes ORDINARY compost, so
+>   running out of pineapples half way through a bin and topping up with potatoes would quietly
+>   cost the tier. CompostBinPlan therefore fills each bin from the first queued item it is
+>   actually carrying, and RunLoadout budgets in whole bins of one item for the same reason.
+> - A queue that mixes the tiers is allowed and explained rather than prevented: each bin comes
+>   out at its own item's tier, which is a reasonable thing to want and a nasty surprise to
+>   discover at a bin.
+> Tests: CompostRunStoreTest (queue order, lone pick wears no digit, re-pick goes to the back,
+> single-id profile still loads, mixed queue is not all-supercompost), CompostBinPlanTest
+> (spills to the next fill when the first is not carried, first carried fill wins).
+
+also compostable items were showing up in the gear section in bank filtering, they should show
+in seeds now, but I think some of them are also used for protection, so it needs to be listed in
+seeds when its for a compost bin, and in protection list when its for protection, both if the
+user has both in their plan.
+> RESOLVED, both halves.
+> - The fill rows were LoadoutItem.Category.COMPOST, and BankLayout groups COMPOST under 'G'
+>   with the tools and the buckets - which is right for a bucket of ultracompost coming out of
+>   a bin and wrong for fifteen pineapples going into one. New Category.BIN_FILL, grouped with
+>   SEED under 'S': bulk produce the trip is for, in a quantity, exactly like a seed. Added to
+>   CANNOT_PROCEED_WITHOUT too, which it previously inherited from COMPOST.
+> - BOTH LISTINGS: an item serving two purposes now appears in both regions. I first
+>   "corrected" this the wrong way, deduplicating across regions on the strength of a comment
+>   already in itemsIn claiming "the same id in two slots is not a layout Bank Tags can
+>   honour". THE COMMENT IS WRONG and the owner said so from experience. Checked against the
+>   client sources: Bank Tags has a DUPLICATE_ITEM menu option for exactly this, Layout.count
+>   (id) exists to find ids placed more than once, TabInterface gates a menu entry on
+>   count(id) > 1, and LayoutManager.drawItem fills every slot from the bank's own count -
+>   which is how a combat layout shows the same food in several places. The dedup was removed
+>   and the comment rewritten with that evidence.
+> - Within a region it is still one slot per id: two payment rows naming the same berry are
+>   one lot of berries.
+> KNOWN, and worth watching in play: the withdraw NUMBER on a slot is summed per item across
+> every loadout row (BankHighlightOverlay.refreshCounts, which does that deliberately for
+> payments shared by two crops). So a shared item shows the same combined total in both of its
+> slots rather than its per-purpose share. Splitting that needs slot-keyed counts rather than
+> item-keyed; say the word if it reads as double-counting at a real bank.
+> Tests: BankLayoutTest.aBinFillLaysOutWithTheSeeds /
+> anItemServingTwoPurposesAppearsInBothBlocks / oneItemTwiceForOnePurposeStillTakesOneSlot.
+
+"skipping fishbowl helmet, diving apparatus - you have none." I think they're on my boat
+actually? one of them at least? research that
+> RESOLVED - the owner was right, and the wiki is explicit. A boat's CARGO HOLD stores diving
+> gear "taking no space at all", and once stowed it is "accessible from all boats when stored in
+> any of them". A December 2025 update even records "the fishbowl helmet and diving apparatus
+> are no longer deleted from the bank when deposited into the cargo hold" - stowing them is an
+> ordinary supported thing to do, and a hold is exactly where a sailing player leaves them.
+> The loadout was looking in the bank and the pack only, so it announced "you have none" about
+> the one place those two items are least likely to be.
+> - The holds ARE readable: InventoryID has SAILING_BOAT_1_CARGOHOLD .. _5_CARGOHOLD (963-967),
+>   five because a player can own five boats. New BoatHolds store reads all five off
+>   ItemContainerChanged and persists per profile like BankContents does, because a hold is only
+>   sent to the client when it is opened - without a memory the answer would be "not looked" on
+>   every login and the false alarm would return.
+> - Recording is ADDITIVE across the five, unlike the bank's wholesale replace: the game sends
+>   one hold at a time, so replacing would have opening boat two forget boat one. Nothing here
+>   is a count, so the only staleness is remembering gear since removed, which re-reading that
+>   hold corrects.
+> - New LoadoutItem.Need.ON_BOAT, the sea-going counterpart of AT_LEPRECHAUN: not WITHDRAW (no
+>   bank highlight, no withdraw line) and not MISSING (no false alarm). Both diving pieces and
+>   the medallion go through one divingNeed(), which asks carried -> hold -> bank and only says
+>   MISSING once at least one of the two stores has actually been read.
+> Tests: RunLoadoutTest.divingGearInACargoHoldIsNotReportedMissing / divingGearNowhereIsStill
+> Missing / carriedDivingGearOutranksTheHold.
+
+also at the seaweed patches, seaweed spores spawn in the area periodically, we should chatbox
+notify that one has spawned and highlight it on the ground so it catches the players eye while
+they're there, this is one of the few ways to get these and its best to just pickup what you
+planted on the run so you never run out
+> BUILT. Researched first: spores "may randomly appear when diving in shallow water within the
+> underwater area beneath Fossil Island. 1-3 seaweed spores can spawn, and they will despawn in
+> 30 seconds", they appear individually per player like marks of grace, and they "instantly
+> disappear upon logging out". Thirty seconds with your eyes on a patch object is exactly the
+> window a player misses, which is what makes the callout worth making.
+> - SeaweedSpores watches ItemSpawned/ItemDespawned for the spore (gameval SEAWEED_SEED - the
+>   cache's name for it; Seed.SEAWEED already plants the same id) and speaks once per spawn.
+> - NOT a run step, deliberately. A spore is an interruption with a half-minute clock, not work
+>   to queue behind raking and planting - so the guide keeps saying whatever it was saying and
+>   this speaks over the top and marks the tile.
+> - Region-gated to the underwater area (15008) so a spore on a bank floor cannot set it off.
+>   Ownership is deliberately NOT filtered, which is the opposite of DroppedProduce: spores are
+>   spawned per player and the wiki notes "all players whose spores spawn on that tick will
+>   spawn at the same tile", so ownership flags are not something to lean on. Item id plus
+>   region is tight enough - nothing else down there is a spore.
+> - The tile is marked in the game's own ground-item green rather than the guide's highlight
+>   colour, so it reads as a chance passing by rather than as the current step. Drawn before
+>   the step and regardless of whether there is one.
+> - Both halves answer to one switch AND to guided mode: the mark is drawn by GuideOverlay,
+>   which renders nothing with guided mode off, so speaking anyway would be half a feature and
+>   a line of chat from a plugin told to be quiet. New setting "Call out seaweed spores",
+>   default on.
+> Tests: SeaweedSporesTest x8 (announced and remembered, wrong region ignored, wrong item
+> ignored, despawn forgets by handle, scene reload clears, batch, switch off, guided mode off).
+
+full inventory at the farming guild for a compost only run, I'm not getting prompted to go to
+the bin because I don't have all of the items (you physically can't for the big bin). Also
+Compost should take precidence at the farming guild when checked, since this is not a
+traditional patch and can't be assinged as a contract, also to clear space for the rest of the
+runs and restock compost. Contract precidence at the farming guild should not take place if
+farming contract is not selected for the run.
+> RESOLVED - three faults, and the first two both had to go before the bin appeared at all.
+> 1. THE GUILD WAS BEING HELD CLEAR FOR A CONTRACT NOBODY ASKED FOR. contractComesFirst gates
+>    on the setting and the region but never on whether the contract is IN THE RUN, and with
+>    none assigned its "nothing claimed" branch returns an empty list - so every guild patch,
+>    bin included, was withheld to keep the ground free for a contract Jane had not given out.
+>    It now also requires the contract's own run line to be ticked (contractIsInTheRun), which
+>    is the owner's rule and covers both "no contract" and "assigned and being ignored".
+> 2. AND IT WITHHELD THE BIN. A compost bin can never be a contract's patch - Jane cannot
+>    assign one - so it competes for no ground and has no reason to wait. Bins are now exempt
+>    from the hold-back on every branch.
+> 3. THE BIG BIN COULD NEVER BE SUPPLIED. addFills rounds the ask down to whole bins so no bin
+>    ends up half one item and half another, but the big bin's thirty un-noted items exceed a
+>    28-slot pack, so (held / 30) * 30 was zero every time: the row went MISSING, the supply
+>    leg it gates never completed, and the run sat at the bank being told to fetch what it
+>    physically cannot hold. Rounding is now skipped for any bin bigger than a pack - the
+>    rounding is meaningless there anyway - and the row says it fills over two trips.
+> PRECEDENCE: binsFirst sorts a bin to the very front of its stop, applied AFTER contractFirst
+> so it outranks even the contract. The reasoning is inventory rather than importance: emptying
+> the bin frees the pack and restocks the compost every other patch at that stop is about to
+> want, and doing it last means arriving at the herbs with fifteen slots of produce in hand and
+> no ultracompost. It is also free to be wrong about - a bin shares no tool, seed or payment
+> with anything else at the stop, so putting it first takes no click away from another patch.
+> Tests: GuildBinPrecedenceTest x4 (guild open without the contract, unticked contract does not
+> hold, ticked contract still holds but not the bin, bin sorts first),
+> RunLoadoutTest.theBigBinIsSuppliableEvenThoughAPackCannotHoldAFullFill.
+
+still having me try to do my farming contract when its not checked for the run / check the logs
+> RESOLVED, and the log named it outright: "Contract needs collecting for; routing to a supply
+> point" on a run logged as "1 stops [Farming Guild=4922] ... seeds picked for this run: none" -
+> a compost-only run being sent to a bank to collect a poison ivy contract's seed.
+> The earlier fix gated GuideTracker's guild hold-back on the contract's run line. This is a
+> SECOND path, in RunPlanner, and it is the one that was actually doing it:
+> reviewContract() adopts a contract's patch into a live run, widens the run's covered types to
+> match (runTypes.add), and calls collectForTheContract() to route to a supply point. It gates
+> on "active" and "a contract crop exists" and nothing else - it deliberately BYPASSES inTheRun,
+> because its whole job is to adopt a patch the plan does not have, and it tests the patch's
+> group and actionability, neither of which knows what the player asked for.
+> - It now asks contractIsInTheRun(wanted) first, the same question GuideTracker asks. The
+>   contract's line only exists while one is assigned and its patch belongs to the account, so
+>   unticked covers both "no contract" and "assigned and being ignored".
+> - Five existing RunPlannerTest cases were exercising reviewContract without the tick and
+>   rightly started failing; they now tick the line, which is a precondition of the behaviour
+>   they are testing.
+> Test: RunPlannerTest.anUntickedContractIsNotAdoptedMidRun asserts both halves - the patch is
+> not pulled into the stop, and the run's covered types are not widened.
+
+our seedbox orange highlighting logic, should work literally all of the time, right now I have
+seaweed spores and elkhorn frag in my inv and its not prompting during a navigation step on a run
+> NOT REPRODUCED FROM HERE - instrumented instead, plus one real bug found in the owner's data.
+> What was checked and RULED OUT:
+> - The gate is not the navigation step. The orange fill-box highlight is drawn BEFORE the
+>   step==null return in GuideInventoryOverlay.render, so travel legs already reach it.
+> - Not the item ids. SEED_BOX_IDS matches SeedCapture.isSeedBox (closed and open forms).
+> - Not saplings. Seaweed spores and coral frags have saplingItemID -1, so isSapling() is false
+>   and neither is excluded.
+> - Not the six-kinds rule for THESE two items. Read from the owner's own profile store: the
+>   seed box record holds seaweed spore x81 (21490) and elkhorn frag x60 (31511), so the
+>   "kind already boxed always fits" branch should pass for both.
+> REAL BUG FOUND, though not the one reported: that same record holds NINE kinds, and the wiki
+> is clear the box holds six. The box model has drifted - stale kinds linger until an Empty
+> proves otherwise (see the boxProvedEmpty heal in relearnInventoryFromClient). Any count above
+> six there is the model, not the game, and while it stands no genuinely NEW kind can ever
+> light, because kindsBoxed >= SEED_BOX_KINDS is permanently true.
+> WHAT IS LEFT is the live inventory count, which nothing persists, so it cannot be read after
+> the fact. GuideInventoryOverlay now logs the fill-side decision once per distinct answer -
+> the run, which loose seed carried it, the box's recorded kinds, and every loose seed in the
+> pack - exactly as the take-seeds-out side already did for the same "it never lights" report.
+> NEXT TIME: reproduce and the log line names it, e.g.
+>   "Seed box fill highlight: OFF - box holds 9 kinds (limit 6), loose seeds in the pack: none"
+> which would say the store never saw the spores, against
+>   "... loose seeds in the pack: SEAWEEDx3" which would say the six-kinds rule is at fault.
+
+the coral nursery I'm being routed to is giving "desination unreachable" in SP, I think we
+actually want to navigate to and highlight this object on land, which is a set of stairs right
+to the nursery, diving gear needs to be put on first, flippers have no effect here either it
+seems. Steps (ID: 57904 X: 3272 Y: 2463)
+> RESOLVED, and unrelated to the seed box report above.
+> Shortest Path was right and the plugin was asking the wrong question. It routes over a
+> collision map of places you can stand; a coral nursery is on the seabed, so no path to it
+> exists and "destination unreachable" is the honest answer. getRouteTargets was handing it the
+> patch's own tile ring.
+> - New UnderwaterApproach: for CORAL the run asks for the LANDWARD approach instead - the
+>   steps at (3272, 2463) - which is a real walkable tile. The router takes the player to the
+>   shore and the last two actions, gear on and click the steps, are theirs. Same division of
+>   labour the plugin already uses for a fairy ring or a spirit tree.
+> - GuideOverlay outlines the steps whenever the run has an underwater stop left, BY OBJECT ID
+>   (57904) rather than by menu wording - the id was read off the client at the spot, so there
+>   is nothing to parse and nothing to get wrong. Drawn independently of the step, because a
+>   travel leg has no step and this click is the end of one.
+> - Coordinates and id are from play rather than a wiki page, which is worth recording: they
+>   describe the object actually clicked.
+> DELIBERATELY ONE ENTRY. The seaweed patches are underwater too but are reached differently -
+> a rowboat out to sea and a Dive option, no steps - and nobody has reported the router refusing
+> them, so no approach is invented for them. A wrong approach point is worse than none: it would
+> route somebody confidently to the wrong shore.
+> NOT MODELLED: flippers, which the owner reports have no effect there. Nothing in the plugin
+> mentions them, so there was nothing to correct - noted so the next person does not add them.
+> Tests: PatchLocationStoreTest.aCoralNurseryRoutesToItsLandwardSteps /
+> anOrdinaryPatchStillRoutesToItself.
+> FOLLOW-UP, owner clarifying the mechanic: "you're on the dock when you click that, it's steps
+> leading underwater, you're intended to put on your diving gear before going under water."
+> So the routing half above was right and a second instruction was missing entirely. WEARING the
+> gear is what counts, and nothing said so: the loadout's job is to get the suit out of the bank
+> and it is satisfied the moment the pieces are in the pack - which is exactly the state the game
+> punishes, since taking the steps down holding them drowns you or turns you back.
+> - UnderwaterApproach.gearToWear() lists the medallion FIRST, because it replaces the pair -
+>   naming all three would tell a medallion owner to wear a fishbowl helmet they replaced.
+> - GuideInventoryOverlay lights whichever piece is loose in the pack while the run has an
+>   underwater stop, in the GUIDE colour rather than an ambient one: unlike the bucket and the
+>   box this is not "when convenient", it is the next thing to do before the steps. It goes out
+>   the moment the piece is equipped, because getInventoryCount counts the pack alone.
+> - GuideStepOverlay adds "Wear your diving gear before the steps down." to the travel panel,
+>   not as a step - the router stops at the dock and the last two actions, wear then descend,
+>   are the end of the travelling. The order only works one way round, so the line says it.
+> Tests: PatchLocationStoreTest.theDivingGearListLeadsWithTheMedallion / onlyCoralHasALandward
+> Approach (pinning that seaweed is deliberately absent - rowboat and Dive, not steps).
+> FOLLOW-UP 2: "when we click that we start trying to navigate back to it via fairy rings, need
+> to stop that. And patches aren't getting highlighted to do the run, Patches are (ID: 58711,
+> and ID:58710)"
+> Two faults, both from the divert being half-finished.
+> 1. THE ROUTE CLIMBED BACK OUT. The approach point is on the dock, and it was substituted
+>    unconditionally - so after the dive the router did exactly as asked and plotted a course
+>    back UP to it, fairy rings and all. The substitution now also asks WHERE THE PLAYER IS:
+>    UnderwaterApproach.stillWanted is true on the dock's own region (derived from the approach
+>    point, so the two cannot disagree) and while the position is unknown, and false once they
+>    are below. Standing at the nursery needs no route at all.
+>    The divert moved from PatchLocationStore to RunPlanner.routeTargetsFor to do this - the
+>    store has no idea where the player is, and pretending otherwise is what made it
+>    unconditional. The store is back to answering with the patch's own tiles for every patch.
+> 2. THE NURSERY PATCHES NEVER HIGHLIGHTED. Everything the outline machinery does keys on the
+>    patch varbit, and nothing on the seabed carries one - so scanForPatchObjects found nothing
+>    and the tile fallback needs a learned position that is captured the same varbit way.
+>    GuideOverlay now falls back to scanning by OBJECT ID (58710, 58711, from the client at the
+>    spot) before giving up. The two nurseries cannot be told apart from the objects alone, so
+>    both are marked - two adjacent nurseries read as one place to go, the same call the
+>    dropped-crop highlight already makes for stacks on neighbouring squares.
+> Tests: RunPlannerTest.theCoralDivertAppliesOnTheDockAndNotBelowIt / theNurseryObjectsAreKnown
+> ById, PatchLocationStoreTest.theStoreAlwaysAnswersWithThePatchesOwnTiles.
+> FOLLOW-UP 3: "rowboat to seaweed is doing the same thing, ID: 30919 X: 3761 Y: 3898"
+> The seaweed rowboat is now an approach too, with the same evidence the steps had - object id
+> and coordinates read off the client at the spot. The earlier note claiming seaweed was
+> deliberately absent "because nobody has reported the router refusing them" was true when
+> written and stopped being true here; the restraint it describes is still the rule, it just no
+> longer applies to this patch.
+> - stillWanted was comparing against a single hardcoded CORAL_DOCK_REGION. Each Approach now
+>   derives its OWN region from its own point, so the coral dock and the Fossil Island shore are
+>   judged separately - standing on one is not standing at the other, and with one constant it
+>   would have been.
+> - Nothing else needed changing: the divert, the object outline, the "wear your diving gear"
+>   line and its inventory highlight are all keyed on "this run has an underwater stop", so
+>   seaweed picked them all up for free.
+> - Seaweed patches were NOT given object ids. Its patch objects carry the farming varbit like
+>   any ordinary patch (core decodes "Seaweed patch[Rake,Inspect,Guide]" through the varbit
+>   states), so the normal outline scan already finds them - and the owner reported only the
+>   routing this time, not a missing highlight.
+> Tests: PatchLocationStoreTest.bothUnderwaterFamiliesHaveALandwardApproach /
+> eachApproachIsJudgedAgainstItsOwnShore.
+
+when you run out of ultracompost fall back to supercompost and then regular compost and so on,
+but notify in the chatbox and info box that you've been downgraded, do your compost runs.
+(follow-up: "make it a setting actually")
+> BUILT, behind a setting - "Fall back to weaker compost", OFF by default. Off is the right
+> default even though the behaviour is wanted: which bucket gets spent is a decision made on the
+> tab, and quietly spending a different one is the plugin overriding the player without saying
+> so. The switch is what makes the substitution consented to.
+> - CompostTier.weaker() / bestAvailableAtOrBelow() walk the enum's own order, so the ladder is
+>   the ranking rather than ordinal arithmetic scattered over three call sites.
+> - Only DOWNWARD. Treating with something stronger than was asked for spends a scarcer bucket
+>   than the player chose, which is their call.
+> - "In reach" means carried or in the leprechaun's store, because at a patch those are the same
+>   thing - he is standing there and the withdrawal is one click. A tier that exists only in a
+>   bank is not reachable from a patch and does not count.
+> - THE IMPORTANT GUARD, and a regression I introduced and caught: with NOTHING in reach the
+>   chosen tier stands. The first version returned NONE, which silenced the compost step
+>   entirely - so "withdraw ultracompost from the leprechaun", exactly right when his store has
+>   not been read yet, became nothing at all. Only a tier actually seen to be there displaces
+>   the one that was asked for. Five existing GuidePlanTest cases caught it.
+> - Notified once per tier per group, not per patch: a herb run treats a dozen patches from one
+>   stack and a dozen identical lines is a spam bug. Chat says it when it happens; the infobox
+>   carries it standing, above the ready and withdraw lists, for anyone not watching chat. Both
+>   name the fix - "Worth a compost bin run" - rather than only the symptom.
+> Tests: GuidePlanTest.runningOutOfUltraFallsBackToTheSuperYouAreHolding /
+> withOnlyOrdinaryCompostItFallsAllTheWayDown / aStrongerTierIsNeverSubstitutedIn /
+> nothingInReachLeavesTheChosenTierAlone.
+
+the run list is getting long, we should alphabetize it / and dim the text on unchecked patch types
+> BOTH DONE, and they are the same complaint: the list had outgrown being scanned.
+> ALPHABETICAL: runOptions used the enum's order with the harvest-only pairs grouped at the end.
+> That grouping was a LAYOUT argument - a pair has to sit side by side on one row - and it was
+> already hedged, because RunPanel.buildTypeBoxes pads a fresh row for every pair precisely so
+> the layout could not depend on the order. So sorting was free; it costs the odd blank cell and
+> nothing else.
+> - A pair still moves as one: the full run and its harvest-only counterpart stay adjacent
+>   wherever the name lands them, since two lines about the same patches reading as unrelated
+>   entries is what the grouping existed to prevent.
+> - The compost bins JOINED the alphabet - "do my bins" is the same kind of standing choice as
+>   "do my herbs". The CONTRACT stays pinned last; it is a job rather than a patch type and its
+>   own note explains why it must not sort in with them.
+> DIMMING: unticked lines are drawn in a dimmer grey, re-applied on every toggle as well as at
+> build time so a line lightens the moment it is ticked. Dimmed rather than hidden, deliberately:
+> an unticked line is the thing you click to change the run.
+> Tests: RunOptionCoverageTest.theListIsAlphabeticalApartFromTheContract /
+> aHarvestOnlyLineSitsWithItsFullRun / theContractStaysAtTheEnd (replacing the old
+> typesWithAHarvestOnlyVariantComeLast, which pinned the ordering being replaced),
+> RunListAppearanceTest.untickedLinesAreDimmerThanTickedOnes / anUntickedLineStaysLegible -
+> asserted as a contrast relationship rather than against hex values, so a palette change stays
+> free and a change that flattens the two back together does not.
+> FOLLOW-UP: "weird spacing on the right column, go top down on the sorting on the left column
+> then the right column please" (with a screenshot).
+> The screenshot showed both halves of it: the alphabet ran ACROSS the rows - Allotment | Anima,
+> Belladonna | (blank), Bush | Bush (H/O) - so the names went sideways while the eye went down,
+> and the blank beside Belladonna was a filler cell.
+> - buildTypeBoxes now places the components TRANSPOSED: the left column holds the first half of
+>   the list top to bottom, the right column the second, so an alphabetical list is read the way
+>   an alphabetical list is read. GridLayout still fills row by row; the ORDER handed to it is
+>   what changed.
+> - The gaps are gone with it. They came from starting a fresh row for every full-and-harvest-
+>   only pair so the two halves sat side by side; down a column a pair is naturally adjacent,
+>   one directly under the other, so no padding is needed. At most one cell is blank now - the
+>   foot of the right column on an odd count.
+> - ONE REAL BUG the tests caught rather than inspection: the split can land BETWEEN a pair,
+>   putting the full run at the foot of the left column and its harvest-only line at the head of
+>   the right - as far apart as the grid can put them, which is exactly what the pairing exists
+>   to prevent. With bushes and cactus hidden the boundary fell between the fruit trees. The
+>   split now nudges down a row when it would divide a pair.
+> Tests: ProtectedTabTest.harvestOnlyLinesSitBesideTheirFullRun and pairsStayAlignedWhateverIs
+> SwitchedOff rewritten for vertical adjacency (two cells apart, not one), plus a new
+> atMostOneCellIsBlankAndItIsTheLast pinning that no gap can reappear mid-list.
+
+Bush and Cactus always stay bright when unchecked
+> RESOLVED, and the report named the mechanism without meaning to: Bush, Cactus and Fruit tree
+> are the only PAIRED types, and untick() is only ever called on a pair's counterpart.
+> Ticking a full run unticks its harvest-only line (and vice versa) through
+> JCheckBox.setSelected - which does NOT fire an ActionListener. Only the box the player
+> actually clicked ran the handler that recolours it, so the counterpart was left unticked and
+> still drawn bright. untick() now applies the colour itself.
+> Verified the test fails without the fix rather than assuming it: stubbed the recolour back out
+> and watched aCounterpartUntickedByThePanelDimsToo fail on the brightness assertion.
+> The test drives untick() directly rather than the checkbox's listener, which would run a whole
+> panel refresh and need run state the fixture has no reason to invent.
+> Test: RunListAppearanceTest.aCounterpartUntickedByThePanelDimsToo.

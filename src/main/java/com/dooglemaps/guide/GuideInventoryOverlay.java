@@ -151,7 +151,33 @@ public class GuideInventoryOverlay extends Overlay
 		// twice, as "the box never lights to fill". Ambient like the bucket, in its own
 		// orange for the same reason the bucket got its own red: it means "when
 		// convenient", and the guide colour means "this is the step".
-		if (tracker.getStatus().isRunning() && GuideMenuSwap.boxCanTakeLooseSeeds(seeds))
+		// Diving gear sitting in the pack while a run is heading underwater. Worn is what
+		// counts: the loadout is satisfied once the suit is out of the bank, and standing on
+		// the dock holding it is the state the game punishes — down the steps and you drown,
+		// or are turned back. In the guide colour rather than an ambient one, because unlike
+		// the bucket and the box this is not "when convenient": it is the next thing to do
+		// before the steps, and it disappears the moment the piece is equipped.
+		if (tracker.getStatus().isRunning() && tracker.underwaterApproach() != null)
+		{
+			for (int piece : com.dooglemaps.data.UnderwaterApproach.gearToWear())
+			{
+				if (carried.getInventoryCount(piece) > 0)
+				{
+					highlightInInventory(graphics, piece, colour);
+					// The medallion replaces the pair, so one lit piece is the whole
+					// instruction — see UnderwaterApproach.gearToWear.
+					if (piece == net.runelite.api.gameval.ItemID.MEDALLION_OF_THE_DEEP)
+					{
+						break;
+					}
+				}
+			}
+		}
+
+		boolean running = tracker.getStatus().isRunning();
+		com.dooglemaps.data.Seed fillable = GuideMenuSwap.looseSeedTheBoxWouldTake(seeds);
+		noteFillBoxDecision(running, fillable);
+		if (running && fillable != null)
 		{
 			for (int boxId : SEED_BOX_IDS)
 			{
@@ -235,6 +261,61 @@ public class GuideInventoryOverlay extends Overlay
 			}
 		}
 		return null;
+	}
+
+	/** The last fill-box decision logged, so it is said once per distinct answer. */
+	@javax.annotation.Nullable
+	private String loggedFillDecision;
+
+	/**
+	 * Says why the box is or is not lit to fill, once per distinct answer.
+	 *
+	 * <p>The take-seeds-out side already logs its decision, for a reason its own note spells
+	 * out: the answer is live counts, and by the time "the box never lights" is reported they
+	 * have all moved on. This is the same line for the other direction, and it names the
+	 * three things that can be false — the run, a loose seed the box would take, and the
+	 * six-kinds rule that closes the door on a seventh kind.
+	 *
+	 * <p>Worth knowing while reading it: the box's recorded kinds can drift above six, since
+	 * the record is rebuilt from what the box reports and stale kinds linger until an Empty
+	 * proves otherwise. A count above six here means the model, not the game.
+	 */
+	private void noteFillBoxDecision(boolean running,
+		@javax.annotation.Nullable com.dooglemaps.data.Seed fillable)
+	{
+		String key = running + "#" + (fillable == null ? "none" : fillable.name());
+		if (key.equals(loggedFillDecision))
+		{
+			return;
+		}
+		loggedFillDecision = key;
+
+		if (!running)
+		{
+			log.info("Seed box fill highlight: OFF - no run is under way");
+			return;
+		}
+		if (fillable != null)
+		{
+			log.info("Seed box fill highlight: ON - {} loose in the pack, box holds {} kinds",
+				fillable.name(), GuideMenuSwap.kindsInTheBox(seeds));
+			return;
+		}
+
+		StringBuilder loose = new StringBuilder();
+		for (com.dooglemaps.data.Seed seed : com.dooglemaps.data.Seed.values())
+		{
+			int inPack = seeds.getCount(seed, com.dooglemaps.state.SeedSource.INVENTORY);
+			if (inPack > 0)
+			{
+				loose.append(seed.name()).append('x').append(inPack)
+					.append(seed.isSapling() ? " (sapling, never boxable)" : "")
+					.append("; ");
+			}
+		}
+		log.info("Seed box fill highlight: OFF - box holds {} kinds (limit {}), loose seeds in "
+			+ "the pack: {}", GuideMenuSwap.kindsInTheBox(seeds), GuideMenuSwap.SEED_BOX_KINDS,
+			loose.length() == 0 ? "none" : loose.toString().trim());
 	}
 
 	/**

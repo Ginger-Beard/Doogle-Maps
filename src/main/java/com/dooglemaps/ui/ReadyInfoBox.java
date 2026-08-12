@@ -29,14 +29,19 @@ public class ReadyInfoBox extends InfoBox
 	private final RunLoadout loadout;
 	private final RunPlanner planner;
 
+	/** Told when the run has fallen back to weaker compost than was picked. */
+	private final com.dooglemaps.guide.GuideTracker guideTracker;
+
 	private int readyCount;
 	private int problemCount;
 	private int withdrawCount;
 
 	public ReadyInfoBox(BufferedImage image, Plugin plugin, DoogleMapsPanel panel,
-		DoogleMapsConfig config, RunLoadout loadout, RunPlanner planner)
+		DoogleMapsConfig config, RunLoadout loadout, RunPlanner planner,
+		com.dooglemaps.guide.GuideTracker guideTracker)
 	{
 		super(image, plugin);
+		this.guideTracker = guideTracker;
 		this.panel = panel;
 		this.config = config;
 		this.loadout = loadout;
@@ -100,6 +105,24 @@ public class ReadyInfoBox extends InfoBox
 	}
 
 	/**
+	 * Says on the infobox that the run is treating with weaker compost than was picked.
+	 *
+	 * <p>First, above the ready and withdraw lists, because it is the one line that says the
+	 * run is not doing what the player configured. The chatbox says it once when it happens;
+	 * this is the standing reminder for anyone who was not watching the chat at the time, and
+	 * it names the fix rather than only the symptom.
+	 */
+	private void appendDowngrade(StringBuilder text)
+	{
+		com.dooglemaps.data.CompostTier using = guideTracker.compostDowngrade();
+		if (using != null)
+		{
+			text.append("</br>Fallen back to ").append(using.getDisplayName().toLowerCase())
+				.append("</br>Worth a compost bin run.");
+		}
+	}
+
+	/**
 	 * What the run still wants out of the bank, with counts.
 	 *
 	 * <p>Answers the question you have while standing at the bank, which the sidebar could
@@ -132,10 +155,15 @@ public class ReadyInfoBox extends InfoBox
 	{
 		if (ready.isEmpty() && problems.isEmpty() && withdraw.isEmpty())
 		{
-			return "Doogle Maps</br>Nothing ready.";
+			StringBuilder idle = new StringBuilder("Doogle Maps");
+			appendDowngrade(idle);
+			return idle.length() > "Doogle Maps".length()
+				? idle.toString()
+				: "Doogle Maps</br>Nothing ready.";
 		}
 
 		StringBuilder text = new StringBuilder("Doogle Maps");
+		appendDowngrade(text);
 
 		if (!ready.isEmpty())
 		{

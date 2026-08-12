@@ -297,60 +297,68 @@ public class PlantingGroups
 	}
 
 	/**
-	 * Every line the run's patch-type list should offer.
+	 * Every line the run's patch-type list should offer, in alphabetical order.
 	 *
-	 * <h2>The types with a harvest-only variant come last</h2>
+	 * <h2>Alphabetical, because the list outgrew being read as a whole</h2>
 	 *
-	 * Every option is a single line except those three, which are a pair — and mixing pairs in
-	 * among singles is what pushes them across the two-column grid's row breaks. Grouped at the
-	 * bottom, the singles fill whole rows between them and each pair lands on a row of its own,
-	 * so the list reads as "the ordinary runs, then the three that can be picked clean".
+	 * It used to be the enum's order with the harvest-only pairs grouped at the end, which was
+	 * a layout argument: a pair has to sit side by side on one row, and putting them last kept
+	 * the grid tidy. That reasoning was already hedged — {@code RunPanel.buildTypeBoxes} pads a
+	 * fresh row for every pair anyway, precisely so the layout could not depend on the order —
+	 * and with every patch type now runnable the list is long enough that finding a line
+	 * matters more than the odd blank cell. Asked for from play.
 	 *
-	 * <p>Within each half the order is still the enum's, which is the tab strip's, so nothing is
-	 * scrambled beyond the one grouping this is for.
+	 * <p>A pair still moves as one: the full run and its harvest-only counterpart are adjacent
+	 * wherever the name lands them, because two lines about the same patches reading as
+	 * unrelated entries is the thing the grouping existed to prevent.
+	 *
+	 * <p>The <b>contract</b> is the one exception and stays pinned at the end; see
+	 * {@link #addContractRun} for why it is not a patch type at all. The compost bins join the
+	 * alphabet — "do my bins" is the same kind of standing choice as "do my herbs", and a line
+	 * you tick every run should be where you would look for it.
 	 */
 	public java.util.List<com.dooglemaps.data.RunOption> runOptions()
 	{
+		List<com.dooglemaps.data.RunOption> paired = new ArrayList<>();
+		for (PatchImplementation type : PatchImplementation.values())
+		{
+			if (RUNNABLE.contains(type))
+			{
+				addFullRuns(paired, type);
+			}
+		}
+		addBinRun(paired);
+
+		// Sorted on the full line's own label, so a pair's two halves cannot be separated by
+		// something whose name happens to fall between them.
+		paired.sort((a, b) -> a.getLabel().compareToIgnoreCase(b.getLabel()));
+
 		java.util.List<com.dooglemaps.data.RunOption> options = new ArrayList<>();
-
-		// The types with no harvest-only variant first, then the ones that have it — each
-		// immediately followed by its own variant. Within each half the order is the enum's, so
-		// it still reads the way the tab strip does.
-		for (PatchImplementation type : PatchImplementation.values())
+		for (com.dooglemaps.data.RunOption option : paired)
 		{
-			if (RUNNABLE.contains(type) && !REGROWS.contains(type))
+			options.add(option);
+			if (REGROWS.contains(option.getType()) && !option.getGroup().isContract())
 			{
-				addFullRuns(options, type);
+				options.add(com.dooglemaps.data.RunOption.harvestOnly(option.getGroup()));
 			}
 		}
 
-		for (PatchImplementation type : PatchImplementation.values())
-		{
-			if (!RUNNABLE.contains(type) || !REGROWS.contains(type))
-			{
-				continue;
-			}
-			addFullRuns(options, type);
-			options.add(com.dooglemaps.data.RunOption.harvestOnly(PlantingGroup.of(type)));
-		}
-
-		addBinRun(options);
 		addContractRun(options);
 		return options;
 	}
 
 	/**
-	 * The compost bins' line, after the patch types and before the contract.
+	 * The compost bins' line, which joins the alphabet rather than being pinned.
 	 *
-	 * <p>One line for both sizes, exactly as the sidebar's tab already folds them — "the same
-	 * thing at two sizes", see {@code PatchTabs}. The line carries the normal bin's group and
+	 * <p>One line for both sizes, exactly as the sidebar's tab folds them — "the same thing at
+	 * two sizes", see {@code PatchTabs}. The line carries the normal bin's group and
 	 * {@code RunTypeStore.getSelected} widens the tick to cover the guild's big one, so a
 	 * single tick means "do my bins" the way a single tab means "show my bins".
 	 *
-	 * <p>Deliberately <b>not</b> in {@code RUNNABLE}, although the bins are now runnable in
-	 * every ordinary sense. That path assumes a seed — the harvest-only derivation, the seed
-	 * selector, the estimate all walk {@code Seed.forPatchType} — and a bin takes buckets and
-	 * produce instead. Everything seed-shaped stays structurally unable to see it.
+	 * <p>Deliberately <b>not</b> in {@code RUNNABLE}, although the bins are runnable in every
+	 * ordinary sense. That path assumes a seed — the harvest-only derivation, the seed
+	 * selector and the estimate all walk {@code Seed.forPatchType} — and a bin takes buckets
+	 * and produce instead. Everything seed-shaped stays structurally unable to see it.
 	 */
 	private void addBinRun(java.util.List<com.dooglemaps.data.RunOption> options)
 	{

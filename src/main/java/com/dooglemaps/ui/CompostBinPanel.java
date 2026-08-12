@@ -11,7 +11,9 @@ import java.awt.Dimension;
 import java.awt.GridLayout;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.util.Set;
 import javax.swing.BorderFactory;
+import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
@@ -27,10 +29,18 @@ import net.runelite.client.ui.FontManager;
  * purpose — owned items as bank-style icons, a click to pick, the green selection tint —
  * because a player who has picked a seed already knows how to pick a fill.
  *
- * <p>The list is <b>what you own</b> out of the supercompostable table, not the whole table:
- * an icon for produce you have none of would be a choice you cannot act on, exactly the
- * reasoning the seed list follows. Counts come from the bank plus the pack, drawn as stack
- * numbers the way the bank draws them.
+ * <h2>Two sections, because the bin has two useful outcomes</h2>
+ *
+ * Supercompost first, since it is the reason most people fill a bin by hand, and ordinary
+ * compost under it. Both are offered rather than only the first: an account with no pineapples
+ * still has potatoes and grimy guams, and ordinary compost is what most of a farm run actually
+ * gets treated with. Each collapses on its own — a bank full of allotment crops makes the
+ * ordinary list long, and someone who only ever bins pineapples should be able to fold it away.
+ *
+ * <p>Each list is <b>what you own</b> out of its table rather than the whole table: an icon for
+ * produce you have none of is a choice you cannot act on, which is the same reasoning the seed
+ * list follows. Counts come from the bank plus the pack, drawn as stack numbers the way the
+ * bank draws them.
  */
 class CompostBinPanel extends JPanel
 {
@@ -45,19 +55,83 @@ class CompostBinPanel extends JPanel
 
 	private static final Color TEXT = new Color(0xDC, 0xDC, 0xDC);
 
+	/** Amber, for the tomato warning: a note about what will happen, not a mistake yet. */
+	private static final Color NOTE = new Color(0xC8, 0xA2, 0x2D);
+
+	/** The game's own stack-number yellow, for the queue digit on a picked fill. */
+	private static final Color PRIORITY_NUMBER = new Color(0xFF, 0xFF, 0x00);
+
+	/**
+	 * A fill slot that can wear its place in the queue.
+	 *
+	 * <p>Lifted wholesale from {@code SeedSelectorPanel.SeedIcon}, digit placement and all, so
+	 * the two grids read as the same control: the number is the order the run reaches for them,
+	 * 1 first, and it is drawn top-right because the game bakes its own stack count into the
+	 * sprite's top-left. Hidden when a fill is alone, since a queue of one has no order.
+	 */
+	private static final class FillIcon extends JLabel
+	{
+		private int priority;
+
+		void setPriority(int priority)
+		{
+			if (this.priority != priority)
+			{
+				this.priority = priority;
+				repaint();
+			}
+		}
+
+		@Override
+		protected void paintComponent(java.awt.Graphics graphics)
+		{
+			super.paintComponent(graphics);
+			if (priority <= 0)
+			{
+				return;
+			}
+
+			String digits = String.valueOf(priority);
+			graphics.setFont(FontManager.getRunescapeSmallFont());
+			int x = getWidth() - graphics.getFontMetrics().stringWidth(digits) - 3;
+			int y = graphics.getFontMetrics().getAscent() + 1;
+			graphics.setColor(Color.BLACK);
+			graphics.drawString(digits, x + 1, y + 1);
+			graphics.setColor(PRIORITY_NUMBER);
+			graphics.drawString(digits, x, y);
+		}
+	}
+
+	/**
+	 * Shared across the tabs like the seed list's own key, so folding a section stays folded.
+	 *
+	 * <p>Only one tab shows these, so the sharing buys nothing today — it is here because the
+	 * layout store's keys are a flat namespace and a bare "super" would be the sort of name
+	 * another section could reasonably want later.
+	 */
+	private static final String SUPER_KEY = "binFillSuper";
+	private static final String ORDINARY_KEY = "binFillOrdinary";
+
 	private final CompostRunStore store;
 	private final BankContents bank;
 	private final CarriedItems carried;
 	private final ItemManager itemManager;
 	private final com.dooglemaps.data.ItemNames itemNames;
+	private final PanelLayoutStore layout;
 
-	private final JPanel grid = new JPanel();
+	private final JButton superHeading = new JButton();
+	private final JButton ordinaryHeading = new JButton();
+	private final JPanel superGrid = new JPanel();
+	private final JPanel ordinaryGrid = new JPanel();
 	private final WrappedText message = new WrappedText();
+	private final WrappedText tomatoNote = new WrappedText();
 	private final JCheckBox ashBox = new JCheckBox();
 
-	CompostBinPanel(CompostRunStore store, BankContents bank, CarriedItems carried,
-		ItemManager itemManager, com.dooglemaps.data.ItemNames itemNames)
+	CompostBinPanel(PanelLayoutStore layout, CompostRunStore store, BankContents bank,
+		CarriedItems carried, ItemManager itemManager,
+		com.dooglemaps.data.ItemNames itemNames)
 	{
+		this.layout = layout;
 		this.store = store;
 		this.bank = bank;
 		this.carried = carried;
@@ -73,8 +147,15 @@ class CompostBinPanel extends JPanel
 		heading.setForeground(TEXT);
 		heading.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
 
-		grid.setBackground(getBackground());
+		superGrid.setBackground(getBackground());
+		ordinaryGrid.setBackground(getBackground());
 		message.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
+		tomatoNote.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
+		tomatoNote.setForeground(NOTE);
+		tomatoNote.setVisible(false);
+
+		wire(superHeading, SUPER_KEY, superGrid);
+		wire(ordinaryHeading, ORDINARY_KEY, ordinaryGrid);
 
 		Controls.styleCheckBox(ashBox);
 		ashBox.setBackground(getBackground());
@@ -82,49 +163,77 @@ class CompostBinPanel extends JPanel
 		ashBox.setText("Upgrade with volcanic ash");
 		ashBox.addActionListener(e -> store.setAshing(ashBox.isSelected()));
 
+		// Nested BorderLayouts rather than a vertical BoxLayout, which is the same shape the
+		// seed selector uses and is chosen for a concrete reason: a BoxLayout on the Y axis
+		// lays its children out at their MAXIMUM width and centres them on their alignmentX,
+		// both of which default to "as wide as I asked for, in the middle". The two heading
+		// buttons came out floating mid-panel at their text width instead of spanning the
+		// sidebar. BorderLayout stretches NORTH and CENTER to the full width with no
+		// alignment or maximum-size fiddling to keep in step with the content.
+		JPanel lists = new JPanel(new BorderLayout(0, 4));
+		lists.setBackground(getBackground());
+		lists.add(section(superHeading, superGrid), BorderLayout.NORTH);
+		lists.add(section(ordinaryHeading, ordinaryGrid), BorderLayout.CENTER);
+
 		JPanel body = new JPanel(new BorderLayout(0, 4));
 		body.setBackground(getBackground());
-		body.add(grid, BorderLayout.NORTH);
+		body.add(lists, BorderLayout.NORTH);
 		body.add(message, BorderLayout.CENTER);
-		body.add(ashBox, BorderLayout.SOUTH);
+
+		JPanel footer = new JPanel(new BorderLayout(0, 2));
+		footer.setBackground(getBackground());
+		footer.add(tomatoNote, BorderLayout.NORTH);
+		footer.add(ashBox, BorderLayout.CENTER);
+		body.add(footer, BorderLayout.SOUTH);
 
 		add(heading, BorderLayout.NORTH);
 		add(body, BorderLayout.CENTER);
 	}
 
+	/** Wires one heading button to fold its grid, remembering the choice like every section. */
+	private void wire(JButton heading, String key, JPanel grid)
+	{
+		heading.setFont(FontManager.getRunescapeSmallFont());
+		Controls.styleButton(heading);
+		heading.addActionListener(e ->
+		{
+			layout.setOpen(key, !layout.isOpen(key, true));
+			refresh();
+		});
+		grid.setVisible(layout.isOpen(key, true));
+	}
+
+	/** One heading with its grid under it, both spanning the sidebar. */
+	private JPanel section(JButton heading, JPanel grid)
+	{
+		JPanel section = new JPanel(new BorderLayout(0, 2));
+		section.setBackground(getBackground());
+		section.add(heading, BorderLayout.NORTH);
+		section.add(grid, BorderLayout.CENTER);
+		return section;
+	}
+
 	/** Rebuilt on the sidebar's ordinary refresh, like every other section that reads stores. */
 	void refresh()
 	{
-		grid.removeAll();
+		int superShown = fill(superGrid, Compostables.superCompostables(),
+			layout.isOpen(SUPER_KEY, true));
+		int ordinaryShown = fill(ordinaryGrid, Compostables.ordinaryCompostables(),
+			layout.isOpen(ORDINARY_KEY, true));
 
-		int shown = 0;
-		for (int itemId : Compostables.superCompostables())
-		{
-			int owned = bank.getCount(itemId) + carried.getCountIncludingNoted(itemId);
-			if (owned <= 0)
-			{
-				continue;
-			}
-			grid.add(buildIcon(itemId, owned));
-			shown++;
-		}
+		superHeading.setText(Controls.collapseLabel(
+			"Supercompost (" + superShown + ")", layout.isOpen(SUPER_KEY, true)));
+		ordinaryHeading.setText(Controls.collapseLabel(
+			"Compost (" + ordinaryShown + ")", layout.isOpen(ORDINARY_KEY, true)));
 
-		// The grid wants full rows so the last one is not stretched into giant cells.
-		int rows = Math.max(1, (shown + SLOTS_PER_ROW - 1) / SLOTS_PER_ROW);
-		grid.setLayout(new GridLayout(rows, SLOTS_PER_ROW, 2, 2));
-		for (int filler = shown; filler < rows * SLOTS_PER_ROW; filler++)
-		{
-			JPanel blank = new JPanel();
-			blank.setBackground(getBackground());
-			grid.add(blank);
-		}
-
-		if (shown == 0)
+		// One message for both lists rather than one each: "you own nothing binnable" is the
+		// useful statement, and saying it twice under two empty grids reads as two faults.
+		if (superShown == 0 && ordinaryShown == 0)
 		{
 			message.setForeground(TEXT);
 			message.setText(bank.hasBeenSeen()
-				? "Nothing supercompostable owned - pineapples and watermelons are the "
-					+ "usual fills."
+				? "Nothing you own can go in a bin. Pineapples and watermelons make "
+					+ "supercompost; potatoes and grimy herbs make ordinary compost."
 				: "Open a bank to see what you could fill the bins with.");
 			message.setVisible(true);
 		}
@@ -133,24 +242,131 @@ class CompostBinPanel extends JPanel
 			message.setVisible(false);
 		}
 
+		// Two things worth saying at the point the choice was made rather than leaving the
+		// player to find out at a bin: the tomato trap, and that a queue mixing the tiers will
+		// fill some bins with ordinary compost.
+		tomatoNote.setText(fillWarning());
+		tomatoNote.setVisible(!fillWarning().isEmpty());
+
 		int ashOwned = bank.getCount(CompostBin.VOLCANIC_ASH)
 			+ carried.getCountIncludingNoted(CompostBin.VOLCANIC_ASH);
 		ashBox.setSelected(store.isAshing());
-		ashBox.setToolTipText(Tooltips.html("25 ash a bin, 50 for the guild's big one - the "
-			+ "whole bin upgrades to ultracompost while the compost is still in it.<br>You own "
-			+ "<b>" + ashOwned + "</b> volcanic ash."));
+		ashBox.setToolTipText(Tooltips.html(ashTooltip(ashOwned)));
 
 		revalidate();
 		repaint();
 	}
 
+	/**
+	 * The warning under the grids, or empty when the queue is unremarkable.
+	 *
+	 * <p>Mixed tiers is the subtle one and the reason it is said here: each bin is filled from
+	 * a single item, so a queue of pineapples then potatoes is not a downgrade of anything —
+	 * it means the pineapple bins come out super and the potato bins come out ordinary. That
+	 * is a perfectly reasonable thing to want and a nasty surprise to discover, so it is
+	 * stated rather than prevented.
+	 */
+	private String fillWarning()
+	{
+		for (int fill : store.getFills())
+		{
+			if (Compostables.isRottenTomatoTrap(fill))
+			{
+				return "A bin filled only with tomatoes makes rotten tomatoes, not compost. "
+					+ "Add at least one item of another kind.";
+			}
+		}
+
+		boolean anySuper = false;
+		boolean anyOrdinary = false;
+		for (int fill : store.getFills())
+		{
+			anySuper |= Compostables.isSuperCompostable(fill);
+			anyOrdinary |= !Compostables.isSuperCompostable(fill);
+		}
+		if (anySuper && anyOrdinary)
+		{
+			return "Your queue mixes the tiers. Each bin is filled from one item, so the "
+				+ "supercompostable ones give supercompost and the rest give ordinary compost.";
+		}
+		return "";
+	}
+
+	/**
+	 * What the ash box explains, which depends on whether the fill will give it anything to do.
+	 *
+	 * <p>Ash upgrades supercompost and nothing else, so a ticked box over an ordinary fill is a
+	 * combination that quietly does nothing — worth saying at the box rather than leaving the
+	 * player to notice that the ultracompost never arrived.
+	 */
+	private String ashTooltip(int ashOwned)
+	{
+		String owned = "<br>You own <b>" + ashOwned + "</b> volcanic ash.";
+		if (store.hasFill() && !store.fillMakesSupercompost())
+		{
+			// Wiki-checked: ash is used ON supercompost, and there is no ash route from
+			// ordinary compost at all. The compost potion is the only way across that gap.
+			return "Ash only works on supercompost, and at least one of your fills makes "
+				+ "ordinary compost - those bins cannot be upgraded with ash. A compost "
+				+ "potion turns a finished bin of ordinary compost into supercompost "
+				+ "first.<br>Bins already holding supercompost are still upgraded." + owned;
+		}
+		return "25 ash a bin, 50 for the guild's big one - the whole bin upgrades to "
+			+ "ultracompost while the compost is still in it." + owned;
+	}
+
+	/**
+	 * Draws one list's owned items into its grid, and says how many that was.
+	 *
+	 * <p>The count is reported even while the section is folded, because it is what the heading
+	 * shows — a folded "Compost (12)" is the whole reason folding is safe.
+	 */
+	private int fill(JPanel grid, Set<Integer> table, boolean open)
+	{
+		grid.removeAll();
+		grid.setVisible(open);
+
+		int shown = 0;
+		for (int itemId : table)
+		{
+			int owned = bank.getCount(itemId) + carried.getCountIncludingNoted(itemId);
+			if (owned <= 0)
+			{
+				continue;
+			}
+			shown++;
+			if (open)
+			{
+				grid.add(buildIcon(itemId, owned));
+			}
+		}
+
+		if (!open || shown == 0)
+		{
+			grid.setLayout(new GridLayout(1, SLOTS_PER_ROW, 2, 2));
+			return shown;
+		}
+
+		// Full rows, so the last one is not stretched into giant cells.
+		int rows = Math.max(1, (shown + SLOTS_PER_ROW - 1) / SLOTS_PER_ROW);
+		grid.setLayout(new GridLayout(rows, SLOTS_PER_ROW, 2, 2));
+		for (int filler = shown; filler < rows * SLOTS_PER_ROW; filler++)
+		{
+			JPanel blank = new JPanel();
+			blank.setBackground(getBackground());
+			grid.add(blank);
+		}
+		return shown;
+	}
+
 	private JLabel buildIcon(int itemId, int owned)
 	{
-		JLabel icon = new JLabel();
+		FillIcon icon = new FillIcon();
 		icon.setPreferredSize(new Dimension(SLOT_WIDTH, SLOT_HEIGHT));
 		icon.setHorizontalAlignment(SwingConstants.CENTER);
 
-		boolean selected = store.getFillItem() == itemId;
+		boolean selected = store.getFills().contains(itemId);
+		icon.setPriority(store.priorityOf(itemId));
 		Icons.setStack(icon, itemManager.getImage(itemId, owned, true));
 		icon.setOpaque(selected);
 		icon.setBackground(selected ? SELECTED_BACKGROUND : null);
@@ -159,9 +375,16 @@ class CompostBinPanel extends JPanel
 			: BorderFactory.createEmptyBorder(1, 1, 1, 1));
 
 		String name = itemNames.get(itemId, "This");
+		String makes = Compostables.isSuperCompostable(itemId)
+			? "supercompost" : "ordinary compost";
+		int priority = store.priorityOf(itemId);
 		icon.setToolTipText(Tooltips.html("<b>" + name + "</b><br>" + owned
-			+ " owned - a bin takes 15 un-noted, the big one 30.<br>"
-			+ (selected ? "Picked; click to clear." : "Click to fill the bins with these.")));
+			+ " owned - a bin takes 15 un-noted, the big one 30.<br>A full bin of these makes "
+			+ makes + ".<br>"
+			+ (selected
+				? (priority > 0 ? "Number " + priority + " in the queue; click to remove."
+					: "Picked; click to clear.")
+				: "Click to fill the bins with these.")));
 
 		icon.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
 		icon.addMouseListener(new MouseAdapter()
@@ -169,10 +392,10 @@ class CompostBinPanel extends JPanel
 			@Override
 			public void mousePressed(MouseEvent event)
 			{
-				// The store toggles - picking the picked one clears it - and this panel's
-				// refresh redraws the tint on the sidebar's next pass; the click's own
-				// refresh below makes it immediate.
-				store.setFillItem(itemId);
+				// The store toggles - picking a picked one removes it, and a fresh pick goes
+				// to the BACK of the queue, which is how reordering is done here and in the
+				// seed grid alike. The click's own refresh redraws the digits immediately.
+				store.toggleFill(itemId);
 				refresh();
 			}
 		});

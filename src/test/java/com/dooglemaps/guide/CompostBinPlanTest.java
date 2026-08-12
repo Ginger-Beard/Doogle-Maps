@@ -16,6 +16,7 @@ import org.junit.Test;
 import org.mockito.Mockito;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.when;
@@ -116,7 +117,8 @@ public class CompostBinPlanTest
 	@Test
 	public void fullBucketsAreDepositedBeforeTheBinIsRefilled()
 	{
-		when(store.getFillItem()).thenReturn(ItemID.PINEAPPLE);
+		when(store.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
 		when(carried.getInventoryCount(ItemID.BUCKET_ULTRACOMPOST)).thenReturn(15);
 		when(carried.getInventoryCount(ItemID.PINEAPPLE)).thenReturn(15);
 
@@ -134,10 +136,82 @@ public class CompostBinPlanTest
 	@Test
 	public void aFillYouAreNotCarryingGetsNoStep()
 	{
-		when(store.getFillItem()).thenReturn(ItemID.PINEAPPLE);
+		when(store.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
 		when(carried.getInventoryCount(ItemID.PINEAPPLE)).thenReturn(0);
 
 		assertTrue(steps(EMPTY_BIN).isEmpty());
+	}
+
+	/**
+	 * Holding less than a bin wants gets an honest partial fill, not "fill the bin".
+	 *
+	 * <p>Nothing supercompostable stacks and a bin refuses notes, so fifteen items is fifteen
+	 * slots — and the big bin's thirty cannot fit in a twenty-eight slot inventory at all.
+	 * "Fill the bin" to someone holding ten ended halfway through with no word about why.
+	 */
+	@Test
+	public void aShortFillSaysHowShortItIs()
+	{
+		when(store.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
+		when(carried.getInventoryCount(ItemID.PINEAPPLE)).thenReturn(10);
+
+		List<GuideStep> steps = steps(EMPTY_BIN);
+
+		assertEquals(1, steps.size());
+		assertEquals(GuideAction.FILL_BIN, steps.get(0).getAction());
+		assertTrue("names what can go in: " + steps.get(0).getText(),
+			steps.get(0).getText().contains("Add your 10"));
+		assertTrue("and how far short it leaves you: " + steps.get(0).getText(),
+			steps.get(0).getText().contains("5 short"));
+	}
+
+	/**
+	 * The queue spills at the next BIN, never within one.
+	 *
+	 * <p>A bin filled with anything not entirely supercompostable makes ordinary compost, so
+	 * running out of pineapples half way through and topping up with potatoes would quietly
+	 * cost the tier. With no pineapples carried the step reaches straight past them to the
+	 * next fill and puts a whole bin of that in.
+	 */
+	@Test
+	public void theQueueSpillsToTheNextFillWhenTheFirstIsNotCarried()
+	{
+		when(store.getFills()).thenReturn(
+			java.util.Arrays.asList(ItemID.PINEAPPLE, ItemID.WATERMELON));
+		when(carried.getInventoryCount(ItemID.PINEAPPLE)).thenReturn(0);
+		when(carried.getInventoryCount(ItemID.WATERMELON)).thenReturn(15);
+
+		List<GuideStep> steps = steps(EMPTY_BIN);
+
+		assertEquals(1, steps.size());
+		assertEquals(GuideAction.FILL_BIN, steps.get(0).getAction());
+		assertEquals("the second fill fills this bin whole",
+			ItemID.WATERMELON, steps.get(0).getItemId());
+	}
+
+	/** ...and the first fill wins whenever it is actually in the pack. */
+	@Test
+	public void theFirstCarriedFillIsTheOneUsed()
+	{
+		when(store.getFills()).thenReturn(
+			java.util.Arrays.asList(ItemID.PINEAPPLE, ItemID.WATERMELON));
+		when(carried.getInventoryCount(ItemID.PINEAPPLE)).thenReturn(15);
+		when(carried.getInventoryCount(ItemID.WATERMELON)).thenReturn(15);
+
+		List<GuideStep> steps = steps(EMPTY_BIN);
+
+		assertEquals(ItemID.PINEAPPLE, steps.get(0).getItemId());
+	}
+
+	/** The big bin's thirty never fit one inventory, which is a fact worth having in the data. */
+	@Test
+	public void theBigBinCannotBeFilledInOneTrip()
+	{
+		assertTrue("a normal bin's fifteen fit fine", CompostBin.NORMAL.fitsOneInventory());
+		assertFalse("thirty un-noted items against twenty-eight slots",
+			CompostBin.BIG.fitsOneInventory());
 	}
 
 	@Test
@@ -153,7 +227,8 @@ public class CompostBinPlanTest
 	@Test
 	public void aPartFilledBinAsksForTheTopUp()
 	{
-		when(store.getFillItem()).thenReturn(ItemID.PINEAPPLE);
+		when(store.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
 		when(carried.getInventoryCount(ItemID.PINEAPPLE)).thenReturn(10);
 
 		List<GuideStep> steps = steps(SUPER_FILLING_EIGHT);

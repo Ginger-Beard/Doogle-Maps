@@ -125,8 +125,9 @@ public class RunLoadout
 		com.dooglemaps.data.ItemNames itemNames, com.dooglemaps.DoogleMapsConfig config,
 		net.runelite.api.Client client, com.dooglemaps.state.RunTypeStore runTypes,
 		com.dooglemaps.state.ContractState contracts,
-		com.dooglemaps.state.CompostRunStore compostRun)
+		com.dooglemaps.state.CompostRunStore compostRun, BoatHolds boatHolds)
 	{
+		this.boatHolds = boatHolds;
 		this.compostRun = compostRun;
 		this.contracts = contracts;
 		this.runTypes = runTypes;
@@ -200,6 +201,9 @@ public class RunLoadout
 	 */
 	private static final Set<LoadoutItem.Category> CANNOT_PROCEED_WITHOUT = EnumSet.of(
 		LoadoutItem.Category.SEED,
+		// A bin's fill for the same reason a seed is: reaching an empty bin without it
+		// achieves nothing there. It used to inherit this by being filed under COMPOST.
+		LoadoutItem.Category.BIN_FILL,
 		LoadoutItem.Category.COMPOST,
 		LoadoutItem.Category.PAYMENT,
 		LoadoutItem.Category.TOOL);
@@ -994,12 +998,11 @@ public class RunLoadout
 		}
 
 		// One item in place of two, wherever the run is going. See the class note above.
-		if (carried.has(ItemID.MEDALLION_OF_THE_DEEP) || bank.has(ItemID.MEDALLION_OF_THE_DEEP))
+		if (carried.has(ItemID.MEDALLION_OF_THE_DEEP) || bank.has(ItemID.MEDALLION_OF_THE_DEEP)
+			|| boatHolds.has(ItemID.MEDALLION_OF_THE_DEEP))
 		{
 			items.add(new LoadoutItem(ItemID.MEDALLION_OF_THE_DEEP, "Medallion of the deep",
-				LoadoutItem.Category.TOOL,
-				need(carried.has(ItemID.MEDALLION_OF_THE_DEEP),
-					bank.has(ItemID.MEDALLION_OF_THE_DEEP), false), 0,
+				LoadoutItem.Category.TOOL, divingNeed(ItemID.MEDALLION_OF_THE_DEEP), 0,
 				"Breathing apparatus for every underwater patch, on its own - no suit needed"));
 			return;
 		}
@@ -1013,12 +1016,42 @@ public class RunLoadout
 				+ "drown part-way through the patches";
 		items.add(new LoadoutItem(ItemID.HUNDRED_PIRATE_DIVING_HELMET, "Fishbowl helmet",
 			LoadoutItem.Category.TOOL,
-			need(carried.has(ItemID.HUNDRED_PIRATE_DIVING_HELMET),
-				bank.has(ItemID.HUNDRED_PIRATE_DIVING_HELMET), false), 0, reason));
+			divingNeed(ItemID.HUNDRED_PIRATE_DIVING_HELMET), 0, reason));
 		items.add(new LoadoutItem(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK, "Diving apparatus",
 			LoadoutItem.Category.TOOL,
-			need(carried.has(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK),
-				bank.has(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK), false), 0, reason));
+			divingNeed(ItemID.HUNDRED_PIRATE_DIVING_BACKPACK), 0, reason));
+	}
+
+	/**
+	 * Where a piece of diving gear is, counting the place it usually lives.
+	 *
+	 * <p>The cargo hold is asked before the bank is despaired of, which is the whole fix: the
+	 * hold stores this gear taking no space and it is then reachable from every boat, so it is
+	 * where a sailing player naturally leaves it — and the loadout, looking only in the bank
+	 * and the pack, told them they owned none. Reported from play.
+	 *
+	 * <p>Unknown rather than missing while <b>neither</b> store has been read, matching the
+	 * rule the bank already follows: claiming someone owns no helmet on the strength of two
+	 * places nobody has looked in is a false alarm, and a hold is only sent to the client when
+	 * it is opened.
+	 */
+	private LoadoutItem.Need divingNeed(int itemId)
+	{
+		if (carried.has(itemId))
+		{
+			return LoadoutItem.Need.HAVE;
+		}
+		if (boatHolds.has(itemId))
+		{
+			return LoadoutItem.Need.ON_BOAT;
+		}
+		if (bank.has(itemId))
+		{
+			return LoadoutItem.Need.WITHDRAW;
+		}
+		return bank.hasBeenSeen() || boatHolds.hasBeenSeen()
+			? LoadoutItem.Need.MISSING
+			: LoadoutItem.Need.UNKNOWN;
 	}
 
 	/**
@@ -1068,6 +1101,9 @@ public class RunLoadout
 	/** The bin run's fill and ash choices. See {@code CompostRunStore}. */
 	private final com.dooglemaps.state.CompostRunStore compostRun;
 
+	/** What is stowed at sea, which for the diving gear is where it usually is. */
+	private final BoatHolds boatHolds;
+
 	/**
 	 * What a compost-bin run takes to the bank: the fill, the ash, and something to carry the
 	 * compost out in.
@@ -1089,22 +1125,9 @@ public class RunLoadout
 			return;
 		}
 
-		int fill = compostRun.getFillItem();
-		if (fill != com.dooglemaps.state.CompostRunStore.NO_FILL && work.fillItems > 0)
+		if (work.fillItems > 0)
 		{
-			int carriedCount = carried.getInventoryCount(fill);
-			int held = bank.getCount(fill) + carriedCount;
-			items.add(new LoadoutItem(fill,
-				itemNames.get(fill, "Bin fill"), LoadoutItem.Category.COMPOST,
-				carriedCount >= work.fillItems ? LoadoutItem.Need.HAVE
-					: held > 0 ? LoadoutItem.Need.WITHDRAW
-					: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
-				work.fillItems,
-				Math.max(0, Math.min(work.fillItems, held) - carriedCount),
-				"Fills " + work.fillableBins
-					+ (work.fillableBins == 1 ? " compost bin" : " compost bins")
-					+ " - un-noted, so it is " + work.fillItems + " pack slots",
-				LoadoutItem.From.BANK));
+			addFills(items, work);
 		}
 
 		if (compostRun.isAshing() && work.ashNeeded > 0)
@@ -1127,6 +1150,129 @@ public class RunLoadout
 		{
 			addCompostCarriers(items, work);
 		}
+	}
+
+	/**
+	 * How much bin fill one trip can actually carry.
+	 *
+	 * <p>The inventory, less a slot for the ash when the upgrade is on. Ash is the only other
+	 * thing this run brings from a bank, and it <b>stacks</b> — so 25 of it costs one slot
+	 * whatever the number says. Everything else the trip needs comes from the leprechaun
+	 * standing at the bin: the empty buckets, and the store the full ones go back into.
+	 *
+	 * <p>The buckets are deliberately not reserved for here. Emptying and depositing happen in
+	 * turns against whatever room is going — see {@code CompostBinPlan}, which takes as many
+	 * buckets as there are free slots and hands the compost straight back — so the produce does
+	 * not have to share the pack with them.
+	 */
+	private int fillBudget()
+	{
+		int reserved = compostRun.isAshing() ? 1 : 0;
+		return com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE - reserved;
+	}
+
+	/**
+	 * A row per picked fill, taken in queue order until the pack is full.
+	 *
+	 * <p>The queue is the answer to "one crop is never enough": fifteen un-noted items a bin
+	 * means eight bins want a hundred and twenty of something, and almost nobody has that of
+	 * one thing. So the picks are drawn down in order — all the pineapples the trip can use,
+	 * then watermelons for whatever is left — which is the same spilling the seed allocation
+	 * does across patches.
+	 *
+	 * <p>Whole bins at a time, deliberately. A bin filled with a mixture that is not entirely
+	 * supercompostable makes ordinary compost, so the guide fills each bin from one item and
+	 * the loadout budgets the same way: asking for eleven pineapples and four watermelons
+	 * would be banking a downgraded bin.
+	 */
+	private void addFills(List<LoadoutItem> items,
+		com.dooglemaps.route.RunPlanner.BinWork work)
+	{
+		// One pack-load, never the whole job. The run's total is routinely more than an
+		// inventory holds: nine empty bins want 150 items, and asking for 150 pineapples was
+		// an instruction nobody could follow - it drove the bank highlight's count too.
+		int budget = fillBudget();
+		int binSize = Math.max(1, work.fillItems / Math.max(1, work.fillableBins));
+		int outstanding = Math.min(work.fillItems, budget);
+		boolean shortOfTheJob = work.fillItems > budget;
+
+		// Whole bins at a time, EXCEPT when a bin is bigger than a pack. The big bin holds
+		// thirty un-noted items against twenty-eight slots, so rounding down to a whole bin
+		// gave zero every time: the fill row went MISSING, the supply leg it gates never
+		// completed, and a compost-only run at the Farming Guild - whose only bin is the big
+		// one - stood at the bank being told to fetch something it could not hold. Reported
+		// from play. Where a bin cannot be filled in one trip the rounding is meaningless, so
+		// the trip simply takes as many as it can and the bin is topped up on the next one.
+		int rounding = binSize <= budget ? binSize : 1;
+
+		for (int fill : compostRun.getFills())
+		{
+			if (outstanding <= 0)
+			{
+				break;
+			}
+
+			int carriedCount = carried.getInventoryCount(fill);
+			int held = bank.getCount(fill) + carriedCount;
+			// Whole bins of this item, so no bin ends up half one thing and half another.
+			int wanted = Math.min(outstanding, (held / rounding) * rounding);
+			if (wanted <= 0)
+			{
+				// Not enough for a full bin of this one. Still worth a row when it is the
+				// only pick, so someone short of a bin's worth is told rather than left
+				// wondering why the list is empty.
+				if (compostRun.getFills().size() == 1)
+				{
+					items.add(new LoadoutItem(fill, itemNames.get(fill, "Bin fill"),
+						LoadoutItem.Category.BIN_FILL,
+						bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
+						Math.min(outstanding, binSize), 0,
+						"A bin takes " + binSize + " un-noted, and you have " + held,
+						LoadoutItem.From.BANK));
+				}
+				continue;
+			}
+
+			items.add(new LoadoutItem(fill, itemNames.get(fill, "Bin fill"),
+				LoadoutItem.Category.BIN_FILL,
+				carriedCount >= wanted ? LoadoutItem.Need.HAVE
+					: held > 0 ? LoadoutItem.Need.WITHDRAW
+					: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
+				wanted,
+				Math.max(0, Math.min(wanted, held) - carriedCount),
+				fillReason(work, wanted, binSize, shortOfTheJob),
+				LoadoutItem.From.BANK));
+			outstanding -= wanted;
+		}
+	}
+
+	/**
+	 * What a fill row says, which depends on whether one trip covers the work.
+	 *
+	 * <p>The short case is the one worth wording carefully. A big bin alone cannot be filled in
+	 * a single inventory at all — thirty un-noted items against twenty-eight slots — so a player
+	 * heading to the guild expecting to finish it needs telling before they walk, not after.
+	 */
+	private String fillReason(com.dooglemaps.route.RunPlanner.BinWork work, int wanted,
+		int binSize, boolean shortOfTheJob)
+	{
+		String bins = work.fillableBins + (work.fillableBins == 1 ? " bin" : " bins");
+		if (!shortOfTheJob)
+		{
+			return "Fills your " + bins + " - un-noted, so it is " + wanted + " pack slots";
+		}
+		if (binSize > fillBudget())
+		{
+			// The big bin, which no inventory can fill in one go however it is arranged.
+			return "As many as a pack holds - the big bin takes " + binSize
+				+ " un-noted items and there are only " + fillBudget()
+				+ " slots, so it fills over two trips.";
+		}
+		return wanted / Math.max(1, binSize) + " bin"
+			+ (wanted / Math.max(1, binSize) == 1 ? "" : "s")
+			+ " worth - un-noted and unstackable, so your " + bins + " want "
+			+ work.fillItems + " items and a pack holds " + fillBudget()
+			+ ". The rest needs another load.";
 	}
 
 	/**

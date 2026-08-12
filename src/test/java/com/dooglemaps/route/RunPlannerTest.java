@@ -204,6 +204,7 @@ public class RunPlannerTest
 
 		// Jane hands out a yew contract while you are standing there.
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		when(groups.groupFor(tree))
 			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
 		planner.reviewContract();
@@ -243,6 +244,7 @@ public class RunPlannerTest
 		// The contract arrives, and its axe is in the bank.
 		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(true);
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		when(groups.groupFor(tree))
 			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
 		planner.reviewContract();
@@ -285,6 +287,7 @@ public class RunPlannerTest
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		com.dooglemaps.data.PlantingGroup contractGroup =
 			com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE);
 		when(groups.groupFor(tree)).thenReturn(contractGroup);
@@ -335,6 +338,7 @@ public class RunPlannerTest
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		com.dooglemaps.data.PlantingGroup contractGroup =
 			com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE);
 		when(groups.groupFor(tree)).thenReturn(contractGroup);
@@ -390,6 +394,7 @@ public class RunPlannerTest
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(true);
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		when(groups.groupFor(tree))
 			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
 
@@ -437,6 +442,7 @@ public class RunPlannerTest
 		int postsBefore = posted.size();
 
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		when(groups.groupFor(tree))
 			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
 		planner.reviewContract();
@@ -469,6 +475,7 @@ public class RunPlannerTest
 			planner.coveredTypes().contains(PatchImplementation.TREE));
 
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		when(groups.groupFor(tree))
 			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
 		planner.reviewContract();
@@ -564,6 +571,7 @@ public class RunPlannerTest
 			.noneMatch(stop -> stop.getRegion().getRegionId() == tree.getRegion().getRegionId()));
 
 		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		tickTheContract(PatchImplementation.TREE);
 		when(groups.groupFor(tree))
 			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
 		planner.reviewContract();
@@ -1899,5 +1907,139 @@ public class RunPlannerTest
 		stateStore.recordVarbit(bin, 31, bin.getImplementation().forVarbitValue(31));
 		org.junit.Assert.assertEquals("a closed bin still composting is the one that does not",
 			0, planner.previewStops(types).size());
+	}
+
+	/**
+	 * A bins-only run with just the Farming Guild enabled finds the guild's bin.
+	 *
+	 * <h2>The guild has no ordinary compost bin — only the big one</h2>
+	 *
+	 * The run list offers a single "Compost bin" line carrying the ordinary bin's type, and the
+	 * fold to both sizes lived in RunTypeStore.getSelected alone. Anything building its own set
+	 * from the checkboxes — the panel's preview, its destination list, and the run it starts —
+	 * therefore planned over COMPOST only, matched no patch anywhere in the guild, and reported
+	 * nothing to do while the player stood at the guild bank looking at the bin. Reported from
+	 * play. CompostBin.coveredByTheBinTick is the shared answer; this pins the case it exists for.
+	 */
+	@org.junit.Test
+	public void aGuildOnlyBinRunFindsTheBigBin()
+	{
+		com.dooglemaps.data.FarmPatch bigBin = null;
+		for (com.dooglemaps.data.FarmPatch patch
+			: com.dooglemaps.data.FarmingWorldData.getPatches(PatchImplementation.BIG_COMPOST))
+		{
+			bigBin = patch;
+			break;
+		}
+		org.junit.Assert.assertNotNull("the guild's big bin is missing from the world data",
+			bigBin);
+		org.junit.Assert.assertTrue("this test is about the guild",
+			bigBin.getRegion().getName().contains("Farming Guild"));
+
+		availability.setAvailable(bigBin, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
+		stateStore.recordVarbit(bigBin, 62, bigBin.getImplementation().forVarbitValue(62));
+
+		// Exactly what a checkbox reports: the line's own type, and nothing else.
+		java.util.Set<PatchImplementation> ticked = EnumSet.of(PatchImplementation.COMPOST);
+		org.junit.Assert.assertEquals("the tick alone matches no patch in the guild",
+			0, planner.previewStops(ticked).size());
+		org.junit.Assert.assertEquals("...and widened, it finds the bin standing there",
+			1, planner.previewStops(
+				com.dooglemaps.data.CompostBin.coveredByTheBinTick(ticked)).size());
+	}
+
+	/**
+	 * Ticks the contract's own run line, which reviewContract now requires.
+	 *
+	 * <p>The contract is a run option like any other, and adopting its patch is something the
+	 * player asks for rather than something an assignment imposes — see
+	 * RunPlanner.contractIsInTheRun.
+	 */
+	private void tickTheContract(PatchImplementation type)
+	{
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.contract(type)))).thenReturn(true);
+	}
+
+	/**
+	 * A contract nobody ticked is not adopted, and sends nobody to a bank.
+	 *
+	 * <p>Reported from play twice, and the log named it: a compost-only run at the Farming
+	 * Guild logged "Contract needs collecting for; routing to a supply point" with an empty
+	 * seed list. reviewContract bypasses inTheRun by design — its job is to adopt a patch the
+	 * plan does not have — so it was the one contract path that never consulted the tick.
+	 */
+	@org.junit.Test
+	public void anUntickedContractIsNotAdoptedMidRun()
+	{
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		org.junit.Assert.assertNotNull(tree);
+		record(tree.getKey(), grownUnchecked(tree));
+		availability.setAvailable(tree, true);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		org.junit.Assert.assertNotNull(herb);
+		record(herb.getKey(), 3);
+		availability.setAvailable(herb, true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		RunStop guild = planner.getRemaining().stream()
+			.filter(stop -> stop.getRegion().getRegionId() == herb.getRegion().getRegionId())
+			.findFirst()
+			.orElseThrow(() -> new AssertionError("no guild stop was planned"));
+
+		// Jane has one assigned, and the player has not ticked it.
+		when(groups.contractCrop()).thenReturn(Produce.YEW);
+		when(groups.groupFor(tree))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE));
+		planner.reviewContract();
+
+		org.junit.Assert.assertFalse(
+			"an unticked contract must not pull its patch into the run",
+			guild.getPatches().contains(tree));
+		org.junit.Assert.assertFalse("nor widen the run's types to match",
+			planner.coveredTypes().contains(PatchImplementation.TREE));
+	}
+
+	/**
+	 * The dock divert applies on land and stops the moment the player is underwater.
+	 *
+	 * <h2>Both halves reported from play</h2>
+	 *
+	 * Routing to the seabed got "destination unreachable", so the run asks for the steps on the
+	 * dock. Keeping that target after the dive was worse: the router did as it was told and
+	 * plotted a course back UP to the dock, via fairy rings, from the nursery floor.
+	 */
+	@org.junit.Test
+	public void theCoralDivertAppliesOnTheDockAndNotBelowIt()
+	{
+		com.dooglemaps.data.UnderwaterApproach.Approach steps =
+			com.dooglemaps.data.UnderwaterApproach.forType(PatchImplementation.CORAL);
+		org.junit.Assert.assertNotNull(steps);
+		int dockRegion = steps.getPoint().getRegionID();
+
+		org.junit.Assert.assertTrue("on the dock, the steps are the destination",
+			com.dooglemaps.data.UnderwaterApproach.stillWanted(steps, dockRegion));
+		org.junit.Assert.assertTrue("and anywhere else on the way there",
+			com.dooglemaps.data.UnderwaterApproach.stillWanted(steps, -1));
+		org.junit.Assert.assertFalse(
+			"once underwater it must stop, or the route climbs back up the steps",
+			com.dooglemaps.data.UnderwaterApproach.stillWanted(steps, 12581));
+	}
+
+	/** The nursery objects are known by id, since nothing on the seabed carries the varbit. */
+	@org.junit.Test
+	public void theNurseryObjectsAreKnownById()
+	{
+		int[] objects = com.dooglemaps.data.UnderwaterApproach.objectsFor(
+			PatchImplementation.CORAL);
+
+		org.junit.Assert.assertEquals("both nurseries, which cannot be told apart",
+			2, objects.length);
+		org.junit.Assert.assertEquals(0,
+			com.dooglemaps.data.UnderwaterApproach.objectsFor(PatchImplementation.HERB).length);
 	}
 }
