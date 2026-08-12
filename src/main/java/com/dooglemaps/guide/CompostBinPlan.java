@@ -181,22 +181,54 @@ public final class CompostBinPlan
 	private static void addFillStep(List<GuideStep> steps, CompostBin bin, FarmPatch patch,
 		int wanted, CompostRunStore store, CarriedItems carried)
 	{
-		int fill = store.getFillItem();
-		if (fill == CompostRunStore.NO_FILL)
+		// The queue's first item that is actually in the pack. One item per bin, never a
+		// mixture: a bin filled with anything that is not entirely supercompostable makes
+		// ordinary compost, so running out of pineapples half way through and topping up with
+		// potatoes would quietly cost the tier. Spilling to the next fill happens at the NEXT
+		// bin, which is what the queue means. See CompostRunStore.getFills.
+		//
+		// Un-noted only, which is the whole reason this counts the pack rather than the bank:
+		// a bin refuses notes, so noted produce in the inventory is no nearer to usable than
+		// produce still in a bank.
+		int fill = CompostRunStore.NO_FILL;
+		int held = 0;
+		for (int candidate : store.getFills())
+		{
+			int carrying = carried.getInventoryCount(candidate);
+			if (carrying > 0)
+			{
+				fill = candidate;
+				held = carrying;
+				break;
+			}
+		}
+		if (fill == CompostRunStore.NO_FILL || held == 0)
 		{
 			return;
 		}
 
-		int held = carried.getInventoryCount(fill);
-		if (held == 0)
+		// What this stop can actually put in, which is not always what the bin wants. Nothing
+		// supercompostable stacks, so a full big bin is thirty slots against an inventory of
+		// twenty-eight and cannot be done in one load however it is arranged. Saying "fill the
+		// bin" to someone holding ten was an instruction that ended halfway through with no
+		// word about what had gone wrong; a part-filled bin is a perfectly good place to stop,
+		// and the count is what tells the player they are coming back.
+		int canAdd = Math.min(held, wanted);
+		String text;
+		if (canAdd >= wanted)
 		{
-			return;
-		}
-
-		steps.add(GuideStep.withItem(GuideAction.FILL_BIN, patch, fill,
-			wanted >= bin.getCapacity()
+			text = wanted >= bin.getCapacity()
 				? "Fill the bin - it takes " + bin.getCapacity() + " un-noted items."
-				: "Add " + wanted + " more to the bin."));
+				: "Add " + wanted + " more to the bin.";
+		}
+		else
+		{
+			text = "Add your " + canAdd + " to the bin - " + (wanted - canAdd) + " short of "
+				+ (wanted >= bin.getCapacity() ? "a full bin" : "closing it")
+				+ ", so it will want another load.";
+		}
+
+		steps.add(GuideStep.withItem(GuideAction.FILL_BIN, patch, fill, text));
 	}
 
 	/** A part-filled bin: full means close it, anything less means top it up. */

@@ -136,6 +136,9 @@ public class DoogleMapsPlugin extends Plugin
 	private DroppedProduce droppedProduce;
 
 	@Inject
+	private com.dooglemaps.guide.SeaweedSpores seaweedSpores;
+
+	@Inject
 	private com.dooglemaps.guide.GuideMenuSwap guideMenuSwap;
 
 	@Inject
@@ -161,6 +164,9 @@ public class DoogleMapsPlugin extends Plugin
 
 	@Inject
 	private BankContents bankContents;
+
+	@Inject
+	private com.dooglemaps.bank.BoatHolds boatHolds;
 
 	@Inject
 	private BankHighlightOverlay bankHighlightOverlay;
@@ -336,9 +342,11 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(playerLocation);
 		eventBus.register(guideTracker);
 		eventBus.register(bankContents);
+		eventBus.register(boatHolds);
 		eventBus.register(leprechaunStore);
 		eventBus.register(playerHouse);
 		eventBus.register(droppedProduce);
+		eventBus.register(seaweedSpores);
 		eventBus.register(guideMenuSwap);
 		eventBus.register(bankFilter);
 		// For its cache invalidation alone - registered before the capture classes run
@@ -370,7 +378,8 @@ public class DoogleMapsPlugin extends Plugin
 			.build();
 		clientToolbar.addNavigation(navigationButton);
 
-		readyInfoBox = new ReadyInfoBox(PluginIcon.create(), this, panel, config, runLoadout, runPlanner);
+		readyInfoBox = new ReadyInfoBox(PluginIcon.create(), this, panel, config, runLoadout,
+			runPlanner, guideTracker);
 		infoBoxManager.addInfoBox(readyInfoBox);
 
 		overlayManager.add(guideOverlay);
@@ -403,9 +412,11 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(playerLocation);
 		eventBus.unregister(guideTracker);
 		eventBus.unregister(bankContents);
+		eventBus.unregister(boatHolds);
 		eventBus.unregister(leprechaunStore);
 		eventBus.unregister(playerHouse);
 		eventBus.unregister(droppedProduce);
+		eventBus.unregister(seaweedSpores);
 		eventBus.unregister(guideMenuSwap);
 		eventBus.unregister(bankFilter);
 		eventBus.unregister(runLoadout);
@@ -450,6 +461,7 @@ public class DoogleMapsPlugin extends Plugin
 		leprechaunStore.reset();
 		playerHouse.reset();
 		droppedProduce.reset();
+		seaweedSpores.reset();
 		protectedPatches.reset();
 		runPlanner.stop();
 	}
@@ -832,6 +844,7 @@ public class DoogleMapsPlugin extends Plugin
 		// The remembered bank, so the loadout, the withdraw list and the filter start informed
 		// rather than waiting for the first bank open of the session. See BankContents.
 		bankContents.load();
+		boatHolds.load();
 		// The Farming level is only otherwise learned from a Farming XP drop, which may not
 		// come for hours. Without it every yield estimate stays hidden, so it is read
 		// outright whenever we load.

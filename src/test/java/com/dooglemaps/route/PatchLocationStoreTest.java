@@ -134,4 +134,82 @@ public class PatchLocationStoreTest
 			throw new RuntimeException(e);
 		}
 	}
+
+	/**
+	 * The store still answers with the patch's own footprint, coral included.
+	 *
+	 * <p>The landward divert lives in {@code RunPlanner.routeTargetsFor}, not here, because it
+	 * depends on where the player is standing — on the dock it applies and underwater it must
+	 * not, or the router plots a course back up the steps.
+	 */
+	@org.junit.Test
+	public void theStoreAlwaysAnswersWithThePatchesOwnTiles()
+	{
+		com.dooglemaps.data.FarmPatch nursery = com.dooglemaps.data.FarmingWorldData
+			.getPatches(com.dooglemaps.data.PatchImplementation.CORAL).get(0);
+		org.junit.Assert.assertNotNull(nursery);
+
+		org.junit.Assert.assertTrue("a ring of tiles, the same as any other patch",
+			freshStore().getRouteTargets(nursery).size() > 1);
+	}
+
+	/**
+	 * The gear list names the medallion first, because it replaces the pair.
+	 *
+	 * <p>Someone who owns one needs neither other piece, and an instruction naming all three
+	 * would be telling them to wear a fishbowl helmet they replaced long ago.
+	 */
+	@org.junit.Test
+	public void theDivingGearListLeadsWithTheMedallion()
+	{
+		int[] gear = com.dooglemaps.data.UnderwaterApproach.gearToWear();
+
+		org.junit.Assert.assertEquals(3, gear.length);
+		org.junit.Assert.assertEquals(net.runelite.api.gameval.ItemID.MEDALLION_OF_THE_DEEP,
+			gear[0]);
+	}
+
+	/**
+	 * Both underwater families have an approach now; nothing on dry land does.
+	 *
+	 * <p>Seaweed was deliberately absent at first, on the grounds that nobody had reported the
+	 * router refusing it — which held until somebody did, with the rowboat's id and position.
+	 * The rule that kept it out is still the rule: an approach goes in when the router has
+	 * actually refused the patch and the object is known, never because a patch looks wet.
+	 */
+	@org.junit.Test
+	public void bothUnderwaterFamiliesHaveALandwardApproach()
+	{
+		com.dooglemaps.data.UnderwaterApproach.Approach steps =
+			com.dooglemaps.data.UnderwaterApproach.forType(
+				com.dooglemaps.data.PatchImplementation.CORAL);
+		com.dooglemaps.data.UnderwaterApproach.Approach boat =
+			com.dooglemaps.data.UnderwaterApproach.forType(
+				com.dooglemaps.data.PatchImplementation.SEAWEED);
+
+		org.junit.Assert.assertNotNull(steps);
+		org.junit.Assert.assertNotNull(boat);
+		org.junit.Assert.assertNotEquals("two different shores, two different regions",
+			steps.getRegionId(), boat.getRegionId());
+		org.junit.Assert.assertNull("nothing on dry land is diverted",
+			com.dooglemaps.data.UnderwaterApproach.forType(
+				com.dooglemaps.data.PatchImplementation.HERB));
+	}
+
+	/** Each approach is judged against its OWN shore, not a shared one. */
+	@org.junit.Test
+	public void eachApproachIsJudgedAgainstItsOwnShore()
+	{
+		com.dooglemaps.data.UnderwaterApproach.Approach steps =
+			com.dooglemaps.data.UnderwaterApproach.forType(
+				com.dooglemaps.data.PatchImplementation.CORAL);
+		com.dooglemaps.data.UnderwaterApproach.Approach boat =
+			com.dooglemaps.data.UnderwaterApproach.forType(
+				com.dooglemaps.data.PatchImplementation.SEAWEED);
+
+		org.junit.Assert.assertTrue(com.dooglemaps.data.UnderwaterApproach.stillWanted(
+			boat, boat.getRegionId()));
+		org.junit.Assert.assertFalse("standing on the coral dock is not standing at the boat",
+			com.dooglemaps.data.UnderwaterApproach.stillWanted(boat, steps.getRegionId()));
+	}
 }

@@ -244,6 +244,47 @@ public interface DoogleMapsConfig extends Config
 	}
 
 	/**
+	 * Running out of ultracompost mid-run is ordinary — it is the tier people hoard and the
+	 * one a bin cannot make without volcanic ash — and a treated patch beats an untreated one
+	 * at any tier. Off by default all the same: which bucket gets spent is the player's
+	 * decision, and quietly spending a different one than they picked is not a call to make
+	 * for them. See {@code CompostTier.bestAvailableAtOrBelow}.
+	 */
+	@ConfigItem(
+		keyName = "downgradeCompost",
+		name = "Fall back to weaker compost",
+		description = "When the compost you picked has run out, treat the patch with the best "
+			+ "you still have - ultra to super to ordinary - rather than skipping it. Says so "
+			+ "in the chatbox and on the infobox each time it happens, so a run never quietly "
+			+ "spends a tier you did not choose.",
+		position = 43,
+		section = guideSection
+	)
+	default boolean downgradeCompost()
+	{
+		return false;
+	}
+
+	/**
+	 * Seaweed spores are the one pickup with a clock on it, so the notice is opt-out rather
+	 * than opt-in. See {@code SeaweedSpores} for why thirty seconds is easy to miss.
+	 */
+	@ConfigItem(
+		keyName = "notifySeaweedSpores",
+		name = "Call out seaweed spores",
+		description = "While you are in the Fossil Island underwater area, say in the chatbox "
+			+ "and mark on the seabed when a seaweed spore appears. They last thirty seconds "
+			+ "and are one of the few ways to restock, so picking up what you plant is what "
+			+ "keeps a seaweed run going.",
+		position = 42,
+		section = guideSection
+	)
+	default boolean notifySeaweedSpores()
+	{
+		return true;
+	}
+
+	/**
 	 * The first place the plugin shaped input rather than describing it, so it has its own
 	 * switch. See {@code GuideMenuSwap} for why it is safe and how the option is chosen.
 	 */

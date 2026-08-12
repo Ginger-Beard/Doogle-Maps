@@ -52,52 +52,161 @@ public class CompostRunStore
 	}
 
 	/**
-	 * The item the bins get filled with, or {@link #NO_FILL} while none is chosen.
+	 * The items the bins get filled with, best first, or empty while nothing is chosen.
 	 *
-	 * <p>Validated against the table on the way out rather than trusted: the stored id could
-	 * be stale across a data regeneration, and an id the table no longer vouches for would
-	 * have the run filling bins with something that makes ordinary compost — or, filled with
-	 * tomatoes, with nothing at all.
+	 * <h2>Several, in the order they were picked — like the seed list</h2>
+	 *
+	 * One fill is rarely enough: fifteen un-noted items per bin means a run over eight bins
+	 * wants a hundred and twenty of something, and almost nobody has that of one crop. Picking
+	 * pineapples then watermelons says "fill with pineapples, and when they run out use
+	 * watermelons", exactly as picking two seeds does for patches. Insertion order is the
+	 * queue, so re-picking sends an item to the back — the same rule, and the same digit on
+	 * the icon, as {@code SeedSelectorPanel}.
+	 *
+	 * <p><b>The spill is per bin, not within one.</b> A bin filled with a mixture that is not
+	 * entirely supercompostable makes ordinary compost, so running out of pineapples half way
+	 * through a bin and topping it up with potatoes would quietly cost the tier. The guide
+	 * therefore fills each bin from a single item; see {@code CompostBinPlan}.
+	 *
+	 * <p>Validated against the tables on the way out rather than trusted: a stored id could be
+	 * stale across a data regeneration, and one neither table vouches for would have the run
+	 * filling bins with something the game simply refuses.
 	 */
-	public int getFillItem()
+	public java.util.List<Integer> getFills()
 	{
-		Integer stored = configManager.getRSProfileConfiguration(
-			DoogleMapsConfig.GROUP, FILL_KEY, int.class);
-		if (stored == null || !Compostables.isSuperCompostable(stored))
+		String stored = configManager.getRSProfileConfiguration(
+			DoogleMapsConfig.GROUP, FILL_KEY, String.class);
+		if (stored == null || stored.isEmpty())
 		{
-			return NO_FILL;
+			return java.util.Collections.emptyList();
 		}
-		return stored;
+
+		java.util.List<Integer> fills = new ArrayList<>();
+		// Comma-separated so a single stored id — which is what the one-pick version wrote —
+		// still parses as a list of one, and an existing profile keeps its choice.
+		for (String part : stored.split(","))
+		{
+			try
+			{
+				int itemId = Integer.parseInt(part.trim());
+				if (Compostables.isCompostable(itemId) && !fills.contains(itemId))
+				{
+					fills.add(itemId);
+				}
+			}
+			catch (NumberFormatException e)
+			{
+				log.debug("Ignoring unreadable bin fill entry \"{}\"", part);
+			}
+		}
+		return fills;
 	}
 
-	/** Whether a fill has been chosen at all — the gate on routing to an empty bin. */
+	/** The first fill to reach for, or {@link #NO_FILL} when none is picked. */
+	public int getFillItem()
+	{
+		java.util.List<Integer> fills = getFills();
+		return fills.isEmpty() ? NO_FILL : fills.get(0);
+	}
+
+	/** Whether any fill has been chosen — the gate on routing to an empty bin. */
 	public boolean hasFill()
 	{
-		return getFillItem() != NO_FILL;
+		return !getFills().isEmpty();
 	}
 
 	/**
-	 * Picks the fill, or clears it when the current pick is clicked again.
+	 * This item's place in the fill queue, 1-based, or 0 when it is unpicked or alone.
 	 *
-	 * <p>Only items the table vouches for are storable, for the same reason the read side
-	 * validates: everything downstream — the loadout's count, the guide's fill step — assumes
-	 * the chosen item makes supercompost.
+	 * <p>Zero for a lone pick because the digit exists to show an <i>order</i>, and one item
+	 * has none — the same rule the seed grid's priority number follows.
 	 */
-	public void setFillItem(int itemId)
+	public int priorityOf(int itemId)
 	{
-		if (itemId == getFillItem())
+		java.util.List<Integer> fills = getFills();
+		if (fills.size() < 2)
+		{
+			return 0;
+		}
+		int position = fills.indexOf(itemId);
+		return position < 0 ? 0 : position + 1;
+	}
+
+	/**
+	 * Adds a fill to the back of the queue, or drops it when it is already picked.
+	 *
+	 * <p>Either tier is storable. The panel offers both lists — an account with no pineapples
+	 * still has potatoes, and ordinary compost is what most of a farm run gets treated with —
+	 * so the store's job is only to refuse an id the game would not accept in a bin at all.
+	 * Which tier a fill produces is not stored: the bin's own varbit says what is in it, so
+	 * everything downstream reads the result rather than predicting it.
+	 */
+	public void toggleFill(int itemId)
+	{
+		java.util.List<Integer> fills = new ArrayList<>(getFills());
+		if (fills.contains(itemId))
+		{
+			fills.remove(Integer.valueOf(itemId));
+		}
+		else if (!Compostables.isCompostable(itemId))
+		{
+			log.warn("Refusing to store {} as a bin fill - a bin will not take it", itemId);
+			return;
+		}
+		else
+		{
+			fills.add(itemId);
+		}
+		store(fills);
+	}
+
+	private void store(java.util.List<Integer> fills)
+	{
+		if (fills.isEmpty())
 		{
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FILL_KEY);
 			changed();
 			return;
 		}
-		if (!Compostables.isSuperCompostable(itemId))
+
+		StringBuilder joined = new StringBuilder();
+		for (int itemId : fills)
 		{
-			log.warn("Refusing to store {} as the bin fill - it is not supercompostable", itemId);
-			return;
+			if (joined.length() > 0)
+			{
+				joined.append(',');
+			}
+			joined.append(itemId);
 		}
-		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, FILL_KEY, itemId);
+		configManager.setRSProfileConfiguration(
+			DoogleMapsConfig.GROUP, FILL_KEY, joined.toString());
 		changed();
+	}
+
+	/**
+	 * Whether every picked fill makes supercompost.
+	 *
+	 * <p>Every, not any, and that is the honest reading: the bins are filled one item at a
+	 * time in queue order, so a queue with an ordinary item anywhere in it will eventually
+	 * fill a bin with ordinary compost. For the panel, which says so under the picks, and for
+	 * the ash box, which upgrades supercompost and nothing else — an ordinary fill with the
+	 * ash ticked is a combination worth being plain about rather than silently doing nothing.
+	 */
+	public boolean fillMakesSupercompost()
+	{
+		java.util.List<Integer> fills = getFills();
+		if (fills.isEmpty())
+		{
+			return false;
+		}
+		for (int fill : fills)
+		{
+			if (!Compostables.isSuperCompostable(fill))
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** Whether a ready bin of supercompost gets the 25-ash (50 in the big bin) upgrade. */

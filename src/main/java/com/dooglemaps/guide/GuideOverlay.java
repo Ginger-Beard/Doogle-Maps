@@ -70,11 +70,15 @@ public class GuideOverlay extends Overlay
 	private final PlayerHouse house;
 	private final DroppedProduce droppedProduce;
 
+	/** Spores on the seabed, which are marked whether or not a run is under way. */
+	private final SeaweedSpores seaweedSpores;
+
 	@Inject
 	GuideOverlay(Client client, GuideTracker tracker, DoogleMapsConfig config,
 		ModelOutlineRenderer outlineRenderer, PatchLocationStore locations, PlayerHouse house,
-		DroppedProduce droppedProduce)
+		DroppedProduce droppedProduce, SeaweedSpores seaweedSpores)
 	{
+		this.seaweedSpores = seaweedSpores;
 		this.droppedProduce = droppedProduce;
 		this.house = house;
 		this.locations = locations;
@@ -97,6 +101,18 @@ public class GuideOverlay extends Overlay
 		}
 
 		Color colour = config.guideHighlightColour();
+
+		// The way down to an underwater patch, whenever the run is heading for one and the
+		// object is in the scene. Independent of the step for the same reason the spores are:
+		// the steps are the last thing to click on a travel leg, and travel legs have no step.
+		highlightUnderwaterApproach(graphics, colour);
+
+		// Before the step, and regardless of whether there is one. A seaweed spore is an
+		// interruption with a thirty-second clock on it rather than a piece of the run's
+		// work — it can land while you are raking, while you are travelling, or with the run
+		// finished and nothing else to say — so it is drawn on its own terms. See
+		// SeaweedSpores.
+		highlightSeaweedSpores(graphics);
 
 		GuideStep step = tracker.getCurrentStep();
 		if (step == null)
@@ -154,6 +170,128 @@ public class GuideOverlay extends Overlay
 		}
 		return null;
 	}
+
+	/**
+	 * Outlines the steps down to an underwater patch the run is heading for.
+	 *
+	 * <p>The router is asked for the landward approach rather than the patch — nothing can
+	 * path to the seabed, and asking got "destination unreachable" (see
+	 * {@link com.dooglemaps.data.UnderwaterApproach}). That leaves the last click unmarked:
+	 * the drawn line ends on a shore and the thing to click is a set of steps among the
+	 * scenery. This is the same gap {@code highlightRouteObject} fills for a fairy ring.
+	 *
+	 * <p>By object id rather than by name, which is the difference from that method: the id is
+	 * known exactly, read off the client at the spot, so there is no menu-wording to parse and
+	 * nothing to get wrong. Scanning costs a scene walk, so it only happens while the run
+	 * actually has an underwater stop left.
+	 */
+	private void highlightUnderwaterApproach(Graphics2D graphics, Color colour)
+	{
+		com.dooglemaps.data.UnderwaterApproach.Approach approach = tracker.underwaterApproach();
+		if (approach == null)
+		{
+			return;
+		}
+
+		int tick = client.getTickCount();
+		if (tick != approachTick || approachId != approach.getObjectId())
+		{
+			approachTick = tick;
+			approachId = approach.getObjectId();
+			approachObjects = scanForObjectId(approach.getObjectId());
+		}
+
+		for (TileObject object : approachObjects)
+		{
+			Shape clickbox = object.getClickbox();
+			if (clickbox != null)
+			{
+				OverlayUtil.renderPolygon(graphics, clickbox, colour,
+					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
+			}
+			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+			{
+				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
+					config.guideOutlineFeathering());
+			}
+		}
+	}
+
+	private int approachTick = -1;
+	private int approachId = -1;
+	private java.util.List<TileObject> approachObjects = Collections.emptyList();
+
+	/** Every scene object with this exact id, impostors resolved like the name scan does. */
+	private java.util.List<TileObject> scanForObjectId(int objectId)
+	{
+		java.util.List<TileObject> found = new java.util.ArrayList<>();
+		java.util.Set<Long> seen = new java.util.HashSet<>();
+		net.runelite.api.WorldView worldView = client.getTopLevelWorldView();
+		net.runelite.api.Tile[][][] tiles = worldView.getScene().getTiles();
+		for (net.runelite.api.Tile[] column : tiles[worldView.getPlane()])
+		{
+			for (net.runelite.api.Tile tile : column)
+			{
+				if (tile == null)
+				{
+					continue;
+				}
+				for (net.runelite.api.GameObject object : tile.getGameObjects())
+				{
+					if (object == null || !seen.add(object.getHash()))
+					{
+						continue;
+					}
+					if (object.getId() == objectId)
+					{
+						found.add(object);
+					}
+				}
+			}
+		}
+		return found;
+	}
+
+	/**
+	 * Marks the seabed tiles a seaweed spore is sitting on.
+	 *
+	 * <p>Its own colour rather than the guide's, and deliberately: everything else this
+	 * overlay draws is "the thing the current step wants", and a spore is not that. It is a
+	 * chance passing by, so it reads as a different kind of mark — the same green the game
+	 * uses for its own ground-item highlights, which is the association a player already has.
+	 *
+	 * <p>Tiles rather than item models, exactly as the dropped-crop highlight does it: a
+	 * ground item is a few pixels with no silhouette worth tracing, and the tile is the thing
+	 * that gets clicked.
+	 */
+	private void highlightSeaweedSpores(Graphics2D graphics)
+	{
+		java.util.List<SeaweedSpores.Spore> spores = seaweedSpores.current();
+		if (spores.isEmpty() || !config.notifySeaweedSpores())
+		{
+			return;
+		}
+
+		Area tiles = new Area();
+		for (SeaweedSpores.Spore spore : spores)
+		{
+			LocalPoint local = LocalPoint.fromWorld(client.getTopLevelWorldView(),
+				spore.getLocation());
+			if (local == null)
+			{
+				continue;
+			}
+			Polygon tile = Perspective.getCanvasTilePoly(client, local);
+			if (tile != null)
+			{
+				tiles.add(new Area(tile));
+			}
+		}
+		fillAndOutline(graphics, tiles, SPORE_COLOUR);
+	}
+
+	/** The game's own ground-item green, so a spore reads as a pickup rather than a step. */
+	private static final Color SPORE_COLOUR = new Color(0x3F, 0xC1, 0x5F);
 
 	/**
 	 * Marks the tiles holding the crops a full pack dropped.
@@ -320,6 +458,27 @@ public class GuideOverlay extends Overlay
 		scannedTick = tick;
 		scannedPatchKey = patch.getKey();
 		scannedObjects = scanForPatchObjects(patch);
+
+		// Nothing on the seabed carries a patch varbit, so the ordinary scan finds a coral
+		// nursery only by luck. Its objects are known by id instead — read off the client at
+		// the spot — which is the same escape hatch the tile fallback below is, one step
+		// earlier and far more precise. Reported from play as the nursery patches never
+		// highlighting. See UnderwaterApproach.objectsFor: the two nurseries cannot be told
+		// apart from the objects alone, so both are marked.
+		if (scannedObjects.isEmpty())
+		{
+			List<TileObject> byId = new ArrayList<>();
+			for (int objectId
+				: com.dooglemaps.data.UnderwaterApproach.objectsFor(patch.getImplementation()))
+			{
+				byId.addAll(scanForObjectId(objectId));
+			}
+			if (!byId.isEmpty())
+			{
+				scannedObjects = byId;
+				return scannedObjects;
+			}
+		}
 
 		// An empty patch was reported as not highlighting, and there are two very different
 		// reasons it might not: nothing in the scene carries its varbit, or something does and

@@ -107,7 +107,7 @@ class PatchTypePanel extends JPanel
 		// bins, and whether the ash upgrade is on. Same footer slot, same reasoning: the
 		// choice belongs on the tab that shows the thing it configures.
 		this.binPanel = type == PatchImplementation.COMPOST
-			? new CompostBinPanel(compostRun, bank, carried, itemManager, itemNames)
+			? new CompostBinPanel(layout, compostRun, bank, carried, itemManager, itemNames)
 			: null;
 		this.members = PatchTabs.membersOf(type);
 		this.stateStore = stateStore;

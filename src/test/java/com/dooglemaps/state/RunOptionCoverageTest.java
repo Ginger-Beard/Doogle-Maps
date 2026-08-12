@@ -91,52 +91,76 @@ public class RunOptionCoverageTest
 	}
 
 	/**
-	 * The paired types are last, so the two-column grid does not have to pad around them.
+	 * The list reads alphabetically, with the contract pinned after it.
 	 *
-	 * <p>Asserted on the option order rather than on the rendered grid because this is where the
-	 * decision is made — the layout pads whatever it is handed, so a regression here would show
-	 * up only as an extra blank cell, which is easy to miss and easy to explain away.
+	 * <p>It used to be the enum's order with the pairs grouped at the end, which was a layout
+	 * argument — and the layout never depended on it, since {@code RunPanel} pads a fresh row
+	 * for every pair regardless. With every patch type runnable the list is long enough that
+	 * finding a line beats saving a blank cell.
 	 */
 	@Test
-	public void typesWithAHarvestOnlyVariantComeLast() throws Exception
+	public void theListIsAlphabeticalApartFromTheContract() throws Exception
 	{
 		List<RunOption> options = groups().runOptions();
-		Set<PatchImplementation> regrows = regrowingTypes();
 
-		int firstPaired = -1;
+		String previous = null;
+		for (RunOption option : options)
+		{
+			if (option.getGroup().isContract())
+			{
+				continue;
+			}
+			// A harvest-only line rides with its full run rather than sorting on its own.
+			if (option.isHarvestOnly())
+			{
+				continue;
+			}
+			if (previous != null)
+			{
+				assertTrue("out of order: " + previous + " then " + option.getLabel(),
+					previous.compareToIgnoreCase(option.getLabel()) <= 0);
+			}
+			previous = option.getLabel();
+		}
+		assertNotNull("no lines at all", previous);
+	}
+
+	/** A pair stays together wherever its name lands it. */
+	@Test
+	public void aHarvestOnlyLineSitsWithItsFullRun() throws Exception
+	{
+		List<RunOption> options = groups().runOptions();
+
 		for (int i = 0; i < options.size(); i++)
 		{
-			// The pinned tail is exempt: the compost bins and the contract are deliberately
-			// after every patch type — they are jobs rather than types, so they must not be
-			// found by scanning the type list. Everything after the first pinned line must be
-			// pinned too, or the tail has stopped being a tail.
-			if (isPinnedTail(options.get(i)))
+			if (!options.get(i).isHarvestOnly())
+			{
+				continue;
+			}
+			assertTrue("a harvest-only line cannot lead the list", i > 0);
+			assertEquals("it must follow its own full run",
+				options.get(i).getGroup(), options.get(i - 1).getGroup());
+			assertFalse(options.get(i - 1).isHarvestOnly());
+		}
+	}
+
+	/** The contract is a job rather than a patch type, so it stays last whatever it is called. */
+	@Test
+	public void theContractStaysAtTheEnd() throws Exception
+	{
+		List<RunOption> options = groups().runOptions();
+
+		for (int i = 0; i < options.size(); i++)
+		{
+			if (options.get(i).getGroup().isContract())
 			{
 				for (int j = i; j < options.size(); j++)
 				{
-					assertTrue("a patch-type line after the pinned tail began: "
-						+ options.get(j).getLabel(), isPinnedTail(options.get(j)));
+					assertTrue("a patch-type line after the contract: " + options.get(j).getLabel(),
+						options.get(j).getGroup().isContract());
 				}
-				break;
 			}
-
-			boolean paired = regrows.contains(options.get(i).getType());
-			if (paired && firstPaired < 0)
-			{
-				firstPaired = i;
-			}
-			assertTrue("an ordinary run option after the paired ones started: "
-				+ options.get(i).getLabel(), paired || firstPaired < 0);
 		}
-
-		assertTrue("no paired types at all", firstPaired > 0);
-	}
-
-	/** The lines pinned after the patch types: the compost bins, then the contract. */
-	private static boolean isPinnedTail(RunOption option)
-	{
-		return option.getGroup().isContract()
-			|| com.dooglemaps.data.CompostBin.forType(option.getType()) != null;
 	}
 
 	/** And nothing that does not regrow offers one — harvesting a herb once is just a run. */

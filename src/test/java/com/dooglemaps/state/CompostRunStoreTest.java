@@ -59,7 +59,7 @@ public class CompostRunStoreTest
 	{
 		assertFalse(store.hasFill());
 
-		store.setFillItem(ItemID.PINEAPPLE);
+		store.toggleFill(ItemID.PINEAPPLE);
 		assertEquals(ItemID.PINEAPPLE, store.getFillItem());
 		assertTrue(store.hasFill());
 	}
@@ -68,19 +68,133 @@ public class CompostRunStoreTest
 	@Test
 	public void pickingTheSameFillAgainClearsIt()
 	{
-		store.setFillItem(ItemID.PINEAPPLE);
-		store.setFillItem(ItemID.PINEAPPLE);
+		store.toggleFill(ItemID.PINEAPPLE);
+		store.toggleFill(ItemID.PINEAPPLE);
 
 		assertFalse(store.hasFill());
 	}
 
-	/** An item the table does not vouch for is refused, not stored. */
+	/**
+	 * Several fills queue in pick order, and the digits follow — the seed grid's rule.
+	 *
+	 * <p>One crop is rarely enough: fifteen un-noted items a bin means eight bins want a
+	 * hundred and twenty of something. Picking pineapples then watermelons means "use
+	 * pineapples, then watermelons when they run out".
+	 */
 	@Test
-	public void aNonSupercompostableFillIsRefused()
+	public void fillsQueueInThePickedOrder()
 	{
-		store.setFillItem(ItemID.TOMATO);
+		store.toggleFill(ItemID.PINEAPPLE);
+		store.toggleFill(ItemID.WATERMELON);
+		store.toggleFill(ItemID.PAPAYA);
 
-		assertFalse("tomatoes make rotten tomatoes, not compost", store.hasFill());
+		assertEquals(java.util.Arrays.asList(ItemID.PINEAPPLE, ItemID.WATERMELON,
+			ItemID.PAPAYA), store.getFills());
+		assertEquals("the first is what the run reaches for",
+			ItemID.PINEAPPLE, store.getFillItem());
+		assertEquals(1, store.priorityOf(ItemID.PINEAPPLE));
+		assertEquals(3, store.priorityOf(ItemID.PAPAYA));
+		assertEquals("unpicked items have no place in the queue",
+			0, store.priorityOf(ItemID.POTATO));
+	}
+
+	/** A lone pick shows no digit, because a queue of one has no order. */
+	@Test
+	public void aLoneFillWearsNoNumber()
+	{
+		store.toggleFill(ItemID.PINEAPPLE);
+
+		assertTrue(store.hasFill());
+		assertEquals(0, store.priorityOf(ItemID.PINEAPPLE));
+	}
+
+	/** Re-picking sends an item to the back, which is how reordering is done. */
+	@Test
+	public void rePickingSendsAFillToTheBack()
+	{
+		store.toggleFill(ItemID.PINEAPPLE);
+		store.toggleFill(ItemID.WATERMELON);
+		store.toggleFill(ItemID.PINEAPPLE);   // removes it
+		store.toggleFill(ItemID.PINEAPPLE);   // ...and it rejoins at the end
+
+		assertEquals(java.util.Arrays.asList(ItemID.WATERMELON, ItemID.PINEAPPLE),
+			store.getFills());
+	}
+
+	/**
+	 * A single stored id — what the one-pick version wrote — still reads as a queue of one.
+	 *
+	 * <p>The compatibility contract: an existing profile keeps the fill it had chosen rather
+	 * than silently losing it to a format change.
+	 */
+	@Test
+	public void aProfileFromTheSinglePickVersionStillLoads()
+	{
+		stored.put("compostBinFill", String.valueOf(ItemID.PINEAPPLE));
+
+		assertEquals(java.util.Collections.singletonList(ItemID.PINEAPPLE), store.getFills());
+	}
+
+	/**
+	 * Every fill must make supercompost for the answer to be yes.
+	 *
+	 * <p>Each bin is filled from one item, so an ordinary item anywhere in the queue means
+	 * some bins come out ordinary — which is what the ash box needs to know.
+	 */
+	@Test
+	public void aMixedQueueDoesNotCountAsSupercompost()
+	{
+		store.toggleFill(ItemID.PINEAPPLE);
+		assertTrue(store.fillMakesSupercompost());
+
+		store.toggleFill(ItemID.POTATO);
+		assertFalse("one ordinary pick is enough to make it not all supercompost",
+			store.fillMakesSupercompost());
+	}
+
+	/** An item no bin would take is refused, not stored. */
+	@Test
+	public void aFillNoBinWouldTakeIsRefused()
+	{
+		store.toggleFill(ItemID.RUNE_SCIMITAR);
+
+		assertFalse("a bin does not take scimitars", store.hasFill());
+	}
+
+	/**
+	 * Both tiers are storable, and the store says which one a fill will make.
+	 *
+	 * <p>The panel offers both lists — an account with no pineapples still has potatoes — so
+	 * the store's job is only to refuse what a bin would not accept at all. Which tier results
+	 * is a question, not a restriction.
+	 */
+	@Test
+	public void eitherTierCanBePickedAndIsReportedHonestly()
+	{
+		store.toggleFill(ItemID.PINEAPPLE);
+		assertTrue(store.hasFill());
+		assertTrue("pineapples make supercompost", store.fillMakesSupercompost());
+
+		store.toggleFill(ItemID.POTATO);
+		assertTrue("an ordinary fill is a real choice, not an error", store.hasFill());
+		assertFalse("...and it makes ordinary compost", store.fillMakesSupercompost());
+	}
+
+	/**
+	 * A tomato is storable, because a mostly-tomato bin is fine.
+	 *
+	 * <p>Only an <b>entirely</b> tomato bin is wasted — the wiki's own escape is "at least one
+	 * compostable item must be of a different type" — so the store keeps it and the panel warns
+	 * instead of the store refusing a legitimate pick.
+	 */
+	@Test
+	public void aTomatoIsStorableAndFlaggedRatherThanRefused()
+	{
+		store.toggleFill(ItemID.TOMATO);
+
+		assertTrue(store.hasFill());
+		assertTrue("the panel is what warns about it",
+			com.dooglemaps.data.Compostables.isRottenTomatoTrap(store.getFillItem()));
 	}
 
 	/**
@@ -92,7 +206,7 @@ public class CompostRunStoreTest
 	@Test
 	public void aStaleStoredFillReadsAsNone()
 	{
-		stored.put("compostBinFill", ItemID.TOMATO);
+		stored.put("compostBinFill", String.valueOf(ItemID.RUNE_SCIMITAR));
 
 		assertFalse(store.hasFill());
 		assertEquals(CompostRunStore.NO_FILL, store.getFillItem());
@@ -116,7 +230,7 @@ public class CompostRunStoreTest
 		int[] fired = {0};
 		store.addChangeListener(() -> fired[0]++);
 
-		store.setFillItem(ItemID.PINEAPPLE);
+		store.toggleFill(ItemID.PINEAPPLE);
 		store.setAshing(true);
 
 		assertEquals(2, fired[0]);

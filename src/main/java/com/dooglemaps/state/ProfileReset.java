@@ -42,13 +42,15 @@ public class ProfileReset
 	private final BankLocationStore bankLocations;
 	private final BarbarianFarming barbarianFarming;
 	private final DailyTeleports dailyTeleports;
+	private final com.dooglemaps.bank.BoatHolds boatHolds;
 
 	@Inject
 	ProfileReset(PatchStateStore patches, SeedInventoryStore seeds,
 		FarmingBonusStore bonuses, PatchLocationStore patchLocations,
 		BankLocationStore bankLocations, BarbarianFarming barbarianFarming,
-		DailyTeleports dailyTeleports)
+		DailyTeleports dailyTeleports, com.dooglemaps.bank.BoatHolds boatHolds)
 	{
+		this.boatHolds = boatHolds;
 		this.dailyTeleports = dailyTeleports;
 		this.patches = patches;
 		this.seeds = seeds;
@@ -85,6 +87,8 @@ public class ProfileReset
 		// housekeeping: a refusal message credited to the wrong cape would otherwise withhold
 		// a teleport the player has until midnight UTC. See DailyTeleports.
 		dailyTeleports.clear();
+		// Observed like the bank's contents, and rebuilt the same way - by opening a hold.
+		boatHolds.clear();
 
 		log.info("Doogle Maps profile reset - patches, seeds and learned locations cleared; "
 			+ "settings, harvest stats, patch toggles and seed selection kept");

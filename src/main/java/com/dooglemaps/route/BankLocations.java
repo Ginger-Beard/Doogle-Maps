@@ -82,11 +82,16 @@ final class BankLocations
 	/**
 	 * The seed vault, which is the Farming Guild's and nowhere else's.
 	 *
-	 * <p>This is the bank chest's tile: the vault sits directly west of it, close enough
-	 * that routing to one puts you at the other. Handy, because a trip for vault seeds also
-	 * gets you a bank for payments.
+	 * <p>The vault object's own tile, not the bank chest's. It used to be the chest — the two
+	 * are ten tiles apart and the reasoning was that routing to one puts you at the other. It
+	 * does not: Shortest Path draws the line to the tile it is given, so a trip for vault seeds
+	 * ended at the bank while the vault itself was the thing lit up. Reported from play, and the
+	 * same disagreement {@code GuideOverlay.marks} was fixed for.
+	 *
+	 * <p>The bank is still had for free when the trip wants both, because the chest is those ten
+	 * tiles away and {@code RunPlanner.supplyTargetsFor} hands over both targets anyway.
 	 */
-	static final WorldPoint SEED_VAULT = new WorldPoint(1253, 3741, 0);
+	static final WorldPoint SEED_VAULT = new WorldPoint(1243, 3740, 0);
 
 	private BankLocations()
 	{

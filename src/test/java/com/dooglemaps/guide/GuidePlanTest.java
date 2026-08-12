@@ -1386,6 +1386,57 @@ public class GuidePlanTest
 		return crystal;
 	}
 
+	/**
+	 * Out of ultracompost, the patch is treated with the supercompost actually in the pack.
+	 *
+	 * <p>Running out of the top tier mid-run is ordinary — it is the one people hoard and the
+	 * one a bin cannot make without volcanic ash — and a supercomposted patch is worth far more
+	 * than an untreated one. Standing there with a stack of super and being told nothing is the
+	 * guide refusing to help with the trip in front of you.
+	 */
+	@Test
+	public void runningOutOfUltraFallsBackToTheSuperYouAreHolding()
+	{
+		assertEquals(CompostTier.SUPERCOMPOST, GuidePlan.usableCompost(
+			CompostTier.ULTRACOMPOST, carryingOnly(CompostTier.SUPERCOMPOST), leprechaun));
+	}
+
+	/** ...and down again, which is the whole point of it being a ladder. */
+	@Test
+	public void withOnlyOrdinaryCompostItFallsAllTheWayDown()
+	{
+		assertEquals(CompostTier.COMPOST, GuidePlan.usableCompost(
+			CompostTier.ULTRACOMPOST, carryingOnly(CompostTier.COMPOST), leprechaun));
+	}
+
+	/** Never upward: a run does not spend a scarcer bucket than the player chose. */
+	@Test
+	public void aStrongerTierIsNeverSubstitutedIn()
+	{
+		assertEquals(CompostTier.COMPOST, GuidePlan.usableCompost(
+			CompostTier.COMPOST, carryingOnly(CompostTier.ULTRACOMPOST), leprechaun));
+	}
+
+	/**
+	 * With nothing in reach the chosen tier stands, so its withdraw step still appears.
+	 *
+	 * <p>The failure this guards against is the worse of the two: turning "withdraw
+	 * ultracompost from the leprechaun" into silence because his store has not been read.
+	 */
+	@Test
+	public void nothingInReachLeavesTheChosenTierAlone()
+	{
+		assertEquals(CompostTier.ULTRACOMPOST, GuidePlan.usableCompost(
+			CompostTier.ULTRACOMPOST, carried, leprechaun));
+	}
+
+	/** A pack holding exactly one tier of compost and nothing else. */
+	private CarriedItems carryingOnly(CompostTier tier)
+	{
+		carrying(tier.getItemID(), 5);
+		return carried;
+	}
+
 	private FarmPatch coralNursery(int varbitValue)
 	{
 		FarmPatch nursery = FarmingWorldData.getPatches(PatchImplementation.CORAL).get(0);

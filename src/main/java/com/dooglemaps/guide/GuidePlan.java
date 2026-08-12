@@ -348,7 +348,8 @@ public final class GuidePlan
 			// silence here, and an untreated patch, precisely because they did it the other
 			// way round. Limited to the first growth stage so it cannot start nagging about a
 			// crop planted days ago.
-			CompostTier wantedAfterPlanting = compostChoice.get(group);
+			CompostTier wantedAfterPlanting = usableCompost(compostChoice.get(group), carried,
+				leprechaun);
 			if (projection.getStage() == 0 && wantedAfterPlanting != CompostTier.NONE
 				&& applied != wantedAfterPlanting
 				&& projection.getCropState() == CropState.GROWING)
@@ -380,7 +381,7 @@ public final class GuidePlan
 		// 3. Compost, then the seed. Preferred in that order because it is one fewer thing to
 		//    remember once a crop is in the ground — but not required: see the just-planted
 		//    case above, which catches anyone doing it the wiki's way round.
-		CompostTier wanted = compostChoice.get(group);
+		CompostTier wanted = usableCompost(compostChoice.get(group), carried, leprechaun);
 		if (wanted != CompostTier.NONE && applied != wanted)
 		{
 			addCompostSteps(steps, patch, wanted, carried, patchesToTreat);
@@ -587,6 +588,42 @@ public final class GuidePlan
 	{
 		return seeds.getPlantable(seed, SeedSource.INVENTORY)
 			+ seeds.getPlantable(seed, SeedSource.SEED_BOX) >= seed.getSeedsPerPatch();
+	}
+
+	/**
+	 * The tier this patch will actually be treated with, after any fallback.
+	 *
+	 * <p>Unconditional here, and that is deliberate: the <b>setting</b> gates whether the
+	 * player is told about a downgrade and whether the run plans around one, and it is asked
+	 * where the notifying happens ({@code GuideTracker}). What the step says has to match what
+	 * the player can do — an instruction to apply ultracompost they do not have is not made
+	 * better by a switch being off.
+	 *
+	 * <p>Reach means carried or in the leprechaun's store, because at a patch those are the
+	 * same thing: he is standing there and the withdraw step is one click. A tier that exists
+	 * only in a bank is not reachable from a patch and does not count.
+	 */
+	static CompostTier usableCompost(CompostTier wanted, CarriedItems carried,
+		LeprechaunStore leprechaun)
+	{
+		// Null tolerated as well as NONE: a group with no stored choice reads as null from the
+		// selection store, and this is called for every patch of every group.
+		if (wanted == null || wanted == CompostTier.NONE)
+		{
+			return CompostTier.NONE;
+		}
+
+		CompostTier best = wanted.bestAvailableAtOrBelow(tier ->
+			carried.getCount(tier.getItemID()) > 0
+				|| carried.hasAny(ItemID.BOTTOMLESS_COMPOST_BUCKET_FILLED)
+				|| leprechaun.hasCompost(tier));
+
+		// Nothing at all in reach is NOT a downgrade to nothing. The chosen tier's own step
+		// still stands — "withdraw ultracompost from the leprechaun" is exactly the right
+		// instruction when his store has not been read yet, and turning a real instruction
+		// into silence because the answer is currently unknown is the worse failure of the
+		// two. Only a tier actually seen to be there displaces the one that was asked for.
+		return best == CompostTier.NONE ? wanted : best;
 	}
 
 	/**

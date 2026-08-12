@@ -235,3 +235,28 @@ wants something - RunPlanner's generic isReady/isEmpty path already covered both
   the last stage gets a spade step; a withering plant is still working and is left alone.
 Tests: GuidePlanTest x3 (spent anima dug up, live anima left alone, crystal chopped for
 shards), RunLoadoutTest x2 (vinery trowel, and no other family asking for one).
+
+--- Bin fill: both tiers, two collapsible sections (2026-08-11) ---
+
+Only the supercompostable list was offered, which quietly assumed everyone bins pineapples.
+Ordinary compost is what most of a farm run actually gets treated with, and an account with no
+fruit still has potatoes and grimy guams.
+
+- Compostables gained ordinaryCompostables() and isCompostable() alongside the super list,
+  scraped from the same wiki "Suitable items" table: allotment crops, herbs BELOW toadflax
+  (clean and grimy), hops and flax, flowers, the bush berries under jangerberry, fruit-tree
+  fruit, Forestry leaves, and the odds and ends. Two entries surprise people and are called
+  out in the javadoc: GIANT SEAWEED and POTATO CACTUS are ordinary, not super. Deliberately
+  not exhaustive at the silly end - kebabs, apple mush and rotten apples are on the wiki's
+  table and nobody stockpiles them to compost.
+- CompostRunStore now validates against BOTH tables rather than the super one, and gained
+  fillMakesSupercompost() so the panel can say which tier a pick yields. The tomato is stored
+  rather than refused: the wiki's own escape is "at least one compostable item must be of a
+  different type", so only an ENTIRELY tomato bin is wasted and the panel warns instead.
+- CompostBinPanel is two collapsible sections - "Supercompost (n)" and "Compost (n)" - each
+  folding on its own through PanelLayoutStore, with the owned count on the heading so a folded
+  section still says what is in it. The ash tooltip now explains itself when the chosen fill
+  makes ordinary compost, since ash upgrades supercompost and nothing else.
+Tests: CompostablesTest (cut-off both ways, the two surprises, no overlap between the lists),
+CompostRunStoreTest (either tier storable and reported, tomato flagged not refused, a scimitar
+refused).

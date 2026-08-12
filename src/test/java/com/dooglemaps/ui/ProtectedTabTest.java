@@ -302,6 +302,8 @@ public class ProtectedTabTest
 		Fixture fixture = new Fixture(true);
 		List<java.awt.Component> cells = fixture.runOptionCells();
 
+		// The grid is filled down each column, so a pair sits one directly under the other -
+		// two cells apart in a two-column grid. See RunPanel.buildTypeBoxes.
 		int pairs = 0;
 		for (int i = 0; i < cells.size(); i++)
 		{
@@ -312,10 +314,9 @@ public class ProtectedTabTest
 			}
 			pairs++;
 
-			assertTrue("a harvest-only line in the left column, so its pair is on the row above",
-				i % 2 == 1);
-			assertEquals("the cell to its left should be the same type's full run",
-				label.replace(" (H/O)", ""), labelOf(cells.get(i - 1)));
+			assertTrue("a harvest-only line cannot be in the top row of a column", i >= 2);
+			assertEquals("the cell above it should be the same type's full run",
+				label.replace(" (H/O)", ""), labelOf(cells.get(i - 2)));
 		}
 
 		assertEquals("every regrowing type should have contributed a pair", 3, pairs);
@@ -360,10 +361,10 @@ public class ProtectedTabTest
 				{
 					continue;
 				}
+				assertTrue("with " + hidden + " hidden, " + label + " has no cell above it",
+					i >= 2);
 				assertEquals("with " + hidden + " hidden, " + label + " lost its pair",
-					label.replace(" (H/O)", ""), labelOf(cells.get(i - 1)));
-				assertTrue("with " + hidden + " hidden, " + label + " is in the left column",
-					i % 2 == 1);
+					label.replace(" (H/O)", ""), labelOf(cells.get(i - 2)));
 			}
 
 			for (PatchImplementation type : hidden)
@@ -371,6 +372,30 @@ public class ProtectedTabTest
 				String name = type.getDisplayName();
 				assertFalse("a hidden type is still offered as a run: " + name,
 					fixture.runOptionLabels().contains(name));
+			}
+		}
+	}
+
+	/**
+	 * The grid has at most one blank cell, and it is the last one.
+	 *
+	 * <p>The old layout started a fresh row for every pair and padded the hole it left, which
+	 * is the gap the owner spotted beside Belladonna. Down a column a pair is naturally
+	 * adjacent, so the only cell that can be empty is the foot of the right column when the
+	 * count is odd.
+	 */
+	@Test
+	public void atMostOneCellIsBlankAndItIsTheLast() throws Exception
+	{
+		Fixture fixture = new Fixture(true);
+		List<java.awt.Component> cells = fixture.runOptionCells();
+
+		for (int i = 0; i < cells.size(); i++)
+		{
+			if (labelOf(cells.get(i)) == null)
+			{
+				assertEquals("a blank cell in the middle of the grid, at " + i,
+					cells.size() - 1, i);
 			}
 		}
 	}

@@ -69,10 +69,14 @@ public class GuideStepOverlay extends OverlayPanel
 	/** Which hops of the drawn route are teleports the game has already refused today. */
 	private final com.dooglemaps.state.DailyTeleports dailyTeleports;
 
+	/** The pack, for the one travel instruction that depends on what is worn. */
+	private final CarriedItems carried;
+
 	@Inject
 	GuideStepOverlay(GuideTracker tracker, DoogleMapsConfig config,
-		com.dooglemaps.state.DailyTeleports dailyTeleports)
+		com.dooglemaps.state.DailyTeleports dailyTeleports, CarriedItems carried)
 	{
+		this.carried = carried;
 		this.tracker = tracker;
 		this.config = config;
 		this.dailyTeleports = dailyTeleports;
@@ -338,6 +342,7 @@ public class GuideStepOverlay extends OverlayPanel
 		}
 
 		appendTravelItem(status.getTravelHint());
+		appendDivingReminder();
 
 		line(status.getStopsRemaining() == 1
 			? "1 stop left"
@@ -364,6 +369,35 @@ public class GuideStepOverlay extends OverlayPanel
 		}
 
 		appendOverflow(transports.size(), "more hops");
+	}
+
+	/**
+	 * Says to put the diving gear on, while it is still in the pack.
+	 *
+	 * <p>On the travel panel rather than as a step, because it belongs to the journey: the
+	 * router stops at the dock, and the two actions after that — wear the suit, take the steps
+	 * down — are the end of the travelling. The order matters and only one way round works, so
+	 * the line says it: the steps are what takes you under, and going under without the gear is
+	 * how the game drowns you.
+	 *
+	 * <p>Silent once the pieces are worn, which is the same rule the highlight follows —
+	 * {@code CarriedItems.getInventoryCount} counts the pack alone, so equipping empties it.
+	 */
+	private void appendDivingReminder()
+	{
+		if (tracker.underwaterApproach() == null)
+		{
+			return;
+		}
+
+		for (int piece : com.dooglemaps.data.UnderwaterApproach.gearToWear())
+		{
+			if (carried.getInventoryCount(piece) > 0)
+			{
+				line("Wear your diving gear before the steps down.", java.awt.Color.WHITE);
+				return;
+			}
+		}
 	}
 
 	/**

@@ -146,7 +146,7 @@ public class GuideMenuSwap
 	}
 
 	/** The box holds this many kinds of seed — six slots, one stack of one kind each. */
-	private static final int SEED_BOX_KINDS = 6;
+	static final int SEED_BOX_KINDS = 6;
 
 	/**
 	 * Which of the box's two options to put under the left click, read off the box itself.
@@ -198,6 +198,19 @@ public class GuideMenuSwap
 	 */
 	static boolean boxCanTakeLooseSeeds(SeedInventoryStore seeds)
 	{
+		return looseSeedTheBoxWouldTake(seeds) != null;
+	}
+
+	/**
+	 * The first loose seed the box would actually accept, or null when there is none.
+	 *
+	 * <p>Split out from {@link #boxCanTakeLooseSeeds} so the overlay can say <i>which</i> seed
+	 * carried the decision. "The box never lights" is not diagnosable after the fact — the
+	 * answer is a handful of live counts and they have all moved on by the time it is
+	 * reported — which is the same reason the take-seeds-out side grew its own log line.
+	 */
+	static Seed looseSeedTheBoxWouldTake(SeedInventoryStore seeds)
+	{
 		int kindsBoxed = 0;
 		for (Seed seed : Seed.values())
 		{
@@ -215,10 +228,24 @@ public class GuideMenuSwap
 			}
 			if (seeds.getCount(seed, SeedSource.SEED_BOX) > 0 || kindsBoxed < SEED_BOX_KINDS)
 			{
-				return true;
+				return seed;
 			}
 		}
-		return false;
+		return null;
+	}
+
+	/** How many kinds the box is currently recorded as holding, for the overlay's log line. */
+	static int kindsInTheBox(SeedInventoryStore seeds)
+	{
+		int kinds = 0;
+		for (Seed seed : Seed.values())
+		{
+			if (!seed.isSapling() && seeds.getCount(seed, SeedSource.SEED_BOX) > 0)
+			{
+				kinds++;
+			}
+		}
+		return kinds;
 	}
 
 	/** The same two ids {@code SeedCapture} watches: closed and open. Not SEEDBOX — see there. */
