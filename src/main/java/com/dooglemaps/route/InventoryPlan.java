@@ -40,8 +40,8 @@ public class InventoryPlan
 	/** Ordinary inventory size. */
 	public static final int TOTAL_SLOTS = 28;
 
-	/** Seed types a single seed box holds. */
-	public static final int SEED_BOX_CAPACITY = 6;
+	// The box's capacity is com.dooglemaps.data.SeedBox.KINDS. This file used to keep its own
+	// public copy of it, which is one of the three that came to exist.
 
 	/** Rake, spade, dibber, secateurs, watering can. */
 	public static final int TOOL_SLOTS = 5;
@@ -160,7 +160,7 @@ public class InventoryPlan
 			return seedTypes;
 		}
 		// One box, holding six types; anything beyond that rides in the inventory.
-		return 1 + Math.max(0, seedTypes - SEED_BOX_CAPACITY);
+		return 1 + Math.max(0, seedTypes - com.dooglemaps.data.SeedBox.KINDS);
 	}
 
 	/**

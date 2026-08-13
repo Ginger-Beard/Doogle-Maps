@@ -1589,3 +1589,891 @@ Bush and Cactus always stay bright when unchecked
 > The test drives untick() directly rather than the checkbox's listener, which would run a whole
 > panel refresh and need run state the fixture has no reason to invent.
 > Test: RunListAppearanceTest.aCounterpartUntickedByThePanelDimsToo.
+
+We had a test for this before but its not working again, when I get a contract from jane, sometimes it will be something I haven't check-healthed on yet, however, if its a tree I need to go get log basket/forestry basket and an axe from the bank first so I can clear it
+
+> Fixed, and the earlier test was not the one that broke - the loadout was right all along.
+> `RunLoadoutTest.aTreeContractOnAnUnclearedPatchAsksForTheAxeAndTheBasket` pins that a tree
+> contract on a patch holding a grown, unchecked tree lists both the axe and the forestry
+> basket. It passes, and passed before any of this.
+>
+> What failed was the *trip back*. Two causes, both about a mid-run contract:
+>
+> 1. `collectForTheContract` gated everything on `needsSupplyTrip()`, which reads the
+>    `withdrawOutstanding` flag pushed once a tick from the withdraw list. At the moment it is
+>    called - a few lines after `reviewContract` widened the run's types - that flag still
+>    describes the run as it was BEFORE the contract existed, so it cannot know about the axe.
+>    It answered no and returned without even setting `supplyOwed`, so the deferred pickup had
+>    nothing to find either. Confirmed from client.log: "Contract needs collecting for" appears
+>    zero times in a session where TREE demonstrably joined the run's types (20:20 without,
+>    20:25 with). The debt is now recorded before the stale question is asked.
+> 2. `reviewSupplies` - the only per-tick re-arm - asked `ToolNeeds.anyOnlyInBank`, and the axe
+>    has never been a ToolNeeds tool; it is a RunLoadout row, which that class's own javadoc
+>    says. So nothing could see it. It now also reads `toolsLeftToWithdraw`, pushed like the
+>    other flags. Being a poll rather than a one-shot is what makes it right where (1) was
+>    wrong: a stale flag is fixed by asking again a tick later.
+>
+> Deliberately narrowed to TOOL rows. A seed or a payment must not yank the player to a bank
+> mid-stop - the run can press on and skip that patch, and "standing on work beats going
+> shopping" is a settled decision. A tool is different: without an axe the tree cannot be
+> chopped, and no amount of standing there changes it.
+>
+> The forestry basket needs no separate work - it is a STORAGE row already offered for a tree
+> run, so it is on the list and highlighted on the trip the axe now earns.
+>
+> Tests: RunPlannerTest.aToolTheWithdrawListWantsMidRunDivertsToABank,
+> anOrdinaryWithdrawalDoesNotDivertMidRun, aWaivedLegIsNotReopenedByAMissingTool.
+
+not prompted to put watermelons in the big bin at farming guild after harvesting while big bin is empty, also at adrougne (at least) I'm getting prompted to note my watermelon instead of using it on the bin
+
+> Two causes, and the log pinned the first.
+>
+> 1. **The bins were only ever put into stops at Start.** `addOpportunisticBins` runs inside
+>    `planStops`, which runs in `start()` and never again - so ticking "fill bins from your
+>    harvest" after pressing Start did nothing for the rest of the trip, silently, and a bin that
+>    finished composting mid-run could never join either. client.log 20:40:17 has
+>    "Harvest: Watermelon x19 from Ardougne South" with `10548.4775` sitting EMPTY, watermelon
+>    (5982) on the fodder list and the minimum only 5 - every condition met and no step, because
+>    the bin was not in the stop to be asked. Now a per-tick `RunPlanner.reviewBins()`, the same
+>    shape as `reviewContract` and using the same `adopt`. The rule is unchanged: a bin joins a
+>    stop the run is **already** making and never creates one.
+> 2. **The leaving note ate the fodder.** `GuidePlan`'s mid-harvest note already stood down for a
+>    crop a bin wants; `appendNoteBeforeLeaving` did not, and it is the one that says "note your
+>    watermelons before moving on". A bin refuses noted items, so the two instructions cannot both
+>    be followed and following the note makes the bin impossible. Being later in the step list is
+>    no protection when the crop is gone by the time the bin's step is reached. It now skips only
+>    the crop a bin at that stop is waiting for; everything else is tidied up exactly as before.
+>
+> Not a bug: the Farming Guild's big bin reads `BIG_SUPERCOMPOST / GROWING` in the profile - closed
+> and composting - so silence there is correct. If it was empty at the time and still said nothing,
+> that is cause 1 again, since the guild bin joins at Start via the Compost tick rather than the
+> poll. Worth re-checking now the poll exists.
+>
+> Tests: RunPlannerTest.aBinJoinsAStopWhenFodderIsSwitchedOnMidRun,
+> thePollStillDoesNotLetABinEarnAStop, LeprechaunErrandOrderTest.theLeavingNoteLeavesTheBinsFodderAlone,
+> anotherCropIsStillNoted, aBinWithNoRoomDoesNotHoldTheNoteBack.
+
+for some reason the catherby teleport step always drops out of the infobox and nexus list when entering the POH
+
+> The house is not the cause, and the log is what rules it out:
+>
+>     20:47:09  None of Shortest Path's hops for "(unnamed leg)" mapped to the furniture here
+>               hops: [Teleport to House, Enter Catherby Portal - Catherby Portal]
+>     20:47:14  RegionUpdateEvent{currentRegionId=41385, previousRegionId=12083}   <- entered the POH
+>
+> The leg was already **"(unnamed leg)"** five seconds before the house was entered. Entering it
+> is just when you notice, because that is when the nexus row is meant to light.
+>
+> The destination name is inferred from Shortest Path's reply, and the reply is briefly
+> unavailable far more often than it looks: `setTargets` wipes `currentDestinations` on every
+> re-route, `onPluginMessage` discards unsolicited replies outright while the player is instanced,
+> and a reply can carry hops with no landing worth matching. That was harmless while nothing
+> depended on the name - but the portal nexus row and the jewellery box line are matched **by
+> destination**, so a nameless leg silently stops highlighting the thing you are meant to click.
+>
+> `destinationStop` now asks the run first. Since the destination latch landed, the planner
+> *knows* which stop it committed to and does not have to infer it; `RunPlanner.committedStop()`
+> is that answer, and the reply-derived logic stays as the fallback for a leg not yet committed.
+> No new guessing: the commitment is only ever set from an unambiguous reply in the first place,
+> and it clears the moment the stop leaves `getRemaining()`.
+>
+> Also returns null on the supply leg, whose destination is a bank rather than a stop.
+>
+> Tests: RunPlannerTest.aCommittedLegIsStillNameableWithNoRouteReply,
+> aFinishedStopIsNoLongerTheCommittedOne, theSupplyLegIsNotNamedFromTheCommitment.
+
+2 things, I think we're going back to cactuses too soon, I just got sent back to the farm guild one mid run, after already harvesting it 20 minutes prior, only now receiving 1 cactus spine, I think they take longer to fully regrow. Second issue is that hold shared plots until all are ready isnt' working, check the logs, just got routed to ardougne farm patch again after only limpwurts were ready
+
+> One cause, two symptoms. The data was already right - a cactus regrows a spine every twenty
+> minutes and holds four (`Produce.CACTUS` regrowTickrate 20, harvestStages 4), and
+> `heldForRegrowth` already says to wait for the fourth. Nothing needed re-timing.
+>
+> **The two hold rules gated stop *creation* and had no say in stop *revival*.** `clusterHeld` and
+> `heldForRegrowth` were consulted by `planStops` and `actionableByGroup` only, while `isComplete`
+> - which decides whether a stop is still in `getRemaining()` - asked `isActionable` alone. A stop
+> is completed after you service it and comes back the instant one of its patches turns actionable
+> again, which is exactly the moment both rules exist to ignore:
+>
+> - Ardougne: you replant, the limpwurt ripens in twenty minutes and the herb beside it takes
+>   eighty. The flower alone un-completed the stop and fetched you back.
+> - The guild cactus: picked clean, one spine back twenty minutes later, and that single spine
+>   un-completed the stop.
+>
+> `isComplete` now applies both holds. Note this also means a wholly-held stop reads complete, so
+> a run whose only remaining work is a plot it is waiting on will end rather than sit open for
+> eighty minutes - which is the right answer, and is what "hold until ready" asks for.
+>
+> The `Shared plots:` diagnostic is logged only at `start()`, which is why the log shows Ardougne
+> "[free to visit]" at 20:18 with everything HARVESTABLE and nothing at all about the later
+> revival. Worth knowing when reading it: it describes the plan, not the run.
+>
+> Tests, each checked to actually fail with the fix removed rather than assumed to work:
+> RunPlannerTest.aHeldPlotStaysHeldWhenOnlyOnePatchRipens, aHeldPlotReturnsWhenTheWholePlotIsReady,
+> aPartlyRegrownCactusDoesNotFetchYouBack.
+
+great conch is still routing us to that random table and not the stairs / try to move the coodinates 1 tile west / oh and its trying to have me rake weeds there, weeds can't exist in the coral nursery / the coords for the great conch calquat patch are at X/Y: 3128,2405
+
+> Two causes, and the tile-west guess was right about the first one.
+>
+> **The steps are not a tile you can stand on.** Shortest Path only ever finishes a search by
+> stepping ONTO a target tile, and the one tile written down was the object's own - a set of
+> steps leading into the sea is no more standable-on than a tree. This is the identical fault
+> `PatchLocationStore.getRouteTargets` rings a bush for, so the approach is ringed the same way:
+> all eight tiles, west included.
+>
+> **The calquat was bidding against it with a made-up tile.** `getLocation` never returns null -
+> an unvisited patch falls back to its region's centre, which for the Conch is (3168, 2400), the
+> table. Honest as a rough guess when it is the only target; fatal in a set beside an approach
+> read off the client, because the router takes the cheapest of what it is handed and cannot
+> tell which entries were invented. The deck is nearer than the steps, so the guess won.
+>
+> Two changes: `routeTargetsFor` only offers a dry patch whose location is *known* (learned or
+> pinned) rather than assumed, and the calquat now has a pin - (3128, 2405), given from play.
+>
+> Worth writing down: that tile is in region **12325** while the patch is filed under **12581**.
+> The Conch is thirteen regions of ship with every varbit on one of them, so
+> `everySeededCoordinateLandsInTheRegionItBelongsTo` rejected a coordinate that is simply
+> correct. It now asks `FarmingWorldData.getRegionsForLocation`, which is the same evidence and
+> is a check the multi-region cases can pass.
+>
+> The rake step was **not** a bug. CORAL is already excluded from raking; that step was the
+> calquat's, and the calquat is real. What made it read as absurd was being offered while
+> standing at the nursery, which is the same 12581-vs-13194 disagreement in another costume.
+>
+> Tests: RunPlannerTest.theStepsAreOfferedWithTheTilesAroundThem,
+> theConchCalquatIsRoutedToItsPinnedTile, aLearnedDeckPatchIsRoutedToAlongsideTheSteps;
+> PatchLocationStoreTest.aPinIsKnownWhereARegionCentreIsNot. The first two were checked to fail
+> with the fix removed, and the failure printed WorldPoint(x=3168, y=2398) - the ring around the
+> table.
+
+
+right now I'm out of enough giant seaweed to protect the east patch and its promtping me to pay "Pay the farmer 5 elkhorn to protect the elkhorn" That isn't even a thing
+
+> `GuidePlan.addProtectionStep` built the sentence from `payment.getProduce()`, which is the crop
+> being *protected*. Every payment on that branch bought a thing with itself - "2 potato to
+> protect the potato", "10 watermelon to protect the watermelon". Wrong everywhere, visible only
+> here, because the planting sequence words its own payment step and this branch fires only when
+> you come back to something already in the ground and still unpaid.
+>
+> Fixed with `ItemNames`, which exists for exactly this and already has every ProtectionPayment
+> item id read into it at login. Its own class comment makes the case: half these payments are
+> baskets and sacks, where the constant reads "basket tomato 5" and the game says "Basket of
+> tomatoes".
+>
+> Test: GuidePlanTest.thePaymentStepNamesThePaymentAndNotTheCrop.
+
+
+still not getting prompted to put watermelons on the regular compost bins with "fill bins from your harvest" checked and watermelons selected, its actually trying to have me still harvest more like my inventory isn't full
+
+> The two halves are one dead end. A bin waiting to be fed is ordered **last** at its stop, which
+> is right - you cannot fill it from a harvest that has not happened. But the pack fills up
+> *during* that harvest, and at that moment three things are true at once: the harvest cannot
+> continue, the leprechaun's note is suppressed precisely because a bin here wants the crop, and
+> the bin's own step is queued behind the harvest that is stuck.
+>
+> `binRank` now sends a hungry bin to the **front** the moment the pack is full and it will take
+> what is filling it. Everywhere else it still goes last.
+>
+> Second, smaller hole in the same place: "a bin here wants this crop" was an open bin plus a
+> crop on the fodder list, which is not the same statement as "the bin will take this". Below a
+> third of the bin `CompostBinPlan` declines to offer a token fill - so three watermelons and a
+> full pack answered yes to the suppression while the bin produced no step at all. It now asks
+> `CompostBinPlan.fodderFor`, so there is one rule about what a bin will take, in the class that
+> acts on it.
+>
+> Tests: GuildBinPrecedenceTest.aFullPackSendsYouToTheBinYouCanFeed (verified to fail without
+> the fix), aBinStillWaitsWhileThereIsRoomToHarvest,
+> aFullPackOfSomethingTheBinRefusesDoesNotMoveIt.
+
+
+the seedbox issue with counts is still a problem, seedbox full, highlighted orange
+
+> Found where the drift comes from rather than only how to heal it.
+>
+> **The Fill derivation credited the box with anything that left the inventory inside its
+> two-tick window.** Banking the rest of your seeds a moment after filling the box looks
+> identical to a Fill, and so does planting one. The account this was found on has a single
+> whiteberry seed in its modelled box and 140 in the bank - which is the shape of a bush seed
+> going in the ground, not in a box.
+>
+> Two rules the box cannot break, both hard rather than heuristic: a Fill takes the **whole**
+> loose stack of a kind it accepts (there is no per-kind limit), so leftovers in the pack mean
+> something else moved them; and it can never make a seventh kind.
+>
+> **And why it stuck.** Six kinds is legal, so `boxCannotBeRight` never fires on a full box, and
+> the old suppression window discarded nearly every real read the game offered - a container
+> event fires when the container changes, and a Fill or Empty is what changes it. A lagged read
+> is *by definition* the contents from before the click, so that is now the test rather than a
+> two-tick guess. When a read is taken, the pending action is disarmed so its delta is not added
+> on top.
+>
+> Two existing tests asserted the old window and were rewritten rather than deleted: their
+> fixtures fed a "stale" copy that was a completely different box (one cabbage where the model
+> held potato and onion), which nothing in the game produces. Pinning the time window instead of
+> the thing the window is for is what let an informative read be thrown away with it.
+>
+> Tests: SeedBoxDriftTest.aPartialDepartureIsNotCreditedToTheBox, aFillCannotAddASeventhKind,
+> aReadThatDiffersFromThePreClickBoxIsTakenAsTruth, plus the two rewritten ones.
+
+
+ope, got sent to a calquat patch without turning into a sapling first, seeds for trees need to be turned into saplings before planting
+
+> `seedAtHand` was right to say no - only the sapling is plantable - but the whole planting
+> branch then returned in silence, so the player stood in front of the patch holding the thing
+> they came for and was told nothing. That is the failure shape this codebase keeps hitting:
+> arrived, and nothing said.
+>
+> New `POT_SEED` step, emitted only when the raw seed is in the pack and the sapling is not. It
+> is a diagnosis rather than a click - a plant pot of soil is a bank errand and the sapling then
+> needs watering, so there is nothing to do at the patch. `RunLoadout` already carries "needs
+> potting into a sapling first" as a reason on its bank row, which is where it is cheapest to
+> act on; this is what gets said when that was missed.
+>
+> Tests: GuidePlanTest.anUnpottedTreeSeedSaysSoAtThePatch, aPottedSaplingStillPlantsNormally.
+
+
+this doesn't make sense to me, why do I have to visit it to navigate to it if we have coordinates?
+
+> Fair challenge, and we mostly did not have coordinates. **32 of 43 farm regions were pinned.**
+> The other eleven routed to a region centre, which is `(regionId >> 8) * 64 + 32` - arithmetic
+> on an id, with no knowledge of where anything stands.
+>
+> The comment justifying the gap said the one-off patches "have a single location each, so the
+> region centre is already a fine approximation". It is not an approximation of anything. For
+> the Great Conch it landed on a table; for the seaweed patches it lands at y 10272, which
+> nothing can reach - and rather than fix the pin, the code worked around that with an approach
+> and wrote the unreachable tile into a comment.
+>
+> The eleven were: Al Kharid (cactus), Anglers' Retreat / Locus Oasis / Fossil Island (the three
+> hardwood groves), Draynor Manor (belladonna), the seabed (seaweed), Hosidius Vinery (grapes),
+> Canifis (mushroom), Port Sarim (spirit tree), Tai Bwo Wannai (calquat) - which is the Karamja
+> fairy ring - and the hespori.
+>
+> Ten are now pinned from the wiki's own `{{Map|...}}` templates on *Special patches/Patches*,
+> the same source and the same provenance as the original 31. That page independently gives
+> **3128,2405** for The Summer Shore calquat, which is exactly the tile given from play - so the
+> two sources agree on the one coordinate we could check them against.
+>
+> The hespori is left out knowingly: its pin sits on `mapID=33`, an instanced cave beneath the
+> guild, so its coordinate is not on the same map as the rest and would fail the region check
+> for a reason that has nothing to do with being wrong.
+>
+> `PatchLocationStoreTest.everyFarmRegionIsPinned` makes this an invariant with one named
+> exemption, so adding a farm region without a pin fails a test instead of being discovered from
+> in front of the client. All 42 pins pass the existing land-in-the-right-region check,
+> derived rectangle and polygon centres included.
+
+
+just pin all of them so we don't keep having this issue
+
+> Done, in both directions.
+>
+> **Every region.** Ten of the eleven unpinned regions now have a pin, from the wiki's own
+> `{{Map}}` templates. `everyFarmRegionIsPinned` keeps it that way, with one named exemption:
+> the hespori, whose pin sits on `mapID=33` - an instanced cave beneath the guild - so its
+> coordinate is not on the same map as the rest and cannot be checked the way the others are.
+>
+> **And every patch that a region pin was lying about.** Pins were per *location*, which is
+> honest at most of them: Falador's two allotments, its flower and its herb are one little farm
+> and the wiki gives them one pin because they are one place. The **Farming Guild** is not that.
+> Fourteen patches from the redwood at x 1229 to the cactus at x 1265, and from the anima at
+> y 3723 to the fruit tree at y 3759 - forty tiles across, every one of them routed to the herb
+> patch. Seven other patches are outliers in the same way: a spirit tree at the far end of
+> Brimhaven, Etceteria and Hosidius, the Gnome Stronghold's fruit tree away from its tree, and
+> Kastori's three.
+>
+> `WikiPatchLocations` now has a per-patch table keyed by `FarmPatch.getKey()` - the same
+> `region.varbit` string the learned table uses - so the tiers read the same way throughout:
+> learned, this patch's pin, its location's pin. 42 region pins and 22 patch pins, all of them
+> checked against `FarmingWorldData.getRegionsForLocation` rather than against region-id
+> equality, which is what lets the genuinely multi-region places pass.
+>
+> The flower patch and the compost bin have no map template anywhere on the wiki, and that is
+> consistent rather than missing - they stand inside the allotment enclosure at every location
+> that has them, the guild included, so they take the allotment pin.
+>
+> One thing the check caught that is worth recording: the Hosidius spirit tree at 1693,3542 is
+> in region **6711** while the plugin files it under 6967, and the Great Conch calquat at
+> 3128,2405 is in **12325** while its patch is filed under 12581. Both passed, because a
+> `FarmRegion` can claim more than one region id and the test asks the world data instead of
+> doing the arithmetic itself. An id-equality check would have rejected two coordinates that are
+> simply correct.
+>
+> Tests: PatchLocationStoreTest.everyFarmRegionIsPinned, everyPerPatchPinLandsWhereItBelongs,
+> theGuildsPatchesAreToldApart, plus the existing land-in-the-right-region check now covering
+> all 64 pins.
+
+
+I don't get prompted to note (at the coral)
+
+> `RunStop.claimsRegion` exists so every caller answers "is the player at this stop" the same
+> way - the Great Conch is filed under region 12581 while two of its patches are on the seabed
+> at 13194 - and its own comment says so, naming its three callers. A **fourth** was added
+> afterwards and compared the bare region id instead: `GuideTracker.standingAt`.
+>
+> What that cost: planting or paying for the last nursery completes the stop, at which point
+> `appendLeavingErrandsAtFinishedStop` asks `standingAt` before re-attaching the errands that
+> belong to the stop rather than to a patch. Underwater it got no, so the note that turns a pack
+> of coral into one stack was never offered, and neither was the bucket return.
+>
+> Test: StopRegionEdgeTest.aStopIsStoodInWhereverItClaimsToReach, verified to fail without the
+> fix. The existing harness needed its `RunStop` mock taught to answer `claimsRegion` for its own
+> region, which is worth noting: a mock that answers false to everything made the stop's own
+> ground read as somewhere else.
+
+
+the menu swaping on paying chet isn't quite right
+
+> **Not a bug, as far as the code goes.** `ChetPaySwapTest` now pins his exact menu in his own
+> order - Pay (East) / Talk-to / Pay (West) / Trade - with his runtime id 15063
+> (`TORTUGAN_CORAL_FARMER_UNLOCKED`, a variant of the plain id the world data records, which is
+> what `FarmerVariants` is for) and the West payment is promoted correctly.
+>
+> Three things had to be right and all three are: the entry array runs backwards so the
+> left-click is last, the id is matched through the variant group, and the option is matched on
+> the patch's own name rather than on wording copied out of one NPC's menu.
+>
+> What is most likely happening: **the swap follows the current step.** If the guide is on the
+> East patch and you go to pay West, it will promote East, correctly. Pinned as a test rather
+> than left as a guess, so if it recurs the next report can start from "the step said X".
+
+
+for some reason the catherby teleport step always drops out of the infobox and nexus list when entering the POH
+
+> The nexus row and the jewellery box line are matched **by destination**, so a nameless leg
+> silently stops highlighting the thing you are meant to click. There is a latch for this - keep
+> the last name while its stop is still outstanding - and it was gated on being inside the
+> house.
+>
+> That gate was too narrow for the case it was written for. The log shows the leg was already
+> nameless five seconds **before** the house was entered, which is what ruled the house out as
+> the cause in the first place and should have ruled out the gate with it.
+>
+> The distinction that actually matters is not where you are standing, it is whether the router
+> said anything. An answer that arrived and matched no stop might genuinely be a new
+> destination, and still returns null. **No answer at all is no news** - the route is wiped
+> whenever a fresh one is asked for, discarded outright while instanced, and empty for a second
+> or two around every teleport.
+>
+> Test: NamelessLegStillHintsTest.aQuietRouteKeepsTheLegsName - names the leg, wipes the route
+> and keeps the name, then sends an unrelated route and loses it. Verified to fail without the
+> fix.
+
+
+seedbox issue still ongoing, its supposed to only be lit orange with the menu set to "fill" if there are seeds in the players inventory and free space in the seed box, else the menu should be "empty" and unlit
+
+> The highlight already worked that way. The **menu did not**, and the two were separate
+> expressions rather than one question asked twice.
+>
+> `GuideInventoryOverlay` lights the box on `looseSeedTheBoxWouldTake` - a loose seed in the
+> pack that the box would actually accept, which is the stated rule including the six-kinds
+> limit. `wantedBoxOption` instead read `anyBoxedSeeds && !boxCanTakeLooseSeeds`, on the
+> reasoning that an empty box has "nothing to tip out" so Fill is the safe default.
+>
+> They agreed everywhere except the state that default created: **an empty box and an empty
+> pack**, where the box sat unlit with Fill under the left click. A free click that does nothing,
+> on an item the overlay is saying nothing about.
+>
+> Both now call the same method. Empty on an empty box is also a click that does nothing, which
+> is the honest cost - and the smaller one, because it matches what the box looks like.
+>
+> If it still lights with no seeds in the pack, the cause is the inventory side rather than this
+> rule, and the overlay already logs which seed carried the decision: *"Seed box fill highlight:
+> ON - POTATO loose in the pack, box holds N kinds"*. That line names it.
+>
+> Tests: GuideMenuSwapTest.anEmptyBoxAndAnEmptyPackEmpties (the flipped case, with the reasoning
+> for the flip), theMenuAgreesWithTheHighlightInEveryState, aStockedBoxWithAnEmptyPackIsUnlitAndEmpties.
+>
+> Unrelated but found while reading: `GuideInventoryOverlay.java` had a **raw NUL byte** in it -
+> deliberate, as the separator in the row-scan cache key, and correct for the job since a NUL
+> cannot occur in a widget name. But with the byte written literally, `file` reports the class as
+> `data` and plain `grep` treats it as binary and prints nothing. Every search of that file this
+> session came back empty and looked like an answer. Now written as `"\u0000"` in a named
+> constant: identical at runtime, and the file is text again.
+
+
+its staying orange still... it should only be orange when there are seeds available to put in it and its not full / any seeds that can go in the seedbox should be accounted for
+
+> Found it, and it was in the counting rather than in the rule.
+>
+> Both `kindsInTheBox` and `looseSeedTheBoxWouldTake` skipped every crop whose
+> `Seed.isSapling()` was true, with the note: *"the box will not take one, and for tree crops
+> the count cannot tell an acorn from the sapling it became."* Those are two different things
+> and conflating them cost a whole slot:
+>
+> - the **sapling** — the plant pot — is what the box refuses;
+> - the **seed** — a calquat seed, an acorn, a magic seed — goes in like any other and takes one
+>   of the six.
+>
+> `isSapling()` is a fact about the **crop**, not about the item in front of you, so it can never
+> make that distinction. Using it meant a box holding five ordinary seeds and a calquat seed
+> counted as **five** kinds, read as having a slot free, and lit to fill with a seventh kind
+> loose in the pack that it would have refused.
+>
+> Found by resolving the live box contents from the profile rather than by reasoning about it:
+> `{5298, 5282, 21490, 31511, 31545, 5290}` — and 5290 is a calquat seed. Five of the six
+> resolved to ordinary crops and the sixth was invisible to the counter.
+>
+> New `SeedInventoryStore.getSeedCount`, which counts the seed item and never the sapling. That
+> is the third question the store now answers, alongside `getCount` (both forms — "do I own
+> this crop") and `getPlantable` (the form that goes in the ground). The box's question was
+> always the third one and there was no method for it.
+>
+> The rule itself is unchanged and was already right: a loose seed of a kind already boxed
+> always fits, since the stacks have no practical limit (the wiki's figure is 2,147,483,647); a
+> new kind fits only while one of the six is free.
+>
+> Tests: GuideMenuSwapTest.aBoxedTreeSeedCountsTowardsTheSixKinds (verified to fail without the
+> fix), aLooseTreeSeedFillsAndItsSaplingDoesNot, plus a `stockSeedItem` helper — the existing
+> `stock` records `getPlantedItemID()`, which for a tree crop is the sapling, so a test could
+> not previously put a tree seed in a container at all.
+
+
+this is still a problem, can you look at the logs? / coral seeds?
+
+> The log settled it, and it showed a second bug underneath the first.
+>
+> **The box was being counted two different ways, and they disagreed.** At 23:04:30 the overlay
+> logged *"box holds 5 kinds (limit 6)"*; at 23:05:43 the store's Fill guard logged *"a box
+> already holding 6 kinds"*. Same box, seventy seconds apart, two answers - because there were
+> two implementations: `applyPendingSeedBoxAction` counted raw map entries with `box.size()`,
+> and `GuideMenuSwap.kindsInTheBox` walked the `Seed` table. The calquat seed is what separated
+> them, which is the same fault as before wearing different clothes.
+>
+> One of those counts gates whether a Fill is believed and the other gates whether the box
+> lights, so a disagreement means two features acting on different beliefs about one container.
+> The count now lives in `SeedInventoryStore.kindsInTheSeedBox` and both call it.
+>
+> **The remaining ON is the rule working, not failing.** The last lines read *"ON -
+> ELKHORN_CORAL loose in the pack, box holds 6 kinds"*. Elkhorn is one of those six, and a kind
+> already boxed always fits - the stacks have no practical limit - so boxing the loose frags
+> saves a slot and the indicator says so. Checked against the wiki rather than assumed: the seed
+> box page says outright that *"frags and mushroom spores are not taxonomically seeds, [but] they
+> can still be stored in the seed box"*, and notes a separate bug about frags not auto-storing
+> from sailing chests.
+>
+> So there are two possibilities left and they need one look in game: either elkhorn frags really
+> are in the box, in which case the highlight is right; or they are not, and the model has
+> drifted again. **Open question for the owner:** even where the game allows it, should frags and
+> spores be left out of the box logic - carried loose because they are about to be planted?
+>
+> Also visible in the log and working as intended: the Fill guard rejecting ranarr, limpwurt,
+> snape grass and watermelon seeds that left the pack during a Fill window while the box was at
+> six kinds. Those went to the bank or the vault, not the box, and before today they would have
+> been credited to it.
+>
+> Tests: SeedBoxDriftTest.theBoxIsCountedTheSameWayEverywhere, aSaplingIsNotOneOfTheSixKinds.
+
+
+jfc... Seedbox: "Ranarr seed"x12, "Toadflax seed"x338, "Irit seed"x281, "Snapdragon seed"x70, "Cadantine seed"x15, "Torstol seed"x53. In my Inventory: "Avantoe seed"x153. Its a bug, stop telling me its not.
+
+> It is a bug, and the owner was right to force the point. Six ordinary herb seeds in the box, a
+> seventh kind loose, and it lights: **no rule about kinds can produce that.** Only a model that
+> disagrees with the box can. Every fix before this one was to a rule, and each of them was
+> arguing about the wrong thing.
+>
+> **The box was never read.** It was derived - from a Fill or Empty plus the inventory delta -
+> and its own container event was discarded by the action window, which in practice is the only
+> time that event fires. Meanwhile `relearnInventoryFromClient` has reconciled the *pack* against
+> the live container every tick for ages, with a comment saying why the box was left out:
+>
+>     "The bank, vault and box stay event-and-derivation driven; the inventory is the one
+>      container that is always available to check."
+>
+> True of the bank and the vault, which the client only holds while they are open. **False of the
+> box.** It is a container you carry; `getItemContainer` answers for it exactly as it does for
+> the pack. Nothing about it ever needed inferring except for the couple of ticks around a click.
+>
+> That one wrong premise is the whole of this container's history of bugs. A model that is only
+> ever inferred has no way back once an inference goes wrong - which is why the notes above keep
+> describing correct fixes to real defects that did not make the symptom go away. They could not.
+> They were all downstream.
+>
+> The box is now reconciled from the client every tick, alongside the pack. The derivation stays
+> for the click itself, where the client's copy really does lag, and the existing window keeps
+> the reconcile out of the way while it does. A null container is treated as "no news" rather
+> than "nothing in it", so a box the client has never been told about does not wipe what is
+> remembered. Any disagreement is logged with both sides written out, so the next one has a
+> timestamp instead of being a state nobody can reconstruct.
+>
+> Tests: SeedBoxDriftTest.theBoxIsReadBackFromTheClientEachTick (the herb-seed case verbatim,
+> verified to fail without the fix), aBoxTheClientCannotSeeLeavesTheModelAlone,
+> theReconcileWaitsForAClickToLand.
+>
+> Also fixed on the way, and worth keeping: the box's kind count had **two implementations** that
+> the log caught disagreeing about the same box in the same second - `box.size()` in the store's
+> Fill guard said six while `GuideMenuSwap` said five. One gates whether a Fill is believed, the
+> other whether the box lights. It now lives in `SeedInventoryStore.kindsInTheSeedBox` and both
+> call it.
+
+
+I've been trying to get these side category's highlighted for the seeds you need to withdrawl from the seed vault, but its never worked
+
+> The widget inspector's own tree is what made this attemptable. `BankHighlightOverlay.highlightVault`
+> already recorded the history: *"The category half never worked. Two attempts at finding the
+> label failed to highlight anything, and neither could be verified from outside the client."*
+> Both were looking at the wrong widget.
+>
+> The rows are **`SeedVault.CATEGORY_LIST` - group 631, child 8**, one dynamic child per row, and
+> the inspector confirms `631.8[3]` is the "Flowers" row. That constant exists in
+> `InterfaceID.SeedVault` and nothing was using it.
+>
+> **No crop-to-category table.** The obvious implementation is a map from each crop to its
+> category name, and it would be a fourth thing to keep in step with the game - wrong the day a
+> category is renamed or a seed moves, and wrong silently. The vault already knows:
+> `CATEGORY_HEADERS` labels the sections of the item list and `OBJ_LIST` lays the items out
+> beneath them, so a seed's category is the nearest header above it. That is the same thing the
+> player reads off the screen, and it needs no maintenance.
+>
+> Compared on the y each widget was **laid out** at rather than its canvas position: headers and
+> items are separate lists over one scroll, so scrolling moves both together and must not change
+> the answer.
+>
+> It also degrades honestly, which matters given this has failed twice. An unrecognised layout
+> matches nothing and draws nothing - no invented outline on the wrong row - and a log line names
+> the categories derived and every row title on screen, so a third failure would arrive as data
+> rather than as another guess.
+>
+> Tests: SeedVaultCategoryTest - the nearest-header rule, several sections at once, the
+> off-by-one where a header below an item must not claim it, an item above every header, tagged
+> header text, and the no-headers case drawing nothing.
+
+
+" - Your inventory is full - note the irit with the tool leprechaun." - I don't have any irits, I'm mid compost bin emptying
+
+> The step named the crop growing in the patch in front of you rather than anything in your
+> pack. So a full pack at a ripe irit said "note the irit" with the irit still in the ground -
+> an instruction with nothing to perform it on. Mid compost-bin emptying the pack was full of
+> buckets and the herb patch beside the bin supplied the wording.
+>
+> It now requires you to be holding some, un-noted. Silence when you hold none is the right
+> answer: the pack being full is real, but this branch's job is to name what to hand over, and
+> the leaving errands name the biggest stack you are genuinely carrying once the patch work is
+> done.
+>
+> Two existing tests broke, and they were pinning the defect. `carryingFullPack()` fills the
+> pack with twenty-eight dummy ids and no potatoes, and the assertion still expected "note the
+> potato" - it passed only because the branch named the crop in the ground. Both now use a new
+> `carryingFullPackOf(itemId)`, which is also the more honest picture: mid harvest the pack
+> really is full of the crop.
+>
+> Tests: GuidePlanTest.aFullPackDoesNotOfferToNoteACropStillInTheGround,
+> aFullPackOfTheCropStillOffersTheNote.
+
+
+after getting a new contract from jane and I need to get the seed from vault/bank, neither get highlighted [the object to walk to, as on a bank run]
+
+> `GuideOverlay.highlightSupplyPoints` outlines the bank booths and the seed vault from
+> `GuideStatus.getSupplySources`, and that set was populated **only on the bank leg**:
+>
+>     planner.isActive() && planner.isAtBankLeg() ? planner.getSupplySources() : emptySet()
+>
+> A contract is taken from Jane in the middle of a run, nowhere near the bank leg. So
+> `contractSeedFetch` correctly produced "Withdraw your irit seed from the seed vault here" and
+> nothing in the room lit up - the instruction without the thing to walk to.
+>
+> `contractSeedStorageHere` already worked out which container it is, and threw the answer away
+> as a string. It now returns the `SeedSource` and derives the wording from it, so the sentence
+> and the outline cannot name different containers.
+>
+> The outline is keyed off the **step on the list** rather than off the contract state, because
+> the step is what carries every other condition - the run's own types, an empty patch to plant
+> in, the seed not already in hand - and re-deciding those in a second place is how the two come
+> to disagree.
+>
+> Tests: ContractSeedFetchStepTest.theFetchLightsTheContainerItNames, aVaultedFetchLightsTheVault,
+> nothingIsLitWithoutAFetchStep, nothingIsLitWhenTheSeedIsNotStoredHere.
+
+
+my inventory is full, mid watermelon harvest, and instead of promtping me to put them into the compost bin, its trying to get me to keep harvesting
+
+> The data was all correct this time - the guild's big bin reads EMPTY, fodder is on, watermelon
+> is the allowed crop. What blocked it was the **minimum fill**.
+>
+> `FODDER_MINIMUM_DIVISOR` declines to offer a token fill: below a third of the bin the step is
+> not worth the click, and the bin keeps its contents between runs so there is no urgency. That
+> reasoning is sound and it is about **a pack with room in it**. With no room the bin is not a
+> tidy-up, it is the only way to carry on - four watermelons into it is four slots back and the
+> harvest continues.
+>
+> The big bin makes this sharper than the seven small ones: a third of thirty is **ten**, and one
+> allotment rarely gives you ten of anything loose after the rest of the stop has filled your
+> pack. So the bin that is best placed to help was the hardest one to trigger.
+>
+> A full pack now waives the minimum. Everywhere else the floor stands, so a stray two
+> watermelons still produce nothing.
+>
+> Note for the tests: `CompostBinPlanTest` mocks `CarriedItems`, and a mock answers **zero** free
+> slots - which is now the waiving case. Left alone that would have silently switched the floor
+> off in the very tests that exist to pin it, so the harness now sets a pack with room by
+> default and the two new tests opt into fullness explicitly.
+>
+> Tests: CompostBinPlanTest.aFullPackIsOfferedTheBinHoweverLittleItHolds (verified to fail
+> without the fix), oneFreeSlotIsNotAFullPack.
+>
+> Also added: a bin decision log line. This has now been reported three times in different
+> clothes - never offered, offered too late, and asking for another watermelon with nowhere to
+> put it - and each time the answer was live counts that had moved on before anyone could look.
+> The line carries all of them: fodder on or off, the allowed crops and how many are held, the
+> room in the bin, the free slots, and the verdict.
+
+
+I have mushroom spores in my box but the bank is prompting me to withdraw mushroom seeds for the run... doesn't complain when the 1 is in my inventory with zero in my box, but as soon as I "fill" the bank run step comes back
+
+> The arithmetic is right and the model is wrong. The loadout counts the box - `inPack` is
+> INVENTORY plus SEED_BOX - and the stored model reads:
+>
+>     SEED_BOX: toadflax 676, irit 281, snapdragon 70, cadantine 15, torstol 53, ranarr 25
+>     BANK:     mushroom spore 94
+>
+> Six herb kinds and **no spore**. Given that model the WITHDRAW row is correct, which is why
+> nothing in the loadout needed changing.
+>
+> **Where the spore went.** The seventh-kind guard exists so a seed banked during a Fill window
+> is not credited to the box. When it fires the seed has already left the inventory, so declining
+> to add it to the box removes it from the model altogether - and if the model's six kinds are
+> not the box's six, that is a disappearance rather than a correction. The spore left the pack,
+> the guard refused it, and nothing held it. Exactly "as soon as I Fill, the bank run step comes
+> back".
+>
+> The guard now says so about itself: a seed the game accepted that the model cannot place is
+> evidence the model is wrong, so `boxSuspect` is set and the next read of the box is taken over
+> the derivation instead of being discarded by the action window.
+>
+> **And the log says the root fix is not in the build being tested.** There are zero "Seed box
+> reconciled from the client" lines, so the tick reconcile - the change that stops the box model
+> going stale at all - is not in it. With that in, this model would have been overwritten by the
+> real box within a tick and the spore would never have gone missing.
+>
+> Tests: SeedBoxDriftTest.aFillItCannotAccountForMakesTheNextReadWin,
+> anUnremarkableFillLeavesTheWindowAlone.
+
+
+also the vault/bank object highlight (not item highlighting inside the interfaces, the literal game world object) is still not working after getting a new contract
+
+> Two gates, and the earlier fix only opened one of them.
+>
+> Populating `GuideStatus.getSupplySources` for a contract fetch was necessary and, on its own,
+> useless: `GuideOverlay.render` only calls `highlightSupplyPoints` inside the **"no current
+> step"** branch, and a contract fetch *is* a step. The answer was available to a branch that was
+> never reached.
+>
+> The reasoning behind the old placement was that the supply leg is the stop with no patch work.
+> True of the bank leg, not true of the other way a run sends you to a container.
+>
+> The named container is now marked wherever the run has named one, outside that branch, guarded
+> on the set being non-empty - which matters, because `marks()` reads an **empty** set as "a
+> bank, we are not sure what for" and would otherwise light every booth in the room. The bank
+> leg keeps that fallback for itself.
+>
+> Test: ContractSeedFetchStepTest.aNamedContainerIsNotTheSameAsTheBankLegsFallback, which pins
+> the two cases apart in words rather than leaving them to a reading of the render method.
+
+
+I literally just launched this client/run, it is in. keep looking. [re: no "Seed box reconciled" lines]
+
+> Correct, and my inference was bad. That line only fires when the read **differs** from the
+> model, so its absence means either "the client had no box to read" or "the box matched" - and
+> I read it as "the code is not there". Same mistake as reading an empty `grep` as an answer
+> earlier in the session, and it cost a round.
+>
+> The reconcile counters only ever counted the inventory, so the box half was invisible. It now
+> counts separately - reads, ticks with no container at all, and corrections made - and says once
+> when the client has no seed box container to reconcile against, naming the id it asked for
+> (573). The run-planned line carries all three.
+>
+> That distinguishes the two remaining possibilities, which want opposite fixes: if the container
+> is null the whole reconcile path is dead and the box is still only ever derived; if it is read
+> and matching, the client's own copy is what disagrees with the box on screen.
+
+
+and the issue with watermellon harvesting when inventory is full is still happening, not getting prompted to put them in the big compost bin
+
+> The `Stop ... offers, in order:` line ended it in one reading, which is what it was added for.
+>
+> The bin was in the stop, and `binRank` was putting it first, and the bin decision line read
+> **"room for 30, fodder on (allowed [5982x14]), 0 free slots -> fill with 5982"**. Everything
+> upstream was right. What the panel showed was the bin's *first* step:
+>
+>     Stop Farming Guild offers, in order: Farming Guild=DEPOSIT_COMPOST; ...
+>
+> **`addDepositStep` runs before `addFillStep`**, and it fires whenever you are carrying a single
+> bucket of compost. At the Farming Guild you always are - it is what you are treating the
+> patches with. So the bin's instruction was permanently "store your buckets with the tool
+> leprechaun", pointing at the leprechaun, and "put these in the bin" sat behind it and never
+> became current.
+>
+> The stated reason for that order was that "the fill needs the slots they are sitting in". It
+> does not: filling a bin takes items **out** of the pack and needs no room at all. The order is
+> right for a **banked** fill for a different reason - you arrived carrying both and the buckets
+> are clutter from the bank trip - so that case keeps it. A **fodder** fill now goes first, with
+> the deposit right behind it.
+>
+> Worth recording as a pattern: three rounds of this were spent fixing real defects upstream -
+> the bin not in the run, the ordering, the minimum fill - each of which was genuinely broken and
+> none of which was the reported symptom. The thing that resolved it was logging **what the stop
+> actually offered**, rather than what each part of the decision concluded.
+>
+> Tests: CompostBinPlanTest.aFodderFillComesBeforeTheDeposit,
+> fullBucketsAreDepositedBeforeABankedRefill (the old test, re-aimed at the case its reasoning
+> actually holds for).
+
+
+
+and now the seedbox bug is back [the highlighting], stop using python to inject code and actually fucking read it please
+
+> Fair, and the two are connected. Nearly every edit this session was a string replacement into
+> a file I had not read end to end, which is a way of changing code while only ever seeing the
+> few lines either side of the change. This regression is exactly what that produces.
+
+> The reconcile added for the staleness bug wrote the client's copy over the model
+> unconditionally:
+>
+>     Map<Integer, Integer> now = countSeeds(box);
+>     ...
+>     record(SeedSource.SEED_BOX.getContainerId(), box);
+>
+> `null` was guarded as "no news". **Empty was not.** So a tick where the client's copy has not
+> been populated wiped the box to nothing, which reads downstream as no kinds in it - and the
+> fill highlight lit for every loose seed in the pack. The highlighting bug, reintroduced by the
+> fix for the staleness bug, in the same file, four lines apart.
+>
+> The distinction that was missing is what each source **is**. A container event is the game
+> telling us something. The reconcile is a poll of whatever the client happens to be holding, so
+> it is a backstop: it may correct the model and it may not empty it. A real Empty still empties
+> the box, because that arrives as the box's own container event and goes through `record` as
+> before.
+>
+> Counted and said once, like the null case, and carried on the run-planned line as
+> "N empty copies ignored" - so if the client's copy really is the box and really is empty,
+> that shows up as a count climbing rather than as silence.
+>
+> Tests: SeedBoxDriftTest.anEmptyCopyFromTheClientDoesNotWipeTheBox,
+> arealEmptyStillEmptiesTheBox.
+
+
+we still, for like the 7th time, haven't fixed the composting issue for fodder patches at the farming guild
+
+> Found it, and every earlier fix was being silently overwritten a few lines after it ran.
+>
+> `sortedByDistance` applies `contractFirst` and then `binsFirst`, which is where six rounds of
+> work went: getting the bin into the run, getting it ranked to the front when the pack is full,
+> waiving the fill minimum, putting FILL_BIN ahead of DEPOSIT_COMPOST. All of it correct, and all
+> of it discarded by the next thing `computeStepsHere` does:
+>
+>     List<FarmPatch> offered = contractComesFirst(stop, ordered);
+>     offered = flowersAfterAllotments(offered, stop);
+>     FarmPatch first = chooseWorkingPatch(offered, stop);   // <- hoists the worked patch back
+>
+> `chooseWorkingPatch` holds you to the patch you are part way through as long as it has any
+> outstanding step. Mid harvest that is the allotment, its step is HARVEST, and it goes to the
+> top of the list whatever `binsFirst` decided.
+>
+> The latch is right in general - it stops the guide hopping between patches mid-job. It is
+> wrong when the job cannot be done, and a full pack with a harvest next is exactly that: there
+> is no next click, and the thing that would unblock it is the bin the latch is hiding. It now
+> lets go for that one case, and for nothing else.
+>
+> **And the diagnostic I added to find this was measuring the wrong list.** `noteStopOrder` was
+> handed `ordered` - before `chooseWorkingPatch` ran - so it logged "bin first" while the panel
+> showed "harvest", and it confirmed a fix that never reached the player. It takes the finished
+> step list now, after the working patch is chosen, after skips are dropped, after errands are
+> woven in, keyed by patch rather than by display name (six patches all called "Farming Guild"
+> named nothing).
+>
+> The lesson worth keeping: a diagnostic that measures something *adjacent* to the question is
+> worse than none, because it produces confident wrong conclusions. Both times this session that
+> an absence or a near-miss got read as an answer, it cost a round.
+>
+> Tests: GuildBinPrecedenceTest.afullPackReleasesTheWorkingPatch (verified to fail without the
+> fix), afullPackKeepsTheLatchForNonHarvestWork.
+
+
+something is seriously fucked with the seedbox fill highlighting logic, why does this keep rearing its head? ... all seeds (not saplings) are storable, we probably need to dedupe some seed logic
+
+> Right on both counts, and the second is the answer to the first. There was no single place
+> that answered **"can this item go in a seed box"**, so four places worked it out separately:
+>
+> - `countSeeds` accepted anything in the `Seed` table - which includes **sapling ids**, because
+>   `Seed.forItemId` maps both forms to the crop;
+> - the kind counter and the fill highlight used `Seed.isSapling()`, a fact about the **crop**
+>   and not about the item in front of you;
+> - the Fill guard counted raw map entries while the overlay walked the seed table, and the log
+>   caught the two disagreeing about the same box in the same second;
+> - and the capacity lived in **three** files, each reading from the next.
+>
+> New `data/SeedBox`: `KINDS`, `accepts(itemId)`, `kindsIn(ids)`, `onlyWhatItHolds(contents)`.
+> The accepted set is derived from the `Seed` table - every seed item, never a sapling item - so
+> it cannot fall behind it, and that is what makes frags and mushroom spores work with no special
+> case.
+>
+> Applied at the point the box's contents are **recorded**, so a sapling can never enter the
+> model at all and every consumer downstream can treat "in the box" as meaning something the box
+> can hold. The three capacity constants are deleted rather than aliased; aliasing is how three
+> of them happened.
+>
+> Tests: SeedBoxTest (every seed accepted, every sapling refused, walked over the whole table),
+> SeedBoxDriftTest.aSaplingCannotEnterTheBoxsModel, aTreeSeedIsAcceptedLikeAnyOther.
+
+
+I'm being routed to a different patch mid compost bin fill up, mellons aren't harvested fully yet
+
+> Caused by the previous fix, one release later, and the two are the same event a second apart.
+>
+> Waiving the fodder minimum for a full pack got the bin offered. Then **putting the first melon
+> in frees a slot** - which re-imposed the minimum, took the fill step away mid fill, and let the
+> working-patch latch grab the allotment again with the bin standing open.
+>
+> The minimum is about whether a fill is worth *starting*. A part-filled bin is not that
+> question: stopping halfway is worse than a token fill ever was. So it is waived for a bin that
+> is already under way as well as for a full pack. "Part filled" is `wanted < capacity`, which is
+> what `addFillingSteps` already passes and what an empty bin never does, so the caller had
+> already answered it.
+>
+> Worth noting how this one differs from the six before it: it was not a new place the answer got
+> lost, it was a boundary condition on a rule I had just changed. The 0/1 free-slot edge is
+> crossed by the very action the rule exists to encourage, which is the kind of thing worth
+> looking for whenever a condition keys off a resource the recommended action consumes.
+>
+> Test: CompostBinPlanTest.aFillAlreadyUnderWayIsNotAbandoned, verified to fail without the fix.
+
+
+I'm standing at the falador patches with allotment and flower harvested and I'm being prompted to tele to another location instead of finishing these patches / I have watermelon seeds in my seedbox, so that info is wrong / nothing to do with the seed pack - there shouldn't be any plugin logic around seed packs, at all
+
+> Three things, and the diagnostic added last round answered the first two.
+>
+> **1. The reconcile is dead.** The log says it outright:
+>
+>     The client has no seed box container to reconcile against (id 573).
+>     The box stays derived until it sends one.
+>
+> `getItemContainer(573)` returns null - the client holds no copy of the seed box until it has
+> been opened. So the "read the box every tick like the pack" fix does nothing, and the box is
+> still only ever derived. Its contents are also **persisted**, so the model can be a session or
+> more old. That is why Falador looked seedless: `seedAtHand` counts the box, the box model held
+> six herb seeds from some earlier session, and the watermelons were not in it.
+>
+> **2. Being sent away without a word.** `announceSkips` exists to say exactly this - "skipping
+> the allotment, your watermelon seeds are in your bank" - and it could never reach the moment it
+> is for. Picking the last crop empties the patch on the same tick; an empty patch with no seed
+> at hand produces no steps; no steps anywhere completes the stop; a completed stop leaves
+> `getRemaining()`, so `stopAt` answers null and `computeStepsHere` returns before the
+> announcement is built. Same shape as the leaving errands, same repair: re-attached at the stop
+> that finished under your feet, anchored to `workingRegion`.
+>
+> And the wording now separates the two things it could not before: "not in your inventory" when
+> the box has been seen this session, and "and your seed box has not been opened this session, so
+> what I have for it is from last time" when it has not. The plugin was wrong at Falador, and
+> worse, it was wrong confidently.
+>
+> **3. Seed packs.** There is no plugin logic around them and there should not be - checked, and
+> every mention in the source is a comment about the contract reward. `SeedCapture` already
+> excludes them from the box highlight deliberately. What went wrong was **wording**: "pack" was
+> being used for the inventory in player-facing text, and a seed pack is a real item, so "not in
+> your pack" reads as a statement about that. Fixed in the three places a player sees it - the
+> skip wording, the seed box config description, and the dropped-crop step - and noted where the
+> new wording is, since the internal comments use "pack" for the inventory throughout.
+>
+> Still open and now precisely stated: **the seed box model cannot be trusted until the box has
+> been opened once in a session.** The plugin has no way to read it before that. Worth deciding
+> whether the run should ask for that up front the way it asks for tools.

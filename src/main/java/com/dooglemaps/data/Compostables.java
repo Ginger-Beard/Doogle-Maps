@@ -194,6 +194,64 @@ public final class Compostables
 		return Collections.unmodifiableSet(items);
 	}
 
+	/**
+	 * The crops a bin can be fed straight from the harvest, which is the allotments' output.
+	 *
+	 * <h2>Why this is far shorter than "everything compostable"</h2>
+	 *
+	 * The fodder list started as both tables above, and that was a list of what a bin
+	 * <i>accepts</i> rather than of what anyone would ever put in one. Two things wrong with it,
+	 * both settled with the owner:
+	 *
+	 * <ul>
+	 *   <li><b>Nobody bins their herbs, or their limpwurt roots.</b> Toadflax and up are
+	 *       supercompostable and worth many times the compost they make. Offering them is
+	 *       offering a mistake.</li>
+	 *   <li><b>The rest are not near a bin.</b> A bin sits beside the allotments — Falador's is
+	 *       {@code 12083.4775} against allotments {@code 12083.4771}–{@code 4774} — and fodder is
+	 *       only ever offered at the stop you are standing in. Pineapples, coconuts, calquat fruit
+	 *       and tree roots come from patches somewhere else entirely, so a tick against them could
+	 *       never fire.</li>
+	 * </ul>
+	 *
+	 * <p>Derived from {@link Produce} rather than written out, so it cannot fall behind the game:
+	 * whatever an allotment grows is what you are holding at the bin beside it. Filtered through
+	 * the tables above so a crop the bin would refuse cannot appear — today that removes nothing,
+	 * and the day an allotment grows something uncompostable it removes it silently instead of
+	 * offering a tick that does nothing.
+	 *
+	 * <p><b>Tomatoes are included, and are a trap.</b> A bin filled entirely with them makes
+	 * rotten tomatoes and no compost at all. They are an allotment crop and the owner asked for
+	 * the allotment crops, so the answer is to say so rather than to decide for them; see
+	 * {@code CompostBinPanel.fillWarning}.
+	 */
+	public static Set<Integer> allotmentFodder()
+	{
+		return ALLOTMENT_FODDER;
+	}
+
+	private static final Set<Integer> ALLOTMENT_FODDER = allotmentFodderSet();
+
+	private static Set<Integer> allotmentFodderSet()
+	{
+		Set<Integer> crops = new LinkedHashSet<>();
+		for (Produce produce : Produce.values())
+		{
+			if (produce.getPatchImplementation() == PatchImplementation.ALLOTMENT
+				&& isCompostable(produce.getItemID()))
+			{
+				crops.add(produce.getItemID());
+			}
+		}
+		return Collections.unmodifiableSet(crops);
+	}
+
+	/** Whether this crop may be offered to a bin out of the harvest. */
+	public static boolean isAllotmentFodder(int itemId)
+	{
+		return ALLOTMENT_FODDER.contains(itemId);
+	}
+
 	private Compostables()
 	{
 	}

@@ -116,8 +116,13 @@ public class BoatHolds extends com.dooglemaps.state.ProfileJsonStore
 					stowed.add(item.getId());
 				}
 			}
-			save();
 		}
+
+		// Outside the monitor. ProfileJsonStore.save's javadoc forbids the other order by name,
+		// and documents the deadlock it caused: a save posts ConfigChanged synchronously into
+		// every subscriber, so holding this lock across it runs arbitrary plugin code under it.
+		// Same miss as BankContents — the sweep that fixed five other stores did not reach here.
+		save();
 	}
 
 	/** Whether this item is stowed in a hold we have read. */
@@ -171,10 +176,13 @@ public class BoatHolds extends com.dooglemaps.state.ProfileJsonStore
 	}
 
 	/** Forgets everything, for a profile reset. Rebuilt by opening a hold. */
-	public synchronized void clear()
+	public void clear()
 	{
-		stowed.clear();
-		seen = false;
+		synchronized (this)
+		{
+			stowed.clear();
+			seen = false;
+		}
 		save();
 	}
 }

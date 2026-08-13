@@ -82,7 +82,8 @@ wording. One line each.
 
 - **Payments**: per-patch multiplication, noted acceptance (shipped this session), the exact
   container items (sacks/baskets) named by id, seaweed's 200 numulite, and the coral tiers
-  already present in the generated table.
+  already present in the generated table. **See the coral addendum below** — the *data* was
+  right and the *capture* of it was not, which this audit had no way to catch.
 - **Unprotectable set** (herb, flower, mushroom, belladonna) matches the wiki exactly, and the
   disease-free split — Trollheim/Weiss provable-by-presence, Hosidius/Harmony/Falador/Civitas
   behind the per-player flag — is the right shape for the heterogeneous gating.
@@ -120,3 +121,35 @@ grapes **0 untreated / 1 saltpetred** (both of which also masquerade as weeds; g
 are never raked and are now excluded from the rake branch). Redwood's sixteen post-maturity
 states are genuinely uniform Clear-only values; crystal trees genuinely end with no stump.
 The tree/hardwood stump-shape rule matched upstream's commented object ids in every case.
+
+## Addendum: the coral nurseries, from a run rather than a page
+
+Written after taking a coral run, and worth separating from the rest of this file: everything
+above was read off the wiki, and every item below came out of the client because the wiki does
+not carry it. The audit's *"Payments — verified correct, no action"* line was true about the
+tables and blind to everything here, which is the limit of a page-reading audit rather than a
+mistake in one.
+
+| Fact | Value | How it was established |
+|---|---|---|
+| The farmer | **Chet** | in-client; he has no wiki page the generator can find |
+| His NPC id | **15063** (`TORTUGAN_CORAL_FARMER_UNLOCKED`) | in-client; the world data carries 15061 |
+| Payment | **per patch**, two right-click options | in-client: `Pay (East) / Talk-to / Pay (West) / Trade` |
+| Elkhorn's price | 5 giant seaweed a patch | generated table, confirmed in play |
+| The nurseries' region | **13194** | the plugin's own `Run planned:` log line |
+| The way down | Steps, object **57904**, at (3272, 2463) | read off the client at the spot |
+
+Three consequences the tables could not have predicted, each of which cost a bug report:
+
+1. **The id in the world data is not the id you meet.** Anything comparing a patch's farmer
+   against an NPC has to allow for variants; see `FarmerVariants`.
+2. **The patches are not in the region their stop is filed under** — 13194 against the Great
+   Conch's 12581, which is the ship. Every "am I there yet" test failed at once.
+3. **A per-patch payment cannot be identified by menu position.** Chet's two Pay options are not
+   adjacent and neither sits where the previous rule expected, so the capture read the option's
+   own words instead.
+
+**The general point for future audits:** the wiki is authoritative about *mechanics* and silent
+about *interaction* — ids, menu shapes, region layout, which of an NPC's several ids the game
+actually spawns. For recent content it is often silent about the mechanics too. Neither gap is
+findable by reading, and both are findable in ten minutes in the client.

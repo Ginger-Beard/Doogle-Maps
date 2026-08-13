@@ -26,6 +26,12 @@ public enum SeedSource
 	SEED_VAULT("Seed vault", InventoryID.SEED_VAULT, true),
 	SEED_BOX("Seed box", InventoryID.SEED_BOX, true);
 
+	// The box's capacity used to be declared here, having already been moved once from the two
+	// places that declared it before. It is in com.dooglemaps.data.SeedBox now, along with the
+	// question this file could never answer — which items a box will actually hold. Three
+	// aliases for one number is how the copies happened, so this one is gone rather than
+	// forwarded.
+
 	private final String displayName;
 	private final int containerId;
 	/** Whether contents survive a restart. All four are held in memory regardless. */

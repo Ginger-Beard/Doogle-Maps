@@ -47,10 +47,17 @@ public class CompostBinPanelLayoutTest
 		// no real ItemManager to render sprites through.
 		Mockito.when(bank.getCount(Mockito.anyInt())).thenReturn(0);
 
+		// Fodder on, so the allotment-bins group is laid out too - a hidden heading has no
+		// geometry to measure, and measuring the geometry is the whole point of this class.
+		CompostRunStore store = Mockito.mock(CompostRunStore.class);
+		Mockito.when(store.isFodderEnabled()).thenReturn(true);
+		Mockito.when(store.getFodderCrops()).thenReturn(java.util.Collections.emptySet());
+		Mockito.when(store.getFills()).thenReturn(java.util.Collections.emptyList());
+
 		panel = new CompostBinPanel(
 			construct(PanelLayoutStore.class,
 				Mockito.mock(net.runelite.client.config.ConfigManager.class)),
-			Mockito.mock(CompostRunStore.class),
+			store,
 			bank,
 			Mockito.mock(CarriedItems.class),
 			Mockito.mock(net.runelite.client.game.ItemManager.class),
@@ -66,6 +73,10 @@ public class CompostBinPanelLayoutTest
 	{
 		for (JButton heading : headings(panel))
 		{
+			if (!heading.isVisible())
+			{
+				continue;
+			}
 			assertTrue(heading.getText() + " is only " + heading.getWidth() + "px of "
 					+ PANEL_WIDTH + " - it is sized to its text, not the sidebar",
 				heading.getWidth() >= PANEL_WIDTH - 2);
@@ -77,19 +88,56 @@ public class CompostBinPanelLayoutTest
 	{
 		for (JButton heading : headings(panel))
 		{
+			if (!heading.isVisible())
+			{
+				continue;
+			}
 			assertEquals(heading.getText() + " does not start at the panel's left edge",
 				0, absoluteX(heading));
 		}
 	}
 
-	/** Both sections are present to be measured in the first place. */
+	/** Every section is present to be measured in the first place. */
 	@Test
-	public void thereAreTwoOfThem()
+	public void thereAreThreeOfThem()
 	{
 		java.util.List<JButton> headings = headings(panel);
-		assertEquals("a supercompost section and an ordinary one", 2, headings.size());
+		assertEquals("the guild bin's two tiers, and the allotment bins' fodder list",
+			3, headings.size());
 		assertTrue(headings.get(0).getText().contains("Supercompost"));
 		assertTrue(headings.get(1).getText().contains("Compost"));
+		assertTrue(headings.get(2).getText().contains("Compost these"));
+	}
+
+	/** With fodder off the allotment group folds away, leaving the guild bin's two. */
+	@Test
+	public void theFodderSectionHidesWhenItIsSwitchedOff()
+	{
+		CompostRunStore off = Mockito.mock(CompostRunStore.class);
+		Mockito.when(off.isFodderEnabled()).thenReturn(false);
+		Mockito.when(off.getFodderCrops()).thenReturn(java.util.Collections.emptySet());
+		Mockito.when(off.getFills()).thenReturn(java.util.Collections.emptyList());
+
+		BankContents bank = Mockito.mock(BankContents.class);
+		Mockito.when(bank.getCount(Mockito.anyInt())).thenReturn(0);
+
+		CompostBinPanel folded = new CompostBinPanel(
+			construct(PanelLayoutStore.class,
+				Mockito.mock(net.runelite.client.config.ConfigManager.class)),
+			off, bank, Mockito.mock(CarriedItems.class),
+			Mockito.mock(net.runelite.client.game.ItemManager.class),
+			Mockito.mock(ItemNames.class));
+		folded.refresh();
+
+		int visible = 0;
+		for (JButton heading : headings(folded))
+		{
+			if (heading.isVisible())
+			{
+				visible++;
+			}
+		}
+		assertEquals("only the guild bin's two lists are on show", 2, visible);
 	}
 
 	/** Every heading button in the panel, in the order they are laid out down the sidebar. */

@@ -165,6 +165,110 @@ public class ContractSeedFetchStepTest
 		assertFalse(has(errands(), GuideAction.FETCH_SEED));
 	}
 
+	/**
+	 * The fetch step also lights the container it is pointing at.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * {@code GuideOverlay.highlightSupplyPoints} outlines the bank booths and the seed vault from
+	 * {@code GuideStatus.getSupplySources}, and that set was populated <b>only on the bank leg</b>.
+	 * A contract is taken from Jane in the middle of a run, nowhere near it — so the step said
+	 * "withdraw your irit seed from the seed vault here" and nothing in the room lit up. Reported
+	 * from play: "after getting a new contract from Jane and I need to get the seed from
+	 * vault/bank, neither get highlighted".
+	 *
+	 * <p>Derived from the step on the list rather than from the contract state, so the outline
+	 * cannot appear for a fetch the guide has decided not to ask for.
+	 */
+	@Test
+	public void theFetchLightsTheContainerItNames() throws Exception
+	{
+		assertTrue("fixture: the fetch is being asked for", has(errands(), GuideAction.FETCH_SEED));
+
+		assertEquals("the bank holds the seed, so the bank is what to walk to",
+			Collections.singleton(SeedSource.BANK), fetchSources(errands()));
+	}
+
+	/** And the vault when that is where it is, so the outline follows the wording. */
+	@Test
+	public void aVaultedFetchLightsTheVault() throws Exception
+	{
+		when(seeds.getPlantable(Seed.CADANTINE, SeedSource.BANK)).thenReturn(0);
+		when(seeds.getPlantable(Seed.CADANTINE, SeedSource.SEED_VAULT)).thenReturn(1);
+
+		List<GuideStep> steps = errands();
+		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("seed vault"));
+		assertEquals(Collections.singleton(SeedSource.SEED_VAULT), fetchSources(steps));
+	}
+
+	/** With no fetch on the list, nothing is lit — the outline follows the instruction. */
+	@Test
+	public void nothingIsLitWithoutAFetchStep() throws Exception
+	{
+		assertTrue(fetchSources(new ArrayList<>()).isEmpty());
+	}
+
+	/** And nothing is lit when the seed is in neither container at this stop. */
+	@Test
+	public void nothingIsLitWhenTheSeedIsNotStoredHere() throws Exception
+	{
+		List<GuideStep> steps = errands();
+		assertTrue("fixture: the fetch is being asked for", has(steps, GuideAction.FETCH_SEED));
+
+		// Neither container here holds it any more - the same stores the step reads.
+		when(seeds.getPlantable(Seed.CADANTINE, SeedSource.BANK)).thenReturn(0);
+		when(seeds.getPlantable(Seed.CADANTINE, SeedSource.SEED_VAULT)).thenReturn(0);
+
+		assertTrue("nothing here holds it, so there is nothing to point at",
+			fetchSources(steps).isEmpty());
+	}
+
+	/**
+	 * The overlay reads the named container outside the "no current step" branch.
+	 *
+	 * <h2>Why this is asserted about the overlay's source and not just the tracker's</h2>
+	 *
+	 * Populating {@code GuideStatus.getSupplySources} for a contract fetch was the first half,
+	 * and on its own it changed nothing: {@code GuideOverlay} only called
+	 * {@code highlightSupplyPoints} when there was <b>no current step</b>, and a contract fetch
+	 * is a step. Reported from play a second time, after the set had been fixed.
+	 *
+	 * <p>So the condition the overlay actually branches on is pinned here in words rather than
+	 * left to a reading of the render method: a non-empty set means "light exactly these", and
+	 * an empty one is the bank leg's own fallback, which {@code marks} reads as every bank and
+	 * no vault. Getting those two round the wrong way lights the room.
+	 */
+	@Test
+	public void aNamedContainerIsNotTheSameAsTheBankLegsFallback() throws Exception
+	{
+		java.util.Set<SeedSource> named = fetchSources(errands());
+
+		assertFalse("a named container is a positive answer, not an absence", named.isEmpty());
+		assertEquals(Collections.singleton(SeedSource.BANK), named);
+
+		// And the fallback is genuinely different: empty is what the bank leg hands over when
+		// it knows it needs a bank without knowing what for.
+		assertTrue(fetchSources(new ArrayList<>()).isEmpty());
+	}
+
+	private java.util.Set<SeedSource> fetchSources(List<GuideStep> steps) throws Exception
+	{
+		Method method = GuideTracker.class.getDeclaredMethod(
+			"contractFetchSources", List.class, RunStop.class);
+		method.setAccessible(true);
+		try
+		{
+			@SuppressWarnings("unchecked")
+			java.util.Set<SeedSource> sources =
+				(java.util.Set<SeedSource>) method.invoke(tracker, steps, guildStop());
+			return sources;
+		}
+		catch (java.lang.reflect.InvocationTargetException e)
+		{
+			throw new AssertionError(e.getCause());
+		}
+	}
+
 	// ------------------------------------------------------------------- helpers
 
 	private List<GuideStep> errands() throws Exception

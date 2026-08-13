@@ -102,6 +102,30 @@ public class SeedInventoryStore
 	/** A Fill or Empty just clicked, waiting for the container change it caused. */
 	private SeedBoxAction pendingSeedBoxAction;
 
+	/**
+	 * Whether the model of the box has been caught contradicting the game.
+	 *
+	 * <p>Set when a Fill moves a seed into a box the model already had at its six kinds. The
+	 * seeds are recorded anyway — see {@link #applyPendingSeedBoxAction} for why the observation
+	 * outranks the model — so this does not gate the count. It marks the model as known-wrong,
+	 * which is what makes a real read of the box beat the suppression window.
+	 *
+	 * <h2>Nothing clears this today, and that is a finding rather than a design</h2>
+	 *
+	 * It is cleared by a {@code SEED_BOX} container arriving, and one never has:
+	 * {@code getItemContainer(573)} has answered null on every attempt of every session on
+	 * record ({@code box 0 read, 56 with no container} in the run log, and zero successful
+	 * reconciles across every archived log). So the recovery this flag names is unreachable,
+	 * and the guard that used to rely on it was silently discarding seeds for good.
+	 *
+	 * <p>The suspicion is therefore surfaced rather than merely recorded — the Fill logs at WARN
+	 * telling the player to open the box, and {@link #hasSeenTheBoxThisSession()} already makes
+	 * {@code GuideTracker.whereSeedsAre} say the box's contents are remembered rather than seen.
+	 * Whether opening the box makes the container arrive at all is unverified; see the note on
+	 * {@link #relearnInventoryFromClient()}.
+	 */
+	private boolean boxSuspect;
+
 	/** The tick the pending action was armed on. See {@link #applyPendingSeedBoxAction}. */
 	private int pendingSeedBoxTick = -1000;
 
@@ -171,13 +195,44 @@ public class SeedInventoryStore
 			// would read as recent for thousands of ticks and freeze the box's reads.
 			int sinceAction = client.getTickCount() - pendingSeedBoxTick;
 			if (source == SeedSource.SEED_BOX
-				&& sinceAction >= 0 && sinceAction <= PENDING_BOX_ACTION_TICKS)
+				&& sinceAction >= 0 && sinceAction <= PENDING_BOX_ACTION_TICKS
+				&& !boxCannotBeRight() && !boxSuspect
+				&& boxReadIsLagged(countSeeds(container)))
 			{
 				return true;
+			}
+			if (source == SeedSource.SEED_BOX)
+			{
+				// Whatever it was, this read settles it.
+				boxSuspect = false;
+				// And it is the game showing us inside the box, which is the only thing that
+				// makes the model current rather than remembered. See hasSeenTheBoxThisSession.
+				boxSeenThisSession = true;
+			}
+
+			// Taking a real read of the box means the action's delta must not then be added on
+			// top of it: the read already includes whatever moved. Disarming here is what keeps
+			// the two paths from double-counting the same Fill.
+			if (source == SeedSource.SEED_BOX)
+			{
+				pendingSeedBoxAction = null;
 			}
 		}
 
 		Map<Integer, Integer> counts = countSeeds(container);
+
+		if (source == SeedSource.SEED_BOX)
+		{
+			// Only what a box can hold. countSeeds accepts anything in the Seed table, and that
+			// table maps a tree crop's SAPLING id to the crop as well as its seed - so without
+			// this a sapling read into the box's model would spend one of its six kinds
+			// forever. See com.dooglemaps.data.SeedBox for why this question now has exactly
+			// one home.
+			counts = com.dooglemaps.data.SeedBox.onlyWhatItHolds(counts);
+
+			// Before it is stored, so the comparison is against what the deltas had made of it.
+			reportBoxDrift(counts);
+		}
 
 		// Both containers a box action can land in: Fill draws from the inventory, and Empty
 		// tips into the inventory - or straight into the bank when one is open, which is
@@ -200,6 +255,104 @@ public class SeedInventoryStore
 	}
 
 	/**
+	 * Whether the derived box is provably wrong, so a real read must be taken over it.
+	 *
+	 * <p>The box holds {@link com.dooglemaps.data.SeedBox#KINDS} kinds and no more, so a model
+	 * holding a seventh is not a disagreement about counts — it is arithmetic that has drifted,
+	 * and there is no reading of the game in which it is right.
+	 *
+	 * <p>It matters because of what the suppression above costs. The box is derived from deltas
+	 * rather than read (the client's copy lags a step behind a Fill or Empty, which is the whole
+	 * reason), and its own container event is ignored for a couple of ticks around an action —
+	 * which is, in practice, the only time that event ever fires. So a derivation that goes wrong
+	 * stays wrong: nothing reads the box again until the player happens to open it, and the
+	 * suppression can eat that too. Reported from play as a box that took <i>two</i> Emptys and
+	 * a check to come right, with the log showing the model at seven kinds while the game
+	 * allows six.
+	 *
+	 * <p>So the window keeps its purpose — a lagged read must not overwrite a good derivation —
+	 * and loses its teeth in the one case where the derivation cannot be good. Deliberately
+	 * narrow: it is a proof, not a heuristic, and it never fires while the model is merely
+	 * uncertain.
+	 */
+	private boolean boxCannotBeRight()
+	{
+		SourceCache box = cached.get(SeedSource.SEED_BOX);
+		if (box == null || kindsIn(box.counts) <= com.dooglemaps.data.SeedBox.KINDS)
+		{
+			return false;
+		}
+		log.info("The seed box model holds {} kinds and the box holds {} - taking the game's "
+				+ "own copy over it. Contents were {}",
+			kindsIn(box.counts), com.dooglemaps.data.SeedBox.KINDS, box.counts);
+		return true;
+	}
+
+	/**
+	 * Whether this read of the box is the stale copy the window exists to reject.
+	 *
+	 * <h2>Why the window alone was not enough</h2>
+	 *
+	 * A lagged read is the box's contents from <b>before</b> the action — that is what "lagged"
+	 * means here, and it is stated in {@link #noteSeedBoxAction}'s own comment. So the exact
+	 * test is whether the read matches what the box was believed to hold at the click, and the
+	 * couple of ticks was only ever a proxy for it.
+	 *
+	 * <p>The proxy is expensive, because a box read almost only ever arrives inside that window:
+	 * a container event fires when the container changes, and a Fill or an Empty is what changes
+	 * it. So the window discarded very nearly every real read the game offered, and a derivation
+	 * that had gone wrong had nothing left to correct it. Reported from play twice — a box that
+	 * took two Emptys and a check to come right, and then a box stuck reading full.
+	 *
+	 * <p>Reading it this way, a disagreement is informative rather than ambiguous. Either the
+	 * read is the post-action truth, or it is the lagged copy and the model of the box before
+	 * the action was already wrong. Both are the game telling us something we did not know, and
+	 * in both the read is an observation where the model is an inference.
+	 */
+	private boolean boxReadIsLagged(Map<Integer, Integer> read)
+	{
+		if (boxBeforeAction == null)
+		{
+			// Nothing to compare against, so fall back to the window's original behaviour.
+			return true;
+		}
+		if (read.equals(boxBeforeAction))
+		{
+			return true;
+		}
+		log.info("The seed box read {} inside the action window, where the model had {} before "
+				+ "the click - taking the read, since a lagged copy would have matched.",
+			read, boxBeforeAction);
+		return false;
+	}
+
+	/**
+	 * Says what a real read of the box disagreed with, which is the diagnostic that was missing.
+	 *
+	 * <p>The box is the one source that is inferred rather than observed, so it is the one that
+	 * can be quietly wrong — and until now nothing compared the inference against the truth on
+	 * the rare occasions the truth arrived. "I had to empty it twice and check it" is not
+	 * diagnosable after the fact without this line.
+	 *
+	 * <p>Only on a real disagreement, so an ordinary read of an accurate box says nothing.
+	 */
+	private void reportBoxDrift(Map<Integer, Integer> actual)
+	{
+		SourceCache box;
+		synchronized (this)
+		{
+			box = cached.get(SeedSource.SEED_BOX);
+		}
+		if (box == null || box.counts.equals(actual))
+		{
+			return;
+		}
+		log.info("Seed box read disagrees with what was derived from Fill/Empty deltas - "
+				+ "derived {}, actually {}. The read wins; the difference is the drift.",
+			box.counts, actual);
+	}
+
+	/**
 	 * Notes that the player has just filled or emptied their seed box.
 	 *
 	 * <p>The seed box cannot simply be read. The client's copy of that container lags a step
@@ -213,7 +366,21 @@ public class SeedInventoryStore
 	{
 		pendingSeedBoxAction = action;
 		pendingSeedBoxTick = client.getTickCount();
+
+		SourceCache box = cached.get(SeedSource.SEED_BOX);
+		boxBeforeAction = box == null
+			? new HashMap<>() : new HashMap<>(box.counts);
 	}
+
+	/**
+	 * What the box was believed to hold when the Fill or Empty was clicked.
+	 *
+	 * <p>The suppression window rejects a lagged read, and a lagged read is <i>by definition</i>
+	 * the box's contents from before the action. So this is the thing the window is actually
+	 * testing for, and holding it turns a guess about timing into a comparison. See
+	 * {@link #boxReadIsLagged}.
+	 */
+	private Map<Integer, Integer> boxBeforeAction;
 
 	/**
 	 * Moves seeds between a container and the box for a Fill or Empty we just saw.
@@ -284,24 +451,100 @@ public class SeedInventoryStore
 
 			if (action == SeedBoxAction.FILL)
 			{
-				// Whatever left the inventory on a Fill went into the box.
+				// Whatever left the inventory on a Fill went into the box - with two things
+				// the box itself cannot have done, because a Fill is not the only way a seed
+				// leaves the pack inside a two-tick window. Depositing the rest of your seeds
+				// at the bank a moment after filling the box, or planting one, both look
+				// identical to this arithmetic, and both were being credited to the box.
+				//
+				// Symptom: a kind in the box with a count of one that had never been in it.
+				// Once there it is nearly permanent, since a sixth kind makes the box read
+				// full and nothing about a full box is provably wrong.
 				for (Map.Entry<Integer, Integer> entry : previous.counts.entrySet())
 				{
 					int delta = entry.getValue() - incoming.getOrDefault(entry.getKey(), 0);
-					if (delta > 0)
+					if (delta <= 0)
 					{
-						box.merge(entry.getKey(), delta, Integer::sum);
-						moved = true;
+						continue;
 					}
+
+					// Already counted, exactly, by the game's own word for this same click.
+					// See moveInSeedBox.
+					if (statedRecently(entry.getKey()))
+					{
+						continue;
+					}
+
+					// A Fill takes the whole loose stack of any kind it accepts - there is no
+					// per-kind limit in the box - so leftovers of that kind still in the pack
+					// mean the box did not take it and something else moved it.
+					if (incoming.getOrDefault(entry.getKey(), 0) > 0)
+					{
+						log.info("A Fill left {} of seed {} in the pack, so the {} that went "
+								+ "somewhere did not go in the box.",
+							incoming.get(entry.getKey()), entry.getKey(), delta);
+						continue;
+					}
+
+					// A seventh kind is impossible in the BOX. It is not impossible in the
+					// MODEL, and the difference is the whole of this branch.
+					//
+					// This used to `continue` here, dropping the seed. The reasoning was that a
+					// box holding six kinds cannot take a seventh, so the seeds must have gone
+					// somewhere else - which is true of the box and false of our copy of it.
+					// When the model's six kinds are not the box's six, the game has just told
+					// us so, and the reply was to discard the message.
+					//
+					// Reported from play, and it cost a whole stop: 681 limpwurt seeds filled
+					// into the box, refused here, and the model went on reporting
+					// `Limpwurt (inv 0, box 0, bank 0, vault 0)`. The flower run then had no
+					// seed to plant, the Farming Guild's flower patch produced no step, the
+					// stop completed under the player and the run routed on to Catherby.
+					//
+					// So the observation wins. A Fill is something the game did and we watched;
+					// the model is a reconstruction from deltas. Where a reconstruction
+					// contradicts an observation, it is the reconstruction that is wrong, and
+					// the honest response is to record what happened and mark the model rather
+					// than to keep the model and lose the seeds.
+					//
+					// Letting the count go over capacity is deliberate, and is the shape the
+					// design already expects: SeedBox.KINDS calls itself an invariant whose
+					// breach "is proof its arithmetic has drifted, which is what
+					// boxCannotBeRight acts on". Refusing the merge is what stopped that proof
+					// ever being recorded, so nothing downstream could act on it.
+					//
+					// The direction of the remaining error is the one worth having. Over-report
+					// and the run plans a plant, arrives, finds no seed at hand and says where
+					// it thinks they are - visible, and the player can correct it. Under-report
+					// and a patch is skipped in silence. Same call docs/TODO.md makes about the
+					// bottomless bucket: wrongly denying what the player has is worse than the
+					// blind spot.
+					if (!box.containsKey(entry.getKey())
+						&& kindsIn(box) >= com.dooglemaps.data.SeedBox.KINDS)
+					{
+						// WARN rather than INFO: unlike the two cases above, this one says the
+						// stored model is provably wrong and stays wrong until the box is read.
+						log.warn("A Fill put {} of seed {} into a box this model already had at "
+								+ "{} kinds - the model is wrong, not the Fill, so the seeds are "
+								+ "recorded and the box is marked suspect. Open the seed box once "
+								+ "to resync it.",
+							delta, entry.getKey(), kindsIn(box));
+						boxSuspect = true;
+					}
+
+					box.merge(entry.getKey(), delta, Integer::sum);
+					moved = true;
 				}
 			}
 			else
 			{
-				// Whatever appeared here on an Empty came out of the box.
+				// Whatever appeared here on an Empty came out of the box - unless the game
+				// already said so by name, in which case that figure is the exact one and this
+				// would subtract it twice. See moveInSeedBox.
 				for (Map.Entry<Integer, Integer> entry : incoming.entrySet())
 				{
 					int delta = entry.getValue() - previous.counts.getOrDefault(entry.getKey(), 0);
-					if (delta > 0)
+					if (delta > 0 && !statedRecently(entry.getKey()))
 					{
 						box.merge(entry.getKey(), -delta, Integer::sum);
 						moved = true;
@@ -354,9 +597,43 @@ public class SeedInventoryStore
 	 *
 	 * <p>The same backstop {@code CarriedItems} runs and for the same reason: events keep the
 	 * count sharp, but a single missed read — a priming block that never ran, a profile switch
-	 * — used to leave phantom seeds in the model until the pack happened to change. The bank,
-	 * vault and box stay event-and-derivation driven; the inventory is the one container that
-	 * is always available to check. Client thread only. No-op when not logged in.
+	 * — used to leave phantom seeds in the model until the pack happened to change.
+	 *
+	 * <h2>The box is reconciled here too — and the client has never once answered</h2>
+	 *
+	 * <p><b>This paragraph used to claim the opposite, and the claim was wrong.</b> It said the
+	 * box "is a container you carry, {@code getItemContainer} answers for it exactly as it does
+	 * for the pack". It does not. {@code getItemContainer(573)} —
+	 * {@code InventoryID.SEED_BOX} — has returned null on every attempt, in every session on
+	 * record: the run log's own counter reads {@code box 0 read, 56 with no container}, and no
+	 * archived log contains a single {@code Seed box reconciled from the client} line.
+	 *
+	 * <p>That matters far beyond a stale comment, because two repairs were built on top of it.
+	 * {@link #boxSuspect} promises the model will be corrected by "the next read of the box",
+	 * and the Fill guard used to <i>discard seeds</i> on the strength of that promise. Neither
+	 * can happen while the container never arrives, so the discard was permanent. See
+	 * {@link #applyPendingSeedBoxAction}.
+	 *
+	 * <p>Why the container is absent is not yet known, and is deliberately not guessed at here.
+	 * The likeliest reading is that the server sends it only while the box interface is open,
+	 * and this account never opens it — {@code GuideMenuSwap.seedBoxLeftClick} puts Fill or
+	 * Empty under the left click precisely so the player never has to. If that is right, the
+	 * plugin's own convenience is what starves its only means of correction, which would want
+	 * fixing at the source rather than here. Settling it needs one observation in the client:
+	 * open the box and see whether a read lands.
+	 *
+	 * <p>That mistake is the whole of the seed box's history of bugs. A container the model only
+	 * ever <i>derives</i> has no way back once a derivation goes wrong — and every fix so far has
+	 * been to one derivation or another, each correct and none of them able to heal what had
+	 * already drifted. Reported repeatedly and finally pinned with the contents written out: six
+	 * ordinary herb seeds in the box, a seventh kind loose in the pack, and the box lighting to
+	 * fill. No rule about kinds can produce that; only a model that disagrees with the box can.
+	 *
+	 * <p>So the box is read from the client every tick, like the pack. The derivation stays for
+	 * the click itself, where the client's copy really does lag, and the window above is what
+	 * keeps the reconcile out of the way while it does.
+	 *
+	 * <p>Client thread only. No-op when not logged in.
 	 */
 	public void relearnInventoryFromClient()
 	{
@@ -412,6 +689,127 @@ public class SeedInventoryStore
 			record(SeedSource.INVENTORY.getContainerId(), container);
 			reconcileStores++;
 		}
+
+		// And the box - from the interface it draws, not from a container.
+		//
+		// This asked getItemContainer(SEED_BOX) for months and the answer was always null. The
+		// counter it kept is what proved it: `box 0 read, 56 with no container` on one run, and
+		// not one reconcile line in any archived log. The seed box simply has no item container,
+		// so the whole path was dead and the box was only ever derived - which is what let a
+		// derivation lose 681 limpwurt seeds and never get them back.
+		//
+		// The interface is the way in. While the box is open its contents are laid out as
+		// children of HosidiusSeedbox.SEED_LAYER, one per seed, each carrying an item id and a
+		// quantity - the same reading every bank-style interface gets. Found by reading how
+		// Dude Where's My Stuff does it, which uses this widget and no container either; the
+		// component itself is named in RuneLite's own gameval, so nothing is borrowed but the
+		// idea. Credited in ATTRIBUTION.md.
+		Map<Integer, Integer> now = readSeedBoxWidget();
+		if (now == null)
+		{
+			// Closed, which is the ordinary state and not a fault: the deltas carry the box
+			// between openings. Said once, because "no line in the log" is ambiguous between a
+			// box that is never open and a box whose contents already match.
+			boxMissing++;
+			if (boxMissing == 1)
+			{
+				log.info("The seed box interface has not been open yet, so the box stays "
+					+ "derived from its Fill, Empty and chat deltas until it is.");
+			}
+		}
+		else
+		{
+			boxReads++;
+			Map<Integer, Integer> before;
+			synchronized (this)
+			{
+				SourceCache cache = cached.get(SeedSource.SEED_BOX);
+				before = cache == null ? new HashMap<>() : new HashMap<>(cache.counts);
+			}
+
+			// An empty copy is not proof of an empty box, and this reconcile is a backstop
+			// rather than an authority. It polls whatever the client happens to be holding; the
+			// container events are the real observations. So it may correct the model and it may
+			// not empty it — a tick where the client's copy has not been populated would
+			// otherwise wipe the box to nothing, which reads downstream as "no kinds in it" and
+			// lights the fill highlight for every loose seed in the pack. That is the
+			// highlighting bug, reintroduced by the fix for the staleness bug.
+			//
+			// An Empty that really happened still empties it: the box's own container event
+			// arrives saying so and goes through record() as before. This only declines to
+			// invent one from a poll.
+			if (!before.equals(now))
+			{
+				boxCorrections++;
+				// Said out loud because this is the line that will explain the next report:
+				// if the model and the box disagree, the disagreement now has a timestamp and
+				// both sides written out, instead of being a state nobody can reconstruct.
+				log.info("Seed box read from its interface - was {}, is {}", before, now);
+			}
+
+			// A full replacement, and an empty read is a real answer here where it was not
+			// before. The old poll had to refuse an empty copy, because a container the client
+			// had simply not populated is indistinguishable from an empty one and wiping the
+			// model on it lit the fill highlight for every loose seed. An open interface has no
+			// such ambiguity: the box is in front of the player and nothing is in it.
+			//
+			// The derivation is disarmed with it. Whatever a pending Fill or Empty was about to
+			// infer, the box has just been looked at, so the inference can only add to a number
+			// that is already right.
+			synchronized (this)
+			{
+				pendingSeedBoxAction = null;
+				boxSuspect = false;
+				boxSeenThisSession = true;
+			}
+			if (store(SeedSource.SEED_BOX, now))
+			{
+				fireChanged();
+			}
+		}
+	}
+
+	/**
+	 * The seed box's contents as its open interface shows them, or null while it is closed.
+	 *
+	 * <p>Null and empty are different answers and both are real: null is "not open, I cannot
+	 * see", empty is "open, and there is nothing in it". Conflating them is what made the old
+	 * container poll unable to trust an empty read at all.
+	 *
+	 * <p>Quantities come from the widget rather than being assumed, because a box slot holds a
+	 * stack — the wiki's own per-stack figure is 2,147,483,647 — so the count is the whole
+	 * point of reading it. Ids the box cannot hold are dropped by {@code onlyWhatItHolds} on the
+	 * way into the model, the same as any other read.
+	 */
+	@javax.annotation.Nullable
+	private Map<Integer, Integer> readSeedBoxWidget()
+	{
+		net.runelite.api.widgets.Widget layer =
+			client.getWidget(net.runelite.api.gameval.InterfaceID.HosidiusSeedbox.SEED_LAYER);
+		if (layer == null || layer.isHidden())
+		{
+			return null;
+		}
+
+		Map<Integer, Integer> read = new HashMap<>();
+		net.runelite.api.widgets.Widget[] children = layer.getChildren();
+		if (children == null)
+		{
+			// The layer exists but has not been populated this frame. Not an empty box.
+			return null;
+		}
+
+		for (net.runelite.api.widgets.Widget child : children)
+		{
+			if (child == null || child.getItemId() <= 0)
+			{
+				continue;
+			}
+			// Max(1) because an interface draws a single item with no quantity text at all,
+			// which reads back as zero rather than one.
+			read.merge(child.getItemId(), Math.max(1, child.getItemQuantity()), Integer::sum);
+		}
+		return com.dooglemaps.data.SeedBox.onlyWhatItHolds(read);
 	}
 
 	/** See the counters in {@link #relearnInventoryFromClient}; volatile, read from the EDT. */
@@ -419,11 +817,28 @@ public class SeedInventoryStore
 	private volatile int reconcileLoggedIn;
 	private volatile int reconcileStores;
 
+	/**
+	 * The box half of the same, counted separately because it can fail on its own.
+	 *
+	 * <p>These are the counters that caught the dead container read: {@code box 0 read} beside a
+	 * large {@code with no container} is what a path that can never work looks like, and it took
+	 * an absence being counted rather than merely unlogged to see it. Worth keeping pointed at
+	 * the new mechanism for the same reason.
+	 *
+	 * <p>{@code boxIgnoredEmpty} went with that path. It counted empty container copies refused
+	 * on the grounds that they might be unpopulated rather than empty — an ambiguity an open
+	 * interface does not have, so there is nothing left to refuse.
+	 */
+	private volatile int boxReads;
+	private volatile int boxMissing;
+	private volatile int boxCorrections;
+
 	/** The reconcile's progress as words, for the run-planned line. */
 	public String describeReconcile()
 	{
 		return reconcileCalls + " ticks, " + reconcileLoggedIn + " logged in, "
-			+ reconcileStores + " stored";
+			+ reconcileStores + " stored; box " + boxReads + " read from its interface, "
+			+ boxMissing + " ticks with it closed, " + boxCorrections + " corrections";
 	}
 
 	/** Whether the live inventory has an open slot. Client thread only. */
@@ -482,7 +897,41 @@ public class SeedInventoryStore
 	 */
 	public void addToSeedBox(int itemId, int quantity)
 	{
-		if (quantity <= 0 || Seed.forItemId(itemId) == null)
+		moveInSeedBox(itemId, quantity);
+	}
+
+	/**
+	 * Takes seeds back out of the box, for the message that says the game just did.
+	 *
+	 * <p>The mirror of {@link #addToSeedBox}, and the reason it exists separately from the Empty
+	 * derivation: <i>"Emptied 4 x Ranarr seed to your inventory."</i> names the seed and the
+	 * count outright, where the derivation has to infer both from what appeared in a container
+	 * and cannot tell an Empty from anything else that filled the pack in the same two ticks.
+	 */
+	public void removeFromSeedBox(int itemId, int quantity)
+	{
+		moveInSeedBox(itemId, -quantity);
+	}
+
+	/**
+	 * Applies an exact, game-stated change to the box.
+	 *
+	 * <h2>Why this marks the seed as spoken for</h2>
+	 *
+	 * Some of these messages describe the very same click the Fill and Empty derivation is
+	 * watching for — <i>"Stored 6 x Ranarr seed in your seed box."</i> is a Fill, and the seeds
+	 * leaving the inventory is the delta {@link #applyPendingSeedBoxAction} would credit. Both
+	 * firing would count them twice.
+	 *
+	 * <p>So the message wins for the seed it names and says so, and the derivation skips that
+	 * seed for the couple of ticks the click stays armed. Per seed rather than per click,
+	 * deliberately: it is not known whether a Fill announces every kind it moved or only some,
+	 * and this way whatever the messages covered is exact while the rest is still inferred
+	 * exactly as before. Guessing that answer either way would have been a new bug.
+	 */
+	private void moveInSeedBox(int itemId, int delta)
+	{
+		if (delta == 0 || Seed.forItemId(itemId) == null)
 		{
 			return;
 		}
@@ -492,12 +941,41 @@ public class SeedInventoryStore
 		{
 			SourceCache entry = cached.get(SeedSource.SEED_BOX);
 			box = entry == null ? new HashMap<>() : new HashMap<>(entry.counts);
-			box.merge(itemId, quantity, Integer::sum);
+			box.merge(itemId, delta, Integer::sum);
+			// Clamped rather than trusted below zero, like the Empty derivation: a count that
+			// was already stale-low must not go negative and poison the totals.
+			box.values().removeIf(count -> count <= 0);
+			statedByMessage.put(itemId, client.getTickCount());
 		}
 		if (store(SeedSource.SEED_BOX, box))
 		{
 			fireChanged();
 		}
+	}
+
+	/**
+	 * Seeds whose movement the game stated outright, by the tick it said so.
+	 *
+	 * <p>Read by {@link #applyPendingSeedBoxAction} so an exact figure is never added to a
+	 * derived one for the same click. See {@link #moveInSeedBox}.
+	 */
+	private final Map<Integer, Integer> statedByMessage = new HashMap<>();
+
+	/** Whether the game named this seed's movement inside the window the click is armed for. */
+	private boolean statedRecently(int itemId)
+	{
+		Integer when = statedByMessage.get(itemId);
+		if (when == null)
+		{
+			return false;
+		}
+		int age = client.getTickCount() - when;
+		if (age < 0 || age > PENDING_BOX_ACTION_TICKS)
+		{
+			statedByMessage.remove(itemId);
+			return false;
+		}
+		return true;
 	}
 
 	private static SeedSource sourceFor(int containerId)
@@ -546,9 +1024,31 @@ public class SeedInventoryStore
 			SourceCache entry = cached.computeIfAbsent(source, k -> new SourceCache());
 			changed = !entry.counts.equals(counts);
 			entry.counts = counts;
-			entry.lastSeen = Instant.now().getEpochSecond();
+			long now = Instant.now().getEpochSecond();
+			entry.lastSeen = now;
 			rememberSeen(counts);
-			if (changed && source.isPersisted())
+			// Saved when the counts moved, and also when the freshness stamp has drifted far
+			// enough from the stored one to be worth a write on its own.
+			//
+			// `changed` alone was the whole condition, and it threw away the one field that
+			// changes on EVERY read. Open a bank whose seed counts happen to match what was
+			// stored and lastSeen is updated in memory and never persisted; restart, and the
+			// store reloads the older stamp. Reported from play as "bank 2h ago" on a run
+			// planned eleven minutes after the bank was open - the stamp on disk was from the
+			// last time the counts themselves moved, two and a half hours earlier.
+			//
+			// It reads as cosmetic and is not: whereSeedsAre and the run-planned line quote
+			// this to say how much to trust an answer, so a bad stamp discredits a good count
+			// and lends credit to a bad one. It bites hardest during development, where the
+			// plugin restarts every few minutes and in-memory stamps rarely survive.
+			//
+			// Throttled rather than unconditional, because the reason for the original guard is
+			// still real: opening a bank fires this with a thousand items whose seed counts are
+			// almost always identical, and writing config on each one is what made banking feel
+			// like it stuttered. Note that the expensive half - fireChanged, which rebuilds the
+			// visible tab - is gated separately by the caller on this method's return value, so
+			// it is unaffected either way.
+			if (source.isPersisted() && (changed || now - lastSaved >= SAVE_STAMP_SECONDS))
 			{
 				save();
 			}
@@ -675,6 +1175,86 @@ public class SeedInventoryStore
 	{
 		SourceCache entry = cached.get(source);
 		return entry == null ? 0 : entry.counts.getOrDefault(seed.getPlantedItemID(), 0);
+	}
+
+	/**
+	 * Whether the game has shown us inside the seed box since the client started.
+	 *
+	 * <h2>Why anything has to ask</h2>
+	 *
+	 * The box's contents are persisted and derived from Fill and Empty deltas in between, and
+	 * the client holds <b>no container for it at all</b> until the box has been opened — the
+	 * reconcile says so out loud, {@code "no seed box container to reconcile against (id 573)"},
+	 * and that line is what settled a night of chasing this. So the model can be a session or
+	 * more old, and nothing downstream could tell the difference between "I know it is not in
+	 * there" and "I have not looked since last time".
+	 *
+	 * <p>Reported from play as being sent away from Falador with the watermelon seeds sitting in
+	 * the box. The plugin was wrong, and worse, it was wrong <i>confidently</i>. This is what
+	 * lets the wording separate the two.
+	 */
+	public synchronized boolean hasSeenTheBoxThisSession()
+	{
+		return boxSeenThisSession;
+	}
+
+	/** Set by any real read of the box — its own container event, or a successful reconcile. */
+	private boolean boxSeenThisSession;
+
+	/**
+	 * How many of the box's six kinds are in use.
+	 *
+	 * <h2>One question, one owner</h2>
+	 *
+	 * There were two implementations of this and the log caught them disagreeing about the same
+	 * box in the same second: the Fill guard counted raw map entries with {@code box.size()} and
+	 * said six, while the overlay walked the {@link Seed} table and said five. One of them
+	 * gates whether a Fill is believed and the other gates whether the box lights, so a
+	 * disagreement is two features acting on different beliefs about one container.
+	 *
+	 * <p>Counted here because this class owns the box's contents, and by the <b>seed item</b>
+	 * rather than by the crop — see {@link #getSeedCount} for why {@code Seed.isSapling()}
+	 * cannot answer it.
+	 */
+	public synchronized int kindsInTheSeedBox()
+	{
+		SourceCache entry = cached.get(SeedSource.SEED_BOX);
+		return entry == null ? 0 : kindsIn(entry.counts);
+	}
+
+	/**
+	 * The same count over a box map that has not been stored yet.
+	 *
+	 * <p>Only ids in the seed table count. Anything else in there is not a seed, and a box that
+	 * cannot hold it has not spent a slot on it — treating an unrecognised id as a kind would
+	 * close the box off for a reason nobody could look up.
+	 */
+	private static int kindsIn(Map<Integer, Integer> box)
+	{
+		return com.dooglemaps.data.SeedBox.kindsIn(
+			com.dooglemaps.data.SeedBox.onlyWhatItHolds(box).keySet());
+	}
+
+	/**
+	 * How many of the <b>seed</b> itself are here — never the sapling it becomes.
+	 *
+	 * <h2>The third question, and the one the seed box actually asks</h2>
+	 *
+	 * {@link #getCount} sums both forms because it answers "do I own this crop", and
+	 * {@link #getPlantable} counts only the form that goes in the ground. Neither is the
+	 * question a seed box has: a box takes <i>seeds</i>, including a calquat seed or an acorn,
+	 * and refuses a plant pot however much of the crop it represents.
+	 *
+	 * <p>Without this, the box's own rules used {@code isSapling()} to skip tree crops
+	 * altogether — and {@code isSapling()} is a fact about the <i>crop</i>, not about the item
+	 * in front of you. A calquat seed in the box was therefore not counted as one of its six
+	 * kinds, the box read as having a slot free when it did not, and the fill highlight stayed
+	 * on with a seventh kind loose in the pack. Reported from play three times.
+	 */
+	public synchronized int getSeedCount(Seed seed, SeedSource source)
+	{
+		SourceCache entry = cached.get(source);
+		return entry == null ? 0 : entry.counts.getOrDefault(seed.getItemID(), 0);
 	}
 
 	/** How many of a crop the account owns in total, seeds and saplings together. */
@@ -864,8 +1444,22 @@ public class SeedInventoryStore
 		fireChanged();
 	}
 
+	/**
+	 * How stale the persisted freshness stamp may get before a read is worth saving for it
+	 * alone. See the throttle in {@link #store}.
+	 */
+	private static final long SAVE_STAMP_SECONDS = 60;
+
+	/**
+	 * When the blob was last written, so an unchanged read can still refresh the stamp on disk
+	 * without writing config on every container event. Set in {@link #save()} rather than at
+	 * the call sites, so every path that saves counts against the throttle.
+	 */
+	private long lastSaved;
+
 	private synchronized void save()
 	{
+		lastSaved = Instant.now().getEpochSecond();
 		Map<String, SourceCache> out = new HashMap<>();
 		cached.forEach((source, entry) ->
 		{

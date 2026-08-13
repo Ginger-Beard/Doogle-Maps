@@ -2539,3 +2539,287 @@ already encodes that fact for another purpose. Deriving from it beats restating 
 derivation cannot be total — spirit trees are tended for three different items, which
 `ProtectionPayment` has no way to express — a one-directional assertion still catches the class of
 error that actually happens.
+
+## The coral farmer was three people
+
+`FarmingWorldData` holds **one** NPC id per farmer, because RuneLite core holds one. The game does
+not. An NPC that gains or loses a right-click option, or that sits behind an unlock, is a different
+id wearing the same face — Guildmaster Jane is three constants, and the Tortugan coral farmer is
+three: `TORTUGAN_CORAL_FARMER` (15061, the one in the world data), `_LOCKED` (15062), and
+`_UNLOCKED` (**15063**, the one a player who has opened the nurseries actually talks to).
+
+Every comparison of "is this the farmer the step means" was an exact `==`, so at the nurseries it
+compared 15061 against 15063 and answered no. Nothing outlined Chet when the guide said to pay him,
+and `ProtectionCapture` could not attribute a payment to a patch — so paying was never recorded at
+all, the patches read unprotected forever, and the run kept sending the player back to a bank for
+five giant seaweed they had already spent.
+
+`GuideOverlay` had already met this with Jane and solved it locally, by grouping ids that **share a
+name** in the generated `Farmers` table. That could never work here, and the reason is worth the
+entry: the generator finds farmers by looking their id up on the wiki, the wiki does not declare
+15061, so the coral farmer has no name — and a fix built on shared names cannot help the one
+gardener who has none. Two mechanisms were needed and it looked like one.
+
+So identity is now `FarmerVariants.same`, hand-written and name-independent, with the shared-name
+path kept underneath so Jane is unchanged. The name and the face are a separate fix in the
+generator (`EXTRA_NPC_GROUPS`), and deliberately separate: one changes behaviour, the other changes
+wording, and only the first was worth doing without the wiki.
+
+**The general shape:** when a fix works by a *side effect* of some data — here, two ids happening
+to share a name — the case it cannot cover is the one where that data is missing, which is
+usually the newest and least-documented thing in the game. Ask what the fix depends on, not just
+what it fixes.
+
+## Two routing guards that answered a question next to the one they were asked
+
+Both are underwater patches, both cost a bug report, and they are the same mistake at different
+scales.
+
+**"Not at the dock" is not "past the dock".** `UnderwaterApproach.stillWanted` decided whether to
+route to the landward steps instead of the unroutable seabed, and it answered
+`playerRegion == approach.getRegionId()` — true only while *standing on the steps*, which is the
+one place the divert buys nothing. Everywhere else, which is to say the entire journey there, the
+router got the patch instead: a seabed patch has no learned location and never gets one, so
+`PatchLocationStore` falls through to the middle of the region — tile (3168, 2400), a table on the
+Great Conch's deck. The guard was defending something real (keep the dock as the target after the
+dive and the router plots a course back *up*, fairy rings and all) but "the player has gone under"
+and "the player is not standing on the dock" are different statements, and one region test cannot
+tell them apart.
+
+**A stop can stand in more ground than it is filed under.** The nurseries are region **13194**; the
+stop is filed under the Great Conch, **12581**, which is the ship the gardener stands on. Three
+separate tests compared that one id — the guide's `stopAt`, the planner's `standingAtAStop`, and
+`retarget`'s work-underfoot guard — so standing among the patches, the run routed the player back
+up the steps, produced no step for the patches in front of them, and opened at a bank with weedy
+patches underfoot. Three symptoms, three bug reports, one comparison.
+
+The region came out of the plugin's own log — `Run planned: … you are in region 13194 which is not
+a stop on this run` — which is the argument for that line existing. It was added because "why did
+it send me to a bank" had cost several rounds of guessing; it then answered a question nobody wrote
+it for.
+
+**The general shape:** a boolean derived from one `==` against one id encodes an assumption that
+the id is the whole answer. Both of these held for every dry, single-region patch in the game and
+neither survived the first patch that was not. When a guard has three callers, giving them one
+shared test (`RunStop.claimsRegion`) is worth it for the coordination alone — two of the three
+answering yes and one no is a worse state than all three answering no.
+
+## Three ways one compost-bin run could not finish
+
+Reported over four sessions as four different bugs. Each component had a defensible local rule and
+the rules disagreed with each other, which is why no single one of them looked wrong.
+
+1. **The guide was silent at a finished bin.** Both bins are marked *health-check-required* in the
+   generated data — a flag they share with trees — so `GrowthTimer.project` declines to promote a
+   finished `GROWING` patch to `HARVESTABLE`, since that promotion is reserved for transitions that
+   are a growth tick rather than a player action. A closed bin therefore never leaves `GROWING`.
+   `RunPlanner` already treated such a bin as ready (it kept the stop open and budgeted its buckets
+   and ash); only `CompostBinPlan` disagreed, so the loadout packed fifty volcanic ash, the run
+   routed the player to the bin, refused to let the stop finish, and then said nothing on arrival.
+2. **The loadout packed no refill.** `binWork` counted ready bins and fillable bins as mutually
+   exclusive — but emptying a bin is what makes it empty, in the same breath at the same bin. So a
+   run whose bins were all ready brought buckets and ash and no produce.
+3. **The fill budget assumed it had the whole pack.** `fillBudget()` was `INVENTORY_SIZE` less one
+   slot for the ash, ignoring the contract seed, the tools and the teleports actually in there. And
+   because `BIN_FILL` is in `CANNOT_PROCEED_WITHOUT`, the row stayed `WITHDRAW` for a pineapple
+   that could never fit, so the supply leg never closed and the run could not leave the bank.
+
+A fourth followed from fixing the first three: with the run finally reaching the bins, it *ended*
+one load early, because a part-filled bin with no produce in the pack looks exactly like a patch
+the guide has no step for. See `docs/run-flow.md`, *A fifth stall*.
+
+**The general shape:** when several components each answer "is this bin ready" for their own
+purposes, the answers have to come from one place or they will diverge — and the divergence shows
+up as behaviour no component's code looks responsible for. The fix in every case was to pass the
+answer in rather than let each side re-derive it: `clockReady` into `CompostBinPlan`, the real free
+slots into `fillBudget`, `isReady()` from the planner rather than a second copy of the test.
+
+**And the bar that found the rest:** *"I should be able to complete these steps with as little as 1
+free inventory slot."* Stated as a requirement mid-session, it immediately exposed a deadlock
+nothing else had — fetch one bucket, fill it, be told to fetch another with nowhere to put it,
+forever, because the deposit step only existed on the paths where the bin was already empty. A
+sharp numeric bound on a workflow is a better test than any amount of reasoning about the
+workflow.
+
+## Lists of the variations seen so far, dressed up as lists of the thing
+
+Two in one class, both silent failures, both found by the same report — *"I paid and it did not
+take"*.
+
+`ProtectionCapture` recognised a farmer accepting payment by matching the chat line against **three
+exact strings**. The three differed only in how the farmer addresses you: "sir", "madam", and the
+Tortugan "iknami". That is a list of the forms of address encountered so far, and it fails the
+first time a new farmer greets a player some other way — with no error, no log, and a patch that
+reads unprotected forever. It matches the invariant sentence now: opens with *That'll do nicely*,
+ends promising the patch will grow.
+
+The same class decided *which* patch a multi-patch farmer had been paid for by **menu position** —
+third right-click option meant patch 0, fourth meant patch 1. Chet disproves every part of that.
+His menu reads
+
+```
+Pay (East) / Talk-to / Pay (West) / Trade
+```
+
+so his payments are not adjacent, neither sits where the rule expected, and the one that *is* third
+is West. Paying east recorded nothing; paying west recorded **east**. That is the worse failure of
+the two: a missed record shows up as "pay the farmer" asking again, where a wrong record never
+shows up at all. It reads the option's own words now — a patch's `name` is its disambiguator within
+a region ("East", "North"), which is the same word a farmer spells into a split Pay option — and
+falls back to position only when the text names no patch at all.
+
+**The general shape:** if a whitelist's entries differ only in one varying part, it is not a
+whitelist of the thing, it is a whitelist of that part's values, and it will be wrong as soon as
+there is a new value. Match on what does not vary. And prefer evidence that *states* the answer
+(the word "East") over evidence that *implies* it (the third menu slot) — the implication is an
+assumption about layout that nobody wrote down and nothing tests.
+
+**The other lesson was the diagnosis cost.** Three separate gates could each swallow a payment
+silently and the class logged nothing on any of them, so the log could not say which had failed.
+It logs the successful capture and the accepted-but-unmatched case now, with the chathead id and
+the last selection. A capture that can fail silently needs to say so, or the next report is another
+round of guessing.
+
+## The route kept changing its mind
+
+Handing Shortest Path every outstanding stop and letting it pick the cheapest is the whole ordering
+strategy, and it is a good one: greedy nearest-first over real travel cost, with no map knowledge
+in this codebase at all. What was missing is that **"cheapest" is measured from where the player
+is**, and `GuideTracker.retargetIfMoved` re-asks on every region change — so the answer moved while
+the player was travelling to it. Cross a boundary on the way to Weiss and Ardougne might now be
+nearer, taking the drawn line, the destination name, the via-hops and the highlighted teleport with
+it, and a few regions later handing them back.
+
+This had already been fixed once, narrowly, for the loudest instance of it: a house teleport
+flipping a Weiss run to the Ardougne bushes as the instance loaded. That fix stopped garbage start
+points being posted and left the general case alone, which is worth noticing — a symptom fixed at
+its most dramatic instance can look like the bug being fixed.
+
+The pick is latched now (`RunPlanner.committedRegion`) until the stop leaves `getRemaining()`.
+Two details that were not obvious:
+
+- **The commitment is pushed in, not read out.** `GuideTracker.destinationStop` already turns the
+  router's reply into a stop and is careful about it — the payload may name the one target it
+  settled on or echo every target it was handed, so it names a stop only when exactly one matches.
+  Re-deriving that in the planner is how the panel and the line would come to disagree.
+- **An unnamed route does not release the leg.** No destination is the ordinary state for a second
+  after every request, and treating it as "undecided" would put the run straight back to
+  re-choosing on every reply.
+
+**The general shape:** a greedy choice re-evaluated continuously is not greedy, it is oscillating.
+If the input to a decision changes as a consequence of acting on the decision, the decision has to
+be latched somewhere.
+
+## The compost bin was two different problems wearing one name
+
+Four sessions of bin bugs, and the last of them turned out not to be a bug at all — it was the
+model being wrong about what a bin is for.
+
+**The complaint.** *"I'm just running around with a full inventory of pineapples and I have to
+note them at the lep to do the rest of my farm runs and I have to re-bank anyways."* A run with
+Compost ticked withdrew a pack-load of fill at the opening bank leg and carried it all day.
+
+**The obvious fix makes it worse, and finding that out was the useful part.** Deferring the
+withdrawal looks like a one-line change to the loadout. It is not:
+`CompostBinPlan.addFillStep` is silent when the fill is not in the pack; zero steps puts the
+patch in `nothingToDo`; `isComplete` counts a patch the guide has no step for as done. So a bin
+stop completes the moment you arrive without produce and drops out of `getRemaining()` **before
+you ever travel there**, with nothing said to the player. The up-front withdrawal was
+load-bearing, and nothing in the code said so.
+
+**Then the measurements killed the next three designs.** Banks are not near bins. Against
+`BankLocations`' seeded points: Farming Guild ~14–20 tiles and same region; Catherby ~23;
+Kourend ~44; Falador ~65; Ardougne ~96; and Civitas, Canifis and Prifddinas have no seeded bank
+at all. `supplyPointIsHere()` is exact region-id equality with no adjacency concept, so it fires
+at the guild and nowhere else — a fact a stale comment two hundred lines away flatly contradicted.
+Every design built on "bank near the bin" was dead on arrival, and each would have taken a day to
+find that out by building it.
+
+**The answer came from the owner's clan, not from the code.** Most people only use the big bin;
+some feed the allotment bins with the crop they have just picked, standing next to them. That is
+not a workaround, it is the shape of the feature: **every small bin shares a `RunStop` with the
+allotments that supply it** — Falador's bin is `12083.4775` and its allotments `12083.4771`–`4774`
+— so harvest-feeding costs no travel, no pack space and no bank trip. Whole watermelon and snape
+grass are on the supercompost list, so an allotment run produces supercompost fodder as a
+by-product.
+
+So the bins split into two features that had been sharing a name:
+
+- the **guild's** bin, which has a bank in its own region and is therefore the only one a run can
+  sensibly be asked to carry for;
+- the **seven beside the allotments**, which are a disposal point for output rather than a
+  destination requiring supply, and are serviced wherever the run already goes.
+
+**Three consequences that were not obvious until the model changed.**
+
+1. **The ordering inverts.** `binsFirst` moved bins to the very front of a stop, ahead even of
+   the contract, on solid reasoning: emptying frees the pack and restocks the compost the other
+   patches want. That is right for a bin being *emptied* and impossible for one being *fed* — you
+   cannot fill from a harvest that has not happened. It sorts on what the bin is waiting for now,
+   not on which bin it is, which lands the guild's correctly both ways.
+2. **The leprechaun and the bin fight over the same crop.** The full-pack step says "note these
+   with the leprechaun", and a bin refuses noted items — so the note quietly makes the produce
+   useless to the bin standing next to you. Harvest-feeding does not work at all without
+   suppressing it. This is the kind of interaction that only exists once two features are asked
+   to share an inventory.
+3. **A negation of a narrower question is not the wider question.** `banksTheFill` was first
+   written as `!guildWillFeed(patch)`, which reads false for a small bin — and false for the
+   wrong reason came out as "so the bank must supply it", putting the pineapple row straight back.
+   Caught by a test asserting the absence of a row, which is the assertion most easily forgotten.
+
+**The general shape:** when a fix keeps producing worse designs, check whether the thing being
+optimised is the right thing to want. Four sessions went into moving bin fill around the map more
+cleverly. The answer was that it should never move at all — and the domain knowledge that said so
+was a question away the whole time, from people who play the game rather than read its data.
+
+## The seed box is the one source that can be quietly wrong
+
+`SeedInventoryStore` reads four containers. Three are observed; the box is **inferred**, and that
+difference is the whole of this entry.
+
+**Why it is inferred.** The client's copy of the box lags a step behind a Fill or Empty, so
+reading it straight after an action returns the contents from *before* the move — which is how
+filling made seeds vanish and emptying made them double. So the box is derived from the action
+plus the inventory delta, and its own container event is ignored for `PENDING_BOX_ACTION_TICKS`
+around a click so the lagged copy cannot overwrite the good answer. All of that is sound and none
+of it changed.
+
+**What it cost.** The suppressed event is, in practice, close to the only time the box's real
+contents ever arrive — a container fires when it changes, and the box changes when you act on it.
+So the one reading that could confirm the derivation is discarded exactly when it turns up, and
+nothing ever compares the two. A derivation that goes wrong therefore *stays* wrong until the
+player notices. Reported from play as a box that took **two Emptys and a check** to come right.
+
+**The log said it outright, and nobody was listening.** `GuideInventoryOverlay` prints the box's
+kind count on every highlight decision, and the session showed:
+
+```
+16:34:00  box holds 7 kinds
+16:34:24  box holds 2 kinds
+16:34:29  box holds 7 kinds
+20:18:39  box holds 0 kinds
+20:18:41  box holds 6 kinds (limit 6)
+```
+
+Seven, against a box that holds six. Not a disagreement about counts — arithmetic with no reading
+of the game in which it is right. The line had been printing that for as long as the drift lasted.
+
+**What was done, and what deliberately was not.** The window keeps its purpose and loses its teeth
+in the one case where the derivation *cannot* be good: a model holding more kinds than the box
+does is taken as proof, and the next real read wins even inside the window. That is a proof rather
+than a heuristic, and it never fires while the model is merely uncertain — a full six kinds is
+legal and still suppresses.
+
+What was **not** done is a fix to whatever produced the seventh kind. The evidence does not isolate
+it: the FILL path credits the box with anything that left the inventory during the window, so a
+plant, a note or a bank withdrawal landing inside it would do this, and so would a no-op Fill that
+stays armed until something else moves. Guessing between them and "fixing" one is how a second
+wrong mechanism gets built on top of a first. Instead the store now logs, on any real read, what
+the deltas had made of the box against what it actually holds — the reconciliation that was
+missing, and the line that will name the cause the next time it happens.
+
+**The general shape:** a value that is *derived* and never *reconciled* is a value that will drift,
+and the interesting question is not whether the derivation is correct but whether anything would
+ever notice if it were not. Here the answer was a player emptying their box twice. Where an
+authoritative reading exists at all — even rarely, even lagged — comparing against it costs one
+log line and converts a silent class of bug into a reported one.

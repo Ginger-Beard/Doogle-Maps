@@ -4,7 +4,6 @@ import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmRegion;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.state.PatchStateStore;
-import com.google.common.collect.ImmutableSet;
 import java.util.Set;
 import javax.annotation.Nullable;
 import javax.inject.Inject;
@@ -33,17 +32,60 @@ import net.runelite.client.eventbus.Subscribe;
 @Singleton
 public class ProtectionCapture
 {
-	private static final Set<String> PAYMENT_ACCEPTED = ImmutableSet.of(
-		"That'll do nicely, sir. Leave it with me - I'll make sure<br>that patch grows for you.",
-		"That'll do nicely, madam. Leave it with me - I'll make<br>sure that patch grows for you.",
-		"That'll do nicely, iknami. Leave it with me - I'll make<br>sure that patch grows for you."
-	);
+	/**
+	 * The acceptance line, matched by its shape rather than by its exact text.
+	 *
+	 * <h2>Why an exact set stopped working</h2>
+	 *
+	 * It was three whole strings, differing only in how the farmer addresses you — "sir",
+	 * "madam", and the Tortugan "iknami". That is a list of the forms of address seen so far,
+	 * dressed up as a list of acceptance lines, and it fails silently the first time a new
+	 * farmer says the same thing to a new kind of customer: the payment is simply never
+	 * recorded, the patch reads unprotected forever, and the run keeps sending the player back
+	 * to a bank for payment items they have already spent. Reported from play at the coral
+	 * nurseries, both patches paid for and both still reading {@code patchProtected: false}.
+	 *
+	 * <p>What does not vary is the sentence around the name, so that is what is matched: it
+	 * opens with "That'll do nicely" and ends by promising the patch will grow. Still tight —
+	 * no other farmer dialogue makes that promise — and no longer a list that has to be kept up
+	 * to date by someone noticing it has not been.
+	 *
+	 * <p>The line wraps, and where it wraps moves with the length of the name, so the {@code
+	 * <br>} lands mid-word between "make" and "sure" in two of the three known lines and after
+	 * "sure" in the other. Normalising it away is what lets one test cover all of them; see
+	 * {@code ProtectionCaptureTest}, which pins the three known lines against this shape so the
+	 * evidence they represent is not lost with the set.
+	 */
+	private static final String ACCEPTED_OPENS = "that'll do nicely";
+	private static final String ACCEPTED_PROMISE = "that patch grows for you";
+
+	/** Whether this is a farmer agreeing to look after a patch. */
+	private static boolean isPaymentAccepted(@Nullable String line)
+	{
+		if (line == null)
+		{
+			return false;
+		}
+		String flat = line.replace("<br>", " ").toLowerCase(java.util.Locale.ROOT);
+		return flat.startsWith(ACCEPTED_OPENS) && flat.contains(ACCEPTED_PROMISE);
+	}
 
 	private final Client client;
 	private final PatchStateStore stateStore;
 
 	/** Which of a multi-patch farmer's patches the player last chose. */
 	private int lastSelectedOption;
+
+	/**
+	 * The right-click option that chose the patch, when one did.
+	 *
+	 * <p>Preferred over {@link #lastSelectedOption} because it says which patch outright:
+	 * "Pay (East)" carries the same word the patch is named after. Null whenever the choice
+	 * came from a dialogue list, where the index is the honest answer and the text is not the
+	 * option's own name.
+	 */
+	@Nullable
+	private String lastSelectedText;
 
 	/**
 	 * The tick the selection was made on, so it cannot be redeemed by a different dialogue.
@@ -70,30 +112,45 @@ public class ProtectionCapture
 	public void reset()
 	{
 		lastSelectedOption = 0;
+		lastSelectedText = null;
 		lastSelectedTick = -1000;
+		reportedUnmatched.clear();
 	}
 
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
 		Widget text = client.getWidget(InterfaceID.ChatLeft.TEXT);
-		if (text == null || !PAYMENT_ACCEPTED.contains(text.getText()))
+		Widget head = client.getWidget(InterfaceID.ChatLeft.HEAD);
+		if (text == null || head == null
+			|| head.getModelType() != WidgetModelType.NPC_CHATHEAD)
 		{
 			return;
 		}
 
-		Widget head = client.getWidget(InterfaceID.ChatLeft.HEAD);
-		if (head == null || head.getModelType() != WidgetModelType.NPC_CHATHEAD)
+		if (!isPaymentAccepted(text.getText()))
 		{
+			reportUnmatched(head.getModelId(), text.getText());
 			return;
 		}
 
 		FarmPatch patch = findPatchForNpc(head.getModelId());
 		if (patch == null)
 		{
+			// Said out loud, because the alternative is what this cost last time: a payment
+			// made, nothing recorded, and no way to tell from outside whether the line went
+			// unrecognised, the chathead was an id the world data does not carry, or the
+			// multi-patch choice went stale. All three land here and each needs a different fix.
+			log.info("A farmer accepted a payment and no patch could be matched to it - "
+					+ "chathead {}, last selection \"{}\" ({} ticks ago). The patch will keep "
+					+ "reading unprotected until this id is recognised; see FarmerVariants.",
+				head.getModelId(), lastSelectedText,
+				client.getTickCount() - lastSelectedTick);
 			return;
 		}
 
+		log.info("Protection recorded: {} paid for, from chathead {}",
+			patch.getDisplayName(), head.getModelId());
 		stateStore.recordProtected(patch, true);
 	}
 
@@ -111,14 +168,29 @@ public class ProtectionCapture
 			{
 				// Child 0 is the "Select an Option" header.
 				lastSelectedOption = widget.getIndex() - 1;
+				lastSelectedText = null;
 				lastSelectedTick = client.getTickCount();
 			}
 		}
-		else if ((action == MenuAction.NPC_THIRD_OPTION || action == MenuAction.NPC_FOURTH_OPTION)
-			&& event.getMenuOption().startsWith("Pay"))
+		else if (isNpcOption(action) && event.getMenuOption().startsWith("Pay"))
 		{
 			// Some farmers expose their patches directly as right-click options instead.
-			lastSelectedOption = action == MenuAction.NPC_THIRD_OPTION ? 0 : 1;
+			//
+			// The text is kept as well as the position, and preferred, because the position is
+			// a guess that the coral farmer disproves. Chet's menu reads
+			//
+			//     Pay (East) / Talk-to / Pay (West) / Trade
+			//
+			// so his two payments are not the third and fourth options, are not adjacent, and
+			// the one that IS third is West. Under the old rule "Pay (East)" was not recorded
+			// at all and "Pay (West)" was recorded against East - a wrong protection state
+			// rather than a missing one, which is the worse of the two. Reported from play.
+			//
+			// Every NPC option is accepted now for the same reason: which op a Pay lands on is
+			// the NPC's business, and there is no reading of it that the position can be
+			// trusted for.
+			lastSelectedText = event.getMenuOption();
+			lastSelectedOption = positionOf(action);
 			lastSelectedTick = client.getTickCount();
 		}
 	}
@@ -146,6 +218,7 @@ public class ProtectionCapture
 		if (option != null && isPatchOption(option.getText()))
 		{
 			lastSelectedOption = subId - 1;
+			lastSelectedText = null;
 			lastSelectedTick = client.getTickCount();
 		}
 	}
@@ -153,6 +226,109 @@ public class ProtectionCapture
 	private static boolean isPatchOption(@Nullable String name)
 	{
 		return name != null && (name.contains("Patch") || name.contains("allotment"));
+	}
+
+	/**
+	 * Lines already reported, so a farmer talking is not a wall of log.
+	 *
+	 * <p>Unbounded in principle and tiny in practice: it only grows for dialogue said by a
+	 * chathead this location's farmers answer to, which is a handful of sentences per farmer.
+	 */
+	private final Set<String> reportedUnmatched = new java.util.HashSet<>();
+
+	/**
+	 * Says when a farmer said something this class did not understand.
+	 *
+	 * <p>Only for a chathead that belongs to a farmer of a patch you are standing at, so it
+	 * cannot fire for shopkeepers or quest dialogue — and only once per distinct line. This is
+	 * the diagnostic that was missing: when a payment is not recorded there is currently no way
+	 * to tell from a log whether the wording was new, and "I paid and it did not take" is not
+	 * something anyone can debug after the fact.
+	 */
+	private void reportUnmatched(int npcId, @Nullable String line)
+	{
+		if (line == null || line.isEmpty() || findPatchForNpc(npcId) == null)
+		{
+			return;
+		}
+		if (reportedUnmatched.add(line))
+		{
+			log.debug("Farmer chathead {} said something not recognised as a payment: \"{}\"",
+				npcId, line);
+		}
+	}
+
+	/** Whether this NPC option is one of the five a right-click can carry. */
+	private static boolean isNpcOption(MenuAction action)
+	{
+		return action == MenuAction.NPC_FIRST_OPTION
+			|| action == MenuAction.NPC_SECOND_OPTION
+			|| action == MenuAction.NPC_THIRD_OPTION
+			|| action == MenuAction.NPC_FOURTH_OPTION
+			|| action == MenuAction.NPC_FIFTH_OPTION;
+	}
+
+	/**
+	 * The patch index this option position used to imply, or -1 where it implies nothing.
+	 *
+	 * <p>Kept only as a fallback for farmers whose Pay options do not name a patch. Third and
+	 * fourth are the pair the old rule recognised, so those two keep their meaning and every
+	 * other position now says "no idea" rather than silently meaning East.
+	 */
+	private static int positionOf(MenuAction action)
+	{
+		if (action == MenuAction.NPC_THIRD_OPTION)
+		{
+			return 0;
+		}
+		return action == MenuAction.NPC_FOURTH_OPTION ? 1 : -1;
+	}
+
+	/**
+	 * Whether the last selection was this patch.
+	 *
+	 * <p>The option's own words first: a patch's {@code name} is the disambiguator inside its
+	 * region - "East", "North" - and a farmer who splits his payments into separate options
+	 * spells the same word into them. That is a direct statement about which patch was paid
+	 * for, where the position is an inference about menu layout.
+	 *
+	 * <p>Falls back to the position only when the text names <b>no</b> patch of this farmer's.
+	 * Not when it merely fails to name <i>this</i> one: "Pay (East)" tells us the West patch
+	 * was not chosen, and letting the position answer after that would be taking the weaker
+	 * evidence over the stronger one and getting the opposite answer.
+	 */
+	private boolean chosen(FarmPatch patch)
+	{
+		if (namesAPatch(patch))
+		{
+			return names(patch);
+		}
+		return lastSelectedOption >= 0 && patch.getPatchNumber() == lastSelectedOption;
+	}
+
+	/** Whether the selected option names any patch this farmer tends. */
+	private boolean namesAPatch(FarmPatch patch)
+	{
+		if (lastSelectedText == null || patch.getRegion() == null)
+		{
+			return false;
+		}
+		for (FarmPatch sibling : patch.getRegion().getPatches())
+		{
+			if (sibling.getFarmer() == patch.getFarmer() && names(sibling))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean names(FarmPatch patch)
+	{
+		String name = patch.getName();
+		return lastSelectedText != null && !name.isEmpty()
+			&& lastSelectedText.toLowerCase(java.util.Locale.ROOT)
+				.contains(name.toLowerCase(java.util.Locale.ROOT));
 	}
 
 	@Nullable
@@ -168,7 +344,11 @@ public class ProtectionCapture
 		{
 			for (FarmPatch patch : region.getPatches())
 			{
-				if (patch.getFarmer() != npcId)
+				// Through the variant table, not an exact compare: a farmer can be several
+				// ids and the world data holds only one. The coral farmer is 15061 there and
+				// 15063 in the world once the nurseries are unlocked, so an exact compare
+				// matched nothing and paying Chet was never recorded. See FarmerVariants.
+				if (!com.dooglemaps.data.FarmerVariants.same(patch.getFarmer(), npcId))
 				{
 					continue;
 				}
@@ -177,8 +357,7 @@ public class ProtectionCapture
 				// demands a fresh selection - see lastSelectedTick.
 				int age = client.getTickCount() - lastSelectedTick;
 				boolean fresh = age >= 0 && age <= SELECTION_FRESH_TICKS;
-				if (patch.getPatchNumber() == -1
-					|| (fresh && patch.getPatchNumber() == lastSelectedOption))
+				if (patch.getPatchNumber() == -1 || (fresh && chosen(patch)))
 				{
 					found = patch;
 				}

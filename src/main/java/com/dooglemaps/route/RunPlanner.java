@@ -75,6 +75,15 @@ public class RunPlanner
 	private final PatchStateStore stateStore;
 	private final GrowthTimer growthTimer;
 	private final ShortestPathIntegration router;
+
+	/**
+	 * The bin choices, for the one question stop planning has to ask of them.
+	 *
+	 * <p>Only the fodder toggle is read here. Which crops are allowed is the guide's business,
+	 * and what to bank is the loadout's; this class needs to know one thing — whether the seven
+	 * bins beside the allotments are the run's concern at all.
+	 */
+	private final com.dooglemaps.state.CompostRunStore compostRun;
 	private final PlayerLocation playerLocation;
 
 	/**
@@ -216,8 +225,10 @@ public class RunPlanner
 		PatchStateStore stateStore, GrowthTimer growthTimer, ShortestPathIntegration router,
 		PlayerLocation playerLocation, ToolNeeds tools, ProtectedPatches protectedPatches,
 		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions,
+		com.dooglemaps.state.CompostRunStore compostRun,
 		com.dooglemaps.DoogleMapsConfig config)
 	{
+		this.compostRun = compostRun;
 		this.config = config;
 		this.runOptions = runOptions;
 		this.protection = protection;
@@ -266,6 +277,7 @@ public class RunPlanner
 			stops.clear();
 			announced.clear();
 			skippedRegions.clear();
+			committedRegion = -1;
 			stops.putAll(planStops(types));
 			runTypes.clear();
 			runTypes.addAll(types);
@@ -352,6 +364,15 @@ public class RunPlanner
 		Map<Integer, List<FarmPatch>> byRegion = new LinkedHashMap<>();
 		for (PatchImplementation type : types)
 		{
+			// The seven beside the allotments arrive by one road only - addOpportunisticBins,
+			// below - so that "never a reason to travel" holds however this was called. The
+			// ticked set should not carry COMPOST at all (coveredByTheBinTick swaps it for the
+			// guild's bin), but a caller that passes the raw type would otherwise plan a stop
+			// for a bin in the middle of nowhere, and that is the exact trip being removed.
+			if (type == PatchImplementation.COMPOST)
+			{
+				continue;
+			}
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
 				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types)
@@ -363,6 +384,9 @@ public class RunPlanner
 			}
 		}
 
+		addOpportunisticBins(byRegion);
+		mergeSharedStops(byRegion);
+
 		Map<Integer, RunStop> planned = new LinkedHashMap<>();
 		for (List<FarmPatch> patches : byRegion.values())
 		{
@@ -370,6 +394,164 @@ public class RunPlanner
 			planned.put(region.getRegionId(), new RunStop(region, patches));
 		}
 		return planned;
+	}
+
+	/**
+	 * Folds a region into the stop it shares a way in with, when the run is making both.
+	 *
+	 * <h2>Why a merge rather than a grouping key</h2>
+	 *
+	 * Grouping by {@code SharedStops.hostOf} up front would be shorter and is wrong in one case
+	 * that matters: run the hops without the bush and the group's key is the Champions' Guild
+	 * while every patch in it is in Lumbridge. Everything downstream keys on
+	 * {@code stop.getRegion().getRegionId()} — routing, arrival, the stop's name — so the stop
+	 * would claim to be somewhere it has no patches.
+	 *
+	 * <p>Done afterwards, the rule states itself: a region joins a stop that <b>already exists</b>,
+	 * and otherwise keeps its own. That is the same shape as {@link #addOpportunisticBins}, and
+	 * it is why nothing here can create travel or move a stop the run was not already making.
+	 *
+	 * <p>Appended rather than prepended, so {@code patches.get(0)} stays a host patch and
+	 * {@code RunStop.getLocation} still routes to the Champions' Guild rather than to the hops
+	 * fifty tiles down the road.
+	 */
+	/** The last fold logged, so a per-tick replan does not repeat it. See {@link #mergeSharedStops}. */
+	@Nullable
+	private String loggedMerge;
+
+	private void mergeSharedStops(Map<Integer, List<FarmPatch>> byRegion)
+	{
+		for (Integer joining : new ArrayList<>(byRegion.keySet()))
+		{
+			int host = com.dooglemaps.data.SharedStops.hostOf(joining);
+			if (host == joining)
+			{
+				continue;
+			}
+
+			List<FarmPatch> hostPatches = byRegion.get(host);
+			if (hostPatches == null)
+			{
+				// The host is not a stop on this run, so there is nothing to share a trip with.
+				continue;
+			}
+
+			hostPatches.addAll(byRegion.remove(joining));
+
+			// Once per distinct answer, not once per call. planStops runs from previewStops,
+			// which the sidebar's per-tick snapshot asks for - so an unconditional line here is
+			// one every 0.6s for the whole run. Reported from play at the Farming Guild, as a
+			// wall of identical DEBUG. Same latch noteStopOrder uses, and for the same reason:
+			// the interesting event is the decision changing.
+			String said = joining + "->" + host;
+			if (!said.equals(loggedMerge))
+			{
+				loggedMerge = said;
+				log.debug("Region {} folded into the {} stop - one arrival serves both", joining,
+					hostPatches.get(0).getRegion().getName());
+			}
+		}
+	}
+
+	/**
+	 * Adds the allotment bins to stops the run is already making, and to no others.
+	 *
+	 * <h2>A bin beside the allotments is never a reason to travel</h2>
+	 *
+	 * It has no bank near it — Catherby ~23 tiles, Falador ~65, Ardougne ~96, and Civitas,
+	 * Canifis and Prifddinas none the plugin ships at all — so arriving at one with nothing to
+	 * put in it is a wasted trip, and hauling fifteen un-noted items to it across the map is the
+	 * complaint this whole change came from. What it <i>is</i> good for is the harvest you are
+	 * holding when you finish the patches it sits beside, which is what players do by hand.
+	 *
+	 * <p>So it is bolted onto a region that already has a stop and never creates one. That is
+	 * the whole of "opportunistic", expressed as one rule in one place — a filter applied
+	 * afterwards would have said the same thing less directly, and threading it through
+	 * {@link #isActionable} would have meant that method consulting the run, which it must not.
+	 *
+	 * <p>Done here rather than through {@code types} because the ticked set no longer carries
+	 * {@code COMPOST} at all: {@code CompostBin.coveredByTheBinTick} narrows the line to the
+	 * guild's big bin, which is deliberate — it is what keeps these seven out of the loadout,
+	 * out of {@code binWork} and out of every bank row.
+	 */
+	private void addOpportunisticBins(Map<Integer, List<FarmPatch>> byRegion)
+	{
+		if (!compostRun.isFodderEnabled())
+		{
+			// The toggle governs the seven entirely, filling and emptying alike. Off is the same
+			// state as an unticked run line: the run does not touch them.
+			return;
+		}
+
+		for (FarmPatch patch : availability.getAvailablePatches(PatchImplementation.COMPOST))
+		{
+			List<FarmPatch> here = byRegion.get(patch.getRegion().getRegionId());
+			if (here == null || !isActionable(patch))
+			{
+				continue;
+			}
+			here.add(patch);
+		}
+	}
+
+	/**
+	 * Adopts the allotment bins into stops the run is already making, once a tick.
+	 *
+	 * <h2>Why planning them once was not enough</h2>
+	 *
+	 * {@link #addOpportunisticBins} runs inside {@link #planStops}, which runs at {@link #start}
+	 * and never again. Everything it decided is therefore frozen at the moment the player pressed
+	 * the button, and two ordinary things happen after that:
+	 *
+	 * <ul>
+	 *   <li><b>The setting is switched on mid-run.</b> A player who ticks "fill bins from your
+	 *       harvest" after starting gets nothing for the rest of the trip, silently — the bins
+	 *       were never put in the stops and no amount of standing next to one changes it. This is
+	 *       the reported case: nineteen watermelons picked at Ardougne, its bin empty, the crop on
+	 *       the fodder list, and no fill ever offered.</li>
+	 *   <li><b>A bin becomes worth servicing later.</b> One that was still composting at the start
+	 *       finishes on the clock an hour into the run, and a plan made before that cannot know.</li>
+	 * </ul>
+	 *
+	 * <p>So it is a poll, exactly like {@link #reviewContract()} — which exists for the same shape
+	 * of problem, a patch the plan did not have — and it borrows that method's {@code adopt}. The
+	 * rule it enforces is unchanged: a bin joins a stop the run is <b>already</b> making and never
+	 * creates one, so it still cannot cause a step of travel.
+	 */
+	public void reviewBins()
+	{
+		if (!active || !compostRun.isFodderEnabled())
+		{
+			return;
+		}
+
+		// Outside the lock, like every store walk here: RunPlanner -> Availability -> patches.
+		List<FarmPatch> joining = new ArrayList<>();
+		for (FarmPatch patch : availability.getAvailablePatches(PatchImplementation.COMPOST))
+		{
+			if (isActionable(patch))
+			{
+				joining.add(patch);
+			}
+		}
+
+		synchronized (this)
+		{
+			for (FarmPatch patch : joining)
+			{
+				int regionId = patch.getRegion().getRegionId();
+				RunStop stop = stops.get(regionId);
+				if (stop == null || stop.contains(patch))
+				{
+					continue;
+				}
+				stop.adopt(patch);
+				// It has work again, so a completion announced before the bin arrived must not
+				// keep the stop from being routed to. Same reason reviewContract does this.
+				announced.remove(regionId);
+				log.debug("Compost bin at {} joined the stop", stop.getName());
+			}
+		}
 	}
 
 	/**
@@ -406,14 +588,25 @@ public class RunPlanner
 	 */
 	private boolean inTheRun(FarmPatch patch)
 	{
-		// Both bins answer to the one compost line, the same fold the tab strip and
-		// RunTypeStore.getSelected make - see PlantingGroups.addBinRun. Asked before groupFor
-		// because groupFor honestly reports the big bin's own type, and the honest answer's
-		// key is one no line ever stores.
-		if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) != null)
+		// The bins answer to two different questions now, and neither is groupFor's - asked
+		// before it because groupFor honestly reports the big bin's own type, whose key no line
+		// ever stores. See CompostBin.coveredByTheBinTick for why the tick narrowed.
+		//
+		// The guild's big bin is the ticked line: it is the only bin with a bank in its own
+		// region, so it is the only one a run can be asked to supply.
+		if (patch.getImplementation() == PatchImplementation.BIG_COMPOST)
 		{
 			return runOptions.isSelected(com.dooglemaps.data.RunOption.full(
 				PlantingGroup.of(PatchImplementation.COMPOST)));
+		}
+
+		// The seven beside the allotments are not a line at all. They are in a run whenever the
+		// player has said crops may be fed to a bin, and are serviced wherever the run already
+		// goes - planStops drops any stop that would exist only for one, so they never cause
+		// travel of their own.
+		if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) != null)
+		{
+			return compostRun.isFodderEnabled();
 		}
 
 		PlantingGroup group = groups.groupFor(patch);
@@ -737,17 +930,52 @@ public class RunPlanner
 	private boolean isComplete(RunStop stop)
 	{
 		Set<String> blocked = nothingToDo;
+		Set<PatchImplementation> types = runTypesSnapshot();
 		for (FarmPatch patch : stop.getPatches())
 		{
 			// Actionable *and* actually doable. A patch the guide has no step for is one the
 			// player cannot act on however long they stand there, so waiting on it is waiting
 			// forever. See nothingToDo.
-			if (isActionable(patch) && !blocked.contains(patch.getKey()))
+			//
+			// ...and not one the run is deliberately waiting on. The two hold rules used to gate
+			// planStops and nothing else, so they decided whether a stop was CREATED and had no
+			// say in whether it came back - and a stop comes back the instant one of its patches
+			// turns actionable again, which is exactly the moment both rules exist to ignore.
+			// Two reports, one cause:
+			//
+			//   "hold shared plots until all are ready isn't working - just got routed to
+			//    Ardougne again after only limpwurts were ready". The flower finishes in twenty
+			//    minutes and the herb beside it takes eighty; the stop was completed after the
+			//    first visit, then un-completed by the flower alone.
+			//
+			//   "we're going back to cactuses too soon - harvested it twenty minutes prior, only
+			//    receiving 1 cactus spine". A harvest-only cactus regrows a spine every twenty
+			//    minutes and holds four; one spine made the stop actionable again.
+			if (stillWanted(patch, blocked, types))
 			{
 				return false;
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * Whether this one patch still has work the player could go and do.
+	 *
+	 * <p>Lifted out of {@link #isComplete} unchanged, because three questions turn out to be
+	 * the same question and were answering it differently: whether a stop is finished, whether
+	 * the player has <i>arrived</i> at one (see {@link #hasArrivedAt}), and which patch the
+	 * router should be aimed at (see {@link #routeTargetsFor}). The last two used to ask about
+	 * every patch at the stop regardless of whether anything was left to do there.
+	 *
+	 * <p>Callers pass {@code blocked} and {@code types} in rather than each reading them, so a
+	 * walk over a stop's patches takes one snapshot of the run's types instead of one per patch.
+	 */
+	private boolean stillWanted(FarmPatch patch, Set<String> blocked,
+		Set<PatchImplementation> types)
+	{
+		return isActionable(patch) && !blocked.contains(patch.getKey())
+			&& !clusterHeld(patch, types) && !heldForRegrowth(patch);
 	}
 
 	/**
@@ -803,6 +1031,22 @@ public class RunPlanner
 	public void setWithdrawOutstanding(boolean outstanding)
 	{
 		withdrawOutstanding = outstanding;
+	}
+
+	/**
+	 * The same push, narrowed to tools — the one thing worth a mid-run trip back.
+	 *
+	 * <p>Separate from {@link #withdrawOutstanding} because the two are asked at different
+	 * moments and must answer differently. That one decides whether the supply leg is finished;
+	 * this one decides whether to <b>start a new one</b> in the middle of a run, which only a
+	 * tool justifies. See {@code RunLoadout.toolsLeftToWithdraw}.
+	 */
+	private volatile boolean toolOutstanding;
+
+	/** Told whether a tool the run needs is still in a bank; see {@link #reviewSupplies()}. */
+	public void setToolOutstanding(boolean outstanding)
+	{
+		toolOutstanding = outstanding;
 	}
 
 	/**
@@ -982,14 +1226,26 @@ public class RunPlanner
 	 * decode names the product even while a closed bin is still composting. Fillable bins want
 	 * the chosen produce, less whatever a part-filled bin already holds. A bin never seen
 	 * counts as an empty one, exactly as {@code isActionable} treats it as worth a look.
+	 *
+	 * <h2>A ready bin is also a fillable one, and missing that ended runs early</h2>
+	 *
+	 * The two counts used to be exclusive - a ready bin was counted for its buckets and its ash
+	 * and then skipped for the fill. But emptying a bin is what makes it empty: the visit that
+	 * takes thirty buckets of ultracompost out leaves a bin wanting thirty items of produce, in
+	 * the same breath, at the same bin. Counting only the buckets meant the loadout packed no
+	 * pineapples for it, and {@code CompostBinPlan.addFillStep} is deliberately quiet when the
+	 * fill is not in the pack - so the moment the last bucket went to the leprechaun the bin had
+	 * no step, the stop read as finished and the run ended with every bin left open and empty.
+	 * Reported from play.
+	 *
+	 * <p>A whole bin's worth, because a ready bin empties completely; the part-filled remainder
+	 * only applies to {@code FILLING}. This does mean a stop of ready bins asks for more produce
+	 * than a pack holds, which is already handled rather than newly broken - see
+	 * {@code RunLoadout.fillReason} and its short-of-the-job wording.
 	 */
 	public synchronized BinWork binWork(Set<PatchImplementation> types)
 	{
-		int readyBins = 0;
-		int readyBuckets = 0;
-		int ashNeeded = 0;
-		int fillableBins = 0;
-		int fillItems = 0;
+		Counts counts = new Counts();
 
 		for (PatchImplementation type : types)
 		{
@@ -1004,43 +1260,175 @@ public class RunPlanner
 				{
 					continue;
 				}
-				com.dooglemaps.state.PatchSnapshot snapshot = stateStore.get(patch);
-				PatchProjection projection = growthTimer.project(patch, snapshot);
-				if (projection == null)
-				{
-					fillableBins++;
-					fillItems += bin.getCapacity();
-					continue;
-				}
-
-				boolean ready = projection.getCropState() == CropState.HARVESTABLE
-					|| (projection.getCropState() == CropState.GROWING && projection.isReady());
-				if (ready)
-				{
-					readyBins++;
-					readyBuckets += projection.getCropState() == CropState.HARVESTABLE
-						? snapshot.getStage() + 1
-						: bin.getCapacity();
-					if (projection.getProduce() == Produce.SUPERCOMPOST
-						|| projection.getProduce() == Produce.BIG_SUPERCOMPOST)
-					{
-						ashNeeded += bin.ashNeeded();
-					}
-					continue;
-				}
-				if (projection.getCropState() == CropState.EMPTY)
-				{
-					fillableBins++;
-					fillItems += bin.getCapacity();
-				}
-				else if (projection.getCropState() == CropState.FILLING)
-				{
-					fillableBins++;
-					fillItems += Math.max(0, bin.getCapacity() - (snapshot.getStage() + 1));
-				}
+				count(counts, bin, patch, banksItsFill(patch));
 			}
 		}
-		return new BinWork(readyBins, readyBuckets, ashNeeded, fillableBins, fillItems);
+
+		// The seven beside the allotments, for their ash and their buckets and nothing else.
+		//
+		// They are not in `types` - CompostBin.coveredByTheBinTick narrows the tick to the guild's
+		// bin, which is what keeps their fill out of the loadout. But ash is one inventory slot
+		// however much of it you carry, and without it a small bin filled from harvest could never
+		// be upgraded to ultracompost through the plugin at all. That is a real feature lost for a
+		// slot saved, so the fill is the only thing withheld.
+		if (compostRun.isFodderEnabled() && !types.contains(PatchImplementation.COMPOST))
+		{
+			for (FarmPatch patch
+				: availability.getAvailablePatches(PatchImplementation.COMPOST))
+			{
+				count(counts, com.dooglemaps.data.CompostBin.NORMAL, patch, false);
+			}
+		}
+
+		return new BinWork(counts.readyBins, counts.readyBuckets, counts.ashNeeded,
+			counts.fillableBins, counts.fillItems);
+	}
+
+	/** The running totals {@link #binWork} builds, so both of its loops share one accumulation. */
+	private static final class Counts
+	{
+		private int readyBins;
+		private int readyBuckets;
+		private int ashNeeded;
+		private int fillableBins;
+		private int fillItems;
+	}
+
+	/**
+	 * Adds one bin to the totals.
+	 *
+	 * @param banksTheFill whether this bin's produce is the bank's problem. False for the seven
+	 *                     beside the allotments, which are fed from the harvest standing next to
+	 *                     them, and false for the guild's bin on the trips its own allotments
+	 *                     will feed it — in both cases the buckets and the ash still count, and
+	 *                     only the fifteen-to-thirty un-noted items are withheld.
+	 */
+	private void count(Counts counts, com.dooglemaps.data.CompostBin bin, FarmPatch patch,
+		boolean banksTheFill)
+	{
+		com.dooglemaps.state.PatchSnapshot snapshot = stateStore.get(patch);
+		PatchProjection projection = growthTimer.project(patch, snapshot);
+		if (projection == null)
+		{
+			addFill(counts, bin.getCapacity(), banksTheFill);
+			return;
+		}
+
+		boolean ready = projection.getCropState() == CropState.HARVESTABLE
+			|| (projection.getCropState() == CropState.GROWING && projection.isReady());
+		if (ready)
+		{
+			counts.readyBins++;
+			counts.readyBuckets += projection.getCropState() == CropState.HARVESTABLE
+				? snapshot.getStage() + 1
+				: bin.getCapacity();
+			if (projection.getProduce() == Produce.SUPERCOMPOST
+				|| projection.getProduce() == Produce.BIG_SUPERCOMPOST)
+			{
+				counts.ashNeeded += bin.ashNeeded();
+			}
+			// And then it is an empty bin, at the same stop, on the same visit.
+			addFill(counts, bin.getCapacity(), banksTheFill);
+			return;
+		}
+		if (projection.getCropState() == CropState.EMPTY)
+		{
+			addFill(counts, bin.getCapacity(), banksTheFill);
+		}
+		else if (projection.getCropState() == CropState.FILLING)
+		{
+			addFill(counts, Math.max(0, bin.getCapacity() - (snapshot.getStage() + 1)),
+				banksTheFill);
+		}
+	}
+
+	private static void addFill(Counts counts, int items, boolean banksTheFill)
+	{
+		if (!banksTheFill)
+		{
+			return;
+		}
+		counts.fillableBins++;
+		counts.fillItems += items;
+	}
+
+	/**
+	 * Whether this bin's produce is a bank's problem, which only the guild's ever is.
+	 *
+	 * <p>Two reasons a bin does not bank, and they are different. The seven beside the allotments
+	 * <b>never</b> do: there is no bank near any of them, so the fill would be carried across the
+	 * map, which is the complaint this came from. The guild's does, unless its own allotments will
+	 * feed it that trip.
+	 *
+	 * <p>Stated once, here, because getting it as {@code !guildWillFeed(patch)} was wrong in
+	 * exactly the way a negation of a narrower question usually is: that reads false for a small
+	 * bin, and false-for-the-wrong-reason came out as "so the bank must supply it".
+	 */
+	private boolean banksItsFill(FarmPatch bin)
+	{
+		return bin.getImplementation() == PatchImplementation.BIG_COMPOST
+			&& !guildWillFeed(bin);
+	}
+
+	/**
+	 * Whether the Farming Guild's own allotments will feed the big bin this trip.
+	 *
+	 * <h2>The one bin with two sources</h2>
+	 *
+	 * The guild has allotments, the big bin and a bank all in region 4922 — the only place all
+	 * three are true, and the reason {@link #supplyPointIsHere()} exists. So it can be fed either
+	 * way, and every input to the choice is known before the run starts: are those patches in the
+	 * run, planted with a crop the player allows as fodder, and going to be pickable this trip.
+	 *
+	 * <p>All three true and the bank is not asked for anything. Any one false — unplanted, not
+	 * ready yet, planted with something not on the list, or fodder switched off — and today's
+	 * bank row returns unchanged, because those all mean the same thing: the guild cannot supply
+	 * it, so the bank must.
+	 *
+	 * <p>Deliberately all-or-nothing rather than banking the shortfall against a predicted yield.
+	 * {@code CropYieldModel} could produce a number, but "eight pineapples against a predicted
+	 * twenty-two watermelons" would put a wrong-sized ask on the list most trips and reintroduce
+	 * exactly the pack-clogging this is here to remove. A short bin is topped up on site instead,
+	 * from the bank that is fourteen tiles away.
+	 *
+	 * <p>False for anything that is not the big bin, so callers need no second test.
+	 */
+	private boolean guildWillFeed(FarmPatch bin)
+	{
+		if (bin.getImplementation() != PatchImplementation.BIG_COMPOST
+			|| !compostRun.isFodderEnabled())
+		{
+			return false;
+		}
+
+		java.util.Set<Integer> allowed = compostRun.getFodderCrops();
+		if (allowed.isEmpty())
+		{
+			return false;
+		}
+
+		for (FarmPatch patch : bin.getRegion().getPatches())
+		{
+			// The region's whole patch list, so availability has to be asked here - unlike
+			// planStops, this is not already walking an available-only set.
+			if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) != null
+				|| !availability.isAvailable(patch) || !inTheRun(patch))
+			{
+				continue;
+			}
+			PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
+			if (projection == null || projection.getProduce() == null
+				|| !allowed.contains(projection.getProduce().getItemID()))
+			{
+				continue;
+			}
+			// Laden already, or the clock says it will be by the time you get there.
+			if (projection.hasProduceToPick() || projection.isReady())
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** The bin counts {@link #binWork} hands the loadout. */
@@ -1131,6 +1519,28 @@ public class RunPlanner
 		{
 			return false;
 		}
+
+		// Never for the plot being stood on — the same guard clusterHeld carries, and it was
+		// missing here.
+		//
+		// The paragraph above says this is planning-time only and spells out what a completion
+		// filter would do: "finish the stop under their feet at the first berry". It then became
+		// one, in isComplete, and did exactly that. Pick one berry of four and the bush drops
+		// below its cap, so it is held; a one-patch stop then completes, leaves getRemaining(),
+		// and GuideTracker.stopAt answers null — which sends computeStepsHere down its
+		// between-stops branch, where the only thing left to say is the leaving errand. Reported
+		// from play at the Ardougne monastery bush: told to note each white berry as it was
+		// picked, with nothing ever telling you to pick the next one.
+		//
+		// The hold is about not making the TRIP. Standing there, the trip is already spent, so
+		// there is nothing left for it to save and every reason to finish the plant. That is the
+		// same reasoning clusterHeld's guard is built on, and both are really one question —
+		// "is the player here" — asked in two places. See docs/code-review-2026-08c.md §1-2 for
+		// why they should become one predicate rather than two copies.
+		if (patch.getRegion().getRegionId() == playerLocation.getRegionId())
+		{
+			return false;
+		}
 		PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
 		return projection != null && projection.regrows()
 			&& projection.hasProduceToPick() && projection.isRegrowing();
@@ -1139,6 +1549,42 @@ public class RunPlanner
 	/** The patch types that share a plot at the classic locations, and so ripen as a group. */
 	private static final Set<PatchImplementation> CLUSTER_TYPES = EnumSet.of(
 		PatchImplementation.ALLOTMENT, PatchImplementation.FLOWER, PatchImplementation.HERB);
+
+	/**
+	 * Whether this is a compost bin standing on one of those plots.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"I was just sent to ardougne farm without volcanic ash to fill the bin, and with
+	 * watermelons still in progress, per our combined allotment/herb/flower patches rule, we
+	 * shouldn't have even gone here"</i>. The hold was working exactly as written — the session
+	 * log's own <i>Shared plots</i> line shows Ardougne <b>[free to visit]</b> at plan time with
+	 * all four patches ripe, and the player serviced them. What brought them back an hour later
+	 * was the <b>bin</b>: it was left composting, its clock came round, {@code binActionable}
+	 * re-opened the stop, and nothing in {@link #clusterHeld} had an opinion because a bin is not
+	 * one of {@link #CLUSTER_TYPES}. So the trip the hold exists to prevent was made anyway, for
+	 * the one patch on that ground the hold could not see.
+	 *
+	 * <p>A bin is the best possible thing to make wait: its contents keep indefinitely, there is
+	 * no disease clock on it, and it is standing among the patches that will want the compost. It
+	 * is held on exactly the terms the plot is, so an unticked or harvest-only plot never holds it
+	 * and it can never wait for ever.
+	 */
+	private boolean isClusterBin(FarmPatch patch)
+	{
+		if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) == null)
+		{
+			return false;
+		}
+		for (FarmPatch sibling : patch.getRegion().getPatches())
+		{
+			if (CLUSTER_TYPES.contains(sibling.getImplementation()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
 
 	/**
 	 * Whether this patch's trip should wait for the rest of its plot.
@@ -1176,7 +1622,7 @@ public class RunPlanner
 	private boolean clusterHeld(FarmPatch patch, Set<PatchImplementation> types)
 	{
 		if (!config.holdClustersUntilReady()
-			|| !CLUSTER_TYPES.contains(patch.getImplementation()))
+			|| !(CLUSTER_TYPES.contains(patch.getImplementation()) || isClusterBin(patch)))
 		{
 			return false;
 		}
@@ -1195,6 +1641,34 @@ public class RunPlanner
 				|| !types.contains(sibling.getImplementation())
 				|| !inTheRun(sibling)
 				|| !availability.isAvailable(sibling))
+			{
+				continue;
+			}
+
+			// A contract patch never holds the plot it stands in.
+			//
+			// Reported from play: "our group rule about not harvesting allotment/herb/flower
+			// patches until they're all ready should not apply in the farming guild where one of
+			// them was a contract I just completed, this caused me to skip the flower/allotment
+			// patches."
+			//
+			// Completing a contract plants the next crop Jane asked for, so the guild's plot
+			// acquires a freshly sown patch at a moment nothing else there chose. The hold then
+			// reads it exactly as it reads any growing crop and parks the whole plot behind it —
+			// which is the one thing this setting must not do, because a contract patch will
+			// essentially never come ripe in step with the plot. The ready flower and allotments
+			// beside it were skipped, and would go on being skipped for as long as the contract
+			// runs.
+			//
+			// The hold exists to save a teleport by arriving once, when everything is ready. That
+			// bargain is between patches sharing a growth cycle. A contract keeps its own clock,
+			// set by Guildmaster Jane, so it is not a party to it and cannot be waited for.
+			//
+			// Only the holding half is waived. The contract patch is still serviced when the run
+			// gets there, and still held back from the plot's own ordering by contractComesFirst
+			// — see GuideTracker. What changes is that it no longer speaks for its neighbours.
+			com.dooglemaps.data.PlantingGroup siblingGroup = groups.groupFor(sibling);
+			if (siblingGroup != null && siblingGroup.isContract())
 			{
 				continue;
 			}
@@ -1694,8 +2168,19 @@ public class RunPlanner
 
 		synchronized (this)
 		{
-			RunStop here = stops.get(region);
-			return here != null && !isComplete(here);
+			// Scanned rather than looked up by key, because a stop can stand in more ground than
+			// the one region it is filed under - see RunStop.claimsRegion. A run started among
+			// the coral nurseries used to answer "standing on nothing" and open at a bank for
+			// the compost bins, with weedy patches underfoot. Reported from play. The map is a
+			// dozen entries, so the walk costs nothing worth keeping the key lookup for.
+			for (RunStop here : stops.values())
+			{
+				if (here.claimsRegion(region) && !isComplete(here))
+				{
+					return true;
+				}
+			}
+			return false;
 		}
 	}
 
@@ -1824,8 +2309,37 @@ public class RunPlanner
 
 		if (sources.contains(SeedSource.SEED_VAULT))
 		{
+			// The vault, and the one bank standing in the same room as it.
+			//
+			// There is exactly one seed vault in the game and it is in the Farming Guild, so a
+			// trip that wants it is a trip to the guild whatever else it wants. Handing over
+			// every bank as well let the router do exactly what it is asked to do — pick the
+			// cheapest — and it picked whichever bank the player happened to be near, because
+			// there is nearly always one closer than the guild. The vault then still had to
+			// happen, from wherever that bank was. Reported from play: "when we start a run or
+			// are on a bank trip and need to go to the seed vault, we need to navigate to the
+			// farming guild's seed vault, getting navigated to one of the other banks isn't the
+			// right move".
+			//
+			// The guild's chest is ten tiles from the vault, so this costs the bank half
+			// nothing — one arrival serves both errands, which is the trip the player was making
+			// anyway. That geometry is why this is a target change rather than a trade-off. See
+			// BankLocations.FARMING_GUILD_BANK, seeded rather than learned, so it can be routed
+			// to without the player ever having opened it.
+			//
+			// Still BOTH targets, never one: this method used to return the vault INSTEAD of the
+			// banks whenever a single seed lived there, which pointed the route at the vault
+			// while the withdraw list read "From the bank: yew, yew, rune pouch, book of the
+			// dead". Also reported from play. Nothing here changes what the leg has to collect
+			// or when it ends — only where it sends you.
 			targets.add(banks.getSeedVault());
+			if (sources.contains(SeedSource.BANK))
+			{
+				targets.add(banks.getFarmingGuildBank());
+			}
+			return targets;
 		}
+
 		if (sources.contains(SeedSource.BANK) || sources.isEmpty())
 		{
 			// Every bank the account can use; the router knows which is genuinely nearest.
@@ -1929,6 +2443,9 @@ public class RunPlanner
 			atBankLeg = false;
 			supplyOwed = false;
 			postedSources = null;
+			// Chosen afresh from the bank. The leg picked before the trip was cheapest from
+			// wherever the run started, which is not where it is standing now.
+			committedRegion = -1;
 		}
 		log.debug("Supplies collected; routing to patches");
 		retarget();
@@ -1970,6 +2487,7 @@ public class RunPlanner
 			stops.clear();
 			announced.clear();
 			skippedRegions.clear();
+			committedRegion = -1;
 			runTypes.clear();
 			active = false;
 			atBankLeg = false;
@@ -2176,6 +2694,23 @@ public class RunPlanner
 	 */
 	private void collectForTheContract()
 	{
+		// Owed before it is asked whether it is wanted, and that ordering is the fix.
+		//
+		// needsSupplyTrip reads withdrawOutstanding, which is pushed once a tick from the
+		// withdraw list - so at this exact moment it still describes the run as it was BEFORE
+		// reviewContract widened its types a few lines ago. It cannot know about the contract's
+		// seed or its axe yet, answers no, and the old early return left with nothing recorded
+		// at all: no leg armed, and supplyOwed never set, so the deferred pickup had nothing to
+		// find either. A tree contract taken at the guild therefore never got a trip back for
+		// the axe its patch needed. Reported from play.
+		//
+		// Recording the debt first costs nothing if it turns out to be unwanted: every consumer
+		// re-asks needsSupplyTrip before acting on it.
+		synchronized (this)
+		{
+			supplyOwed = true;
+		}
+
 		boolean wantsSupplies = needsSupplyTrip();
 		if (!wantsSupplies)
 		{
@@ -2231,6 +2766,12 @@ public class RunPlanner
 		{
 			if (getRemaining().isEmpty())
 			{
+				// Out of supplies is not out of work. Asked before ending rather than after,
+				// because ending is not something a run recovers from.
+				if (divertForSupplies())
+				{
+					return;
+				}
 				log.debug("Run complete - every stop finished");
 				synchronized (this)
 				{
@@ -2281,6 +2822,83 @@ public class RunPlanner
 	}
 
 	/**
+	 * Sends a run that has run out of supplies back for another load, instead of ending it.
+	 *
+	 * <h2>Why the run ended a load early</h2>
+	 *
+	 * A stop finishes when nothing at it is actionable <b>or</b> the guide has no step for it —
+	 * see {@link #isComplete} and {@code nothingToDo}. That second clause is what stops a run
+	 * waiting forever on a patch nobody can act on, and it is also exactly what a part-filled
+	 * compost bin looks like when the produce has run out: still {@code FILLING}, still wanting
+	 * fifteen more pineapples, and {@code CompostBinPlan.addFillStep} deliberately silent because
+	 * a bin takes no notes and there are none in the pack. Every stop read complete, and the run
+	 * ended with the bins half full and five hundred pineapples in the bank. Reported from play.
+	 *
+	 * <p>Bins are simply where it shows first. A pack holds one load and the fill is un-noted and
+	 * unstackable, so <b>more than one trip is the normal case</b> rather than an edge — the
+	 * loadout has said so in as many words since {@code fillReason} learned to.
+	 *
+	 * <h2>Why here and not in reviewSupplies</h2>
+	 *
+	 * {@link #reviewSupplies()} re-arms the leg the moment its clause goes true, which is right
+	 * for a tool: without a spade there is nothing to do anywhere. Supplies are not like that.
+	 * Emptying a bin into the leprechaun frees the very slots that make the fill row outstanding
+	 * again, so the same eager test would have yanked the player back to the bank <i>while stood
+	 * at a bin</i> with produce in the pack and a bin waiting for it.
+	 *
+	 * <p>So this is asked at the one moment it cannot interrupt anything: the run has walked
+	 * every stop and each has said it wants nothing more. If a bank trip would change that
+	 * answer, the trip is the run's next leg rather than its epitaph.
+	 *
+	 * <p>{@link #suppliesOutstanding()} rather than a bin-shaped test of its own, because the
+	 * question is not about bins. It is "would going to a bank unblock anything", and that is a
+	 * question the withdraw list already answers for seeds, tools, payments and fills alike —
+	 * see {@code RunLoadout.anythingLeftToWithdraw}. Nothing unobtainable can loop it: a row goes
+	 * {@code MISSING} rather than {@code WITHDRAW} when the bank has none, so an empty bank ends
+	 * the run exactly as it does today.
+	 *
+	 * <p>A waived leg still outranks this. Skip step during the supply leg means no for the rest
+	 * of the run, and an escape hatch that reopens is not one.
+	 *
+	 * @return true when the run was sent back to a bank instead of ending
+	 */
+	private boolean divertForSupplies()
+	{
+		synchronized (this)
+		{
+			if (bankLegWaived || atBankLeg)
+			{
+				return false;
+			}
+		}
+
+		// Outside the lock, like every other store walk here: it reaches the loadout, the tool
+		// store and availability. See the ordering note at the top of the file.
+		if (!suppliesOutstanding())
+		{
+			return false;
+		}
+
+		synchronized (this)
+		{
+			// Re-checked under the lock, because the walk above ran without it.
+			if (bankLegWaived || atBankLeg)
+			{
+				return false;
+			}
+			supplyOwed = true;
+			atBankLeg = true;
+			runCompletePending = false;
+			// The next leg is the bank; the one after it is chosen from there.
+			committedRegion = -1;
+		}
+
+		log.info("Out of supplies rather than out of work - going back for another load");
+		retarget();
+		return true;
+	}
+
+	/**
 	 * Sends the run back for a tool it started with and no longer has.
 	 *
 	 * <h2>The gap this closes</h2>
@@ -2314,7 +2932,17 @@ public class RunPlanner
 		}
 
 		// Outside the lock, like every store walk here: RunPlanner -> Availability -> patches.
-		if (!tools.anyOnlyInBank(runTypesSnapshot()))
+		//
+		// Two sources, because ToolNeeds does not know about all of them. It covers the farming
+		// tools; the AXE is a RunLoadout row and always has been, so asking only that class left
+		// the loudest case invisible - a contract taken from Jane for a patch still holding last
+		// run's tree, where the guide asks for a chop and the axe is in the bank. Reported from
+		// play. toolOutstanding is the withdraw list's own answer, pushed once a tick.
+		//
+		// Being a poll rather than a one-shot is what makes this reliable where
+		// collectForTheContract is not: the pushed flag is a tick stale, and a tick later this
+		// asks again.
+		if (!tools.anyOnlyInBank(runTypesSnapshot()) && !toolOutstanding)
 		{
 			return;
 		}
@@ -2328,6 +2956,7 @@ public class RunPlanner
 			}
 			supplyOwed = true;
 			atBankLeg = true;
+			committedRegion = -1;
 		}
 
 		log.info("A tool the run needs is no longer on you or with the leprechaun - "
@@ -2386,6 +3015,7 @@ public class RunPlanner
 	public boolean onPatchChanged(FarmPatch patch)
 	{
 		boolean completedStop;
+		RunStop stop;
 		synchronized (this)
 		{
 			if (!active)
@@ -2393,7 +3023,7 @@ public class RunPlanner
 				return false;
 			}
 
-			RunStop stop = stops.get(patch.getRegion().getRegionId());
+			stop = stops.get(patch.getRegion().getRegionId());
 			if (stop == null || !stop.contains(patch))
 			{
 				return false;
@@ -2421,16 +3051,321 @@ public class RunPlanner
 			// now, rather than being quietly dropped.
 			pickUpDeferredSupplies();
 			retarget();
+			return true;
 		}
-		return completedStop;
+
+		// The stop is not finished, but the part of it you are standing in is.
+		//
+		// The rule above rests on "the answer cannot improve until you leave the region you are
+		// being routed to", which holds for every stop the game files and not for the one
+		// SharedStops builds: the Champions' Guild bush and the Lumbridge hops are one stop with
+		// fifty tiles between them. Picking the bush left the run with no route and no reason to
+		// ask for one until the player had walked most of the way to the hops by themselves and
+		// crossed a region boundary. Reported from play.
+		//
+		// hasArrivedAt is the test because it is now exactly this question - is there still work
+		// within ARRIVED_TILES of the player - so Falador keeps the optimisation this branch was
+		// written for: after the allotment, the flower and the herb are still where you stand
+		// and nothing is re-asked.
+		if (!hasArrivedAt(stop, playerLocation.getRegionId()))
+		{
+			log.debug("Work left at {} but none of it here; re-asking for a route",
+				stop.getName());
+			retarget();
+		}
+		return false;
 	}
 
 	/**
-	 * Hands every outstanding stop to the router, which picks the cheapest to reach.
+	 * How close to a patch counts as having arrived, in tiles.
 	 *
-	 * <p>This is the whole ordering strategy. Re-posting the shrinking set after each stop
-	 * gives greedy nearest-first over real travel cost, without this class knowing anything
-	 * about the map.
+	 * <p>Ten: close enough that the patch is on screen and a drawn line to it would be telling
+	 * you what you can already see, far enough that it does not blink out while you walk the last
+	 * few steps. The owner's number.
+	 */
+	private static final int ARRIVED_TILES = 10;
+
+	/**
+	 * Whether the player is at this stop, as opposed to merely inside its map region.
+	 *
+	 * <h2>A region is 64x64 tiles, and that was the whole of the old test</h2>
+	 *
+	 * Arriving anywhere in a remaining stop's region cleared the route. That is right where the
+	 * arrival point <b>is</b> the patches — Falador drops you among them, and a route line there
+	 * competes with the per-patch guidance rather than adding to it, which is the reason the
+	 * clear exists at all.
+	 *
+	 * <p>It is wrong wherever a region's arrival point is not its patches. Reported from play:
+	 * the Brimhaven spirit tree and the palm tree patch are both region 11058, at
+	 * {@code (2802,3203)} and {@code (2765,3213)} — <b>thirty-eight tiles apart</b>. Taking the
+	 * tree put the player "at" the stop, the route was wiped on the arrival tick, and the palm
+	 * tree was most of a screen away with nothing drawn. The line flashing first is the reply to
+	 * the pre-teleport request landing a tick late and being cleared behind it.
+	 *
+	 * <p>So arrival is measured against the patches themselves now. The same region-as-position
+	 * mistake as {@code GuideTracker.standingAt}'s edge tolerance and the highlight's varbit
+	 * match, and answerable for the same reason: patch positions are real, from
+	 * {@link PatchLocationStore}, and every region carries at least a wiki pin.
+	 *
+	 * <p><b>The seabed keeps its region test</b>, and has to. A coral nursery's patch is filed
+	 * under the Great Conch while it physically stands at 13194, so its stored position is the
+	 * ship rather than the seabed and a distance test would never fire — which is the exact bug
+	 * {@code claimsRegion} was added to fix. {@code UnderwaterApproach.isAtPatch} is that half,
+	 * kept whole.
+	 *
+	 * <p>Costs no extra routing. {@code GuideTracker.retargetIfMoved} only re-asks on a region
+	 * change, so nothing new is posted while the player walks around a stop; the route drawn
+	 * before arrival simply survives to the patch instead of being wiped at the boundary.
+	 *
+	 * <h2>And measured against the patches that still want doing</h2>
+	 *
+	 * Reported from play, between the Champions' Guild bush and the Lumbridge hops: no route
+	 * for the walk. {@link com.dooglemaps.data.SharedStops} deliberately folds those two regions
+	 * into one stop, because one teleport serves both — and every "a stop is one place" shortcut
+	 * in this class then reads the fifty tiles between them as no distance at all. Arriving at
+	 * the bush counted as arriving at the whole stop, so the route was wiped while half the work
+	 * was still most of Lumbridge away.
+	 *
+	 * <p>A finished patch is not somewhere you have arrived; it is somewhere you have left. So
+	 * the distance is measured only against patches that {@link #stillWanted}. On an ordinary
+	 * single-region stop this changes nothing — Falador's patches are all within the ten tiles
+	 * of each other, so whichever one is left is still "here" — and on the merged stop it is
+	 * the whole of the fix.
+	 */
+	private boolean hasArrivedAt(RunStop stop, int playerRegion)
+	{
+		WorldPoint at = playerLocation.get();
+		Set<String> blocked = nothingToDo;
+		Set<PatchImplementation> types = runTypesSnapshot();
+
+		boolean anythingLeftHere = false;
+		for (FarmPatch patch : stop.getPatches())
+		{
+			// The seabed keeps its region test whole, and ungated: a coral nursery's stored
+			// position is the ship, so this is the only test that can recognise standing among
+			// them at all. Narrowing it would be narrowing the one thing that works.
+			if (com.dooglemaps.data.UnderwaterApproach.isAtPatch(patch, playerRegion))
+			{
+				return true;
+			}
+
+			if (!stillWanted(patch, blocked, types))
+			{
+				continue;
+			}
+			anythingLeftHere = true;
+
+			if (at == null)
+			{
+				continue;
+			}
+			WorldPoint where = locations.getLocation(patch);
+			if (where != null && where.getPlane() == at.getPlane()
+				&& at.distanceTo(where) <= ARRIVED_TILES)
+			{
+				return true;
+			}
+		}
+
+		// Nothing here wants doing at all — which the stop being in `remaining` says should be
+		// impossible, so this is a race between the snapshot and the stop list rather than a
+		// state. Answer it the old way, over every patch: the failure mode to avoid is drawing
+		// a route to a stop the player is standing in, and the old test could not do that.
+		return anythingLeftHere ? false : standingAmong(stop, at);
+	}
+
+	/**
+	 * The first patch at this stop that still wants doing and that we know the way to.
+	 *
+	 * <p>{@code isKnown} for the same reason {@link #routeTargetsFor}'s dry half asks it: a patch
+	 * nobody has stood beside has a <i>region centre</i> rather than a location, and routing to a
+	 * guess when a known patch was available is how the Great Conch's calquat sent players to a
+	 * table on the deck. Null when there is no such patch, which the caller falls back on.
+	 */
+	@Nullable
+	private FarmPatch firstPatchStillWanted(RunStop stop)
+	{
+		Set<String> blocked = nothingToDo;
+		Set<PatchImplementation> types = runTypesSnapshot();
+		for (FarmPatch patch : stop.getPatches())
+		{
+			if (locations.isKnown(patch) && stillWanted(patch, blocked, types))
+			{
+				return patch;
+			}
+		}
+		return null;
+	}
+
+	/** The pre-{@link #stillWanted} arrival test, kept for the race noted in its caller. */
+	private boolean standingAmong(RunStop stop, @Nullable WorldPoint at)
+	{
+		if (at == null)
+		{
+			return false;
+		}
+		for (FarmPatch patch : stop.getPatches())
+		{
+			WorldPoint where = locations.getLocation(patch);
+			if (where != null && where.getPlane() == at.getPlane()
+				&& at.distanceTo(where) <= ARRIVED_TILES)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The stop the run has settled on travelling to, by region id, or -1 while undecided.
+	 *
+	 * <h2>Deciding once is the point</h2>
+	 *
+	 * Every outstanding stop is handed to the router and it picks the cheapest to reach: that is
+	 * the whole ordering strategy, and re-posting the shrinking set after each stop gives greedy
+	 * nearest-first over real travel cost without this class knowing anything about the map.
+	 *
+	 * <p>"Cheapest to reach" is measured <b>from where the player is</b>, though, and
+	 * {@code GuideTracker.retargetIfMoved} re-asks on every region change. So the answer moved
+	 * while the player was travelling to it: cross a boundary on the way to Weiss and Ardougne
+	 * might now be nearer, so the drawn line, the destination name, the via-hops and the
+	 * highlighted teleport all swung round to Ardougne — and a few regions later, back again.
+	 * With several run types ticked there is always another stop close enough to win a leg.
+	 * Reported from play as the route and the infobox changing direction constantly.
+	 *
+	 * <p>The instance case of exactly this was already patched once, in {@link #retarget}: a
+	 * house teleport flipping a Weiss run to the Ardougne bushes. That was the same bug wearing
+	 * a hat — the fix there was to stop posting garbage start points, which cured the loudest
+	 * instance of it and left the general one alone.
+	 *
+	 * <p>So the pick is made once and then kept. While this holds a region the router is sent
+	 * that stop and nothing else, which is also what makes the drawn line agree with the panel
+	 * by construction rather than by both happening to read the same reply. It is dropped when
+	 * the stop leaves {@link #getRemaining} — finished, or waved past — and the next leg is
+	 * chosen greedily all over again from wherever the player then is.
+	 *
+	 * <p>Guarded by this class's monitor like every other piece of run state.
+	 */
+	private int committedRegion = -1;
+
+	/**
+	 * Told which stop the drawn route ends at, so the run can stop re-deciding.
+	 *
+	 * <p>Pushed by the guide rather than read from the router here, and that is deliberate:
+	 * {@code GuideTracker.destinationStop} already turns the reply's landing points into a stop,
+	 * and it is careful about it — the payload may be the one target Shortest Path settled on or
+	 * an echo of every target it was handed, so it names a stop <b>only when exactly one
+	 * matches</b>. Duplicating that judgement here is how the panel and the route would come to
+	 * disagree about where the run is going. Same arrangement as {@link #setNothingToDo} and
+	 * {@link #setWithdrawOutstanding}.
+	 *
+	 * <p>Ignored during the supply leg, whose destination is a bank: the reply's landings can
+	 * brush a patch stop's region on the way, and latching onto that would have the run commit
+	 * to a stop it has not chosen yet and cannot see.
+	 *
+	 * @param regionId the destination stop's region, or -1 when the route does not name one
+	 */
+	public synchronized void commitDestination(int regionId)
+	{
+		if (regionId < 0 || atBankLeg)
+		{
+			// Not a decision either way. An unnamed route is the ordinary state for a second or
+			// two after every request, and forgetting the commitment on it would put the run
+			// straight back to re-deciding on every reply.
+			return;
+		}
+		if (committedRegion != regionId)
+		{
+			log.debug("Run committed to {} for this leg", regionId);
+			committedRegion = regionId;
+		}
+	}
+
+	/**
+	 * The stop the run has committed to travelling to, or null while it has not chosen one.
+	 *
+	 * <h2>The run's own answer, which the router's reply is only evidence for</h2>
+	 *
+	 * {@code GuideTracker.destinationStop} works the destination out of Shortest Path's reply —
+	 * the landing points it sends back with the path — and that reply is not always usable. It
+	 * can arrive with hops and no landing worth matching, it is discarded outright while the
+	 * player is instanced (see {@code ShortestPathIntegration.onPluginMessage}), and it is wiped
+	 * the moment a fresh route is asked for. Every one of those is a second or two where the leg
+	 * has no name.
+	 *
+	 * <p>That used to be harmless, because nothing much depended on the name. It is not harmless
+	 * now: the portal nexus row and the jewellery box line are matched <b>by destination</b>, so
+	 * a nameless leg silently stops highlighting the thing you are meant to click. Reported from
+	 * play as the Catherby teleport dropping out of the infobox and the nexus list on the way
+	 * into the house — and the log shows the leg was already <i>"(unnamed leg)"</i> five seconds
+	 * before the house was entered, which is what rules out the house itself being the cause.
+	 *
+	 * <p>Once the run has committed, it <b>knows</b> where it is going and does not have to infer
+	 * it. The commitment is only ever set from an unambiguous reply in the first place — see
+	 * {@link #commitDestination} — so preferring it adds no guessing, and it is dropped the
+	 * moment the stop leaves {@link #getRemaining()}, at which point the reply decides the next
+	 * leg exactly as before.
+	 */
+	@Nullable
+	public synchronized RunStop committedStop()
+	{
+		if (committedRegion < 0 || atBankLeg)
+		{
+			return null;
+		}
+		for (RunStop stop : getRemaining())
+		{
+			if (stop.getRegion().getRegionId() == committedRegion)
+			{
+				return stop;
+			}
+		}
+		return null;
+	}
+
+	/** Forgets the committed leg, so the next retarget picks greedily again. */
+	private synchronized void releaseCommitment()
+	{
+		committedRegion = -1;
+	}
+
+	/**
+	 * The stops to hand the router: the committed one alone, or all of them while undecided.
+	 *
+	 * <p>The commitment is dropped here rather than watched for elsewhere, because this is the
+	 * one place that already has the live remaining list in its hand — a stop that has finished
+	 * or been waved past is simply not in it, and both are the moment to choose again.
+	 */
+	private List<RunStop> committedLeg(List<RunStop> remaining)
+	{
+		int committed;
+		synchronized (this)
+		{
+			committed = committedRegion;
+		}
+		if (committed < 0)
+		{
+			return remaining;
+		}
+
+		for (RunStop stop : remaining)
+		{
+			if (stop.getRegion().getRegionId() == committed)
+			{
+				return Collections.singletonList(stop);
+			}
+		}
+
+		log.debug("The committed stop is done or skipped; choosing the next leg afresh");
+		releaseCommitment();
+		return remaining;
+	}
+
+	/**
+	 * Hands the router the leg the run is on, or every outstanding stop while it has yet to
+	 * choose one.
+	 *
+	 * <p>See {@link #committedRegion} for why choosing once and keeping it is the whole point.
 	 */
 	public void retarget()
 	{
@@ -2529,10 +3464,15 @@ public class RunPlanner
 		// route to the next stop is not just noise, it is an instruction competing with the one
 		// guided mode is giving. It also stopped Shortest Path drawing a teleport-and-bank
 		// route across the screen while the player was stood on ripe crops.
+		//
+		// claimsRegion, not the bare region id: the coral nurseries sit at 13194 while their
+		// stop is filed under the Great Conch at 12581, so standing among them read as being
+		// nowhere near them and the run drew a route back UP to the steps just walked down.
+		// Reported from play. See RunStop.claimsRegion.
 		int here = playerLocation.getRegionId();
 		for (RunStop stop : remaining)
 		{
-			if (stop.getRegion().getRegionId() == here)
+			if (hasArrivedAt(stop, here))
 			{
 				router.clear();
 				return;
@@ -2544,8 +3484,10 @@ public class RunPlanner
 		// patch tile is blocked — so the old single-tile target made every route end in its
 		// no-progress cutoff instead of an arrival, and the line spent most of a journey being
 		// recalculated rather than drawn. See PatchLocationStore.getRouteTargets.
+		//
+		// Only the leg being travelled, once the run has picked one. See committedRegion.
 		List<WorldPoint> targets = new ArrayList<>();
-		for (RunStop stop : remaining)
+		for (RunStop stop : committedLeg(remaining))
 		{
 			targets.addAll(routeTargetsFor(stop));
 		}
@@ -2555,28 +3497,114 @@ public class RunPlanner
 	/**
 	 * Where to send the router for one stop, diverting to a landward approach when it needs one.
 	 *
-	 * <h2>Only while the player is not already down there</h2>
+	 * <h2>The divert is the normal case, not the exception</h2>
 	 *
-	 * The coral nurseries are on the seabed and nothing can path to them, so the run asks for
-	 * the steps on the dock instead — see {@code UnderwaterApproach}. Kept as the target after
-	 * the dive, though, the router does exactly as it is told and plots a course back UP to the
-	 * dock, fairy rings and all. Reported from play. So the divert is asked of the player's
-	 * position too: on the dock it stands, and once they are underwater the patch speaks for
-	 * itself — at which point they are standing on it and no route is needed anyway.
+	 * The coral nurseries and the seaweed patches are on the seabed and nothing can path to them,
+	 * so the run asks for the steps on the dock — or the rowboat — instead; see
+	 * {@code UnderwaterApproach}.
+	 *
+	 * <p>This used to ask {@code UnderwaterApproach.stillWanted}, which diverted <b>only while
+	 * the player was standing in the approach's own region</b>. That is the one place the divert
+	 * buys nothing, and everywhere else — which is to say, on the entire journey there — the
+	 * router got the patch instead. A seabed patch has no learned location and never will
+	 * (its objects carry no patch varbit, which is why {@code UnderwaterApproach.objectsFor}
+	 * exists at all), so {@code PatchLocationStore} falls all the way through to the middle of
+	 * the region: for the Great Conch, tile (3168, 2400), which in the world is a table on the
+	 * ship's deck. Reported from play, in those words. The seaweed patches were worse still —
+	 * region 15008's centre is out at y 10272, unreachable, so the route simply failed.
+	 *
+	 * <p>What {@code stillWanted} was defending against is real: keep the dock as the target
+	 * after the dive and the router does exactly as it is told, plotting a course back UP,
+	 * fairy rings and all. Also reported from play. But "the player has gone under" and "the
+	 * player is not standing on the dock" are not the same statement, and reading the second as
+	 * the first is what cost the journey its route.
+	 *
+	 * <p>The honest test for having gone under is standing in the stop's own region, which is
+	 * how every other part of this class recognises arrival. It is also belt and braces:
+	 * {@link #retarget} clears the route outright when the player is in a remaining stop's
+	 * region, so this is a second lock on the same door rather than the only one.
+	 *
+	 * <h2>A stop can be half wet</h2>
+	 *
+	 * The Great Conch carries two coral patches <i>and</i> a calquat, so its stop is genuinely
+	 * two places: a seabed reached from one region and a tree standing on the deck. Both go in.
+	 * The router already picks the cheapest of everything it is handed, and once one of them is
+	 * done the set shrinks to the other — which is the same greedy shape the run uses between
+	 * stops, applied within one.
+	 *
+	 * <p>Note that the dry half is keyed off the first patch that <b>has</b> a location rather
+	 * than {@code RunStop.getRouteTargets}, which always asks patch zero: on the Great Conch
+	 * patch zero is a coral patch, so a calquat-only visit was being routed to the seabed's
+	 * region centre — the same table — with no underwater patch involved at all.
+	 *
+	 * <h2>And only a dry half we actually know the way to</h2>
+	 *
+	 * {@code isKnown}, because a patch nobody has stood beside and that no pin was written down
+	 * for has no location — it has a <i>region centre</i>, which
+	 * {@link PatchLocationStore#getLocation} hands out so that an unvisited patch is still
+	 * roughly routable. Roughly is fine when it is the only target.
+	 * Here it is not: it sits in a set beside a landward approach read off the client to the
+	 * tile, and the router picks the cheapest of what it is given without knowing that one of
+	 * them is a guess. The Great Conch's calquat has never been seen, its centre is (3168, 2400)
+	 * — a table on the deck — and the deck is nearer than the steps, so the guess won every
+	 * time. Reported from play, twice, in those words.
+	 *
+	 * <p>Dropping it loses nothing. The stop is still routed to, by the half whose location is
+	 * known, and arriving there is what teaches the plugin where the other half is.
 	 */
 	private java.util.List<WorldPoint> routeTargetsFor(RunStop stop)
 	{
+		// Insertion-ordered and de-duplicated: both coral patches share one set of steps, and
+		// handing the router the same tile twice is noise in a message that crosses plugins.
+		java.util.Set<WorldPoint> approaches = new LinkedHashSet<>();
+		FarmPatch dryLand = null;
 		for (FarmPatch patch : stop.getPatches())
 		{
 			com.dooglemaps.data.UnderwaterApproach.Approach approach =
 				com.dooglemaps.data.UnderwaterApproach.forPatch(patch);
-			if (com.dooglemaps.data.UnderwaterApproach.stillWanted(
-				approach, playerLocation.getRegionId()))
+			if (approach != null)
 			{
-				return java.util.Collections.singletonList(approach.getPoint());
+				approaches.addAll(approach.getRouteTargets());
+			}
+			else if (dryLand == null && locations.isKnown(patch))
+			{
+				dryLand = patch;
 			}
 		}
-		return stop.getRouteTargets(locations);
+
+		// Every ordinary stop: the patch here that still wants doing, not patch zero.
+		//
+		// RunStop.getRouteTargets answers with patch zero on the reasoning that "they are all in
+		// one region, so any of them lands the player in the right place, and walking between
+		// them is trivial once there". True of every stop the game files, and false of the one
+		// SharedStops builds: the Champions' Guild bush and the Lumbridge hops are one stop and
+		// fifty tiles apart. With the bush picked and the hops still to do, aiming at patch zero
+		// aimed at the tile the player was already standing on — Shortest Path finished the
+		// search instantly and drew nothing, which is exactly what "no route between them"
+		// looked like. Reported from play.
+		//
+		// Still one patch rather than every remaining one: the router only needs somewhere to
+		// finish, each target is a ring of about seventeen tiles, and this message crosses a
+		// plugin boundary. Falling back to patch zero keeps a stop routable in the race where
+		// nothing reads as wanted.
+		if (approaches.isEmpty())
+		{
+			FarmPatch wanted = firstPatchStillWanted(stop);
+			return wanted == null
+				? stop.getRouteTargets(locations)
+				: locations.getRouteTargets(wanted);
+		}
+
+		List<WorldPoint> targets = new ArrayList<>();
+		if (!stop.claimsRegion(playerLocation.getRegionId()))
+		{
+			targets.addAll(approaches);
+		}
+		if (dryLand != null)
+		{
+			targets.addAll(locations.getRouteTargets(dryLand));
+		}
+		return targets;
 	}
 
 	/**

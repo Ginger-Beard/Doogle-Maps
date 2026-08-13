@@ -123,6 +123,49 @@ public class RunStop
 	}
 
 	/**
+	 * Whether a player standing in this map region is standing at this stop.
+	 *
+	 * <h2>Why this is not simply the region id</h2>
+	 *
+	 * For every dry stop it is exactly that, and this reads as ceremony. The Great Conch is why
+	 * it is not: its patches are filed under region 12581, the ship the coral gardener stands
+	 * on, while two of them are coral nurseries on the seabed at 13194. Comparing the one id
+	 * meant a player standing among the nurseries was, as far as the run could tell, nowhere
+	 * near them — and three separate things then went wrong at once, each of them a bug report
+	 * of its own. See {@code UnderwaterApproach.Approach#getUnderwaterRegionId}.
+	 *
+	 * <p>Here rather than in each caller because there were three callers and they have to
+	 * agree: the guide's {@code stopAt}, which decides whether there are steps to give;
+	 * {@code RunPlanner.standingAtAStop}, which decides whether the run defers its bank trip;
+	 * and {@code RunPlanner.retarget}, which decides whether to draw a route at all. Two of the
+	 * three answering yes and one no is a worse state than all three answering no.
+	 *
+	 * <p>The stop's own region is tried first, so the common case costs one comparison and no
+	 * patch walk.
+	 */
+	public boolean claimsRegion(int regionId)
+	{
+		if (region.getRegionId() == regionId)
+		{
+			return true;
+		}
+		for (FarmPatch patch : patches)
+		{
+			// A patch standing in its own region rather than the stop's. Two ways that happens,
+			// and both mean the player is at this stop: a seabed patch reached from the stop's
+			// shore, and a region folded in because it shares this one's way in — see
+			// UnderwaterApproach and SharedStops. The check is the patch's own region rather
+			// than either table, so it covers both without asking which applies.
+			if (patch.getRegion().getRegionId() == regionId
+				|| com.dooglemaps.data.UnderwaterApproach.isAtPatch(patch, regionId))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * Where to route for this stop.
 	 *
 	 * <p>The first patch's position: they are all in one region, so any of them lands the

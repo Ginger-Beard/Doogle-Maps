@@ -593,6 +593,106 @@ public class PersistenceTest
 			reloaded.hasEverSeen(com.dooglemaps.data.Seed.SNAPDRAGON));
 	}
 
+	/**
+	 * A read that finds nothing changed still persists when it happened.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * {@code store()} refreshed {@code lastSeen} on every read but saved only when the
+	 * <b>counts</b> moved. Opening a bank whose seed counts match what is stored is the ordinary
+	 * case, not the rare one, so the fresh stamp lived in memory and never reached disk — and
+	 * died on the next restart.
+	 *
+	 * <p>Reported from play as a run planned at 12:42 announcing {@code bank 2h ago} when the
+	 * bank had been open at 12:31. The stamp on disk was from 10:03, the last time the counts
+	 * themselves changed. Cosmetic it is not: {@code GuideTracker.whereSeedsAre} and the
+	 * run-planned line quote this to say how far an answer can be trusted, so a stale stamp
+	 * discredits a good count.
+	 *
+	 * <p>Pinned through a reload rather than by inspecting the live store, because in memory the
+	 * stamp was always right — losing it on restart was the whole of the bug.
+	 */
+	@Test
+	public void anUnchangedReadStillRecordsWhenItHappened() throws Exception
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		int ranarr = com.dooglemaps.data.Seed.RANARR.getItemID();
+
+		SeedInventoryStore first = construct(SeedInventoryStore.class, client, configManager, gson);
+		first.load();
+		first.record(SeedSource.BANK.getContainerId(), container(ranarr, 5));
+		long firstSeen = first.getLastSeen(SeedSource.BANK);
+		assertTrue("fixture: the first read is stored", firstSeen > 0);
+
+		// A restart, then a bank open whose seed counts are identical to what was stored. This
+		// is the case the old guard skipped entirely.
+		SeedInventoryStore reloaded =
+			construct(SeedInventoryStore.class, client, configManager, gson);
+		reloaded.load();
+		assertEquals("fixture: the reload starts from the stored stamp",
+			firstSeen, reloaded.getLastSeen(SeedSource.BANK));
+		reloaded.record(SeedSource.BANK.getContainerId(), container(ranarr, 5));
+
+		// And a second restart, which is what proves the stamp was written rather than merely
+		// held. Nothing about the counts changed at any point.
+		SeedInventoryStore afterUnchangedRead =
+			construct(SeedInventoryStore.class, client, configManager, gson);
+		afterUnchangedRead.load();
+		assertEquals("the counts are untouched", 5,
+			afterUnchangedRead.getCount(com.dooglemaps.data.Seed.RANARR, SeedSource.BANK));
+		assertTrue("an unchanged read still says the bank was looked at",
+			afterUnchangedRead.getLastSeen(SeedSource.BANK) >= firstSeen);
+	}
+
+	/**
+	 * A store that has never read its blob must not write over it.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * {@code save()} serialises the whole in-memory map with no merge, and {@code load()}
+	 * tolerates having nothing to read — at the login screen there is no RuneScape profile, so
+	 * {@code applyJson} is skipped and {@code resetForLoad()} has already emptied the map.
+	 * Anything writing in that window persisted the emptiness.
+	 *
+	 * <p>Found in a live profile: {@code patchLocations} held six entries against a hundred and
+	 * seven observed patches, and all six were in the region of the last login.
+	 * {@code PatchLocationCapture} is the one writer driven by an event that fires that early —
+	 * {@code GameObjectSpawned}, as the login scene builds — so it was the store that lost its
+	 * data, every client start, for good. Unlike {@code PatchStateStore} it has no backfill to
+	 * regenerate from.
+	 *
+	 * <p>Pinned on {@code PatchLocationStore} because that is where it was found, but the guard
+	 * is in the base class and covers every store that inherits it.
+	 */
+	@Test
+	public void aStoreThatNeverLoadedDoesNotOverwriteWhatIsStored() throws Exception
+	{
+		com.dooglemaps.data.FarmPatch patch =
+			com.dooglemaps.data.FarmingWorldData.getPatches(
+				com.dooglemaps.data.PatchImplementation.HERB).get(0);
+
+		// A full blob, as a previous session left it.
+		com.dooglemaps.route.PatchLocationStore first =
+			construct(com.dooglemaps.route.PatchLocationStore.class, configManager, gson);
+		first.load();
+		first.record(patch, new net.runelite.api.coords.WorldPoint(3054, 3312, 0), 1, 1);
+		assertTrue("fixture: the position was stored", first.isExact(patch));
+
+		// A fresh client. This one writes before it has read anything - the login-scene window.
+		com.dooglemaps.route.PatchLocationStore early =
+			construct(com.dooglemaps.route.PatchLocationStore.class, configManager, gson);
+		com.dooglemaps.data.FarmPatch other =
+			com.dooglemaps.data.FarmingWorldData.getPatches(
+				com.dooglemaps.data.PatchImplementation.ALLOTMENT).get(0);
+		early.record(other, new net.runelite.api.coords.WorldPoint(3055, 3313, 0), 1, 1);
+
+		// The stored copy is untouched, so the next proper load still finds the old position.
+		com.dooglemaps.route.PatchLocationStore reloaded =
+			construct(com.dooglemaps.route.PatchLocationStore.class, configManager, gson);
+		reloaded.load();
+		assertTrue("the unread store did not overwrite the blob", reloaded.isExact(patch));
+	}
+
 	/** Seeds leaving the inventory for any other reason must not be credited to the box. */
 	@Test
 	public void plantingSeedsDoesNotPutThemInTheSeedBox() throws Exception

@@ -155,6 +155,7 @@ public class HarvestedPatchStillGuidedTest
 			groups,
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
 			runOptions,
+			Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
 			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 
 		tracker = trackerWith(planner, stateStore, timer, playerLocation, selection, seeds,

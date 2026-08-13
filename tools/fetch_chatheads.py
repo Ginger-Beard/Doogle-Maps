@@ -79,8 +79,21 @@ def api(**params):
 # Listed here rather than fetched by hand so she is still resolved, named and recorded in
 # chatheads.tsv by the same path as the gardeners: a wiki lookup by id, which fails loudly if
 # she ever moves rather than leaving a silently wrong face bundled.
+#
+# The coral farmer is here for the other half of the same reason. He IS a patch's farmer, so
+# farmer_constants() already finds him - but only as TORTUGAN_CORAL_FARMER, 15061, which is the
+# id FarmingWorldData carries and the one the wiki does not declare. The lookup therefore failed
+# and he has been the one gardener in the game with no name and no face; FarmerIconTest carries
+# him in KNOWN_MISSING and FarmerIcon's class note calls him out by name.
+#
+# Grouping him lets the page be found by whichever of the three ids the wiki does declare, and
+# writes the sprite under all three - which matters here more than it does for Jane, because the
+# id a player actually meets depends on an unlock: _UNLOCKED, 15063, once the nurseries are open.
+# Reported from play with that id. Until this is next run he is named nowhere; the identity half
+# is handled at runtime by FarmerVariants, which does not need a name.
 EXTRA_NPC_GROUPS = [
     ("FARMING_GUILD_MASTER", "FARMING_GUILD_MASTER_1OP", "FARMING_GUILD_MASTER_2OP"),
+    ("TORTUGAN_CORAL_FARMER", "TORTUGAN_CORAL_FARMER_LOCKED", "TORTUGAN_CORAL_FARMER_UNLOCKED"),
 ]
 
 

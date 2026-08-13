@@ -520,12 +520,101 @@ public class LeprechaunErrandOrderTest
 		return stop;
 	}
 
+	/** A stop holding a patch and the compost bin that stands beside it. */
+	private static RunStop stopWithABin(FarmPatch patch)
+	{
+		FarmPatch bin = com.dooglemaps.data.FarmingWorldData
+			.getPatches(com.dooglemaps.data.PatchImplementation.COMPOST).get(0);
+		RunStop stop = Mockito.mock(RunStop.class);
+		when(stop.getName()).thenReturn("Falador");
+		when(stop.getPatches()).thenReturn(java.util.Arrays.asList(patch, bin));
+		when(stop.getServiced()).thenReturn(new java.util.HashSet<>());
+		return stop;
+	}
+
+	/** Puts every patch the tracker asks about into a given state. */
+	private void binIs(com.dooglemaps.data.CropState state)
+	{
+		com.dooglemaps.timer.PatchProjection projection =
+			Mockito.mock(com.dooglemaps.timer.PatchProjection.class);
+		when(projection.getCropState()).thenReturn(state);
+		when(growthTimer.project(Mockito.any(), Mockito.any())).thenReturn(projection);
+	}
+
+	/**
+	 * The leaving note does not offer a crop the bin beside you is waiting for.
+	 *
+	 * <h2>The two instructions cannot both be followed</h2>
+	 *
+	 * A bin refuses noted items, so noting the watermelons makes them useless to the bin standing
+	 * next to them. Reported from play in those words — <i>"I'm getting prompted to note my
+	 * watermelon instead of using it on the bin"</i> — and being later in the step list is no
+	 * protection when the crop is gone by the time the bin's step is reached.
+	 */
+	@Test
+	public void theLeavingNoteLeavesTheBinsFodderAlone() throws Exception
+	{
+		binIs(com.dooglemaps.data.CropState.EMPTY);
+		when(compostRun.allowsFodder(ItemID.WATERMELON)).thenReturn(true);
+		carrying(ItemID.WATERMELON, 19);
+
+		List<GuideStep> steps = new ArrayList<>();
+		bundleAt(steps, stopWithABin(somePatch()));
+
+		assertEquals("the bin wants them; the leprechaun can have what is left later",
+			0, steps.stream()
+				.filter(step -> step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+				.count());
+	}
+
+	/** A crop no bin wants is noted exactly as before, so the tidy-up still happens. */
+	@Test
+	public void anotherCropIsStillNoted() throws Exception
+	{
+		binIs(com.dooglemaps.data.CropState.EMPTY);
+		when(compostRun.allowsFodder(ItemID.WATERMELON)).thenReturn(true);
+		carrying(ItemID.WATERMELON, 19, ItemID.UNIDENTIFIED_RANARR, 6);
+
+		List<GuideStep> steps = new ArrayList<>();
+		bundleAt(steps, stopWithABin(somePatch()));
+
+		GuideStep note = stepWith(steps, GuideAction.NOTE_AT_LEPRECHAUN);
+		assertEquals("the ranarrs are nobody's compost",
+			ItemID.UNIDENTIFIED_RANARR, note.getItemId());
+	}
+
+	/** And with the bin full, the fodder is just produce again. */
+	@Test
+	public void aBinWithNoRoomDoesNotHoldTheNoteBack() throws Exception
+	{
+		binIs(com.dooglemaps.data.CropState.GROWING);
+		when(compostRun.allowsFodder(ItemID.WATERMELON)).thenReturn(true);
+		carrying(ItemID.WATERMELON, 19);
+
+		List<GuideStep> steps = new ArrayList<>();
+		bundleAt(steps, stopWithABin(somePatch()));
+
+		assertEquals(ItemID.WATERMELON,
+			stepWith(steps, GuideAction.NOTE_AT_LEPRECHAUN).getItemId());
+	}
+
+	private void bundleAt(List<GuideStep> steps, RunStop stop) throws Exception
+	{
+		Method method = GuideTracker.class.getDeclaredMethod(
+			"appendLeprechaunErrands", List.class, RunStop.class);
+		method.setAccessible(true);
+		method.invoke(tracker, steps, stop);
+	}
+
 	/**
 	 * A tracker with everything mocked except what the errands actually read.
 	 *
 	 * <p>Only {@code CarriedItems} matters here — the errand list is a function of the pack and
 	 * nothing else — so the rest are mocks rather than fixtures.
 	 */
+	/** The bin choices; the leaving note now asks whether a bin still wants the crop. */
+	private static com.dooglemaps.state.CompostRunStore compostRun;
+
 	private static GuideTracker trackerWith(CarriedItems carried,
 		com.dooglemaps.timer.GrowthTimer growthTimer) throws Exception
 	{
@@ -543,6 +632,11 @@ public class LeprechaunErrandOrderTest
 			else if (types[i] == com.dooglemaps.timer.GrowthTimer.class)
 			{
 				args[i] = growthTimer;
+			}
+			else if (types[i] == com.dooglemaps.state.CompostRunStore.class)
+			{
+				args[i] = compostRun =
+					Mockito.mock(com.dooglemaps.state.CompostRunStore.class);
 			}
 			else
 			{

@@ -137,7 +137,12 @@ public class GuideInventoryOverlay extends Overlay
 		// means "whenever you like". Asked from play: a non-required look for a non-required
 		// action. The wash is already transparent (ItemHighlight.FILL_ALPHA); only the hue
 		// changes.
-		if (config.dropEmptyBuckets() && tracker.getStatus().isRunning())
+		//
+		// Off entirely while the guide is asking for buckets, which is a compost bin - see
+		// GuideStatus.wantsEmptyBuckets. Nothing takes its place: an empty bucket at a bin is
+		// not the click to make either, the bin is.
+		GuideStatus status = tracker.getStatus();
+		if (config.dropEmptyBuckets() && status.isRunning() && !status.wantsEmptyBuckets())
 		{
 			highlightInInventory(graphics, net.runelite.api.gameval.ItemID.BUCKET_EMPTY,
 				DROP_BUCKET_RED);
@@ -157,7 +162,13 @@ public class GuideInventoryOverlay extends Overlay
 		// or are turned back. In the guide colour rather than an ambient one, because unlike
 		// the bucket and the box this is not "when convenient": it is the next thing to do
 		// before the steps, and it disappears the moment the piece is equipped.
-		if (tracker.getStatus().isRunning() && tracker.underwaterApproach() != null)
+		//
+		// Which is exactly why it waits until the player is AT the shore. This asked the broad
+		// underwaterApproach(), true from the first tick of any run with a seaweed or coral stop
+		// on it - so the suit sat lit in the guide colour, the colour that means "this is the
+		// step", through every herb patch and bank trip of a run whose dive was several
+		// teleports away. Reported from play. See GuideTracker.underwaterApproachAtHand.
+		if (tracker.getStatus().isRunning() && tracker.underwaterApproachAtHand() != null)
 		{
 			for (int piece : com.dooglemaps.data.UnderwaterApproach.gearToWear())
 			{
@@ -314,7 +325,8 @@ public class GuideInventoryOverlay extends Overlay
 			}
 		}
 		log.info("Seed box fill highlight: OFF - box holds {} kinds (limit {}), loose seeds in "
-			+ "the pack: {}", GuideMenuSwap.kindsInTheBox(seeds), GuideMenuSwap.SEED_BOX_KINDS,
+			+ "the pack: {}", GuideMenuSwap.kindsInTheBox(seeds),
+			com.dooglemaps.data.SeedBox.KINDS,
 			loose.length() == 0 ? "none" : loose.toString().trim());
 	}
 
@@ -583,6 +595,17 @@ public class GuideInventoryOverlay extends Overlay
 	}
 
 	/**
+	 * The separator inside the row-scan cache key.
+	 *
+	 * <p>A NUL, because it cannot occur in a widget name and so cannot make two different
+	 * lists of rows collide into one key. Written as an escape rather than as the byte
+	 * itself: with the raw character in the source, {@code file} reports this class as
+	 * binary and plain {@code grep} silently matches nothing in it, which is a poor trap to
+	 * leave for the next person searching the overlay.
+	 */
+	private static final String SEPARATOR = "\u0000";
+
+	/**
 	 * Rows naming any of the wanted strings, rescanned once a tick; earlier wants win.
 	 *
 	 * <p>Cached because the search is expensive and render is per frame: it walks up to six levels
@@ -598,7 +621,7 @@ public class GuideInventoryOverlay extends Overlay
 	private java.util.List<Rectangle> matchingRows(java.util.List<String> wanted)
 	{
 		int tick = client.getTickCount();
-		String key = String.join(" ", wanted);
+		String key = String.join(SEPARATOR, wanted);
 		if (tick != scannedRowTick || !key.equals(scannedRowFor))
 		{
 			scannedRowTick = tick;

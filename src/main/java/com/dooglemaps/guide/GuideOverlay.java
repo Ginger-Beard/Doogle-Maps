@@ -100,6 +100,20 @@ public class GuideOverlay extends Overlay
 			return null;
 		}
 
+		// Nothing is drawn against a scene that is being rebuilt, and every cached object found
+		// in the old one is dropped on the spot.
+		//
+		// Belt and braces beside isStillInScene, and the same fix PlayerHouse carries for the
+		// same reason: the scans below run once a tick and this draws every frame, so between a
+		// reload and the next tick the caches hold objects whose scene data has been freed and
+		// reused. isStillInScene catches the ones that end up outside the new scene's bounds;
+		// this catches the rest by not asking about them at all.
+		if (client.getGameState() != net.runelite.api.GameState.LOGGED_IN)
+		{
+			forgetScannedObjects();
+			return null;
+		}
+
 		Color colour = config.guideHighlightColour();
 
 		// The way down to an underwater patch, whenever the run is heading for one and the
@@ -114,6 +128,26 @@ public class GuideOverlay extends Overlay
 		// SeaweedSpores.
 		highlightSeaweedSpores(graphics);
 
+		// The container the run has named, whenever it has named one.
+		//
+		// This lived inside the "no current step" branch below, alongside the bank leg, on the
+		// reasoning that the supply leg is the stop with no patch work. That is true of the bank
+		// leg and not of the other way a run sends you to a container: a contract taken from
+		// Jane produces a FETCH_SEED step, and a step is exactly what makes the branch below
+		// unreachable. So the sentence said "withdraw your irit seed from the seed vault here"
+		// and the vault standing in front of the player stayed dark. Reported from play twice -
+		// the second time after the sources set had been fixed, which only made the answer
+		// available to a branch that was never reached.
+		//
+		// Guarded on the set being non-empty, which matters: marks() reads an empty set as "a
+		// bank, we are not sure what for" and would light every booth in the room.
+		java.util.Set<com.dooglemaps.state.SeedSource> named =
+			tracker.getStatus().getSupplySources();
+		if (!named.isEmpty())
+		{
+			highlightSupplyPoints(graphics, colour);
+		}
+
 		GuideStep step = tracker.getCurrentStep();
 		if (step == null)
 		{
@@ -123,7 +157,9 @@ public class GuideOverlay extends Overlay
 			// The supply leg is a stop with an instruction — "collect your supplies" — and the
 			// panel has been saying so all along while the scene stayed dark. The one thing you
 			// actually have to click was the one thing never marked.
-			if (tracker.getStatus().isAtBankLeg())
+			// The named case is handled above; this is the bank leg that has not worked out
+			// what it is collecting yet, where marks() falls back to every bank and no vault.
+			if (tracker.getStatus().isAtBankLeg() && named.isEmpty())
 			{
 				highlightSupplyPoints(graphics, colour);
 			}
@@ -145,8 +181,23 @@ public class GuideOverlay extends Overlay
 			{
 				highlightRouteObject(graphics, colour);
 			}
+
+			// And the patches you are travelling TO, once they come into view.
+			//
+			// Patch highlighting used to live entirely below this early return, so it began only
+			// when the stop produced a step — which is to say, only once the run considered you
+			// arrived. Walking the last stretch with the route drawn and every patch dark was
+			// reported from play right after arrival stopped meaning "somewhere in the region";
+			// the two are the same moment seen twice, and this is the half that was missing.
+			//
+			// Outline only, never the tile marker: the fallback exists so a patch you are stood
+            // at cannot silently fail to highlight, and a marker for something still a hundred
+			// tiles away would be drawn behind the wall of whatever is between you and it. Out of
+			// scene means out of sight, and out of sight is nothing to draw.
+			highlightPatchesAhead(graphics, tracker.getStatus().getPatchesAhead(), colour);
 			return null;
 		}
+
 
 		if (step.highlightsPatch())
 		{
@@ -170,6 +221,84 @@ public class GuideOverlay extends Overlay
 		}
 		return null;
 	}
+
+	/**
+	 * Outlines every patch of the stop being travelled to that is currently in view.
+	 *
+	 * <h2>One scan for the lot, and why that is not an optimisation</h2>
+	 *
+	 * {@link #findPatchObjects} caches a single patch per tick — it was written for the current
+	 * step, and there is only ever one of those. Calling it in a loop therefore misses on every
+	 * patch after the first and rescans the whole 104x104 scene, four object kinds a tile, for
+	 * each of them. Per frame, not per tick: at Falador that is four full scene walks fifty times
+	 * a second, to draw an outline that has not moved.
+	 *
+	 * <p>So this walks the scene once and buckets what it finds. The cost is one scan a tick
+	 * regardless of how many patches the stop has, which is what the single-patch cache was
+	 * already paying.
+	 *
+	 * <p>Outline only, never {@link #markTile}: the tile fallback exists so a patch you are
+	 * standing at cannot silently fail to highlight, and a marker for something a hundred tiles
+	 * off would be drawn through whatever stands between. Out of scene is out of sight, and out
+	 * of sight is nothing to draw.
+	 */
+	private void highlightPatchesAhead(Graphics2D graphics,
+		List<com.dooglemaps.data.FarmPatch> ahead, Color colour)
+	{
+		if (ahead.isEmpty())
+		{
+			return;
+		}
+
+		int tick = client.getTickCount();
+		if (tick != aheadTick)
+		{
+			aheadTick = tick;
+			aheadObjects = new ArrayList<>();
+			Set<Long> seen = new HashSet<>();
+			Scene scene = client.getTopLevelWorldView().getScene();
+			Tile[][][] tiles = scene.getTiles();
+			int plane = client.getTopLevelWorldView().getPlane();
+			for (Tile[] column : tiles[plane])
+			{
+				for (Tile tile : column)
+				{
+					if (tile == null)
+					{
+						continue;
+					}
+					for (com.dooglemaps.data.FarmPatch patch : ahead)
+					{
+						for (GameObject object : tile.getGameObjects())
+						{
+							consider(object, patch, seen, aheadObjects);
+						}
+						consider(tile.getGroundObject(), patch, seen, aheadObjects);
+						consider(tile.getDecorativeObject(), patch, seen, aheadObjects);
+						consider(tile.getWallObject(), patch, seen, aheadObjects);
+					}
+				}
+			}
+		}
+
+		if (aheadObjects.isEmpty())
+		{
+			return;
+		}
+
+		fillAndOutline(graphics, mergedTiles(aheadObjects), colour);
+		if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+		{
+			for (TileObject object : aheadObjects)
+			{
+				outlineObject(object, colour);
+			}
+		}
+	}
+
+	/** The travel-leg scan's per-tick cache; see {@link #highlightPatchesAhead}. */
+	private List<TileObject> aheadObjects = Collections.emptyList();
+	private int aheadTick = -1;
 
 	/**
 	 * Outlines the steps down to an underwater patch the run is heading for.
@@ -203,17 +332,7 @@ public class GuideOverlay extends Overlay
 
 		for (TileObject object : approachObjects)
 		{
-			Shape clickbox = object.getClickbox();
-			if (clickbox != null)
-			{
-				OverlayUtil.renderPolygon(graphics, clickbox, colour,
-					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
-			}
-			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
-			{
-				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
-					config.guideOutlineFeathering());
-			}
+			drawObject(graphics, object, colour);
 		}
 	}
 
@@ -372,8 +491,7 @@ public class GuideOverlay extends Overlay
 			// this traces the crops themselves, and the renderer takes one object at a time.
 			for (TileObject object : objects)
 			{
-				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
-					config.guideOutlineFeathering());
+				outlineObject(object, colour);
 			}
 		}
 		else
@@ -382,7 +500,7 @@ public class GuideOverlay extends Overlay
 			Area boxes = new Area();
 			for (TileObject object : objects)
 			{
-				Shape clickbox = object.getClickbox();
+				Shape clickbox = isStillInScene(object) ? clickboxOf(object) : null;
 				if (clickbox != null)
 				{
 					boxes.add(new Area(clickbox));
@@ -390,6 +508,152 @@ public class GuideOverlay extends Overlay
 			}
 			fillAndOutline(graphics, boxes, colour);
 		}
+	}
+
+	/**
+	 * Draws one object the way every highlight in here draws one: clickbox, then model.
+	 *
+	 * <p>Four call sites had this same eight lines copied out, which is how the guard below came
+	 * to be missing from all of them at once.
+	 */
+	private void drawObject(Graphics2D graphics, TileObject object, Color colour)
+	{
+		if (!isStillInScene(object))
+		{
+			return;
+		}
+
+		Shape clickbox = clickboxOf(object);
+		if (clickbox != null)
+		{
+			OverlayUtil.renderPolygon(graphics, clickbox, colour,
+				ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
+		}
+
+		if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
+		{
+			outlineObject(object, colour);
+		}
+	}
+
+	/**
+	 * Whether this object is still standing in the scene we are about to draw.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"when a patch/tree/idk gets highlighted, ALL of the NPCs in the area start flickering
+	 * with the same colour highlighting, rapidly, extremely rapidly. Including my own player
+	 * character."</i>
+	 *
+	 * <p>The same stale object behind the overlay NPEs (§0f), on the frames where it does not
+	 * have the decency to throw. Every object drawn here comes from a scan that ran on a
+	 * <b>tick</b>, and this renders on a <b>frame</b>, so after a scene reload the caches hold
+	 * objects whose scene data the client has already freed and reused. {@code getClickbox} walks
+	 * that memory and raises a {@code NullPointerException} — the loud case, and the one that got
+	 * noticed first. {@code ModelOutlineRenderer} walks it too, and it does not throw: it renders
+	 * an outline from whatever now occupies those scene slots, which is the NPCs standing around
+	 * you and your own player. Different symptom, one cause; the flicker is per-frame because
+	 * what is in the reused memory changes every frame.
+	 *
+	 * <p>{@code LocalPoint.isInScene} is the cheap honest test — an object that no longer has a
+	 * place in the current scene is one nothing should be asked about. Deliberately not a
+	 * try/catch: the outline path was never throwing, so catching was never going to help it.
+	 */
+	private boolean isStillInScene(TileObject object)
+	{
+		try
+		{
+			return standsInTheScene(object);
+		}
+		catch (RuntimeException stale)
+		{
+			noteStaleObject(stale);
+			return false;
+		}
+	}
+
+	/** The test itself, without the logging, so it can be asked of a plain object in a test. */
+	static boolean standsInTheScene(TileObject object)
+	{
+		LocalPoint at = object.getLocalLocation();
+		return at != null && at.isInScene();
+	}
+
+	/**
+	 * An object's clickbox, or null when the client cannot build one for it.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * Every object drawn here comes from a scan that ran on a tick, and this renders on a frame,
+	 * so an object can outlive the scene it was found in by up to ~30 frames. Asking a stale one
+	 * for its clickbox throws a {@code NullPointerException} <i>inside the client</i> — the
+	 * traces bottom out in {@code fb.getClickbox} building a model against freed scene data, with
+	 * nothing of ours null anywhere in them. So the {@code clickbox != null} check these call
+	 * sites already had was dead weight: the failure is a throw, not a null.
+	 *
+	 * <p>And it cost far more than the one highlight. {@code OverlayRenderer.safeRender} catches
+	 * per overlay, not per object, so one stale house portal took the route object and every
+	 * patch ahead down with it for that frame — twenty-five bursts of it in a week of logs.
+	 *
+	 * <p>{@link com.dooglemaps.state.PlayerHouse} closes most of the window by dropping its
+	 * furniture on {@code LOADING} rather than on the next tick. This is what remains: the scans
+	 * in this class have the same one-tick staleness and no event to hang that on, and there is
+	 * no API for asking a {@link TileObject} whether its scene is still there.
+	 */
+	@Nullable
+	private Shape clickboxOf(TileObject object)
+	{
+		try
+		{
+			return object.getClickbox();
+		}
+		catch (RuntimeException stale)
+		{
+			noteStaleObject(stale);
+			return null;
+		}
+	}
+
+	/** {@link #clickboxOf}'s counterpart: the model outline walks the same freed data. */
+	private void outlineObject(TileObject object, Color colour)
+	{
+		if (!isStillInScene(object))
+		{
+			return;
+		}
+
+		try
+		{
+			outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
+				config.guideOutlineFeathering());
+		}
+		catch (RuntimeException stale)
+		{
+			noteStaleObject(stale);
+		}
+	}
+
+	/**
+	 * Says it once and then shuts up.
+	 *
+	 * <p>These arrive at frame rate in bursts — a scene reload produces one per object per frame
+	 * until the next tick — so an unthrottled warn would bury the log it is meant to be visible
+	 * in. Worth saying at all because a <i>persistent</i> version of this would mean the object
+	 * is not stale but wrong, which is a bug of ours and would otherwise now be silent.
+	 */
+	private boolean staleReported;
+
+	private void noteStaleObject(RuntimeException cause)
+	{
+		if (staleReported)
+		{
+			log.debug("Skipped a stale scene object", cause);
+			return;
+		}
+		staleReported = true;
+		log.warn("Skipped a scene object the client could no longer draw - it was found on an "
+			+ "earlier tick and the scene has been rebuilt since. The highlight is missing for "
+			+ "this frame only. Further occurrences log at debug.", cause);
 	}
 
 	/**
@@ -463,8 +727,7 @@ public class GuideOverlay extends Overlay
 		// nursery only by luck. Its objects are known by id instead — read off the client at
 		// the spot — which is the same escape hatch the tile fallback below is, one step
 		// earlier and far more precise. Reported from play as the nursery patches never
-		// highlighting. See UnderwaterApproach.objectsFor: the two nurseries cannot be told
-		// apart from the objects alone, so both are marked.
+		// highlighting.
 		if (scannedObjects.isEmpty())
 		{
 			List<TileObject> byId = new ArrayList<>();
@@ -472,6 +735,27 @@ public class GuideOverlay extends Overlay
 				: com.dooglemaps.data.UnderwaterApproach.objectsFor(patch.getImplementation()))
 			{
 				byId.addAll(scanForObjectId(objectId));
+			}
+
+			// ...and then narrowed to the one the step actually names.
+			//
+			// This used to mark both nurseries, on the stated grounds that they "cannot be told
+			// apart from the objects alone" — true when it was written, because a seabed patch
+			// had no location and the two ids do not map one-to-one onto the two patches.
+			// Reported from play as both being lit at once. They are five tiles apart and both
+			// positions are now shipped (MeasuredPatchLocations 12581.4771 and .4772), so the
+			// question the objects could not answer is answered by where they stand. Same shape
+			// as objectIsThisPatch, which resolves the varbit collisions on dry land.
+			//
+			// Falling back to all of them when the position is unknown, because a nursery lit
+			// twice is a smaller failure than one never lit at all — which is the bug this
+			// whole branch exists to fix.
+			List<TileObject> mine = nearestTo(byId,
+				locations.isKnown(patch) ? locations.getLocation(patch) : null);
+			if (!mine.isEmpty())
+			{
+				scannedObjects = mine;
+				return scannedObjects;
 			}
 			if (!byId.isEmpty())
 			{
@@ -492,6 +776,62 @@ public class GuideOverlay extends Overlay
 				patch.getDisplayName());
 		}
 		return scannedObjects;
+	}
+
+	/**
+	 * How close an object has to stand to a patch's own tile to be that patch's.
+	 *
+	 * <p>Two, because a coral nursery is 2x2 and the pair are five tiles apart — so this cannot
+	 * reach the neighbour, and cannot miss its own. Deliberately not "whichever is nearest": with
+	 * one nursery out of scene, nearest-wins would confidently outline the wrong one.
+	 */
+	private static final int OWN_OBJECT_TILES = 2;
+
+	/**
+	 * The objects standing at this patch, out of a set found by object id alone.
+	 *
+	 * <p>Empty when the position is unknown or nothing is close enough, which the caller reads as
+	 * "no opinion" and falls back on marking all of them.
+	 */
+	private static List<TileObject> nearestTo(List<TileObject> objects, @Nullable WorldPoint at)
+	{
+		if (at == null)
+		{
+			return Collections.emptyList();
+		}
+
+		List<TileObject> mine = new ArrayList<>();
+		for (TileObject object : objects)
+		{
+			WorldPoint where = object.getWorldLocation();
+			if (where != null && where.getPlane() == at.getPlane()
+				&& where.distanceTo(at) <= OWN_OBJECT_TILES)
+			{
+				mine.add(object);
+			}
+		}
+		return mine;
+	}
+
+	/**
+	 * Drops every cached scan, so nothing found in a freed scene is drawn against the next one.
+	 *
+	 * <p>The tick stamps are reset rather than only the lists: a stamp left matching would have
+	 * the next scan on that tick skipped, and an empty list is the one answer worse than a stale
+	 * one — it reads as "this patch has no object", which is a claim.
+	 */
+	private void forgetScannedObjects()
+	{
+		aheadObjects = Collections.emptyList();
+		aheadTick = -1;
+		approachObjects = Collections.emptyList();
+		approachTick = -1;
+		scannedObjects = Collections.emptyList();
+		scannedTick = -1;
+		scannedPatchKey = null;
+		supplyObjects = new ArrayList<>();
+		routeObjects = Collections.emptyList();
+		routeObjectTick = -1;
 	}
 
 	/** The last patch a miss was logged for, so it is said once rather than every tick. */
@@ -605,18 +945,7 @@ public class GuideOverlay extends Overlay
 				continue;
 			}
 
-			Shape clickbox = object.getClickbox();
-			if (clickbox != null)
-			{
-				OverlayUtil.renderPolygon(graphics, clickbox, colour,
-					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
-			}
-
-			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
-			{
-				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
-					config.guideOutlineFeathering());
-			}
+			drawObject(graphics, object, colour);
 		}
 	}
 
@@ -848,17 +1177,7 @@ public class GuideOverlay extends Overlay
 
 		for (TileObject object : routeObjects)
 		{
-			Shape clickbox = object.getClickbox();
-			if (clickbox != null)
-			{
-				OverlayUtil.renderPolygon(graphics, clickbox, colour,
-					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
-			}
-			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
-			{
-				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
-					config.guideOutlineFeathering());
-			}
+			drawObject(graphics, object, colour);
 		}
 	}
 
@@ -1006,7 +1325,11 @@ public class GuideOverlay extends Overlay
 		// See GuideTracker.liveTransports.
 		List<String> transports = tracker.liveTransports();
 		List<TileObject> furniture = house.matchingFurniture(name ->
-			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)));
+			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)
+				// ...and, for a spirit tree, only to somewhere a tree has actually been grown.
+				// Reported from play: the guild's tree was outlined for a hop through it while
+				// its patch sat at weeds. See GuideTracker.spiritTreeUsableFor.
+				&& tracker.spiritTreeUsableFor(hop)));
 
 		// The destination gets a say before the way out does. The route's hops are Shortest
 		// Path's plan, and its model has no nexus — so a destination the player's own
@@ -1019,7 +1342,8 @@ public class GuideOverlay extends Overlay
 		{
 			String destination = hint.getDestination();
 			furniture = house.matchingFurniture(name ->
-				HouseTeleports.furnitureServesHop(name, destination));
+				HouseTeleports.furnitureServesHop(name, destination)
+					&& tracker.spiritTreeUsableFor(destination));
 		}
 
 		// justEntered guards the arrival tick, where this overlay's live isInside() is a tick
@@ -1061,18 +1385,7 @@ public class GuideOverlay extends Overlay
 
 		for (TileObject object : furniture)
 		{
-			Shape clickbox = object.getClickbox();
-			if (clickbox != null)
-			{
-				OverlayUtil.renderPolygon(graphics, clickbox, colour,
-					ColorUtil.colorWithAlpha(colour, FILL_ALPHA), graphics.getStroke());
-			}
-
-			if (config.guideHighlightStyle() == DoogleMapsConfig.GuideHighlightStyle.OUTLINE)
-			{
-				outlineRenderer.drawOutline(object, config.guideOutlineThickness(), colour,
-					config.guideOutlineFeathering());
-			}
+			drawObject(graphics, object, colour);
 		}
 	}
 
@@ -1086,20 +1399,21 @@ public class GuideOverlay extends Overlay
 	 */
 	private void highlightNpcById(Graphics2D graphics, Color colour, int npcId)
 	{
-		// Through the farmer table's grouping, not the raw id alone. One person can be several
-		// ids — Guildmaster Jane is three, and the step carries her chathead id while the NPC
-		// in the guild stands as an _1OP/_2OP variant, so the exact compare outlined nobody.
-		// Farmers already groups every alias under one name; ids it does not know fall back to
-		// the exact match, so every single-id farmer behaves as before.
-		String alias = com.dooglemaps.data.Farmers.getName(npcId);
+		// Through the variant table, not the raw id alone. One person can be several ids —
+		// Guildmaster Jane is three, and the step carries her chathead id while the NPC in the
+		// guild stands as an _1OP/_2OP variant, so the exact compare outlined nobody.
+		//
+		// This used to group by shared NAME, which covers Jane and cannot cover the coral
+		// farmer: the generator has never found a wiki page for him, so he has no name to
+		// share and the step outlined nobody at the nurseries. FarmerVariants keeps the name
+		// path and adds the ids that have been seen in play.
 		for (NPC npc : client.getTopLevelWorldView().npcs())
 		{
 			if (npc == null)
 			{
 				continue;
 			}
-			if (npc.getId() != npcId
-				&& (alias == null || !alias.equals(com.dooglemaps.data.Farmers.getName(npc.getId()))))
+			if (!com.dooglemaps.data.FarmerVariants.same(npcId, npc.getId()))
 			{
 				continue;
 			}
@@ -1149,6 +1463,40 @@ public class GuideOverlay extends Overlay
 	}
 
 	/** Keeps an object if it carries this patch's varbit and has not already been counted. */
+	/**
+	 * Whether a scene object is <b>this</b> patch: the right varbit, in the right region.
+	 *
+	 * <h2>A varbit id is not unique across the map</h2>
+	 *
+	 * The same numbers repeat everywhere — {@code FARMING_TRANSMIT_A} alone is shared by forty-one
+	 * patches, so the Champions' Guild bush is {@code 12596.4771} and Lumbridge's hops patch is
+	 * {@code 12851.4771}. Matching on the varbit alone lights whichever same-numbered patch happens
+	 * to be in the loaded scene, which need not be the one the step is about.
+	 *
+	 * <p>Reported from play on a harvest-only bush run, and worse than cosmetic. At the Champions'
+	 * Guild, with the step correctly reading <i>"harvest the cotton"</i> fifty tiles away in
+	 * Lumbridge, the picked-clean <b>whiteberry bush</b> lit up instead. On a harvest-only run the
+	 * click that bush invites is the one that clears it — destroying the plant the run exists to
+	 * keep.
+	 *
+	 * <p>Newly reachable rather than newly wrong. {@code SharedStops} folds Lumbridge into the
+	 * Champions' Guild stop, so for the first time a current step can name a patch that is not the
+	 * one underfoot. The scan was always ambiguous; the merge is what walked into it.
+	 *
+	 * <p>The same disambiguation {@code PatchLocationCapture} makes when it learns a position:
+	 * resolve the region first, match the varbit within it. The seabed needs no exception here —
+	 * nothing on it carries a patch varbit at all, which is why {@link #findPatchObjects} falls
+	 * through to {@code UnderwaterApproach.objectsFor}.
+	 *
+	 * <p>Static and parameterised so it can be tested without a scene, like
+	 * {@link #routeObjectMatch}.
+	 */
+	static boolean objectIsThisPatch(int objectVarbitId, int objectRegionId, FarmPatch patch)
+	{
+		return objectVarbitId == patch.getVarbit()
+			&& objectRegionId == patch.getRegion().getRegionId();
+	}
+
 	private void consider(@Nullable TileObject object, FarmPatch patch, Set<Long> seen,
 		List<TileObject> found)
 	{
@@ -1158,7 +1506,8 @@ public class GuideOverlay extends Overlay
 		}
 
 		ObjectComposition definition = client.getObjectDefinition(object.getId());
-		if (definition == null || definition.getVarbitId() != patch.getVarbit())
+		if (definition == null || !objectIsThisPatch(definition.getVarbitId(),
+			object.getWorldLocation().getRegionID(), patch))
 		{
 			return;
 		}

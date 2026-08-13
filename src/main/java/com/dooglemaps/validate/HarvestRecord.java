@@ -58,6 +58,17 @@ public class HarvestRecord
 	/** False when the patch was left standing rather than picked clean. */
 	private boolean completed;
 
+	/**
+	 * Whether the drop that empties the patch has already been recognised.
+	 *
+	 * <p>A patch empties once, so the bundled drop can only happen once, and saying so is what
+	 * keeps {@link #isTheLastPick} safe on snape grass — it pays 82 to pick and 82 to plant, so
+	 * its emptying drop of 164 is arithmetically indistinguishable from two ordinary picks
+	 * landing on the same tick. Without this, a second such drop would be read as a second
+	 * emptying and invent a pick that never happened.
+	 */
+	private boolean clearAwardCounted;
+
 	HarvestRecord(FarmPatch patch, Produce produce, CompostTier compost, int farmingLevel,
 		FarmingBonuses bonuses, long startedAt)
 	{
@@ -80,8 +91,11 @@ public class HarvestRecord
 	 *
 	 * <p>Counted drop by drop rather than by dividing the total. Division looks tidier and is
 	 * worse: it compounds every source of error over a long harvest, and it silently absorbs
-	 * experience that was never a pick at all. One drop is one pick, so counting them is both
-	 * more accurate and harder to be wrong about.
+	 * experience that was never a pick at all. Counting drops is both more accurate and harder
+	 * to be wrong about.
+	 *
+	 * <p>One drop is one pick everywhere but the end of a harvest, where the pick that empties
+	 * the patch arrives bundled with the award for clearing it — see {@link #isTheLastPick}.
 	 */
 	void addXp(double xp)
 	{
@@ -92,6 +106,46 @@ public class HarvestRecord
 		{
 			itemsFromXp++;
 		}
+		else if (isTheLastPick(xp))
+		{
+			clearAwardCounted = true;
+			itemsFromXp++;
+		}
+	}
+
+	/**
+	 * Whether this drop is the pick that emptied the patch, which arrives bundled.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The last pick of an allotment, hops or herb patch does not pay a pick's worth. It pays a
+	 * pick <i>plus</i> the award {@link CropYieldModel#clearedPatchXp} describes, in one drop:
+	 * avantoe pays 62, 62, 62 and then 116, which is its 61.5 to pick and its 54.5 to plant.
+	 * {@link #isOnePick} rejects that, so the last pick of every harvest counted from experience
+	 * was silently lost.
+	 *
+	 * <p>Which is the whole herb run, because a herb goes into the sack rather than the inventory
+	 * and experience is the only thing counting it. Every ranarr row in the harvest CSV is a herb
+	 * short, and the residual it leaves is the giveaway: 56.2 to 57.6 across thirty-five patches,
+	 * against a ranarr's 27 + 30.5 = 57.5. The same for avantoe at 115.0 to 116.8 against 116, and
+	 * cadantine at 226.6 against 226.5. A crop whose items <i>are</i> visible - watermelon, snape
+	 * grass - was unharmed, because {@link #getItemsHarvested} takes the larger of the two counts
+	 * and the inventory had it right all along. That is why this reads as an experience bug and
+	 * not a yield one, and why it hid for so long.
+	 *
+	 * <p>Only for crops that pay per item. A flower's single drop is the whole patch and not a
+	 * pick of anything, so counting it as one would claim a limpwurt patch gave one root.
+	 */
+	private boolean isTheLastPick(double xp)
+	{
+		Seed seed = Seed.forProduce(produce);
+		if (clearAwardCounted || perPickXp() <= 0 || !CropYieldModel.paysHarvestPerItem(seed))
+		{
+			return false;
+		}
+
+		double cleared = bonuses.applyOutfit(CropYieldModel.clearedPatchXp(seed));
+		return cleared > 0 && isOnePick(xp, perPickXp() + cleared);
 	}
 
 	/**
@@ -209,8 +263,32 @@ public class HarvestRecord
 	/**
 	 * Experience the harvest alone should have paid.
 	 *
-	 * <p>Planting and check-health are excluded because neither happens during a harvest, so
-	 * a mismatch here points at the per-pick figure specifically.
+	 * <p>Check-health is excluded because it does not happen during a harvest, so a mismatch here
+	 * points at the per-pick figure specifically.
+	 *
+	 * <h2>Planting is not excluded, because the game does not exclude it</h2>
+	 *
+	 * It used to be, on the reasonable-sounding grounds that planting is not harvesting. The
+	 * player's own experience drops say otherwise: an allotment, hops, herb or flower patch pays
+	 * nothing when the seed goes in and pays the planting figure at the moment it is picked clean.
+	 * See {@link CropYieldModel#clearedPatchXp} for the four families and the drops behind them.
+	 * Not modelling it made nearly every replanted patch report a mismatch — watermelon by 48.5,
+	 * snape grass by 82, cotton by 72 — with the residual sitting on the planting constant to a
+	 * tenth, over seventy patches for watermelon alone.
+	 *
+	 * <h2>Why the prediction moved and not the record</h2>
+	 *
+	 * The alternative was to keep predicting the picks and stop {@link #addXp} from attributing
+	 * that award to the harvest. That is the wrong half to change twice over. {@code xpGained} is
+	 * the <i>observation</i> — it is what the CSV means by actual_xp, and the experience really
+	 * did arrive, on that tick, for that patch, because that patch was harvested. Editing an
+	 * observation to agree with a model is how a validation log stops being evidence. And the
+	 * award only exists at all because the patch was cleared, so the prediction can say exactly
+	 * when to expect it: {@link #completed} is the same fact, already recorded.
+	 *
+	 * <p>Which is also why a patch left standing predicts none of it, and that is the control
+	 * group rather than an assumption: the eighteen incomplete watermelon rows in the CSV sit
+	 * within a point of their prediction, fourteen of them within a tenth.
 	 */
 	public double getPredictedXp()
 	{
@@ -219,10 +297,13 @@ public class HarvestRecord
 		{
 			return 0;
 		}
+
+		Seed seed = Seed.forProduce(produce);
 		// Flowers pay once for the patch however many items come out, so the count of items
 		// picked is the wrong multiplier for them.
-		return bonuses.applyOutfit(
-			xp.getHarvestXp()
-				* CropYieldModel.xpHarvestsFor(Seed.forProduce(produce), getItemsHarvested()));
+		double harvest = xp.getHarvestXp()
+			* CropYieldModel.xpHarvestsFor(seed, getItemsHarvested());
+		double cleared = completed ? CropYieldModel.clearedPatchXp(seed) : 0;
+		return bonuses.applyOutfit(harvest + cleared);
 	}
 }

@@ -5,10 +5,12 @@ marked. Built by tracing `RunPlanner` → `GuideTracker` → `GuidePlan` → `Pa
 
 Read the red nodes first. They were the states a run could enter and not leave.
 
-> **Status: all four fixed.** Completion is derived from patch state and polled once a tick, so a
+> **Status: all four fixed**, and a fifth found later — a run *ending* a load early, out of the
+> same exemption machinery. Completion is derived from patch state and polled once a tick, so a
 > stop ends when nothing at it is actionable rather than when every patch has been watched being
 > planted — and a patch the guide has no step for is skipped rather than waited on, with the panel
-> saying which and why.
+> saying which and why. See *A fifth stall* below, and *What is still open*, which is no longer
+> empty.
 
 ---
 
@@ -32,7 +34,7 @@ flowchart TD
     Outstanding -- yes --> Withdraw
     Outstanding -- "no — including items you own nowhere" --> Travel
 
-    Travel["<b>Travel</b><br/>Shortest Path routes to whichever<br/>remaining stop is cheapest"]
+    Travel["<b>Travel</b><br/>Shortest Path picks the cheapest<br/>remaining stop — <i>once</i>, and the<br/>run then keeps it: RunPlanner.committedRegion"]
     Travel --> Work
 
     Work["<b>At a stop</b><br/>order patches: contract first,<br/>then nearest — GuideTracker.sortedByDistance"]
@@ -51,13 +53,36 @@ flowchart TD
     More -- no --> Lep["Leprechaun errands:<br/>note crops, return empty buckets"]
     Lep --> Remaining{"Stops left?"}
     Remaining -- yes --> Travel
-    Remaining -- no --> Done([Run ends])
+    Remaining -- no --> Refill{"Would a bank trip<br/>unblock anything?<br/><i>divertForSupplies</i>"}
+    Refill -- "yes — another load" --> SupplyLeg
+    Refill -- no --> Done([Run ends])
 
     Tick["<i>reviewProgress, every tick</i><br/>re-checks completion in case<br/>no varbit change announced it"] -.-> More
 
     classDef normal fill:#1e293b,stroke:#64748b,color:#e2e8f0
     class Start,Done,Plan,SupplyLeg,Withdraw,Travel,Work,Patch,Lep,JaneStep,Tick normal
 ```
+
+### Two loops the diagram now has that it did not
+
+**The run can go back for another load.** A pack holds one load, and a compost bin's fill is
+un-noted and unstackable — fifteen items for a normal bin, thirty for the guild's — so *more
+than one trip is the normal case for bins rather than an edge*. "Every stop is finished" and
+"there is nothing left to do" stopped being the same statement, and the run used to end on the
+first one: bins half full, five hundred pineapples still in the bank. `divertForSupplies` asks
+the withdraw list one question at the moment the run would otherwise end — *would going to a
+bank unblock anything* — and makes the trip the next leg instead of the epitaph. Nothing
+unobtainable can loop it: a row goes `MISSING` rather than `WITHDRAW` when the bank has none.
+
+**The destination is chosen once per leg, not once per region crossing.** Handing Shortest Path
+every outstanding stop and letting it pick the cheapest is still the ordering strategy — but
+"cheapest" is measured from where the player is, and `GuideTracker.retargetIfMoved` re-asks on
+every region change. So the answer moved *while travelling to it*: cross a boundary on the way
+to Weiss and Ardougne might now be nearer, taking the drawn line, the destination name, the
+via-hops and the highlighted teleport with it. With several run types ticked there is always
+another stop close enough to win a leg. The pick is now latched until the stop leaves
+`getRemaining()` — finished, or waved past — and the next leg is chosen greedily all over again
+from wherever the player then is.
 
 ## One patch, click by click
 
@@ -151,9 +176,37 @@ Completion is **derived**, matching the half that already worked:
 - `RunPlanner.reviewProgress()`, polled each tick, catches a stop that finished without any varbit
   transition to announce it. Fixes stall 4.
 
+### A fifth stall, found later, and the same shape as the other four
+
+**The run ended a load early.** Not a stall — the opposite, a run finishing when it should not
+have — but it came out of the same machinery, so it belongs here. A stop is complete when
+nothing at it is actionable *or the guide has no step for it*, and that second clause is exactly
+what a part-filled compost bin looks like once the produce runs out: still `FILLING`, still
+wanting fifteen more, and `CompostBinPlan.addFillStep` deliberately silent because a bin takes
+no notes and there were none in the pack. Every stop read complete and the run deactivated.
+
+The exemption clause is right and is what fixed stalls 2 and 3; what was missing was asking, at
+the moment it produces a finished run, whether the reason everything is exempt is one a bank
+trip would fix. See `divertForSupplies` above.
+
 ### What is still open
 
-Nothing in this loop, as far as I can tell.
+Two things in this loop, both about a stop knowing where it is.
+
+**A stop can stand in more ground than it is filed under.** `RunStop.claimsRegion` now covers
+the case that bit: the coral nurseries are region 13194 while their stop is filed under the
+Great Conch at 12581, so every "am I there yet" test compared the wrong pair of numbers and
+answered no — the run routed the player back *up* the steps they had just come down, produced
+no step for the patches in front of them, and opened at a bank with weedy patches underfoot.
+Fixed for the underwater families, whose seabed is written down in `UnderwaterApproach`. It is
+not a general answer: any other patch whose region differs from its `FarmRegion` would fail the
+same way and there is no test that would notice.
+
+**A stop can be two places.** The Great Conch carries two coral nurseries on the seabed *and* a
+calquat on the deck, one `RunStop` because their varbits arrive together. Routing hands the
+router both and lets it pick, but the guide will list the calquat's steps while you are
+underwater, and the stop cannot complete until you surface for it. Splitting the stop is the
+obvious fix and has not been done.
 
 The gap this section used to name — a contract taken mid-run having no way to fetch its seed — is
 closed. The cause was not the missing machinery it looked like: `RunPlanner.selectedForThisRun`

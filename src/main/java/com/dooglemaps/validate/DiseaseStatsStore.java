@@ -273,10 +273,13 @@ public class DiseaseStatsStore extends com.dooglemaps.state.ProfileJsonStore
 		return stats;
 	}
 
-	public synchronized void clear()
+	public void clear()
 	{
-		stats.clear();
-		sickThisCycle.clear();
+		synchronized (this)
+		{
+			stats.clear();
+			sickThisCycle.clear();
+		}
 		save();
 	}
 

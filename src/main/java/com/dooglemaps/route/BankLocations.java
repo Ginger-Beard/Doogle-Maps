@@ -93,6 +93,16 @@ final class BankLocations
 	 */
 	static final WorldPoint SEED_VAULT = new WorldPoint(1243, 3740, 0);
 
+	/**
+	 * The Farming Guild's bank chest — the one bank that shares a room with the vault.
+	 *
+	 * <p>Named separately from its seeded entry because a trip that wants the vault wants
+	 * <i>this</i> bank rather than the nearest one; see {@code RunPlanner.supplyTargetsFor}. It is
+	 * in {@link #SEEDED} as well and always has been, so relying on it needs no unlock and no
+	 * learned sighting.
+	 */
+	static final WorldPoint FARMING_GUILD_BANK = new WorldPoint(1253, 3741, 0);
+
 	private BankLocations()
 	{
 	}

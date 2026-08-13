@@ -1962,3 +1962,192 @@ boxed always can. Saplings never count; the box will not take one.
 - **Fail signature**: a left-click that fills an already-full box → the box's contents are
   stale in `SeedInventoryStore` (it is derived from deltas, not read; see `docs/NOTES.md`),
   not a fault in the rule. Check the box's tab in the panel against what it actually holds.
+
+### 1a-liv. Compost bins: emptying, refilling, and the run coming back for more — new, four fixes
+
+Four bugs reported across one session, all on the compost-bin line. They interlock, so the
+useful test is one bin run end to end rather than four separate checks.
+
+Setup: tick **Compost**, pick a fill (pineapple), leave **Add volcanic ash** on, and have at
+least one bin with finished compost in it — the guild's big bin is the sharpest case, since it
+takes thirty un-noted items against twenty-eight slots.
+
+- **Pass — a finished bin is not silent.** Stand at a closed bin the clock says is done. The
+  guide asks for the ash (if you carry it), then the buckets, then the emptying. It used to say
+  nothing at all: bins are marked *health-check-required* in the generated data, so
+  `GrowthTimer` never promotes them out of `GROWING`, while `RunPlanner` counted them ready and
+  routed you there anyway.
+- **Pass — the bin gets refilled.** After the compost goes to the leprechaun, the bin is empty
+  and the guide asks you to fill it. Previously the loadout packed no produce for a bin it was
+  about to empty, so the step had nothing to name and the stop quietly finished.
+- **Pass — the run goes back for another load.** With more bins than one pack can fill, the run
+  does **not** end when every stop reads complete: it routes to a bank, you withdraw, and it
+  comes back. *Fail signature:* the run deactivates with bins standing open and produce still in
+  the bank — `divertForSupplies` is not firing, or the fill row is `MISSING` rather than
+  `WITHDRAW` (check the bank actually holds the fill).
+- **Pass — you can leave the bank.** The fill row asks for what fits in the pack you have, not
+  twenty-seven, and goes `HAVE` when the pack is full so the supply leg closes. *Fail
+  signature:* parked at the bank being told to withdraw produce that will not fit — that is the
+  exact bug, and it means `fillBudget()` is measuring the inventory's size rather than its free
+  slots.
+- **Pass — one free slot is enough.** Deliberately fill your pack to a single free slot at a
+  ready bin. The guide fetches one bucket, you fill it, and then it tells you to **hand the
+  compost to the leprechaun** rather than asking for another bucket you cannot hold. Repeat
+  until the bin is empty. *Fail signature:* "withdraw 1 empty bucket" with no free slot, forever.
+- **Pass — empty buckets stop being litter at a bin.** With **Drop empty buckets** on, buckets
+  are lit red with Drop under the left click for the whole run — *except* while the guide is
+  asking you to empty a bin, where they are the tool the step needs. Check the red goes away and
+  the left click reverts, and that it comes back once the bin is being refilled.
+
+### 1a-lv. Diving gear is asked for at the shore, not for the whole run — new, a fix
+
+- **Pass**: with a seaweed or coral stop on the run, the suit in your pack is **not** lit and the
+  travel panel does **not** say "wear your diving gear" while you are doing herbs three teleports
+  away. Both appear when you are standing at the rowboat (Fossil Island) or at the steps (Great
+  Conch), and disappear the moment the pieces are worn.
+- **Fail signature**: lit from the first tick of the run. `underwaterApproach()` is the broad
+  test and is correct for the *outline* — the steps are not in the scene anywhere else, so it
+  draws nothing — but the highlight and the panel line must use `underwaterApproachAtHand()`.
+- **Known judgement call**: it uses the **exact** approach region, not neighbouring ones. Being
+  lenient would light the prompt one region out, and Fossil Island's rowboat region is
+  diagonally adjacent to the hardwood patches — so the prompt would return while you are doing
+  hardwoods, which is the same complaint. If you would rather it appeared as you walk in, that
+  is a one-line change.
+
+### 1a-lvi. The coral nurseries — new, the largest untested piece here
+
+The nurseries are region **13194** while their stop is filed under the Great Conch, **12581**.
+Three tests compared the one id, so all of this failed together.
+
+- **Pass — you are routed to the steps.** A coral run points at the **Steps** (id 57904, at
+  3272, 2463), not at a table on the ship's deck. *Fail signature:* routed to roughly
+  (3168, 2400) — that is region 12581's centre, which is what `PatchLocationStore` falls back to
+  for a patch it can never learn the position of.
+- **Pass — standing among the nurseries, there is no route at all** and the guide gives you the
+  patches in front of you. *Fail signature:* a route back **up** the steps you just came down.
+- **Pass — a run begun down there does not open at a bank.** With the compost bins also ticked
+  and their fill outstanding, "standing on work beats going shopping" applies. *Fail signature:*
+  sent to a bank with weedy coral patches underfoot.
+- **Pass — the calquat is not reached by diving.** A Great Conch run with only the calquat
+  actionable routes to the deck, not to the steps.
+
+### 1a-lvii. Paying Chet, per patch — new, and only half verified
+
+Chet is the coral farmer. He is three NPC ids and the world data carries the one you never meet
+(`TORTUGAN_CORAL_FARMER`, 15061); the unlocked id is **15063**. He charges **per patch** and his
+right-click menu reads:
+
+```
+Pay (East) / Talk-to / Pay (West) / Trade
+```
+
+- **Pass — the payment is recorded.** Pay for a patch and its row gains a shield;
+  `patchProtected` goes true in the profile. *Fail signature:* it stays false, the loadout keeps
+  asking for five giant seaweed per patch, and — because a payment item is something the run
+  cannot proceed without — the run keeps diverting to a bank for seaweed you already spent.
+  **Workaround while this is broken:** untick Coral in the protection selection.
+- **Pass — it is recorded against the right patch.** Pay East, and *East* gains the shield. The
+  old rule read the menu position (third option meant patch 0) and would have credited West's
+  payment to East, which is the failure that never shows itself.
+- **Pass — the log now says which gate failed.** `Protection recorded: <patch> paid for, from
+  chathead <id>` on success, and on a payment accepted with nothing matched, a line naming the
+  chathead, the last Pay option and its age. If a payment does not take, that line is the answer.
+- **Not yet verified — the left-click swap.** With **Left-click the right Pay option** on, and a
+  pay step current for the *West* patch, Chet's left click should be "Pay (West)" rather than the
+  "Pay (East)" his menu opens on. Reported as not working and untested since. Before assuming
+  the matcher is wrong, check what the panel was actually asking for at the time: the swap only
+  fires while a `PAY_FARMER` step **for that patch** is current, and is a deliberate no-op
+  otherwise.
+- **Still missing**: Chet has no name or portrait in the sidebar until
+  `tools/fetch_chatheads.py` is re-run. See `DEVELOPMENT.md`.
+
+### 1a-lviii. The route stops changing its mind mid-journey — new, a fix
+
+With several run types ticked, the run used to re-pick its destination on every region change,
+because "cheapest to reach" is measured from where you are standing. The line, the destination
+name, the via-hops and the highlighted teleport all swung between stops as you travelled.
+
+- **Pass**: start a run with three or more stops. Whichever stop the panel names first stays
+  named for the whole journey, however many regions you cross or teleports you take. The pick is
+  made again — greedily, from where you now are — only once that stop is finished or skipped.
+- **Pass**: **Skip step** on a travel leg still moves you on. Note it *drops that stop for the
+  rest of the run* rather than merely re-deciding; the place comes back next run.
+- **Fail signature**: the destination changes while you are in transit. Also worth knowing: with
+  one target instead of many, an unreachable stop now means **no line at all** rather than a line
+  to some other stop. That is honest, and it is only safe because the underwater routing above
+  was fixed in the same session.
+
+### 1a-lix. Compost bins split in two: the guild's, and the seven you feed by hand — new
+
+The largest behaviour change to the bins so far, and none of it is verified. Reported from play
+as *"I'm just running around with a full inventory of pineapples… and I have to re-bank anyways."*
+
+**What changed.** The **Compost** run tick now means the Farming Guild's big bin **only** — it is
+the one bin with a bank in its own region (~14–20 tiles; Falador is ~65 and Ardougne ~96, and
+Civitas, Canifis and Prifddinas have no bank the plugin ships at all). The other seven are no
+longer a run line. They are fed from the harvest you are already holding when you finish the
+allotments beside them, and are serviced only where the run already goes.
+
+Setup: **Compost tab → Fill bins from your harvest**, then under *Compost these* pick the crops you
+are willing to spare. The list is **the eight an allotment grows** and nothing else — potato,
+onion, cabbage, tomato, sweetcorn, strawberry, watermelon, snape grass. Watermelon and snape grass
+make supercompost; the rest make ordinary.
+
+Narrowed from "everything a bin accepts" with the owner: nobody bins their herbs or limpwurt
+roots, and everything else compostable grows somewhere a bin is not — fodder is only ever offered
+at the stop you are standing in, and a bin stands beside the allotments. A tick against a
+pineapple could never have fired.
+
+- **Pass — the seven are never banked for.** Tick Allotment and Compost, open the bank: there is
+  no pineapple row for Falador, Catherby or anywhere else. *Fail signature:* a `BIN_FILL` row for
+  a bin that is not the guild's.
+- **Pass — the bin takes what you just picked.** At Falador, harvest the allotments, then the
+  guide offers the bin your watermelons. The step comes **after** the patches, not before —
+  `binsFirst` now sorts a bin waiting to be fed to the back and a bin with compost in it to the
+  front. *Fail signature:* "fill the bin" offered on arrival, before anything is harvested.
+- **Pass — a crop you did not pick is never binned.** With watermelon allowed and snape grass
+  not, a pack of snape grass produces no fill step at that bin.
+- **Pass — the leprechaun does not eat the fodder.** When the pack fills mid-harvest, the guide
+  does **not** say "note the watermelons" while a bin here still wants them — noting makes them
+  useless to a bin, which refuses noted items. It should offer the bin instead. *This is the
+  subtlest thing to check and the one most likely to be wrong.* A crop the bins do not want (or
+  with fodder off) still gets the ordinary note step.
+- **Pass — no small bin is ever a reason to travel.** Untick Allotment, leaving only Compost:
+  the run goes to the Farming Guild and nowhere else, even with finished compost sitting in the
+  Falador bin. That is the accepted cost of the split.
+- **Pass — a token amount is not offered.** Holding four watermelons at an empty bin produces no
+  step; the floor is a third of the bin. A **banked** fill has no floor — every pineapple you
+  deliberately withdrew should go in.
+- **Pass — the list is allotment crops only.** No herbs, no limpwurt roots, no pineapples or
+  coconuts. Any fodder pick stored before this narrowed simply stops being returned, so an old
+  selection heals itself rather than needing clearing.
+- **Pass — the tomato trap is called out.** Sparing tomatoes and nothing else warns that a bin
+  filled only with them makes rotten tomatoes rather than compost. Tomatoes are still offered,
+  because they are an allotment crop and the choice is the player's.
+
+### 1a-lx. The guild bin's two sources — new
+
+The guild has allotments, the bin and a bank in one region, so it can be supplied either way. The
+choice is made before you set off:
+
+| Guild allotments | Bank row |
+|---|---|
+| planted with an allowed crop, ready this trip | **none** — the harvest feeds it |
+| still growing | today's row |
+| planted with something not on the fodder list | today's row |
+| fodder switched off | today's row |
+
+- **Pass**: with watermelons ready in the guild's allotments and watermelon spared, the loadout
+  asks for **no** pineapples. Clear or unplant those allotments and the row returns.
+- **Pass — a short bin is topped up on site.** Yield is stochastic, so a bin expecting thirty may
+  get twenty-two. The bank is ~14 tiles away and the part-fill wording says how short you are
+  ("8 short of a full bin, so it will want another load"). Deliberately **not** predicted and
+  banked for in advance — that would put a wrong-sized ask on the list most trips.
+- **Ash still works everywhere.** The seven are out of the loadout for their *fill* only; a ready
+  small bin still banks its 25 volcanic ash, because ash stacks into one slot and losing the
+  ultracompost upgrade on seven bins to save a slot would be a bad trade.
+- **Existing profiles keep their tick.** The stored key is still `COMPOST`; only its meaning and
+  its label narrowed, to **Compost (Guild)**. It deliberately still begins with "Compost" — the
+  run list is alphabetical and read by eye, and an earlier "Big bin" sorted it between Belladonna
+  and Bush, where it was reported as missing from the run menu entirely. *Fail signature:*
+  Compost silently unticked after updating, or the line absent from under C.

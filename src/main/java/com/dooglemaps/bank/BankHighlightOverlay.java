@@ -308,6 +308,9 @@ public class BankHighlightOverlay extends Overlay
 			return;
 		}
 
+		// The left-hand category rows, so a seed scrolled out of sight still says where it is.
+		highlightVaultCategories(graphics);
+
 		// Clipped to the visible part of the list. A scrolling container reports bounds covering
 		// everything it holds, so a mark on a scrolled-off row would otherwise paint over the rest
 		// of the interface.
@@ -337,6 +340,210 @@ public class BankHighlightOverlay extends Overlay
 		{
 			graphics.setClip(previousClip);
 		}
+	}
+
+	/**
+	 * Outlines the vault's category rows that hold a seed the run still wants.
+	 *
+	 * <h2>Two earlier attempts failed, and this is why</h2>
+	 *
+	 * The note on {@link #highlightVault} records them: "the category half never worked. Two
+	 * attempts at finding the label failed to highlight anything, and neither could be verified
+	 * from outside the client." Both were looking in the wrong place. The rows live under
+	 * {@code SeedVault.CATEGORY_LIST} — group 631, child 8 — one dynamic child each, read off the
+	 * widget inspector and given from play. That is the missing verification, and it is why this
+	 * attempt is being made at all rather than a third guess.
+	 *
+	 * <h2>No table of which seed is in which category</h2>
+	 *
+	 * The obvious implementation is a map from crop to category name, and it would be a fourth
+	 * thing to keep in step with the game — wrong the day a category is renamed or a seed moves,
+	 * and wrong silently. The vault already knows: {@code CATEGORY_HEADERS} labels the sections
+	 * of the item list, and {@code OBJ_LIST} lays the items out beneath them. So a seed's
+	 * category is simply the nearest header above it, which is the same thing the player reads
+	 * off the screen.
+	 *
+	 * <p>That also means this degrades honestly. If the headers are not laid out the way this
+	 * expects, nothing matches and nothing is drawn — no invented highlight on the wrong row —
+	 * and {@link #noteVaultCategories} says what it saw so the next attempt starts from data.
+	 */
+	private void highlightVaultCategories(Graphics2D graphics)
+	{
+		Widget list = client.getWidget(InterfaceID.SeedVault.CATEGORY_LIST);
+		if (list == null || list.isHidden())
+		{
+			return;
+		}
+
+		Set<String> wanted = vaultCategoriesWanted();
+		java.util.List<Widget> rows = new java.util.ArrayList<>();
+		java.util.List<String> seen = new java.util.ArrayList<>();
+		for (Widget row : descendants(list))
+		{
+			String text = plainText(row);
+			if (text.isEmpty())
+			{
+				continue;
+			}
+			seen.add(text);
+			if (wanted.contains(text.toLowerCase(java.util.Locale.ROOT)))
+			{
+				rows.add(row);
+			}
+		}
+		noteVaultCategories(wanted, seen);
+
+		java.awt.Shape previousClip = graphics.getClip();
+		graphics.clip(visibleBounds(list));
+		try
+		{
+			for (Widget row : rows)
+			{
+				Rectangle bounds = row.getBounds();
+				if (bounds == null || bounds.isEmpty())
+				{
+					continue;
+				}
+				graphics.setColor(config.guideHighlightColour());
+				graphics.draw(bounds);
+			}
+		}
+		finally
+		{
+			graphics.setClip(previousClip);
+		}
+	}
+
+	/**
+	 * The category names holding a seed this run still wants, lowercased for matching.
+	 *
+	 * <p>Derived from where the items actually sit rather than from a table: the nearest header
+	 * above an item is its category. Headers and items are separate widget lists laid out over
+	 * the same scroll, so the comparison is on the y they were laid out at, not on the screen —
+	 * scrolling moves both together and must not change the answer.
+	 */
+	private Set<String> vaultCategoriesWanted()
+	{
+		Map<Integer, LoadoutItem.Need> marked = vaultItems();
+		return categoriesHolding(client.getWidget(InterfaceID.SeedVault.CATEGORY_HEADERS),
+			client.getWidget(InterfaceID.SeedVault.OBJ_LIST), marked.keySet());
+	}
+
+	/**
+	 * Which category sections these items sit under, lowercased.
+	 *
+	 * <p>Static and given its two widgets rather than reaching for the client, so the rule can be
+	 * pinned by a test without an interface open. The rule is the whole of the design: a seed's
+	 * category is the nearest header above it, which is what the player reads off the screen, and
+	 * needs no table of crop-to-category kept in step with the game by hand.
+	 *
+	 * <p>Compared on the y each widget was <b>laid out</b> at, not on the screen. Headers and
+	 * items are separate lists over one scroll, so scrolling moves both together and must not
+	 * change the answer.
+	 */
+	static Set<String> categoriesHolding(Widget headers, Widget items, Set<Integer> wantedItems)
+	{
+		if (headers == null || items == null || wantedItems.isEmpty())
+		{
+			return Collections.emptySet();
+		}
+
+		// Headers by the y they are laid out at, so "the nearest one above" is a lookup.
+		java.util.NavigableMap<Integer, String> byHeight = new java.util.TreeMap<>();
+		for (Widget header : descendants(headers))
+		{
+			String text = plainText(header);
+			if (!text.isEmpty())
+			{
+				byHeight.put(header.getRelativeY(), text.toLowerCase(java.util.Locale.ROOT));
+			}
+		}
+		if (byHeight.isEmpty())
+		{
+			return Collections.emptySet();
+		}
+
+		Set<String> wanted = new java.util.LinkedHashSet<>();
+		for (Widget item : descendants(items))
+		{
+			if (item.getItemId() <= 0 || !wantedItems.contains(item.getItemId()))
+			{
+				continue;
+			}
+			Map.Entry<Integer, String> header = byHeight.floorEntry(item.getRelativeY());
+			if (header != null)
+			{
+				wanted.add(header.getValue());
+			}
+		}
+		return wanted;
+	}
+
+	/** A widget's text with the game's colour tags taken off, or empty. */
+	private static String plainText(Widget widget)
+	{
+		String text = widget.getText();
+		return text == null ? "" : net.runelite.client.util.Text.removeTags(text).trim();
+	}
+
+	/** Every child of this widget, of either kind, one level down and then their children. */
+	private static java.util.List<Widget> descendants(Widget parent)
+	{
+		java.util.List<Widget> found = new java.util.ArrayList<>();
+		java.util.Deque<Widget> queue = new java.util.ArrayDeque<>();
+		queue.add(parent);
+		int guard = 0;
+		while (!queue.isEmpty() && guard++ < VAULT_WIDGET_LIMIT)
+		{
+			Widget widget = queue.poll();
+			for (Widget[] children : new Widget[][]{
+				widget.getDynamicChildren(), widget.getStaticChildren(),
+				widget.getNestedChildren()})
+			{
+				if (children == null)
+				{
+					continue;
+				}
+				for (Widget child : children)
+				{
+					if (child != null)
+					{
+						found.add(child);
+						queue.add(child);
+					}
+				}
+			}
+		}
+		return found;
+	}
+
+	/**
+	 * A walk of a widget tree wants a ceiling, and the vault's is generous.
+	 *
+	 * <p>Not a tuning number: it is there so a cycle or an unexpectedly deep tree cannot spin the
+	 * render thread. The real lists are a few dozen rows.
+	 */
+	private static final int VAULT_WIDGET_LIMIT = 4000;
+
+	/** The last category decision logged, so it is said once per distinct answer. */
+	private String loggedVaultCategories;
+
+	/**
+	 * Says what the category highlight wanted and what the vault offered, once per answer.
+	 *
+	 * <p>The two previous attempts at this could not be verified from outside the client, which
+	 * is the whole reason they stayed broken. This makes the next report one line: the categories
+	 * derived from where the seeds sit, and every row title actually on screen.
+	 */
+	private void noteVaultCategories(Set<String> wanted, java.util.List<String> seen)
+	{
+		String key = wanted + "#" + seen;
+		if (key.equals(loggedVaultCategories))
+		{
+			return;
+		}
+		loggedVaultCategories = key;
+		log.info("Seed vault categories: wanting {}, rows on screen {}", wanted, seen);
 	}
 
 	/**

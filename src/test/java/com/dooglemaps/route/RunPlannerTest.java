@@ -30,6 +30,7 @@ import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -66,6 +67,9 @@ public class RunPlannerTest
 	private net.runelite.api.Client client;
 	private com.dooglemaps.state.PlayerLocation playerLocation;
 	private com.dooglemaps.state.RunTypeStore runOptions;
+
+	/** The bin choices; the planner reads the fodder toggle when it plans stops. */
+	private com.dooglemaps.state.CompostRunStore compostRun;
 	private com.dooglemaps.DoogleMapsConfig pluginConfig;
 
 	/**
@@ -116,6 +120,7 @@ public class RunPlannerTest
 		stateStore = construct(PatchStateStore.class, configManager, gson);
 		availability = construct(AvailabilityProfile.class, configManager, gson, stateStore);
 		PatchLocationStore locations = construct(PatchLocationStore.class, configManager, gson);
+		patchLocations = locations;
 		banks = construct(BankLocationStore.class, configManager, gson);
 		timer = construct(GrowthTimer.class, configManager);
 		// Run queued client-thread work immediately, so the test sees what was posted.
@@ -151,6 +156,7 @@ public class RunPlannerTest
 			groups = Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
 			runOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			compostRun = Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
 			pluginConfig = Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 	}
 
@@ -298,6 +304,13 @@ public class RunPlannerTest
 		contracts.recordAssigned(Produce.YEW);
 		planner.reviewContract();
 
+		System.out.println("PROBE sources=" + planner.getSupplySources()
+			+ " targets=" + lastTargets() + " vault=" + banks.getSeedVault());
+		System.out.println("PROBE usableBanks=" + banks.getUsableBanks());
+		for (PluginMessage m : posted)
+		{
+			System.out.println("PROBE msg " + m.getName() + " -> " + m.getData());
+		}
 		assertTrue("the vault holds the contract's sapling, so the run owes it a visit",
 			planner.getSupplySources().contains(SeedSource.SEED_VAULT));
 		assertTrue("and the route has to go there",
@@ -940,6 +953,29 @@ public class RunPlannerTest
 		return -1;
 	}
 
+	/**
+	 * A varbit value meaning "a real crop, freshly in the ground", or -1.
+	 *
+	 * <p>The state that ends a patch's business with the run, whatever it grows. Decoded rather
+	 * than hardcoded because the one hardcoded number in these tests — {@code service}'s varbit
+	 * 4 — is a guam seedling in a herb patch and plain <i>weeds</i> in a bush, which is a patch
+	 * still asking to be dealt with.
+	 */
+	private int justPlantedValue(FarmPatch patch)
+	{
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+			if (decoded != null && decoded.getProduce() != null
+				&& decoded.getProduce().isCrop()
+				&& decoded.getCropState() == com.dooglemaps.data.CropState.GROWING)
+			{
+				return value;
+			}
+		}
+		return -1;
+	}
+
 	/** The crop's grown-but-unchecked varbit value, or -1 when the data has none. */
 	private int grownUncheckedValue(FarmPatch patch)
 	{
@@ -965,6 +1001,23 @@ public class RunPlannerTest
 	}
 
 	/** Puts the local player somewhere in the given map region. */
+	/**
+	 * Puts the player <b>at</b> a patch, rather than merely in its map region.
+	 *
+	 * <p>{@link #standingIn} drops them on the region's arithmetic centre, which is a fine stand-in
+	 * for "somewhere in this region" and is not the same statement as "at this stop". Arrival is
+	 * measured against the patches now — see {@code RunPlanner.hasArrivedAt}, and the Brimhaven
+	 * spirit tree thirty-eight tiles from its own palm tree that made the difference matter.
+	 */
+	private void standingAt(FarmPatch patch)
+	{
+		WorldPoint where = patchLocations.getLocation(patch);
+		net.runelite.api.Player player = Mockito.mock(net.runelite.api.Player.class);
+		when(player.getWorldLocation()).thenReturn(where);
+		when(client.getLocalPlayer()).thenReturn(player);
+		playerLocation.onGameTick(new net.runelite.api.events.GameTick());
+	}
+
 	private void standingIn(int regionId)
 	{
 		WorldPoint where = new WorldPoint(
@@ -1170,6 +1223,419 @@ public class RunPlannerTest
 		assertEquals("with only herbs ticked, the growing allotment holds nothing",
 			1, planner.start(EnumSet.of(PatchImplementation.HERB)).size());
 	}
+
+	/**
+	 * ...and the compost bin standing on that plot waits with it.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"I was just sent to ardougne farm without volcanic ash to fill the bin, and with
+	 * watermelons still in progress, per our combined allotment/herb/flower patches rule, we
+	 * shouldn't have even gone here"</i>. The hold itself was working — the session log's
+	 * <i>Shared plots</i> line has Ardougne <b>[free to visit]</b> at plan time with all four
+	 * patches ripe, and they were serviced. What brought the player back an hour later was the
+	 * bin: left composting, its clock came round, {@code binActionable} re-opened the stop, and
+	 * {@code clusterHeld} had no opinion because a bin is not one of the three cluster types.
+	 * The trip the setting exists to prevent was made for the one patch on that ground the
+	 * setting could not see.
+	 *
+	 * <p>A bin is the best possible thing to make wait: nothing in it spoils, it has no disease
+	 * clock, and it is standing among the patches that will want its compost.
+	 */
+	@Test
+	public void aBinOnASharedPlotDoesNotKeepThePlotsStopAlive()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		// Everything at the plot ready, and the bin finished too: one trip, correctly planned.
+		record(FALADOR_HERB, 43);
+		record(FALADOR_BIN, readyBinValue());
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch(FALADOR_BIN), true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.COMPOST));
+		planner.leaveBank();
+		assertTrue("fixture: the plot is a stop on this run",
+			planner.getRemaining().stream().anyMatch(this::isFalador));
+
+		// The herb is picked and replanted, and the player leaves. The bin is still sat there
+		// finished — and on its own that is not worth the plot being kept open, because the
+		// plot cannot be worked again until the new herb grows.
+		service(FALADOR_HERB);
+
+		assertTrue("the bin alone should not hold the stop open: " + planner.getRemaining(),
+			planner.getRemaining().stream().noneMatch(this::isFalador));
+	}
+
+	private boolean isFalador(RunStop stop)
+	{
+		return stop.getRegion().getRegionId()
+			== patch(FALADOR_HERB).getRegion().getRegionId();
+	}
+
+	/** Falador's compost bin, on the same ground as its allotments. */
+	private static final String FALADOR_BIN = "12083.4775";
+
+	/** A bin varbit meaning "finished, waiting to be emptied", decoded rather than assumed. */
+	private int readyBinValue()
+	{
+		FarmPatch bin = patch(FALADOR_BIN);
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = bin.getImplementation().forVarbitValue(value);
+			if (decoded != null && decoded.getProduce() != null
+				&& decoded.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE)
+			{
+				return value;
+			}
+		}
+		throw new AssertionError("no harvestable varbit decodes for the Falador bin");
+	}
+
+	/**
+	 * A held plot does not come back the moment one of its patches ripens.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The two hold rules gated {@code planStops} and nothing else, so they decided whether a stop
+	 * was <b>created</b> and had no say in whether it came <b>back</b> — and a stop returns the
+	 * instant one of its patches turns actionable, which is exactly the moment the hold exists to
+	 * ignore. Reported as "hold shared plots until all are ready isn't working - just got routed
+	 * to Ardougne again after only limpwurts were ready": the flower finishes in twenty minutes
+	 * and the herb beside it takes eighty.
+	 */
+	@Test
+	public void aHeldPlotStaysHeldWhenOnlyOnePatchRipens()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		// Both ready at the start, so the stop is planned and then finished.
+		record(FALADOR_HERB, 43);
+		record(FALADOR_FLOWER, 12);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch(FALADOR_FLOWER), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER));
+		planner.leaveBank();
+
+		// Both replanted: nothing to do, so the stop completes.
+		record(FALADOR_HERB, 4);
+		record(FALADOR_FLOWER, 8);
+		assertTrue("fixture: a freshly replanted plot wants nothing",
+			planner.getRemaining().isEmpty());
+
+		// The flower ripens first. The herb beside it is still growing, so the trip is exactly
+		// the one the setting exists to skip.
+		record(FALADOR_FLOWER, 12);
+
+		assertTrue("one ripe flower must not fetch you back to a plot that is not ready",
+			planner.getRemaining().isEmpty());
+	}
+
+	/** And it does come back once the slow one catches up. */
+	@Test
+	public void aHeldPlotReturnsWhenTheWholePlotIsReady()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		record(FALADOR_HERB, 43);
+		record(FALADOR_FLOWER, 12);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch(FALADOR_FLOWER), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER));
+		planner.leaveBank();
+
+		record(FALADOR_HERB, 4);
+		record(FALADOR_FLOWER, 8);
+		assertTrue(planner.getRemaining().isEmpty());
+
+		record(FALADOR_FLOWER, 12);
+		record(FALADOR_HERB, 43);
+
+		assertEquals("with the whole plot ready the trip is worth making",
+			1, planner.getRemaining().size());
+	}
+
+	/**
+	 * A harvest-only cactus is not worth a trip for one spine of four.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * A cactus regrows a spine every twenty minutes and holds four, so twenty minutes after
+	 * picking it clean there is exactly one on it. {@code heldForRegrowth} says to wait — and it
+	 * gated {@code planStops} only, so once the stop had been completed the single spine
+	 * un-completed it and the run went back. Reported from play: "we're going back to cactuses
+	 * too soon... after already harvesting it twenty minutes prior, only now receiving 1 cactus
+	 * spine".
+	 */
+	@Test
+	public void aPartlyRegrownCactusDoesNotFetchYouBack()
+	{
+		FarmPatch cactus = FarmingWorldData.getPatches(PatchImplementation.CACTUS).get(0);
+		availability.setAvailable(cactus, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.harvestOnly(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CACTUS)))).thenReturn(true);
+		when(runOptions.isHarvestOnly(Mockito.any())).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		// Varbit 18: all four spines on it, which is worth the trip.
+		stateStore.recordVarbit(cactus, 18, cactus.getImplementation().forVarbitValue(18));
+		Set<PatchImplementation> cacti = EnumSet.of(PatchImplementation.CACTUS);
+		planner.start(cacti);
+		planner.leaveBank();
+		assertEquals("fixture: a full cactus is worth visiting", 1,
+			planner.getRemaining().size());
+
+		// Picked clean, then one spine back twenty minutes later.
+		stateStore.recordVarbit(cactus, 15, cactus.getImplementation().forVarbitValue(15));
+		assertTrue("fixture: a bare cactus wants nothing", planner.getRemaining().isEmpty());
+
+		stateStore.recordVarbit(cactus, 16, cactus.getImplementation().forVarbitValue(16));
+
+		assertTrue("one spine of four is not a trip", planner.getRemaining().isEmpty());
+	}
+
+	/**
+	 * But standing at it, the first pick must not end the stop under your feet.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * {@code heldForRegrowth} says its own javadoc twice over: planning-time only, because "a
+	 * completion filter would read 'no longer full' as 'not worth visiting' and finish the stop
+	 * under their feet at the first berry". It then became one, in {@code isComplete}, without
+	 * the standing-here guard {@code clusterHeld} carries.
+	 *
+	 * <p>So picking one unit dropped the stop out of {@code getRemaining()},
+	 * {@code GuideTracker.stopAt} answered null, and {@code computeStepsHere} took its
+	 * between-stops branch — where the only thing left to say is the leaving errand. Reported
+	 * from play at the Ardougne monastery bush on a harvest-only run: told to note each white
+	 * berry as it was picked, and never told to pick the next one.
+	 *
+	 * <p>The hold is about not making the <b>trip</b>. Standing there, the trip is already spent.
+	 * The test above keeps its half of that: away from the patch, one spine is still not a trip.
+	 */
+	@Test
+	public void standingAtAPartlyPickedPatchTheStopStaysOpen()
+	{
+		FarmPatch cactus = FarmingWorldData.getPatches(PatchImplementation.CACTUS).get(0);
+		availability.setAvailable(cactus, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.harvestOnly(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CACTUS)))).thenReturn(true);
+		when(runOptions.isHarvestOnly(Mockito.any())).thenReturn(true);
+		standingIn(cactus.getRegion().getRegionId());
+
+		// Full, then one picked - the moment the shipped test above measures from a distance.
+		stateStore.recordVarbit(cactus, 18, cactus.getImplementation().forVarbitValue(18));
+		planner.start(EnumSet.of(PatchImplementation.CACTUS));
+		planner.leaveBank();
+		assertEquals("fixture: a full cactus is worth visiting", 1, planner.getRemaining().size());
+
+		stateStore.recordVarbit(cactus, 17, cactus.getImplementation().forVarbitValue(17));
+
+		assertEquals("standing here, the rest of the crop is still work", 1,
+			planner.getRemaining().size());
+	}
+
+	/**
+	 * Landing in a stop's region is not arriving at it, when the patch is across the region.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The route was cleared the moment the player stood anywhere in a remaining stop's region.
+	 * Right where the arrival point <b>is</b> the patches — Falador drops you among them, and a
+	 * line there competes with the per-patch guidance rather than adding to it.
+	 *
+	 * <p>Wrong wherever it is not. Brimhaven's spirit tree and its palm tree patch are both region
+	 * 11058, at {@code (2802,3203)} and {@code (2765,3213)} — thirty-eight tiles apart. Taking the
+	 * tree wiped the route on the arrival tick and left the palm tree most of a screen away with
+	 * nothing drawn. Reported from play as the line flashing and vanishing, which is the reply to
+	 * the pre-teleport request landing a tick late and being cleared behind it.
+	 */
+	@Test
+	public void landingAcrossTheRegionFromAPatchStillGetsARoute()
+	{
+		FarmPatch palm = FarmingWorldData.getPatches(PatchImplementation.FRUIT_TREE).stream()
+			.filter(p -> p.getRegion().getRegionId() == BRIMHAVEN_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		availability.setAvailable(palm, true);
+
+		// Where the spirit tree drops you: same region, the far side of it.
+		WorldPoint spiritTree = new WorldPoint(2802, 3203, 0);
+		WorldPoint patchAt = patchLocations.getLocation(palm);
+		assertTrue("fixture: the two are far enough apart to be the point",
+			spiritTree.distanceTo(patchAt) > 20);
+		standingAtPoint(spiritTree);
+
+		planner.start(EnumSet.of(PatchImplementation.FRUIT_TREE));
+
+		assertFalse("the patch is across the region, so it still wants a line",
+			lastTargets().isEmpty());
+	}
+
+	/** And standing on the patch clears it, which is what the whole rule is for. */
+	@Test
+	public void standingAtThePatchClearsTheRoute()
+	{
+		FarmPatch palm = FarmingWorldData.getPatches(PatchImplementation.FRUIT_TREE).stream()
+			.filter(p -> p.getRegion().getRegionId() == BRIMHAVEN_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		availability.setAvailable(palm, true);
+		standingAt(palm);
+
+		planner.start(EnumSet.of(PatchImplementation.FRUIT_TREE));
+
+		assertTrue("you are stood on it; a drawn line would be a second voice",
+			lastTargets().isEmpty());
+	}
+
+	/** Brimhaven, whose spirit tree and palm tree share a region and little else. */
+	private static final int BRIMHAVEN_REGION = 11058;
+
+	private void standingAtPoint(WorldPoint where)
+	{
+		net.runelite.api.Player player = Mockito.mock(net.runelite.api.Player.class);
+		when(player.getWorldLocation()).thenReturn(where);
+		when(client.getLocalPlayer()).thenReturn(player);
+		playerLocation.onGameTick(new net.runelite.api.events.GameTick());
+	}
+
+	/** Lumbridge's hops patch and the Champions' Guild bush - one teleport, two regions. */
+	private static final int LUMBRIDGE_HOPS_REGION = 12851;
+	private static final int CHAMPIONS_GUILD_REGION = 12596;
+
+	/**
+	 * Two regions that share a way in are serviced as one stop.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The route is chosen a leg at a time by whichever remaining stop is cheapest to reach, so
+	 * two stops in the same corner of the map are not necessarily consecutive: the run serviced
+	 * one, travelled away, and came back to the same teleport later for the other. Reported from
+	 * play — <i>"we end up back there at the same tele to champions guild later in the run doing
+	 * the bush or hops or vice versa"</i>.
+	 */
+	@Test
+	public void regionsSharingAWayInAreOneStop()
+	{
+		FarmPatch hops = FarmingWorldData.getPatches(PatchImplementation.HOPS).stream()
+			.filter(p -> p.getRegion().getRegionId() == LUMBRIDGE_HOPS_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		FarmPatch bush = FarmingWorldData.getPatches(PatchImplementation.BUSH).stream()
+			.filter(p -> p.getRegion().getRegionId() == CHAMPIONS_GUILD_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		availability.setAvailable(hops, true);
+		availability.setAvailable(bush, true);
+		// Left unobserved: a patch never seen is treated as worth a look, which is all this
+		// test needs and avoids pinning a varbit decode it is not about.
+		standingIn(VARROCK_REGION);
+
+		planner.start(EnumSet.of(PatchImplementation.HOPS, PatchImplementation.BUSH));
+		planner.leaveBank();
+
+		java.util.List<RunStop> stops = planner.getRemaining();
+		assertEquals("one arrival, so one stop", 1, stops.size());
+		RunStop only = stops.get(0);
+		assertEquals("and it is the teleport's own destination", CHAMPIONS_GUILD_REGION,
+			only.getRegion().getRegionId());
+		assertEquals("the hops joined the bush", 2, only.getPatches().size());
+		assertTrue("standing at the hops is standing at this stop",
+			only.claimsRegion(LUMBRIDGE_HOPS_REGION));
+	}
+
+	/**
+	 * And a region only ever joins a stop the run is already making.
+	 *
+	 * <p>The whole safety of the merge. Without the bush there is nothing to share the trip
+	 * with, so Lumbridge keeps its own stop rather than becoming a Champions' Guild stop with no
+	 * patches in the Champions' Guild — which everything downstream keys on and would misread.
+	 */
+	@Test
+	public void aSharedRegionAloneKeepsItsOwnStop()
+	{
+		FarmPatch hops = FarmingWorldData.getPatches(PatchImplementation.HOPS).stream()
+			.filter(p -> p.getRegion().getRegionId() == LUMBRIDGE_HOPS_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		availability.setAvailable(hops, true);
+		standingIn(VARROCK_REGION);
+
+		planner.start(EnumSet.of(PatchImplementation.HOPS));
+		planner.leaveBank();
+
+		java.util.List<RunStop> stops = planner.getRemaining();
+		assertEquals(1, stops.size());
+		assertEquals("nothing to share with, so it stands alone", LUMBRIDGE_HOPS_REGION,
+			stops.get(0).getRegion().getRegionId());
+	}
+
+	/**
+	 * The second half of a shared stop gets a route of its own.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"between champions guild bush patch and the lumby hops patch we should use SP to
+	 * navigate"</i>. The merge above is what makes those two one stop, and three separate
+	 * shortcuts in {@code RunPlanner} then read "one stop" as "one place", which it is for every
+	 * stop the game files and not for this one — the patches are about fifty tiles apart:
+	 *
+	 * <ul>
+	 *   <li>{@code hasArrivedAt} counted arriving at <i>any</i> patch as arriving at the stop, so
+	 *       reaching the bush wiped the route.</li>
+	 *   <li>{@code RunStop.getRouteTargets} answers with patch zero, so even a fresh request
+	 *       aimed at the bush the player was standing on and Shortest Path finished instantly.</li>
+	 *   <li>{@code onPatchChanged} only re-asked when the <i>whole</i> stop was done, so nothing
+	 *       triggered a new route when the bush was finished.</li>
+	 * </ul>
+	 *
+	 * <p>Any one of them left alone is enough to reproduce the report, which is why this drives
+	 * the whole sequence rather than testing the three separately.
+	 */
+	@Test
+	public void theSecondHalfOfASharedStopIsRoutedTo()
+	{
+		FarmPatch hops = FarmingWorldData.getPatches(PatchImplementation.HOPS).stream()
+			.filter(p -> p.getRegion().getRegionId() == LUMBRIDGE_HOPS_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		FarmPatch bush = FarmingWorldData.getPatches(PatchImplementation.BUSH).stream()
+			.filter(p -> p.getRegion().getRegionId() == CHAMPIONS_GUILD_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		availability.setAvailable(hops, true);
+		availability.setAvailable(bush, true);
+		standingIn(VARROCK_REGION);
+
+		planner.start(EnumSet.of(PatchImplementation.HOPS, PatchImplementation.BUSH));
+		planner.leaveBank();
+
+		// Fixture: the two really are far enough apart for this to be a question at all.
+		assertTrue("the fifty tiles are the whole point of this test",
+			patchLocations.getLocation(bush).distanceTo(patchLocations.getLocation(hops)) > 10);
+
+		// Arriving at the bush clears the route, which is right: the work is under your feet and
+		// a drawn line would be a second voice.
+		standingAt(bush);
+		planner.retarget();
+		assertTrue("stood on the bush, so no route", lastTargets().isEmpty());
+
+		// Pick and replant it. Not service(), which plants varbit 4 — a guam seedling for a herb
+		// patch, but plain weeds for a bush, so the patch would still be asking to be dealt with
+		// and the test would prove nothing. Found by decoding rather than assumed.
+		int planted = justPlantedValue(bush);
+		assertTrue("no growing-crop varbit decodes for this bush", planted >= 0);
+		record(bush.getKey(), planted);
+		planner.onPatchChanged(bush);
+
+		// The hops are still to do, and are most of Lumbridge away.
+
+		assertFalse("the walk to the hops is a journey and wants a route",
+			lastTargets().isEmpty());
+		assertEquals("routed to the hops, not back to the bush being stood on",
+			Collections.singleton(LUMBRIDGE_HOPS_REGION), regionsTargeted());
+	}
+
+	/** Falador's flower patch, which ripens far faster than the herb beside it. */
+	private static final String FALADOR_FLOWER = "12083.4773";
 
 	/**
 	 * The plot the player is standing on is never held.
@@ -1554,7 +2020,7 @@ public class RunPlannerTest
 	{
 		record(ARDOUGNE_HERB, 43);
 		availability.setAvailable(patch(ARDOUGNE_HERB), true);
-		standingIn(patch(ARDOUGNE_HERB).getRegion().getRegionId());
+		standingAt(patch(ARDOUGNE_HERB));
 
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 
@@ -1580,7 +2046,7 @@ public class RunPlannerTest
 		record(CATHERBY_HERB, 43);
 		availability.setAvailable(patch(ARDOUGNE_HERB), true);
 		availability.setAvailable(patch(CATHERBY_HERB), true);
-		standingIn(patch(ARDOUGNE_HERB).getRegion().getRegionId());
+		standingAt(patch(ARDOUGNE_HERB));
 
 		planner.start(EnumSet.of(PatchImplementation.HERB));
 
@@ -1714,8 +2180,56 @@ public class RunPlannerTest
 		assertTrue("the opening leg should target banks, not patches", lastTargets().size() > 1);
 	}
 
+	/**
+	 * A trip that wants the vault <b>and</b> the bank goes to the guild, not the nearest bank.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"when we start a run or are on a bank trip and need to go to the seed vault, we need to
+	 * navigate to the farming guild's seed vault, its the only one in the game, getting navigated
+	 * to one of the other banks isn't the right move."</i>
+	 *
+	 * <p>The vault-only case below was always right. This is the one that was not: with both
+	 * containers wanted, {@code supplyTargetsFor} handed the router the vault <i>plus every
+	 * usable bank in the game</i>, and the router did exactly as asked and picked the cheapest —
+	 * which is nearly always some other bank, because there is nearly always one closer than the
+	 * Farming Guild. The vault then still had to happen, from wherever that left you.
+	 *
+	 * <p>The guild's chest is ten tiles from the vault, so both errands are served by one
+	 * arrival and there is no trade-off being made here. Two targets, never one: returning the
+	 * vault <i>instead of</i> the banks is the older bug, where the route pointed at the vault
+	 * while the withdraw list read "From the bank: yew, yew, rune pouch".
+	 */
 	@Test
-	public void seedsInTheVaultSendYouToTheFarmingGuildNotTheNearestBank()
+	public void wantingBothTheVaultAndTheBankRoutesToTheGuildAlone()
+	{
+		// One of each, and two patches to plant them in, so the allocation genuinely needs both
+		// containers rather than emptying whichever it reaches first.
+		stockVault(com.dooglemaps.data.Seed.RANARR, 1);
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+		stockBank(com.dooglemaps.data.Seed.SNAPDRAGON, 1);
+		selection.toggle(com.dooglemaps.data.Seed.SNAPDRAGON);
+
+		record(FALADOR_HERB, 3);
+		record(CATHERBY_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch(CATHERBY_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+
+		assertEquals("fixture: the leg wants both containers",
+			EnumSet.of(SeedSource.BANK, SeedSource.SEED_VAULT),
+			EnumSet.copyOf(planner.getSupplySources()));
+
+		Set<WorldPoint> targets = lastTargets();
+		assertEquals("the guild serves both, so nowhere else is offered: " + targets,
+			2, targets.size());
+		assertTrue("the vault itself", targets.contains(banks.getSeedVault()));
+		assertTrue("and the chest ten tiles from it",
+			targets.contains(banks.getFarmingGuildBank()));
+	}
+
+	@Test
+	public void seedsInTheVaultAloneSendYouToTheVault()
 	{
 		// There is one seed vault and it is in the Farming Guild, so routing to "a bank" for
 		// vault seeds is precisely the wrong side of the map.
@@ -1873,40 +2387,266 @@ public class RunPlannerTest
 	}
 
 	/**
-	 * A compost bin routes when it is empty or collectable, and only then.
+	 * Out of supplies is not out of work: the run goes back for another load.
 	 *
-	 * <p>Ready compost is worth the trip and so is an empty bin — settled with the owner: no
-	 * fill selection is needed to be shown a bin with room in it, since the guide simply stays
-	 * quiet when there is nothing to say. A closed bin still composting is the one state with
-	 * nothing at it but a lid. The tick itself is the one line both bins answer to; see
-	 * PlantingGroups.addBinRun.
+	 * <p>The reported dead end, in its general form. A pack holds one load, so a stop can finish
+	 * for no better reason than that the produce ran out — the bin is still {@code FILLING}, the
+	 * guide has no step for it because a bin takes no notes, and {@code isComplete} counts a
+	 * patch with no step as done. Every stop then reads complete and the run ended a load early
+	 * with the bank still holding five hundred pineapples.
 	 */
-	@org.junit.Test
-	public void binsRouteWhenEmptyOrCollectable()
+	@Test
+	public void runningOutOfSuppliesSendsTheRunBackRatherThanEndingIt()
 	{
-		com.dooglemaps.data.FarmPatch bin = com.dooglemaps.data.FarmingWorldData
-			.getPatches(PatchImplementation.COMPOST).get(0);
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.leaveBank();
+
+		service(FALADOR_HERB);
+
+		// The withdraw list says a bank trip would unblock something - the fill this run could
+		// not carry in one load. Pushed the way the guide pushes it, once a tick.
+		planner.setWithdrawOutstanding(true);
+		planner.setNothingToDo(Collections.emptySet());
+		planner.reviewProgress();
+
+		assertTrue("the run is not over while a bank trip would help", planner.isActive());
+		assertTrue("and the trip is its next leg", planner.isAtBankLeg());
+	}
+
+	/** With nothing a bank could add, the same path still ends the run. */
+	@Test
+	public void nothingLeftToCollectStillEndsTheRun()
+	{
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.leaveBank();
+
+		service(FALADOR_HERB);
+
+		planner.setWithdrawOutstanding(false);
+		planner.setNothingToDo(Collections.emptySet());
+		planner.reviewProgress();
+
+		assertFalse(planner.isActive());
+	}
+
+	/**
+	 * A waived supply leg outranks the diversion, or the escape hatch stops being one.
+	 *
+	 * <p>Skip step during the supply leg means no for the rest of the run, and a run that ends
+	 * is a run the player can restart - where a leg that reopens on the way out is not something
+	 * they can refuse twice.
+	 */
+	@Test
+	public void aWaivedLegIsNotReopenedByTheDiversion()
+	{
+		record(FALADOR_HERB, 3);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.waiveBankLeg();
+
+		service(FALADOR_HERB);
+
+		planner.setWithdrawOutstanding(true);
+		planner.setNothingToDo(Collections.emptySet());
+		planner.reviewProgress();
+
+		assertFalse("no means no for the rest of the run", planner.isAtBankLeg());
+		assertFalse(planner.isActive());
+	}
+
+	/**
+	 * The guild's bin routes when it is empty or collectable, and only then.
+	 *
+	 * <p>Ready compost is worth the trip and so is an empty bin — settled with the owner: no fill
+	 * selection is needed to be shown a bin with room in it, since the guide simply stays quiet
+	 * when there is nothing to say. A closed bin still composting is the one state with nothing at
+	 * it but a lid. This is the bin the run tick means; see CompostBin.coveredByTheBinTick.
+	 */
+	@Test
+	public void theGuildBinRoutesWhenEmptyOrCollectable()
+	{
+		FarmPatch bin = FarmingWorldData.getPatches(PatchImplementation.BIG_COMPOST).get(0);
 		availability.setAvailable(bin, true);
 		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
 			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
 			.thenReturn(true);
-		java.util.Set<PatchImplementation> types = EnumSet.of(PatchImplementation.COMPOST);
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.BIG_COMPOST);
 
 		stateStore.recordVarbit(bin, 62, bin.getImplementation().forVarbitValue(62));
-		org.junit.Assert.assertEquals("finished compost is worth the trip",
-			1, planner.previewStops(types).size());
+		assertEquals("finished compost is worth the trip", 1, planner.previewStops(types).size());
 
 		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
-		org.junit.Assert.assertEquals("an empty bin routes with no fill chosen at all",
+		assertEquals("an empty bin routes with no fill chosen at all",
 			1, planner.previewStops(types).size());
 
 		stateStore.recordVarbit(bin, 40, bin.getImplementation().forVarbitValue(40));
-		org.junit.Assert.assertEquals("a part-filled bin still has room, so it routes too",
+		assertEquals("a part-filled bin still has room, so it routes too",
 			1, planner.previewStops(types).size());
 
-		stateStore.recordVarbit(bin, 31, bin.getImplementation().forVarbitValue(31));
-		org.junit.Assert.assertEquals("a closed bin still composting is the one that does not",
+		stateStore.recordVarbit(bin, 97, bin.getImplementation().forVarbitValue(97));
+		assertEquals("a closed bin still composting is the one that does not",
 			0, planner.previewStops(types).size());
+	}
+
+	/**
+	 * A bin beside the allotments is never a reason to travel, in any state.
+	 *
+	 * <h2>The whole point of the split</h2>
+	 *
+	 * There is no bank near any of the seven — Catherby ~23 tiles, Falador ~65, Ardougne ~96, and
+	 * three of them have no seeded bank at all — so arriving at one with nothing to put in it is a
+	 * wasted trip, and carrying fifteen un-noted items to it across the map is what the change came
+	 * from. Even finished compost sitting in one does not earn a journey of its own.
+	 */
+	@Test
+	public void anAllotmentBinNeverEarnsAStopOfItsOwn()
+	{
+		FarmPatch bin = FarmingWorldData.getPatches(PatchImplementation.COMPOST).get(0);
+		availability.setAvailable(bin, true);
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.COMPOST);
+
+		for (int varbit : new int[]{62, 0, 40})
+		{
+			stateStore.recordVarbit(bin, varbit, bin.getImplementation().forVarbitValue(varbit));
+			assertTrue("varbit " + varbit + " should not plan a stop",
+				planner.previewStops(types).isEmpty());
+		}
+	}
+
+	/**
+	 * ...but it is serviced at a stop the run is making anyway.
+	 *
+	 * <p>Falador's bin is `12083.4775` and its allotments `12083.4771`–`4774`: one region, one
+	 * stop, a few tiles apart. That is what makes feeding it from the harvest free, and it is the
+	 * reason the seven are opportunistic rather than dropped.
+	 */
+	@Test
+	public void anAllotmentBinIsPickedUpAtAStopTheRunAlreadyMakes()
+	{
+		FarmPatch herb = patch(FALADOR_HERB);
+		FarmPatch bin = null;
+		for (FarmPatch candidate : FarmingWorldData.getPatches(PatchImplementation.COMPOST))
+		{
+			if (candidate.getRegion().getRegionId() == herb.getRegion().getRegionId())
+			{
+				bin = candidate;
+				break;
+			}
+		}
+		assertNotNull("fixture: Falador should carry a compost bin beside its allotments", bin);
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(herb, true);
+		availability.setAvailable(bin, true);
+		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+
+		List<RunStop> stops = planner.previewStops(EnumSet.of(PatchImplementation.HERB));
+		assertEquals(1, stops.size());
+		assertTrue("the bin rides along with the stop the herbs earned",
+			stops.get(0).getPatches().contains(bin));
+	}
+
+	/**
+	 * Switching fodder on mid-run still gets the bins serviced.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The bins were put into stops by {@code planStops}, which runs at {@code start} and never
+	 * again — so a player who ticked "fill bins from your harvest" after pressing Start got
+	 * nothing for the rest of the trip, silently. Reported from play: nineteen watermelons picked
+	 * at Ardougne, its bin empty, watermelon on the fodder list, and no fill ever offered.
+	 */
+	@Test
+	public void aBinJoinsAStopWhenFodderIsSwitchedOnMidRun()
+	{
+		FarmPatch herb = patch(FALADOR_HERB);
+		FarmPatch bin = binBeside(herb);
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(herb, true);
+		availability.setAvailable(bin, true);
+		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
+
+		// Off when the run is planned, which is the whole point.
+		when(compostRun.isFodderEnabled()).thenReturn(false);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		assertFalse("fixture: the bin is not in the plan",
+			planner.getStops().get(0).getPatches().contains(bin));
+
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+		planner.reviewBins();
+
+		assertTrue("the bin joins the stop the run is already making",
+			planner.getStops().get(0).getPatches().contains(bin));
+	}
+
+	/** It still never creates a stop of its own, however the poll is timed. */
+	@Test
+	public void thePollStillDoesNotLetABinEarnAStop()
+	{
+		FarmPatch bin = FarmingWorldData.getPatches(PatchImplementation.COMPOST).get(0);
+		availability.setAvailable(bin, true);
+		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		int before = planner.getStops().size();
+
+		planner.reviewBins();
+
+		assertEquals("no new stop, ever", before, planner.getStops().size());
+	}
+
+	/** The compost bin sharing a region with this patch. */
+	private static FarmPatch binBeside(FarmPatch patch)
+	{
+		for (FarmPatch candidate : FarmingWorldData.getPatches(PatchImplementation.COMPOST))
+		{
+			if (candidate.getRegion().getRegionId() == patch.getRegion().getRegionId())
+			{
+				return candidate;
+			}
+		}
+		throw new AssertionError("no compost bin beside " + patch.getDisplayName());
+	}
+
+	/** With fodder off, the seven are not the run's concern at all. */
+	@Test
+	public void fodderOffLeavesTheAllotmentBinsAlone()
+	{
+		FarmPatch herb = patch(FALADOR_HERB);
+		FarmPatch bin = null;
+		for (FarmPatch candidate : FarmingWorldData.getPatches(PatchImplementation.COMPOST))
+		{
+			if (candidate.getRegion().getRegionId() == herb.getRegion().getRegionId())
+			{
+				bin = candidate;
+				break;
+			}
+		}
+		assertNotNull(bin);
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(herb, true);
+		availability.setAvailable(bin, true);
+		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
+		when(compostRun.isFodderEnabled()).thenReturn(false);
+
+		List<RunStop> stops = planner.previewStops(EnumSet.of(PatchImplementation.HERB));
+		assertEquals(1, stops.size());
+		assertFalse(stops.get(0).getPatches().contains(bin));
 	}
 
 	/**
@@ -1958,6 +2698,86 @@ public class RunPlannerTest
 	 * player asks for rather than something an assignment imposes — see
 	 * RunPlanner.contractIsInTheRun.
 	 */
+	/**
+	 * A contract's crop does not park the plot it is standing in.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"our group rule about not harvesting allotment/herb/flower patches until they're all
+	 * ready should not apply in the farming guild where one of them was a contract I just
+	 * completed, this caused me to skip the flower/allotment patches."</i>
+	 *
+	 * <p>Completing a contract plants the next crop Jane asked for, so the guild's plot acquires
+	 * a freshly sown patch at a moment nothing else there chose. {@code clusterHeld} read it as
+	 * any other growing crop and parked the whole plot behind it — and a contract patch will
+	 * essentially never ripen in step with the plot, so the ready flower and allotments beside it
+	 * would go on being skipped for as long as the contract ran.
+	 *
+	 * <p>The hold is a bargain between patches sharing a growth cycle. A contract keeps Jane's
+	 * clock, so it is not a party to it.
+	 */
+	@Test
+	public void aContractCropDoesNotHoldTheGuildPlot()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		FarmPatch flower = guildPatch(PatchImplementation.FLOWER);
+		assertNotNull("the guild has no herb patch in the data", herb);
+		assertNotNull("the guild has no flower patch in the data", flower);
+
+		// The flower is ready to pick; the herb has the contract's crop freshly in the ground.
+		record(flower.getKey(), readyFlowerValue(flower));
+		record(herb.getKey(), justPlantedValue(herb));
+		availability.setAvailable(flower, true);
+		availability.setAvailable(herb, true);
+
+		// Fixture: as a plain ticked herb, the growing crop DOES hold the plot. That is the
+		// setting working, and it is what makes the contract case a change rather than a no-op.
+		//
+		// Both halves of the tick are needed once groupFor is stubbed: inTheRun stops taking its
+		// null-group shortcut and starts asking runOptions, which a bare mock answers "no" to.
+		when(groups.groupFor(herb))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.of(PatchImplementation.HERB));
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.HERB)))).thenReturn(true);
+		assertTrue("fixture: an ordinary growing herb holds its plot",
+			planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER))
+				.stream().noneMatch(this::isGuild));
+
+		// The same patch, the same crop, now Jane's.
+		when(groups.groupFor(herb))
+			.thenReturn(com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.HERB));
+		tickTheContract(PatchImplementation.HERB);
+
+		assertTrue("the ready flower beside it is not skipped for a contract's clock",
+			planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER))
+				.stream().anyMatch(this::isGuild));
+	}
+
+	private boolean isGuild(RunStop stop)
+	{
+		return stop.getRegion().getRegionId()
+			== guildPatch(PatchImplementation.HERB).getRegion().getRegionId();
+	}
+
+	/** A flower varbit meaning "grown and ready to pick", decoded rather than assumed. */
+	private int readyFlowerValue(FarmPatch patch)
+	{
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+			if (decoded != null && decoded.getProduce() != null
+				&& decoded.getProduce().isCrop()
+				&& decoded.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE)
+			{
+				return value;
+			}
+		}
+		throw new AssertionError("no harvestable varbit decodes for " + patch);
+	}
+
 	private void tickTheContract(PatchImplementation type)
 	{
 		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
@@ -2005,29 +2825,526 @@ public class RunPlannerTest
 	}
 
 	/**
-	 * The dock divert applies on land and stops the moment the player is underwater.
+	 * A coral run is routed to the steps, from anywhere.
 	 *
-	 * <h2>Both halves reported from play</h2>
+	 * <h2>The reported dead end</h2>
 	 *
-	 * Routing to the seabed got "destination unreachable", so the run asks for the steps on the
-	 * dock. Keeping that target after the dive was worse: the router did as it was told and
-	 * plotted a course back UP to the dock, via fairy rings, from the nursery floor.
+	 * The divert used to apply only while the player stood in the steps' own region — the one
+	 * place it buys nothing — so the entire journey there was routed to the patch instead. A
+	 * seabed patch has no learned location and never gets one, so {@code PatchLocationStore}
+	 * falls through to the middle of the region: tile (3168, 2400), which in the world is a
+	 * table on the Great Conch's deck. Reported from play, in those words.
 	 */
-	@org.junit.Test
-	public void theCoralDivertAppliesOnTheDockAndNotBelowIt()
+	@Test
+	public void aCoralRunIsRoutedToTheStepsRatherThanTheRegionCentre()
 	{
+		FarmPatch coral = coralPatch();
+		availability.setAvailable(coral, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		record(coral.getKey(), 0);
+
+		standingIn(FALADOR_REGION);
+		planner.start(EnumSet.of(PatchImplementation.CORAL));
+		planner.leaveBank();
+
 		com.dooglemaps.data.UnderwaterApproach.Approach steps =
 			com.dooglemaps.data.UnderwaterApproach.forType(PatchImplementation.CORAL);
-		org.junit.Assert.assertNotNull(steps);
-		int dockRegion = steps.getPoint().getRegionID();
+		assertNotNull(steps);
+		assertTrue("the steps are what the router is given: " + lastTargets(),
+			lastTargets().contains(steps.getPoint()));
+		assertFalse("and the deck of the ship is not",
+			regionsTargeted().contains(coral.getRegion().getRegionId()));
+	}
 
-		org.junit.Assert.assertTrue("on the dock, the steps are the destination",
-			com.dooglemaps.data.UnderwaterApproach.stillWanted(steps, dockRegion));
-		org.junit.Assert.assertTrue("and anywhere else on the way there",
-			com.dooglemaps.data.UnderwaterApproach.stillWanted(steps, -1));
-		org.junit.Assert.assertFalse(
-			"once underwater it must stop, or the route climbs back up the steps",
-			com.dooglemaps.data.UnderwaterApproach.stillWanted(steps, 12581));
+	/**
+	 * Standing among the nurseries, there is no route at all - not one back up the steps.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The nurseries are region 13194 and their stop is filed under the Great Conch at 12581, so
+	 * every "am I there yet" test compared the wrong pair of numbers and answered no. The run
+	 * then did the only thing left: it routed the player back UP to the steps they had just
+	 * walked down, while the patches sat in front of them. Reported from play, and the region
+	 * read straight off the {@code Run planned:} line in client.log.
+	 */
+	@Test
+	public void theDivertStopsOnceThePlayerIsAtTheNurseries()
+	{
+		FarmPatch coral = coralPatch();
+		availability.setAvailable(coral, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		record(coral.getKey(), 0);
+
+		planner.start(EnumSet.of(PatchImplementation.CORAL));
+		planner.leaveBank();
+		standingIn(CORAL_NURSERIES_REGION);
+		planner.retarget();
+
+		assertTrue("work underfoot means no route: " + lastTargets(), lastTargets().isEmpty());
+	}
+
+	/** And the deck it is filed under still counts, which is where the calquat stands. */
+	@Test
+	public void theDivertAlsoStopsOnTheDeck()
+	{
+		FarmPatch coral = coralPatch();
+		availability.setAvailable(coral, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		record(coral.getKey(), 0);
+
+		planner.start(EnumSet.of(PatchImplementation.CORAL));
+		planner.leaveBank();
+		standingIn(coral.getRegion().getRegionId());
+		planner.retarget();
+
+		assertTrue(lastTargets().isEmpty());
+	}
+
+	/** The stop claims both its own ground and the seabed below it, and nothing else. */
+	@Test
+	public void theGreatConchStopClaimsTheSeabedToo()
+	{
+		FarmPatch coral = coralPatch();
+		availability.setAvailable(coral, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		record(coral.getKey(), 0);
+		planner.start(EnumSet.of(PatchImplementation.CORAL));
+
+		RunStop conch = planner.getRemaining().get(0);
+		assertTrue("the deck it is filed under",
+			conch.claimsRegion(coral.getRegion().getRegionId()));
+		assertTrue("and the seabed its patches are on",
+			conch.claimsRegion(CORAL_NURSERIES_REGION));
+		assertFalse("but not the shore the steps are on - that is travel, not arrival",
+			conch.claimsRegion(13094));
+		assertFalse("nor anywhere else", conch.claimsRegion(VARROCK_REGION));
+	}
+
+	/**
+	 * A run begun among the nurseries does not open at a bank.
+	 *
+	 * <p>The compost bins' fill is a withdrawal like any other, and "standing on work beats
+	 * going shopping" is meant to defer the trip until the stop underfoot is done. It could not:
+	 * {@code standingAtAStop} compared 13194 against 12581, decided the player was standing on
+	 * nothing, and sent them off to a bank with weedy coral patches in front of them. Reported
+	 * from play, with the loadout asking for sixteen pineapples and fifty volcanic ash.
+	 */
+	@Test
+	public void aRunBegunAtTheNurseriesDefersTheBankTrip()
+	{
+		FarmPatch coral = coralPatch();
+		availability.setAvailable(coral, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		record(coral.getKey(), 0);
+
+		standingIn(CORAL_NURSERIES_REGION);
+		planner.start(EnumSet.of(PatchImplementation.CORAL), true);
+
+		assertFalse("the patches underfoot come first", planner.isAtBankLeg());
+	}
+
+	/** The same run begun anywhere else does collect first, which is the rule being deferred. */
+	@Test
+	public void theSameRunBegunElsewhereStillBanksFirst()
+	{
+		FarmPatch coral = coralPatch();
+		availability.setAvailable(coral, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		record(coral.getKey(), 0);
+
+		standingIn(VARROCK_REGION);
+		planner.start(EnumSet.of(PatchImplementation.CORAL), true);
+
+		assertTrue(planner.isAtBankLeg());
+	}
+
+	/** The seabed the nurseries are on, read off client.log's "Run planned:" line. */
+	private static final int CORAL_NURSERIES_REGION = 13194;
+
+	/** The same store the planner routes through, for tests that learn a patch's tile. */
+	private PatchLocationStore patchLocations;
+
+	/** The Great Conch's calquat is on the deck, and is not routed to the seabed's steps. */
+	@Test
+	public void aDryPatchSharingTheStopKeepsItsOwnTargets()
+	{
+		FarmPatch calquat = null;
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.CALQUAT))
+		{
+			if (patch.getRegion().getRegionId() == coralPatch().getRegion().getRegionId())
+			{
+				calquat = patch;
+				break;
+			}
+		}
+		assertNotNull("fixture: the Great Conch should carry a calquat too", calquat);
+
+		availability.setAvailable(calquat, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CALQUAT)))).thenReturn(true);
+		record(calquat.getKey(), 0);
+
+		standingIn(FALADOR_REGION);
+		planner.start(EnumSet.of(PatchImplementation.CALQUAT));
+		planner.leaveBank();
+
+		com.dooglemaps.data.UnderwaterApproach.Approach steps =
+			com.dooglemaps.data.UnderwaterApproach.forType(PatchImplementation.CORAL);
+		assertNotNull(steps);
+		assertFalse("a tree on the deck is not reached by diving: " + lastTargets(),
+			lastTargets().contains(steps.getPoint()));
+		assertFalse("the route targets nothing at all", lastTargets().isEmpty());
+	}
+
+	/**
+	 * The steps are handed over as a ring, so the search can end beside them.
+	 *
+	 * <p>Shortest Path only finishes by stepping <b>onto</b> a target tile, and a set of steps
+	 * leading into the sea is no more standable-on than a tree. The guess offered from play was
+	 * to move the coordinates a tile west; that is the right cause and one quarter of the fix.
+	 */
+	@Test
+	public void theStepsAreOfferedWithTheTilesAroundThem()
+	{
+		FarmPatch coral = coralPatch();
+		availability.setAvailable(coral, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		record(coral.getKey(), 0);
+
+		standingIn(FALADOR_REGION);
+		planner.start(EnumSet.of(PatchImplementation.CORAL));
+		planner.leaveBank();
+
+		net.runelite.api.coords.WorldPoint steps =
+			com.dooglemaps.data.UnderwaterApproach.forType(PatchImplementation.CORAL).getPoint();
+		assertTrue("the tile west of the steps: " + lastTargets(),
+			lastTargets().contains(new net.runelite.api.coords.WorldPoint(
+				steps.getX() - 1, steps.getY(), steps.getPlane())));
+		assertTrue("and the other three sides",
+			lastTargets().contains(new net.runelite.api.coords.WorldPoint(
+				steps.getX() + 1, steps.getY(), steps.getPlane()))
+			&& lastTargets().contains(new net.runelite.api.coords.WorldPoint(
+				steps.getX(), steps.getY() - 1, steps.getPlane()))
+			&& lastTargets().contains(new net.runelite.api.coords.WorldPoint(
+				steps.getX(), steps.getY() + 1, steps.getPlane())));
+	}
+
+	/**
+	 * The Conch's calquat has a pin now, so it is routed to rather than dropped.
+	 *
+	 * <p>Given from play at the spot: (3128, 2405). Worth an assertion of its own because the
+	 * tile is in region 12325 while the patch is filed under 12581 — the ship spans thirteen
+	 * regions and all its varbits sit on one — so a check that the pin "lands in its own region"
+	 * would reject a coordinate that is simply correct.
+	 */
+	@Test
+	public void theConchCalquatIsRoutedToItsPinnedTile()
+	{
+		FarmPatch coral = coralPatch();
+		FarmPatch calquat = conchCalquat();
+		availability.setAvailable(coral, true);
+		availability.setAvailable(calquat, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CALQUAT)))).thenReturn(true);
+		record(coral.getKey(), 0);
+		record(calquat.getKey(), 0);
+
+		standingIn(FALADOR_REGION);
+		planner.start(EnumSet.of(PatchImplementation.CORAL, PatchImplementation.CALQUAT));
+		planner.leaveBank();
+
+		assertTrue("the pinned deck tile: " + lastTargets(),
+			lastTargets().contains(new net.runelite.api.coords.WorldPoint(3128, 2405, 0)));
+		assertFalse("and never the region centre",
+			lastTargets().contains(new net.runelite.api.coords.WorldPoint(3168, 2400, 0)));
+	}
+
+	/** Once the deck patch has been walked up to, it is a real target again. */
+	@Test
+	public void aLearnedDeckPatchIsRoutedToAlongsideTheSteps()
+	{
+		FarmPatch coral = coralPatch();
+		FarmPatch calquat = conchCalquat();
+		availability.setAvailable(coral, true);
+		availability.setAvailable(calquat, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CORAL)))).thenReturn(true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CALQUAT)))).thenReturn(true);
+		record(coral.getKey(), 0);
+		record(calquat.getKey(), 0);
+		net.runelite.api.coords.WorldPoint deck =
+			new net.runelite.api.coords.WorldPoint(3155, 2411, 0);
+		patchLocations.record(calquat, deck, 1, 1);
+
+		standingIn(FALADOR_REGION);
+		planner.start(EnumSet.of(PatchImplementation.CORAL, PatchImplementation.CALQUAT));
+		planner.leaveBank();
+
+		assertTrue("the learned tile: " + lastTargets(), lastTargets().contains(deck));
+	}
+
+	/** The Great Conch's calquat, which shares its stop with the two nurseries. */
+	private static FarmPatch conchCalquat()
+	{
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.CALQUAT))
+		{
+			if (patch.getRegion().getRegionId() == coralPatch().getRegion().getRegionId())
+			{
+				return patch;
+			}
+		}
+		throw new AssertionError("fixture: the Great Conch should carry a calquat too");
+	}
+
+	// ------------------------------------------- the committed leg
+
+	/**
+	 * Three stops, so a leg has somewhere else it could have swung to.
+	 *
+	 * @return the region ids of the planned stops
+	 */
+	private Set<Integer> threeHerbStops()
+	{
+		for (String key : new String[]{FALADOR_HERB, CATHERBY_HERB, ARDOUGNE_HERB})
+		{
+			record(key, 43);
+			availability.setAvailable(patch(key), true);
+		}
+		selection.toggle(com.dooglemaps.data.Seed.TOADFLAX);
+		stockInventory(com.dooglemaps.data.Seed.TOADFLAX, 5);
+
+		// Deliberately not one of the three. Standing in a remaining stop's region clears the
+		// route outright - work underfoot beats travelling - and would mask everything below.
+		standingIn(VARROCK_REGION);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.leaveBank();
+		return regionsTargeted();
+	}
+
+	/** Somewhere with no stop of its own, so a route is actually drawn. */
+	private static final int VARROCK_REGION = 12854;
+
+	/** Next door to the Ardougne herb stop, and not a stop itself. */
+	private static final int ARDOUGNE_BUSH_REGION = 10290;
+
+	/** Undecided, the router is handed everything and picks - that is the ordering strategy. */
+	@Test
+	public void anUndecidedRunOffersEveryStop()
+	{
+		assertEquals("all three are candidates until one is chosen", 3, threeHerbStops().size());
+	}
+
+	/**
+	 * Once the route names a stop, that is where the run is going.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * "Cheapest to reach" is measured from where the player is, and the run re-asked on every
+	 * region change - so crossing a boundary on the way to one stop could hand the leg to
+	 * another, and a few regions later hand it back. The line, the destination name, the hops
+	 * and the highlighted teleport all swung round with it. Reported from play as the route and
+	 * the infobox changing direction constantly with several run types ticked.
+	 */
+	@Test
+	public void acommittedLegSurvivesTheNextRetarget()
+	{
+		threeHerbStops();
+		int catherby = patch(CATHERBY_HERB).getRegion().getRegionId();
+
+		planner.commitDestination(catherby);
+		// The region change that used to re-open the question - and a pointed one: this is the
+		// region next door to the Ardougne stop, which is exactly when "cheapest from here"
+		// used to hand the leg over mid-journey. Next door rather than in it, since standing
+		// in a remaining stop clears the route outright and would prove nothing.
+		standingIn(ARDOUGNE_BUSH_REGION);
+		planner.retarget();
+
+		assertEquals("one leg, and it is the one already chosen",
+			Collections.singleton(catherby), regionsTargeted());
+	}
+
+	/** Finishing the committed stop hands the choice back, greedily, from wherever you are. */
+	@Test
+	public void finishingTheCommittedStopChoosesAfresh()
+	{
+		threeHerbStops();
+		int falador = patch(FALADOR_HERB).getRegion().getRegionId();
+
+		planner.commitDestination(falador);
+		service(FALADOR_HERB);
+
+		assertEquals("the other two are candidates again", 2, regionsTargeted().size());
+		assertFalse("and the finished one is not",
+			regionsTargeted().contains(falador));
+	}
+
+	/** So does waving it past, which is the escape hatch when the pick was not the one wanted. */
+	@Test
+	public void skippingTheCommittedStopChoosesAfresh()
+	{
+		threeHerbStops();
+		int catherby = patch(CATHERBY_HERB).getRegion().getRegionId();
+
+		planner.commitDestination(catherby);
+		planner.skipRegion(catherby);
+
+		assertEquals(2, regionsTargeted().size());
+		assertFalse(regionsTargeted().contains(catherby));
+	}
+
+	/**
+	 * A route that names nowhere is not a decision to forget the one already made.
+	 *
+	 * <p>An unnamed destination is the ordinary state for a second or two after every request -
+	 * Shortest Path may echo every target it was handed rather than name its pick - so treating
+	 * it as "undecided" would put the run straight back to re-choosing on every reply.
+	 */
+	@Test
+	public void anUnnamedRouteDoesNotReleaseTheLeg()
+	{
+		threeHerbStops();
+		int catherby = patch(CATHERBY_HERB).getRegion().getRegionId();
+
+		planner.commitDestination(catherby);
+		planner.commitDestination(-1);
+		planner.retarget();
+
+		assertEquals(Collections.singleton(catherby), regionsTargeted());
+	}
+
+	/**
+	 * A tool the withdraw list wants mid-run earns a trip back, even if ToolNeeds cannot see it.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * {@code reviewSupplies} asked {@code ToolNeeds.anyOnlyInBank} and nothing else, and the
+	 * <b>axe has never been a ToolNeeds tool</b> — it is a {@code RunLoadout} row. So a contract
+	 * taken from Jane for a patch still holding last run's tree left the player at the Farming
+	 * Guild being told to chop something they had nothing to chop with, and no trip back was ever
+	 * offered. Reported from play, along with the forestry basket the logs need.
+	 */
+	@Test
+	public void aToolTheWithdrawListWantsMidRunDivertsToABank()
+	{
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.leaveBank();
+		assertFalse("nothing was owed at the start", planner.isAtBankLeg());
+
+		// ToolNeeds still says no - the axe is not one of its tools, which is the whole point.
+		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(false);
+		planner.setToolOutstanding(true);
+		planner.reviewSupplies();
+
+		assertTrue("an axe in the bank is a reason to go back for it", planner.isAtBankLeg());
+	}
+
+	/** A seed or a payment is not: the run can press on and skip that patch. */
+	@Test
+	public void anOrdinaryWithdrawalDoesNotDivertMidRun()
+	{
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.leaveBank();
+
+		when(tools.anyOnlyInBank(Mockito.any())).thenReturn(false);
+		planner.setWithdrawOutstanding(true);
+		planner.setToolOutstanding(false);
+		planner.reviewSupplies();
+
+		assertFalse("standing on work still beats going shopping for a seed",
+			planner.isAtBankLeg());
+	}
+
+	/** And a waived leg outranks it, as it does every other diversion. */
+	@Test
+	public void aWaivedLegIsNotReopenedByAMissingTool()
+	{
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB));
+		planner.waiveBankLeg();
+
+		planner.setToolOutstanding(true);
+		planner.reviewSupplies();
+
+		assertFalse("no means no for the rest of the run", planner.isAtBankLeg());
+	}
+
+	/**
+	 * The committed stop is nameable even when the router has said nothing at all.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The destination name is inferred from Shortest Path's reply, and the reply is briefly
+	 * unavailable more often than it looks: wiped whenever a route is re-asked, discarded outright
+	 * while the player is instanced, and sometimes carrying hops with no landing worth matching.
+	 * Harmless until the nexus row and the jewellery box line began matching <b>by destination</b>
+	 * - then a nameless leg silently stops highlighting the thing you are meant to click.
+	 * Reported as the Catherby teleport dropping out of the infobox and the nexus list on the way
+	 * into the house, with the log showing "(unnamed leg)" five seconds before the house was even
+	 * entered.
+	 */
+	@Test
+	public void aCommittedLegIsStillNameableWithNoRouteReply()
+	{
+		threeHerbStops();
+		int catherby = patch(CATHERBY_HERB).getRegion().getRegionId();
+		planner.commitDestination(catherby);
+
+		RunStop named = planner.committedStop();
+		assertNotNull("the run knows where it is going without being told again", named);
+		assertEquals(catherby, named.getRegion().getRegionId());
+	}
+
+	/** It goes quiet the moment that stop is done, so the next leg is chosen fresh. */
+	@Test
+	public void aFinishedStopIsNoLongerTheCommittedOne()
+	{
+		threeHerbStops();
+		int falador = patch(FALADOR_HERB).getRegion().getRegionId();
+		planner.commitDestination(falador);
+		assertNotNull(planner.committedStop());
+
+		service(FALADOR_HERB);
+
+		assertNull("a finished stop cannot be where the run is heading",
+			planner.committedStop());
+	}
+
+	/** And it says nothing on the supply leg, whose destination is a bank rather than a stop. */
+	@Test
+	public void theSupplyLegIsNotNamedFromTheCommitment()
+	{
+		threeHerbStops();
+		planner.commitDestination(patch(CATHERBY_HERB).getRegion().getRegionId());
+		planner.setToolOutstanding(true);
+		planner.reviewSupplies();
+
+		assertTrue("fixture: the run should be collecting", planner.isAtBankLeg());
+		assertNull(planner.committedStop());
+	}
+
+	/** Falador, for standing somewhere that is emphatically not a shore. */
+	private static final int FALADOR_REGION = 12083;
+
+	private static FarmPatch coralPatch()
+	{
+		FarmPatch coral = FarmingWorldData.getPatches(PatchImplementation.CORAL).get(0);
+		assertNotNull(coral);
+		return coral;
 	}
 
 	/** The nursery objects are known by id, since nothing on the seabed carries the varbit. */

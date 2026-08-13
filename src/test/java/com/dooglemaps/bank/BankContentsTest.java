@@ -160,6 +160,12 @@ public class BankContentsTest
 			org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
 			org.mockito.ArgumentMatchers.any());
 
-		return Construct.construct(BankContents.class, configManager, new com.google.gson.Gson());
+		BankContents bank =
+			Construct.construct(BankContents.class, configManager, new com.google.gson.Gson());
+		// Constructed and then loaded, which is the lifecycle DoogleMapsPlugin gives all thirteen
+		// stores at start-up. Skipping it here modelled a store that writes before it has ever
+		// read - the state ProfileJsonStore now refuses, having found it destroying patchLocations.
+		bank.load();
+		return bank;
 	}
 }

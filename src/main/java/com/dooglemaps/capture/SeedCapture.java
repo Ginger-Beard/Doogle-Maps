@@ -39,6 +39,38 @@ public class SeedCapture
 	private static final Pattern SEED_BOX_BULK = Pattern.compile(
 		"The following stolen loot gets added to your seed box: (?<item>.+?) x (?<quantity>\\d+)\\.");
 
+	/**
+	 * The game's own word for seeds going into and out of the box.
+	 *
+	 * <h2>Why these are worth reading when a derivation already exists</h2>
+	 *
+	 * Because they are exact and the derivation is a guess. {@code SeedInventoryStore} works the
+	 * box out by watching what left the inventory in the two ticks after a Fill, which cannot
+	 * tell a Fill from a bank deposit or a planting in the same window — where <i>"Stored 6 x
+	 * Ranarr seed in your seed box."</i> names the seed and the count outright.
+	 *
+	 * <p>The plugin has been watching one of these lines go past for months without acting on
+	 * it: {@code HarvestLog} logs "Stored 1 x Avantoe seed in your seed box." with the note
+	 * <i>"if items are going somewhere the inventory cannot see, this is the wording to
+	 * match"</i>. It was the wording to match.
+	 *
+	 * <p>Found by reading how Dude Where's My Stuff tracks the box, which reads these same lines
+	 * alongside the interface itself; the wordings are the game's own. Credited in
+	 * {@code ATTRIBUTION.md}.
+	 */
+	private static final Pattern[] SEED_BOX_ADDED = {
+		// A Fill, and a seed used on a closed box.
+		Pattern.compile("Stored (?<quantity>\\d+) x (?<item>.+?) in your seed box\\."),
+		// A seed clicked while the box's own interface is open.
+		Pattern.compile(
+			"You put (?<quantity>\\d+) x (?<item>.+?) straight into your open seed box\\."),
+	};
+
+	/** The other direction: an Empty, which names what came back. */
+	private static final Pattern[] SEED_BOX_REMOVED = {
+		Pattern.compile("Emptied (?<quantity>\\d+) x (?<item>.+?) to your inventory\\."),
+	};
+
 	private final SeedInventoryStore seeds;
 	private final FarmingBonusStore bonuses;
 	private final ItemManager itemManager;
@@ -139,7 +171,77 @@ public class SeedCapture
 			{
 				// Not a number we can use; better to miss the seeds than to invent some.
 			}
+			return;
 		}
+
+		if (applyStated(event.getMessage(), SEED_BOX_ADDED, true))
+		{
+			return;
+		}
+		applyStated(event.getMessage(), SEED_BOX_REMOVED, false);
+	}
+
+	/**
+	 * Applies the first of these patterns the message matches.
+	 *
+	 * @param adding true for seeds going in, false for seeds coming out
+	 * @return whether one matched, so the caller can stop looking
+	 */
+	private boolean applyStated(String message, Pattern[] patterns, boolean adding)
+	{
+		for (Pattern pattern : patterns)
+		{
+			Matcher matcher = pattern.matcher(message);
+			if (!matcher.matches())
+			{
+				continue;
+			}
+
+			int quantity;
+			try
+			{
+				quantity = Integer.parseInt(matcher.group("quantity"));
+			}
+			catch (NumberFormatException ignored)
+			{
+				// Better to miss the seeds than to invent some - same call as the bulk line.
+				return true;
+			}
+
+			// Matched, and that is worth reporting even when the name resolves to nothing: a
+			// wording that fits but names a seed we cannot place is the one shape of failure
+			// this cannot notice by itself.
+			if (!move(matcher.group("item"), quantity, adding))
+			{
+				log.info("The game said \"{}\" and \"{}\" is not a seed this build knows - the "
+					+ "box model will drift by {} until it is next opened.",
+					message, matcher.group("item"), quantity);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/** Resolves the named seed and moves it, answering whether the name was placed at all. */
+	private boolean move(String itemName, int quantity, boolean adding)
+	{
+		for (Seed seed : Seed.values())
+		{
+			ItemComposition composition = itemManager.getItemComposition(seed.getItemID());
+			if (composition != null && itemName.equalsIgnoreCase(composition.getName()))
+			{
+				if (adding)
+				{
+					seeds.addToSeedBox(seed.getItemID(), quantity);
+				}
+				else
+				{
+					seeds.removeFromSeedBox(seed.getItemID(), quantity);
+				}
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

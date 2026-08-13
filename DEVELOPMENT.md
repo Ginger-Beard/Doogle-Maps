@@ -183,13 +183,28 @@ python3 tools/fetch_chatheads.py             # ~200 wiki requests, rate-limited
 python3 tools/fetch_chatheads.py --from-tsv  # rebuild Farmers.java without refetching
 ```
 
-Nothing is hand-maintained: the NPC ids come out of the generated `FarmingWorldData`, their numeric
-values out of the runelite-api jar, and their names and portraits off the wiki by searching for the
-id. A farmer who moves ids shows up as a miss in the report rather than as a silently wrong face.
-`tools/chatheads.tsv` records what each one resolved to.
+Almost nothing is hand-maintained: the NPC ids come out of the generated `FarmingWorldData`, their
+numeric values out of the runelite-api jar, and their names and portraits off the wiki by searching
+for the id. A farmer who moves ids shows up as a miss in the report rather than as a silently wrong
+face. `tools/chatheads.tsv` records what each one resolved to.
 
-One gardener has no portrait — the Tortugan who tends the coral patch has no wiki page — and
-`FarmerIconTest` asserts that gap is still a gap, so it fails on purpose if one appears.
+The exception is `EXTRA_NPC_GROUPS` in the script, which lists ids that belong to one person. It
+exists because **the id in the world data is not always an id the wiki declares, nor the one the
+game shows you**. Guildmaster Jane is three constants and the wiki knows two of them; the Tortugan
+coral farmer is three and the wiki knows none of the one `FarmingWorldData` carries. Grouping lets
+the page be found by whichever id does resolve, and writes the sprite under all of them.
+
+**The coral farmer is the one gardener still without a name or a face.** He is in
+`EXTRA_NPC_GROUPS` now, so the next run of this script should resolve him — he is Chet, and the
+unlocked id a player actually meets is `TORTUGAN_CORAL_FARMER_UNLOCKED`. Until it runs,
+`FarmerIconTest` still asserts the gap is a gap, so **that test fails on purpose the moment he
+appears**: drop him from its `KNOWN_MISSING` in the same commit as the regenerated file.
+
+Grouping in the generator only fixes the *name and face*. Who an id **is** at runtime is a
+separate, hand-written table — `FarmerVariants` — because that question has to be answerable
+without a name, and the coral farmer had none. Anything comparing a patch's farmer against an NPC
+in the world goes through it; an exact `==` there is a bug waiting for the next multi-id gardener.
+See `docs/NOTES.md`, *The coral farmer was three people*.
 
 ## Screenshots
 
@@ -303,9 +318,14 @@ In `docs/`:
   settled with the owner, and the Plugin Hub compliance line. Short, and the one to read first.
 - **`docs/run-flow.md`** — the player's click-and-move loop as two flowcharts, traced through
   `RunPlanner` → `GuideTracker` → `GuidePlan` → `PatchInteractionTracker`.
-- **`docs/code-review-2026-08.md`** — a whole-repo review, kept as a dated snapshot. Its headline
-  finding is fixed and its live items were moved into `docs/TODO.md`, so it is history rather
-  than a work list; delete it whenever it stops being interesting.
+- **`docs/farming-mechanics-audit-2026-08.md`** — the guidance logic read against the wiki's
+  Farming category. Its ranked gaps are the useful part and several are still open. Its addenda
+  record what the wiki could not answer: the `PatchRules` values core never encoded, and the
+  coral nurseries, which had to be established in the client.
+- **`docs/code-review-2026-08.md`** and **`docs/code-review-2026-08b.md`** — whole-repo reviews,
+  kept as dated snapshots. Their headline findings are fixed and their live items were moved into
+  `docs/TODO.md`, so they are history rather than work lists; delete them whenever they stop
+  being interesting.
 
 **`doogle-maps-plugin-spec.md` is gone.** It was written before any code existed and described a
 plugin that now exists and can be read instead, so most of it had become a second, worse source of

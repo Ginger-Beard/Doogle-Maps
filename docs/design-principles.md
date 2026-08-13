@@ -81,11 +81,37 @@ What that means in practice:
 - **Menu reordering is a permitted category, used within its ruling.** The rulings allow
   left-click and shift-click swaps (core's own Menu Entry Swapper is the precedent) and
   forbid *conditional menu entry removing*. `GuideMenuSwap` therefore reorders only —
-  never removes, never renames — is opt-in by setting, and is scoped to the guide's own
-  items (the seed box, the empty bucket) and to Guildmaster Jane. The seed box and bucket
-  swaps are now standing-while-the-run-is-on rather than step-driven, which is also the
-  shape a reviewer objecting to step-driven swaps would ask for; only Jane's is still
-  conditional on the current step, and the feature does not depend on that cleverness.
+  never removes, never renames — every swap has its own setting, and each is scoped to
+  one thing the guide is already talking about. There are six:
+
+  | Swap | Scope | When |
+  |---|---|---|
+  | `seedBoxLeftClick` | the seed box | standing, while a run is on |
+  | `dropEmptyBuckets` | empty buckets | standing, while a run is on — **except** at a compost bin |
+  | `contractLeftClick` | Guildmaster Jane | while a contract step is current |
+  | `herbUseLeftClick` | a grimy herb | while a note-at-the-leprechaun step is current |
+  | `payLeftClick` | a farmer who charges per patch | while that patch's pay step is current |
+  | `fairyRingLeftClick` | a fairy ring | while the drawn route goes through one |
+
+  The fairy ring is the clearest case of the rule at work rather than an exception to it: a
+  ring opens on Zanaris or on wherever you went last, neither of which is where the run is
+  going, and the code that is going there is already on the panel. Core offers the same swap by
+  name — `MenuEntrySwapper.swapFairyRing`, "Swap Zanaris with Last-destination or Configure on
+  fairy rings" — so this is the precedent applied rather than stretched.
+
+  The standing/step-driven split used to be a claim about the design — the box and the
+  bucket were made standing on the reasoning that it is the shape a reviewer objecting to
+  step-driven swaps would ask for. It has not held as a rule, and it should not be quoted
+  as one: four of the six are step-driven, because they answer a question the item
+  cannot answer about itself. A grimy herb does not know whether you are noting; a farmer
+  with two Pay options does not know which patch you meant.
+
+  What has held, and is the part worth defending, is that **no swap invents information
+  or hides an option**. Each puts an option the game already offered under the click,
+  every other option stays one right-click away, and switching the setting off restores
+  the game's own order exactly. The bucket's bin exception is the same principle read
+  backwards: leaving Drop under the click while the guide asks you to fill those buckets
+  would be the swap arguing with the instruction.
 
 Submission and every update draw human and AI review. A single automation-shaped feature
 gets the plugin removed, so the first bullet is not a rule to be clever about — and when a

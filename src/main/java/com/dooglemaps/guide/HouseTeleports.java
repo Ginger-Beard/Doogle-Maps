@@ -1,6 +1,10 @@
 package com.dooglemaps.guide;
 
+import com.dooglemaps.data.FarmPatch;
+import com.dooglemaps.data.FarmingWorldData;
+import com.dooglemaps.data.PatchImplementation;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import net.runelite.api.gameval.InterfaceID;
 
@@ -190,11 +194,89 @@ public final class HouseTeleports
 			"xeric's glade", "xeric's lookout", "xeric's inferno", "xeric's heart",
 			"xeric's honour", "hosidius",
 		});
+		// The network's own stops, which every spirit tree reaches and nobody has to grow.
 		FURNITURE_DESTINATIONS.put("spirit tree", new String[]{
 			"tree gnome village", "gnome stronghold", "battlefield of khazard",
 			"grand exchange", "feldip hills", "port sarim", "etceteria", "brimhaven",
 			"hosidius", "farming guild",
 		});
+	}
+
+	/**
+	 * The five spirit tree destinations that only exist if the player grew the tree.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"just got routed to the farming guild via POH spirit tree - farming guild. Don't have
+	 * that yet, I see the jewellery box is also highlighted though."</i> Shortest Path planned a
+	 * hop through a spirit tree that does not exist, and this class agreed with it, because the
+	 * destination list above claims all ten stops unconditionally. Five of them are stops on the
+	 * network and five are <b>farm patches</b> — a spirit tree is only in the network once
+	 * somebody has grown one there.
+	 *
+	 * <p>This plugin knows which, and Shortest Path does not: the guild's spirit tree patch was
+	 * sitting at {@code varbitValue 0, WEEDS} in the session that produced the report. The
+	 * highlight lit the furniture anyway, alongside the jewellery box that genuinely reaches the
+	 * guild by skills necklace — so the one piece of furniture that would work was competing for
+	 * attention with one that would not.
+	 *
+	 * <p>Resolved from {@link FarmingWorldData} rather than written out as keys, so it cannot
+	 * drift from the patch table. Note {@code hosidius} maps to the region the data calls
+	 * <b>Kourend</b>, which is the one place the destination's name and the region's differ.
+	 *
+	 * <p><b>This cannot suppress the route</b>, only our pointing at it. Shortest Path takes
+	 * spirit trees as one boolean ({@code shortestpath.usePohSpiritTree}) with no per-destination
+	 * control, so a hop through a tree you have not grown is still planned. What changes is that
+	 * the guide no longer endorses it by outlining the tree.
+	 */
+	private static final Map<String, FarmPatch> GROWN_SPIRIT_TREES = grownSpiritTrees();
+
+	private static Map<String, FarmPatch> grownSpiritTrees()
+	{
+		Map<String, String> byRegionName = new LinkedHashMap<>();
+		byRegionName.put("port sarim", "Port Sarim");
+		byRegionName.put("etceteria", "Etceteria");
+		byRegionName.put("brimhaven", "Brimhaven");
+		byRegionName.put("hosidius", "Kourend");
+		byRegionName.put("farming guild", "Farming Guild");
+
+		Map<String, FarmPatch> found = new LinkedHashMap<>();
+		for (Map.Entry<String, String> entry : byRegionName.entrySet())
+		{
+			for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.SPIRIT_TREE))
+			{
+				if (patch.getRegion().getName().equals(entry.getValue()))
+				{
+					found.put(entry.getKey(), patch);
+					break;
+				}
+			}
+		}
+		return found;
+	}
+
+	/**
+	 * The patch a spirit tree hop depends on, or null when the destination needs no growing.
+	 *
+	 * <p>Null for every network stop, and for anything that is not a spirit tree destination at
+	 * all — so a caller with no opinion about patch state can ignore this entirely.
+	 */
+	@javax.annotation.Nullable
+	public static FarmPatch spiritTreePatchFor(String destination)
+	{
+		if (destination == null)
+		{
+			return null;
+		}
+		String said = destination.toLowerCase();
+		for (Map.Entry<String, FarmPatch> entry : GROWN_SPIRIT_TREES.entrySet())
+		{
+			if (said.contains(entry.getKey()))
+			{
+				return entry.getValue();
+			}
+		}
+		return null;
 	}
 
 	/**

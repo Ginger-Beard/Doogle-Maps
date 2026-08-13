@@ -36,6 +36,30 @@ public class PatchLocationCapture
 		this.locations = locations;
 	}
 
+	/**
+	 * One patch object seen, waiting for a tick to record it on.
+	 *
+	 * <p>See {@link #onGameTick}. Held rather than recorded straight away because a scene's
+	 * objects spawn <b>before</b> the stores have read anything.
+	 */
+	private static final class Sighting
+	{
+		private final FarmPatch patch;
+		private final WorldPoint point;
+		private final int sizeX;
+		private final int sizeY;
+
+		private Sighting(FarmPatch patch, WorldPoint point, int sizeX, int sizeY)
+		{
+			this.patch = patch;
+			this.point = point;
+			this.sizeX = sizeX;
+			this.sizeY = sizeY;
+		}
+	}
+
+	private final java.util.List<Sighting> pending = new java.util.ArrayList<>();
+
 	@Subscribe
 	public void onGameObjectSpawned(GameObjectSpawned event)
 	{
@@ -56,10 +80,52 @@ public class PatchLocationCapture
 					// The footprint travels with the position: the router is sent the ring of
 					// tiles AROUND the patch, and the ring is only exact once the size is known.
 					// See PatchLocationStore.getRouteTargets.
-					locations.record(patch, location, object.sizeX(), object.sizeY());
+					pending.add(new Sighting(patch, location, object.sizeX(), object.sizeY()));
 					return;
 				}
 			}
+		}
+	}
+
+	/**
+	 * Records what the scene showed, a tick after it showed it.
+	 *
+	 * <h2>Why this cannot happen on the spawn</h2>
+	 *
+	 * A scene's objects spawn during {@code LOADING}, and the stores read their blobs on the
+	 * first {@code LOGGED_IN} — so at a login the whole scene arrives <b>before</b>
+	 * {@code PatchLocationStore} has read anything. Recording there wrote into an empty map,
+	 * which is how a store holding six positions came to overwrite one holding a hundred; see
+	 * {@code ProfileJsonStore}'s write guard, which now refuses it.
+	 *
+	 * <p>Refusing the write fixed the destruction and left the other half: those sightings were
+	 * still thrown away, because {@code load()} clears the map on its way in. Logging in at the
+	 * Farming Guild therefore learned all thirteen patches correctly and kept none of them —
+	 * ten refusals in one second, and the guild's tree and redwood still carrying the wrong
+	 * plane afterwards. Reported from play, from the warning itself.
+	 *
+	 * <p>A {@code GameTick} is the simplest thing that is provably late enough: it only fires
+	 * while logged in, so the load that happens on the way to {@code LOGGED_IN} is already done.
+	 * No game-state test, no ordering assumption between two subscribers, one code path for the
+	 * login scene and every teleport after it.
+	 *
+	 * <p>Nothing clears the buffer on the way out, deliberately: a sighting held across a logout
+	 * is still true when it is flushed, because a patch's position is a fact about the world
+	 * rather than about the account.
+	 */
+	@Subscribe
+	public void onGameTick(net.runelite.api.events.GameTick event)
+	{
+		if (pending.isEmpty())
+		{
+			return;
+		}
+
+		java.util.List<Sighting> seen = new java.util.ArrayList<>(pending);
+		pending.clear();
+		for (Sighting sighting : seen)
+		{
+			locations.record(sighting.patch, sighting.point, sighting.sizeX, sighting.sizeY);
 		}
 	}
 }

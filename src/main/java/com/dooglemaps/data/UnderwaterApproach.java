@@ -30,24 +30,99 @@ import net.runelite.api.coords.WorldPoint;
  */
 public final class UnderwaterApproach
 {
-	/** One landward point, and the object standing on it. */
+	/** One landward point, the object standing on it, and where it leads. */
 	public static final class Approach
 	{
 		private final WorldPoint point;
 		private final int objectId;
 		private final String name;
+		private final int underwaterRegionId;
 
-		Approach(WorldPoint point, int objectId, String name)
+		Approach(WorldPoint point, int objectId, String name, int underwaterRegionId)
 		{
 			this.point = point;
 			this.objectId = objectId;
 			this.name = name;
+			this.underwaterRegionId = underwaterRegionId;
 		}
 
-		/** The tile to route to — walkable, unlike the patch. */
+		/**
+		 * The region on the far side of the approach — the seabed the patches actually stand in.
+		 *
+		 * <h2>Why this has to be written down</h2>
+		 *
+		 * A {@link FarmPatch} is filed under the {@code FarmRegion} whose varbits carry it, and
+		 * for the coral nurseries that is the <b>Great Conch</b>, region 12581: the ship the
+		 * gardener stands on, not the seabed the patches are on. Everything that asks "is the
+		 * player at this stop" compares against that one id, so standing among the nurseries
+		 * answered no — and the consequences were the whole of two bug reports. The run routed
+		 * the player back UP to the steps they had just come down, because the guard that stops
+		 * routing while there is work underfoot never fired. Nothing produced a step for the
+		 * patches in front of them, because the guide's {@code stopAt} found no stop. And a run
+		 * started down there opened at a bank for the compost bins, because
+		 * {@code standingAtAStop} said the player was standing on nothing.
+		 *
+		 * <p>Read straight out of {@code client.log}, which prints the region on the
+		 * {@code Run planned:} line: <i>"you are in region 13194 which is not a stop on this
+		 * run"</i>, logged from the nurseries. Not inferred, in other words — the same standard
+		 * the object ids and coordinates above were held to.
+		 *
+		 * <p>The seaweed patches have the opposite arrangement and want no fixing: their
+		 * {@code FarmRegion} <i>is</i> the underwater region, 15008, so the two agree already.
+		 * It is stated here anyway rather than left null, because a rule with one member and one
+		 * exception is a rule nobody can check.
+		 */
+		public int getUnderwaterRegionId()
+		{
+			return underwaterRegionId;
+		}
+
+		/** The tile the object stands on, for naming and outlining it. */
 		public WorldPoint getPoint()
 		{
 			return point;
+		}
+
+		/**
+		 * The tiles to route to: the object's own, and the ring of eight around it.
+		 *
+		 * <h2>Why one tile was not enough</h2>
+		 *
+		 * Shortest Path only ever finishes a search by stepping <b>onto</b> a target tile — there
+		 * is no "adjacent counts" — and the tile written down here is the object's own. A set of
+		 * steps leading into the sea is not a tile you can stand on any more than a tree is, so
+		 * the search could never terminate on it. This is the identical fault
+		 * {@link com.dooglemaps.route.PatchLocationStore#getRouteTargets} rings a bush for, and
+		 * the same fix: the first walkable tile beside the steps ends the search instantly, and
+		 * it is also exactly where the player wants to be stood.
+		 *
+		 * <p>It is worse here than for a bush, because the coral stop hands the router a second
+		 * target — the calquat on the deck — and an unreachable target does not merely delay the
+		 * route, it loses to the reachable one. Reported from play twice as being walked to a
+		 * table on the Great Conch instead of the steps; the guess offered with the second
+		 * report was to move the coordinates a tile west, which is right about the cause and
+		 * fixed on one side only. Ringing it covers all four.
+		 *
+		 * <p>The centre stays in the set. An unreachable member of a target set never wins, so
+		 * keeping it costs nothing and means an approach that <i>is</i> walkable still routes to
+		 * the spot itself.
+		 */
+		public java.util.List<WorldPoint> getRouteTargets()
+		{
+			java.util.List<WorldPoint> targets = new java.util.ArrayList<>();
+			targets.add(point);
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				for (int dy = -1; dy <= 1; dy++)
+				{
+					if (dx != 0 || dy != 0)
+					{
+						targets.add(new WorldPoint(point.getX() + dx, point.getY() + dy,
+							point.getPlane()));
+					}
+				}
+			}
+			return targets;
 		}
 
 		/** The scene object to outline once the player is close enough to see it. */
@@ -66,13 +141,22 @@ public final class UnderwaterApproach
 		 * The region the approach itself stands in — the shore, never the seabed.
 		 *
 		 * <p>Derived from the point rather than written down beside it, so the two cannot
-		 * disagree. This is what {@link #stillWanted} compares against.
+		 * disagree. Distinct from {@link #getUnderwaterRegionId()}, which is where it leads.
 		 */
 		public int getRegionId()
 		{
 			return point.getRegionID();
 		}
 	}
+
+	/** The seabed below the steps; see {@link Approach#getUnderwaterRegionId()}. */
+	private static final int CORAL_NURSERIES_REGION = 13194;
+
+	/**
+	 * The Fossil Island seabed, which is also the seaweed patches' own {@code FarmRegion} id —
+	 * so unlike the nurseries, nothing here disagreed in the first place.
+	 */
+	private static final int FOSSIL_ISLAND_SEABED = 15008;
 
 	/**
 	 * The steps down to the Coral Nurseries, on the shore of the Great Conch.
@@ -82,7 +166,7 @@ public final class UnderwaterApproach
 	 * actually clicked.
 	 */
 	private static final Approach CORAL_STEPS =
-		new Approach(new WorldPoint(3272, 2463, 0), 57904, "Steps");
+		new Approach(new WorldPoint(3272, 2463, 0), 57904, "Steps", CORAL_NURSERIES_REGION);
 
 	/**
 	 * The rowboat out to the Fossil Island underwater area.
@@ -97,16 +181,20 @@ public final class UnderwaterApproach
 	 * are a real object on a real shore, and the run only has to get the player to the object.
 	 */
 	private static final Approach SEAWEED_ROWBOAT =
-		new Approach(new WorldPoint(3761, 3898, 0), 30919, "Rowboat");
+		new Approach(new WorldPoint(3761, 3898, 0), 30919, "Rowboat", FOSSIL_ISLAND_SEABED);
 
 	/**
 	 * The nursery objects on the seabed, for outlining a patch the varbit scan cannot find.
 	 *
-	 * <p>Read off the client at the spot, like the steps. The two nurseries cannot be told
-	 * apart from the objects alone — nothing in them carries the patch varbit everything else
-	 * keys on — so both are marked whichever one the step names. Two adjacent nurseries read
-	 * as one place to go, which is the same call the dropped-crop highlight makes for two
-	 * stacks on neighbouring squares.
+	 * <p>Read off the client at the spot, like the steps. Nothing in them carries the patch
+	 * varbit everything else keys on, and the two ids do not map one-to-one onto the two
+	 * nurseries — so this set alone cannot say which patch an object belongs to.
+	 *
+	 * <p>It no longer has to. Both nursery <b>positions</b> are known ({@code 12581.4771} and
+	 * {@code .4772} in {@code MeasuredPatchLocations}, five tiles apart), so
+	 * {@code GuideOverlay.findPatchObjects} narrows this set by where the objects stand. Until
+	 * that existed both were marked whichever one the step named, which was reported from play
+	 * as the pair lighting up together.
 	 */
 	private static final int[] CORAL_NURSERY_OBJECTS = {58710, 58711};
 
@@ -132,30 +220,22 @@ public final class UnderwaterApproach
 		return patch == null ? null : forType(patch.getImplementation());
 	}
 
-	/**
-	 * Whether the landward approach is still the right thing to route to.
+	/*
+	 * A `stillWanted(approach, playerRegion)` lived here, answering "is the landward approach
+	 * still the right thing to route to" with `playerRegion == approach.getRegionId()`.
 	 *
-	 * <h2>Once you are down the steps it is the wrong answer, loudly</h2>
+	 * It was defending something real — keep the dock as the target after the dive and the
+	 * router plots a course back UP to it, fairy rings and all, which was reported from play —
+	 * but it defended it with the wrong test. "The player has gone under" and "the player is not
+	 * standing on the dock" are different statements, and reading the second as the first meant
+	 * the approach was used only while stood on it and never once on the way there. What the
+	 * router got instead was the patch, which for a seabed patch is a region centre: a table on
+	 * the Great Conch's deck, or a tile out at y 10272 that nothing can reach.
 	 *
-	 * The approach point is on the dock. Kept as the target after the dive, the router does
-	 * exactly what it is asked and plots a course back up to it — through fairy rings, from the
-	 * seabed. Reported from play: "when we click that we start trying to navigate back to it
-	 * via fairy rings". So the substitution lasts only while the player is somewhere else; the
-	 * moment they leave the dock's region the patch speaks for itself, and standing at the
-	 * nursery needs no route at all.
-	 *
-	 * @param playerRegion the region the player is in, or -1 when it is not yet known
+	 * Deleted rather than corrected, because the fixed test needs the stop's region and the
+	 * stop is not a thing this class knows about. It lives in `RunPlanner.routeTargetsFor` now,
+	 * next to the route it decides and next to the arrival test it doubles up on.
 	 */
-	public static boolean stillWanted(@Nullable Approach approach, int playerRegion)
-	{
-		if (approach == null)
-		{
-			return false;
-		}
-		// Unknown counts as "not there yet": before the first tick of a session there is no
-		// evidence either way, and routing to the shore is the safe half of that guess.
-		return playerRegion < 0 || playerRegion == approach.getRegionId();
-	}
 
 	/** The scene objects to outline for this patch, or empty when the varbit scan suffices. */
 	public static int[] objectsFor(@Nullable PatchImplementation type)
@@ -163,6 +243,19 @@ public final class UnderwaterApproach
 		return type == PatchImplementation.CORAL
 			? CORAL_NURSERY_OBJECTS.clone()
 			: new int[0];
+	}
+
+	/**
+	 * Whether a player standing in this region is standing at this patch.
+	 *
+	 * <p>The seabed answer to a question every other patch answers with its {@code FarmRegion}.
+	 * False for anything on dry land, which keeps callers to one test rather than two: a stop
+	 * asks its own region first and only reaches this for the patches that need it.
+	 */
+	public static boolean isAtPatch(@Nullable FarmPatch patch, int playerRegion)
+	{
+		Approach approach = forPatch(patch);
+		return approach != null && playerRegion == approach.getUnderwaterRegionId();
 	}
 
 	/**

@@ -21,6 +21,57 @@ in-client checks are in `docs/TESTING.md`.
 These are written and unverified. `docs/TESTING.md` has the full plan, with a fail signature for
 each so a wrong result points somewhere.
 
+- **Harvest the learned patch positions into a per-patch table.** Two stages, and the first is
+  just playing.
+
+  **Why.** Within a stop, patches are ordered nearest-first, and that needs each patch to have
+  its own coordinate. `WikiPatchLocations` publishes one pin per **location**, not per patch —
+  the wiki's own granularity — so every patch in a region returns the *identical* `WorldPoint`,
+  `GuideTracker.distance` compares equal for every pair, `List.sort` is stable, and the order
+  collapses to `FarmingWorldData` declaration order. That is the "standing at one patch and being
+  given instructions for another" failure, and it is live in every region with no learned
+  positions.
+
+  **Confirmed from the log, as a natural experiment.** Ardougne (10548, unlearned) is emitted
+  `4771; 4772; 4773; 4774` in every single `noteStopOrder` line and never once reorders. Falador
+  (12083, the only region with learned positions) reorders freely — `4771; 4773; 4774`, then
+  `4771; 4774; 4773` — because it can actually tell where the player is standing. The owner's
+  read, and it is right: this is behind a lot of the inner-region routing complaints.
+
+  **Scale of the difference.** Falador's five learned patches sit about five tiles apart
+  (`4771` at 3054,3312 · `4773` at 3054,3307 · `4772` at 3059,3308). Five tiles is the whole
+  resolution the ordering needs, and one shared pin destroys it.
+
+  **Stage 1 — collect.** Play normally until `patchLocations` fills. Nothing to build; the
+  learning already works. It was being destroyed on every client start until the
+  `ProfileJsonStore` write guard landed (see `docs/code-review-2026-08c.md` §0d), which is why
+  the store held six entries against 107 observed patches. **Confirm the guard first**: a couple
+  of client starts with no `Refusing to write patchLocations before it has been read` warning,
+  and the count climbing rather than resetting. The run-planned line reports it as
+  `box … / patchLocations` counters; `PatchLocationStore.isExact` is the per-patch answer.
+
+  **Stage 2 — promote.** Dump the filled `patchLocations` blob and bake it into
+  `WikiPatchLocations` as a per-patch table, keyed by patch rather than by location, carrying the
+  footprint (`sizeX`/`sizeY`) as well as the point. The coordinates are then **measured rather
+  than hand-authored**, which answers the objection in `PatchLocationStore`'s own class note —
+  *"hand-authoring 107 of them would be a lot of data to get subtly wrong and then maintain"* —
+  that was the reason for learning in the first place. It was a good reason when nothing could
+  measure them; the plugin measures them now.
+
+  **What it also settles.** Learning stays, as the self-correcting guard if Jagex ever moves a
+  patch — it just stops being the *only* source. And it dissolves the open question about
+  storage scope: a patch's position is a fact about the game world, identical for every account,
+  yet `patchLocations` is stored per RuneScape profile because it inherits `ProfileJsonStore`.
+  Baked into a data file that stops mattering, because the baseline lives in code and the
+  per-profile store becomes a cache of refinements rather than the system of record.
+
+  **What it does not buy, so nobody re-litigates it later.** Footprints are near-worthless on
+  their own. `getRouteTargets` rings the patch one tile outside its footprint, falling back to
+  `ASSUMED_FOOTPRINT = 3`; too big and the ring lands outside the patch (still walkable, still
+  terminates), too small and it lands inside, which for allotments is walkable anyway. The ring
+  itself is load-bearing — a bush *is* the blockage, so a path to its own tile never terminates —
+  but the measured size is a refinement, not the point. The point is per-patch coordinates.
+
 - **Guided mode** — the whole per-patch loop. Most recently fixed but unseen: patch tiles now
   filled so an emptied patch is visible, weeds asking to be raked, the leprechaun's compost
   slot no longer staying lit, bucket counts asking for what is actually missing, and the
@@ -67,6 +118,29 @@ each so a wrong result points somewhere.
   steps at Guildmaster Jane. The three dialogue lines and the completion message are matched from
   the client sources rather than from play, so a single wording difference makes the whole capture
   silent — and silent looks exactly like "no contract". See the section below and `docs/TESTING.md`.
+- **Paying Chet is unverified, and it is the one that has already failed twice.** Coral protection
+  is still reading `patchProtected: false` after payment as of the last report. Two causes were
+  found and fixed — the NPC id, then the menu position — and the acceptance line was loosened from
+  three exact strings to the shape they share, which is a *third* candidate cause fixed on
+  inference rather than on evidence. The class now logs both the success and the
+  accepted-but-unmatched case, so the next attempt should name the gate rather than needing
+  another round of guessing. `docs/TESTING.md` 1a-lvii.
+- **The per-patch Pay left-click swap** (`payLeftClick`), reported as not working for the West
+  nursery and untested since. It only fires while a `PAY_FARMER` step *for that patch* is current,
+  so the first thing to establish is what the panel was actually asking for at the time.
+- **The compost-bin line end to end** — four interlocking fixes in one session, none seen working
+  together: a finished bin producing steps at all, the refill being packed, the run returning to a
+  bank for a second load, and the whole thing working from a single free inventory slot.
+  `docs/TESTING.md` 1a-liv.
+- **The bin split**, which supersedes most of the above and is the largest unverified change to
+  the bins so far. The Compost tick means the Farming Guild's bin alone; the seven beside the
+  allotments are fed from the harvest standing next to them and never banked for. `docs/TESTING.md`
+  1a-lix and 1a-lx. The subtlest thing in it, and the one most likely to be wrong, is the
+  full-pack step standing down so the leprechaun does not note away the crop the bin is waiting
+  for — a bin refuses noted items, so getting that wrong makes harvest-feeding silently useless.
+- **The latched destination.** The run now picks a stop once and keeps it, rather than re-deciding
+  on every region change. Wants a multi-stop run with several types ticked to confirm the line and
+  the infobox stop swinging between stops mid-journey. `docs/TESTING.md` 1a-lviii.
 
 ## Actionable without the client
 
@@ -170,6 +244,45 @@ each so a wrong result points somewhere.
   round-trip with a reordered and a subset header — the exact regression its own doc comment
   warns about; `ui/Prices` arithmetic; the `BankFilter` state machine, which has two production
   bugs on record and no regression coverage.
+- **The whole run is replanned from scratch every game tick.** `GuideTracker.onGameTick` calls
+  `planner.publishSnapshot(planner.snapshotFor(...))`, and `snapshotFor` calls `previewStops`,
+  which calls `planStops` — the full walk over every available patch of every ticked type, each
+  one projected through `GrowthTimer`, plus `clusterHeld`, `inTheRun` and `addOpportunisticBins`.
+  At the Farming Guild with twelve types ticked that is the entire plan, 1.7 times a second.
+
+  **Found by accident**, which is worth recording: `mergeSharedStops` logged unconditionally, and
+  the wall of identical DEBUG lines at 0.6s intervals is what exposed the cadence. The log line
+  is latched now, so nothing will point at this again.
+
+  **The cadence itself is right and must not simply be removed.** `RunSnapshot`'s class note
+  explains why it exists: the sidebar used to call `previewStops`, both actionable counts,
+  `ripeProduceIn` and `survivalIn` **straight from the EDT**, each taking the planner's monitor
+  while the client thread walked the same methods — *"that cross-thread lock traffic is the
+  pattern the freeze investigation kept circling, and a snapshot removes it structurally rather
+  than carefully"*. Four of the snapshot's five members are live counts that genuinely change
+  every tick as crops grow.
+
+  **`previewStops` is the fifth, and the odd one out.** Its inputs — the ticked type set, which
+  patches are actionable, availability — barely move, yet it is the most expensive member by a
+  wide margin. It is recomputed at tick rate because it shares a struct with things that need to
+  be, not because anything asked for it.
+
+  **Shape of the fix, unverified:** keep publishing the snapshot every tick; cache the preview
+  keyed on the ticked type set and invalidate it on patch-state, availability and the config
+  flags it reads. Cheap members stay live, the replan stops running a hundred times a minute.
+
+  **Do NOT "only plan on start run".** That was the first instinct and it is wrong:
+  `RunPanel.rebuildDestinations` draws the destination list from `previewStops` *before* the run
+  starts, and the method's whole point is being the same computation `start()` does so the panel
+  cannot promise a different trip from the one you get.
+
+  **Measure before building.** Two open questions: whether `countActionableByGroup`,
+  `ripeProduceIn` and `survivalIn` are actually cheap or merely cheaper — if they are also heavy
+  the fix is a different one — and whether a cached preview can go visibly stale mid-run.
+
+  **Related, same path.** `docs/code-review-2026-08c.md` §3 (ConfigManager read under the
+  planner's monitor) and §6 (config re-read and re-parsed on per-tick paths) both ride this
+  exact call chain, so all three are cheaper to fix together than separately.
 
 ## Decisions waiting on you
 
@@ -218,12 +331,40 @@ assumes nobody waters, so a dedicated waterer would be quietly under-promised an
 in the Stats tab as beating prediction. That is an estimates refinement for a play style the
 plugin does not serve, not a gap in the runs it does.
 
-## Coral and seaweed — tracked, but not runnable
+## Coral and seaweed — runnable, and most of the unknowns are now answered
 
 > **Superseded in scope.** The decision is now that *every* patch type should be runnable, not
 > just these two — see "Every patch type should be runnable" below for the data gap that covers.
 > This section is kept because coral and seaweed carry a problem none of the others do: the dive
 > gear and whether Shortest Path can even route there.
+
+> **Status, after taking a coral run in the client.** Both are in `RUNNABLE`. The three unknowns
+> below are answered and the answers are written into the code rather than here:
+>
+> - **Routing does not reach it, and now does not try.** Shortest Path answers *destination
+>   unreachable* for the seabed, so the run targets a landward approach instead —
+>   `UnderwaterApproach`, carrying the object id and coordinates read off the client at the spot:
+>   the **Steps** (57904, at 3272 2463) for coral, the **Rowboat** (30919, at 3761 3898) for
+>   seaweed. The seabed itself is region **13194** for the nurseries, **15008** for seaweed.
+> - **The dive gear is modelled** — loadout rows to get it out of the bank, and a separate
+>   worn-not-carried prompt at the shore, since standing on the dock holding the suit is the
+>   state the game punishes.
+> - **Coral play knowledge, written down.** A leprechaun is present. The farmer is **Chet**
+>   (`TORTUGAN_CORAL_FARMER_UNLOCKED`, 15063 — the world data carries 15061, which is not the id
+>   you meet). He charges **per patch**, as two separate right-click options: `Pay (East)` and
+>   `Pay (West)`, with `Talk-to` between them. Elkhorn costs 5 giant seaweed a patch.
+>
+> **What is left here** is verification rather than design — see `docs/TESTING.md` 1a-lvi and
+> 1a-lvii — plus two known gaps:
+>
+> - **The Great Conch stop is two places.** Two nurseries on the seabed and a calquat on the
+>   deck, one `RunStop` because their varbits arrive together. The guide will list calquat steps
+>   while you are underwater and the stop cannot complete until you surface. Splitting it is the
+>   fix; not done.
+> - **Chet has no name or portrait** until `tools/fetch_chatheads.py` is re-run. He is in
+>   `EXTRA_NPC_GROUPS` now, so the run should resolve him — and `FarmerIconTest` will fail on
+>   purpose when it does, since it still asserts the gap is a gap. Drop him from `KNOWN_MISSING`
+>   in the same commit.
 
 
 Both are in the almanac already: `SEAWEED` (Fossil Island underwater, two patches) and `CORAL`
@@ -257,6 +398,17 @@ you are going anyway.
 
 ## Deferred deliberately
 
+- **A constraint-and-cost planner for the work at one stop** — spec written up separately in
+  `docs/stop-planner-spec.md`, to be picked up on its own branch. Replaces the eight reorder
+  passes in `GuideTracker.computeStepsHere` and the early-return precedence in `GuidePlan` /
+  `CompostBinPlan` with declared constraints plus a walking-cost function. The motivating pair of
+  reports: *"I walked past the lep on my way to put ash in the bin, why didn't I grab empty
+  buckets first"* and, immediately after, *"depending on where you tele in you might not walk past
+  the lep, then ash first makes sense"*. Both are right, which is the point — there is no correct
+  static order, and every rule in the code today is position-blind. Note the spec's own
+  observation that the leprechaun-position work it needs is the same work the Trollheim
+  carry-compost item below is waiting on.
+
 - ~~**The bank tag tab**~~ — **built.** The loadout proved right in play, which was the gate. It
   is a *virtual* tag via `TagManager.registerTag`, so membership is asked live rather than saved
   and nothing is left in the player's own tag list. Off by default: the original reasoning — a
@@ -269,6 +421,36 @@ you are going anyway.
   ~15 tiles from the patch. The non-rotting fix is to learn leprechaun positions the way patch
   positions are already learned, then compute the rule. Low priority: one patch, one walk.
 - **Crowdsourced yield data**, post-Hub and opt-in. See `docs/NOTES.md`.
+- **The hespori, and the gear problem it brings with it.** Currently out of the run entirely: not
+  in `PlantingGroups.RUNNABLE`, no pin in `WikiPatchLocations` (its wiki coordinate is on
+  `mapID=33`, an instanced cave under the guild, so it fails the region check for a reason that
+  has nothing to do with being wrong), and no learned position worth having — the patch is
+  instanced, so `getWorldLocation` there returns instance-space coordinates that mean nothing
+  outside. A stored one is harmless while nothing routes to it, and would want clearing before
+  anything did.
+
+  **Why it is not just another patch.** It is a boss. The run's whole loadout doctrine is
+  farming supplies — seeds, compost, a spade — and walking in with that is walking in unarmed.
+  So supporting it means the bank leg has to produce a *different* loadout for one stop, and
+  then put the farming one back afterwards.
+
+  **The idea, from play:** trigger the player's own Inventory Setups loadout named "hespori" on
+  that bank step, and re-bank the farming setup after. It reuses something the player has
+  already configured rather than the plugin inventing a combat loadout it has no business
+  opinions about.
+
+  **Two things to settle before building, in this order.**
+
+  1. *Is there an API at all?* Cross-plugin messaging is precedent here — `ShortestPathIntegration`
+     drives Shortest Path entirely through `PluginMessage` — but whether Inventory Setups exposes
+     anything equivalent is unknown, and if it does not the idea stops there.
+  2. *Is triggering it inside the compliance line?* This is the sharper one and wants answering
+     before any code. Loading an inventory setup is not one action — it is a sequence of bank
+     withdrawals and equips. If Inventory Setups performs them, then Doogle Maps triggering it is
+     chaining into that sequence rather than reordering a menu, which is a different category
+     from every swap in `docs/design-principles.md`. Highlighting *which* setup to load, and
+     leaving the click to the player, is the version that is obviously fine — and is probably the
+     one to build even if the other turns out to be permitted.
 
 ## Open data questions, blocked on observations
 
@@ -282,8 +464,16 @@ Not code problems — they need harvests, and `HarvestLog` is already collecting
 - **Celastrus**, which has no published constants at all — only "8-10 bark".
 - **Pineapple and papaya check-health experience**, where the seed page and the summary table
   disagree by under a point. One clean observation settles either.
-- **Limpwurt's per-patch experience** — observed 91 against a wiki-implied 120. The per-patch
-  shape is right; the number may not be.
+- ~~**Limpwurt's per-patch experience** — observed 91 against a wiki-implied 120. The per-patch
+  shape is right; the number may not be.~~ **Settled: 120 was right all along, and the capture was
+  wrong.** A limpwurt patch pays 142 in a single drop — its 120 to harvest plus the 21.5 the game
+  defers from planting, against a 1.004 outfit — in eight of the nine harvests logged on
+  2026-08-13, the ninth reading 141 only because the compost award immediately before it took the
+  fraction. The 91 was never a per-patch figure; it was whatever unrelated experience happened to
+  be sitting in the record. `openFromExperience` only matched a single pick's worth, so the one
+  drop a limpwurt harvest ever makes matched nothing and the award went unrecorded: eighty of the
+  eighty-one limpwurt patches picked clean in the CSV carry `actual_xp=0.0`. Both halves are now
+  modelled — see `HarvestLog.looksLikeAHarvestOf` and `CropYieldModel.clearedPatchXp`.
 
 
 ## Picking more than one seed for a patch type — currently three answers, all guesses
@@ -1042,6 +1232,20 @@ while you are still standing in the region being routed to.
 
 Whether that also caused the freeze is unproven, but repeated cross-thread posting under
 contention is the right shape for it, and it was happening several times a minute during a run.
+
+**A second source of the same shape is now gone: the per-patch config write burst.** A session's
+config log held 93 writes of the `patches` blob, 18.5KB each — 85% of every serialised byte this
+plugin produced — arriving in bursts on region entry: ten at 22:41:42 right after "Entered farming
+region(s) [Kourend]", nine at 22:42:08, nine at 22:42:09. `PatchInteractionTracker.scan` walks
+every patch of every loaded region and each changed patch was its own `save()`, and every save
+posts `ConfigChanged` **synchronously** into every subscriber in the client — the player's log
+shows each write followed on the client thread by third-party plugins reloading config. So the
+tick that entered a region made ten passes through every other installed plugin. `scan` now runs
+inside `PatchStateStore.asOneWrite`, which holds the changes and issues one save on the way out
+(in a `finally`, so an early exit or a throw still persists what was captured). Measured in
+`RegionScanWriteBurstTest`: five writes to one for a Falador scan. Same caveat as above — not
+proof it caused the freeze, but it was a lot of synchronous fan-out per tick and it is not there
+any more.
 
 **Get the evidence anyway.** Next freeze, before killing it:
 

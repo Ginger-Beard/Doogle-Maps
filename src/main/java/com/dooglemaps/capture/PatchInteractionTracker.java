@@ -70,6 +70,9 @@ public class PatchInteractionTracker
 	private final com.dooglemaps.validate.DiseaseStatsStore diseaseStats;
 	private final com.dooglemaps.state.ProtectedPatches protectedPatches;
 
+	/** The client's own farming record, for the protection reconciliation below. */
+	private final com.dooglemaps.state.TimeTrackingState timeTracking;
+
 	/** Last raw varbit value seen per patch key, to spot transitions. */
 	private final Map<String, Integer> lastVarbitValues = new HashMap<>();
 
@@ -83,8 +86,10 @@ public class PatchInteractionTracker
 		GrowthTimer growthTimer, RunPlanner runPlanner, HarvestLog harvestLog,
 		BarbarianFarming barbarianFarming, CarriedItems carried,
 		com.dooglemaps.validate.DiseaseStatsStore diseaseStats,
-		com.dooglemaps.state.ProtectedPatches protectedPatches)
+		com.dooglemaps.state.ProtectedPatches protectedPatches,
+		com.dooglemaps.state.TimeTrackingState timeTracking)
 	{
+		this.timeTracking = timeTracking;
 		this.diseaseStats = diseaseStats;
 		this.protectedPatches = protectedPatches;
 		this.barbarianFarming = barbarianFarming;
@@ -176,15 +181,36 @@ public class PatchInteractionTracker
 			// at once. That is us catching up, not crops growing.
 			newRegionLoaded = true;
 			log.debug("Entered farming region(s) {}", regions);
+
+			// Arriving somewhere is when a wrong answer starts costing money, so it is when the
+			// protection and compost facts get checked against the client's own record. Only on
+			// a region change, never per tick: it reads a config key per patch, and the thing it
+			// heals does not happen while you stand still.
+			//
+			// Reported from play as being asked to pay for a coral patch that had not been
+			// harvested — this store had the patch down as unpaid while Time Tracking had
+			// 12581.4771.protected=true the whole time. See PatchStateStore.backfillFrom, which
+			// can only ever restore a payment and never revoke one.
+			stateStore.backfillFrom(timeTracking);
 		}
 
-		for (FarmRegion region : regions)
+		// One config write for the whole scan rather than one per patch.
+		//
+		// The burst above is the problem: arriving somewhere changes every patch of the region at
+		// once, and each change used to be its own save — ten writes of an 18.5KB blob on a single
+		// tick, each posting ConfigChanged synchronously into every other plugin in the client.
+		// A session's log showed 93 of them, 85% of every serialised byte this plugin wrote.
+		// See PatchStateStore.asOneWrite, which also guarantees the flush on an early exit.
+		stateStore.asOneWrite(() ->
 		{
-			for (FarmPatch patch : region.getPatches())
+			for (FarmRegion region : regions)
 			{
-				capture(patch);
+				for (FarmPatch patch : region.getPatches())
+				{
+					capture(patch);
+				}
 			}
-		}
+		});
 
 		newRegionLoaded = false;
 		lastRegions = regions;

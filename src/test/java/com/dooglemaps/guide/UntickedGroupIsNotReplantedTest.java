@@ -25,6 +25,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.Mockito;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -52,6 +53,7 @@ public class UntickedGroupIsNotReplantedTest
 	private com.dooglemaps.state.RunTypeStore runTypes;
 	private com.dooglemaps.state.SeedSelectionStore selection;
 	private com.dooglemaps.state.SeedInventoryStore seeds;
+	private com.dooglemaps.state.CompostSelectionStore compost;
 	private FarmPatch bush;
 	private final PlantingGroup bushGroup = PlantingGroup.of(PatchImplementation.BUSH);
 
@@ -63,6 +65,7 @@ public class UntickedGroupIsNotReplantedTest
 		runTypes = Mockito.mock(com.dooglemaps.state.RunTypeStore.class);
 		selection = Mockito.mock(com.dooglemaps.state.SeedSelectionStore.class);
 		seeds = Mockito.mock(com.dooglemaps.state.SeedInventoryStore.class);
+		compost = Mockito.mock(com.dooglemaps.state.CompostSelectionStore.class);
 
 		DoogleMapsConfig config = Mockito.mock(DoogleMapsConfig.class);
 		when(config.guideFarmingContracts()).thenReturn(true);
@@ -126,17 +129,65 @@ public class UntickedGroupIsNotReplantedTest
 			has(steps, GuideAction.CLEAR));
 	}
 
+	/**
+	 * A patch this run will not replant does not add to the compost withdrawal either.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"at allotment/herb/flower patch combos our getting compost logic is really wacky,
+	 * sometimes i get 2, sometimes 1, sometimes 4"</i>. The compost <b>tier</b> is a property of
+	 * the group and survives the line being unticked or set to harvest-only, so
+	 * {@code countWanting} counted every ripe patch at the stop whose group happened to name the
+	 * same tier — including the ones this run will only pick. The withdrawal was sized from one
+	 * question and the steps it supplies from another, so a bucket or two came back unused, and
+	 * how many depended entirely on which lines were ticked and what was ripe.
+	 *
+	 * <p>Reached by reflection because the count is deliberately private and cached per tick; the
+	 * whole point of the fix is that it now asks the same {@code RunOption.full} question
+	 * {@code stepsFor} does, so the two cannot drift apart again.
+	 */
+	@Test
+	public void aGroupThatWillNotBeReplantedIsNotCountedForCompost() throws Exception
+	{
+		when(compost.get(bushGroup)).thenReturn(com.dooglemaps.data.CompostTier.ULTRACOMPOST);
+
+		com.dooglemaps.route.RunStop stop = Mockito.mock(com.dooglemaps.route.RunStop.class);
+		when(stop.getPatches()).thenReturn(Collections.singletonList(bush));
+
+		when(runTypes.isSelected(RunOption.full(bushGroup))).thenReturn(true);
+		assertEquals("a patch being replanted wants a bucket", 1,
+			countWanting(stop, com.dooglemaps.data.CompostTier.ULTRACOMPOST));
+
+		when(runTypes.isSelected(RunOption.full(bushGroup))).thenReturn(false);
+		when(runTypes.isHarvestOnly(bushGroup)).thenReturn(true);
+		assertEquals("one being picked and left does not", 0,
+			countWanting(stop, com.dooglemaps.data.CompostTier.ULTRACOMPOST));
+	}
+
+	private int countWanting(com.dooglemaps.route.RunStop stop,
+		com.dooglemaps.data.CompostTier tier) throws Exception
+	{
+		Method method = GuideTracker.class.getDeclaredMethod("countWanting",
+			com.dooglemaps.route.RunStop.class, com.dooglemaps.data.CompostTier.class);
+		method.setAccessible(true);
+		return (Integer) method.invoke(tracker, stop, tier);
+	}
+
 	// ------------------------------------------------------------------- helpers
 
 	private List<GuideStep> stepsFor(FarmPatch patch) throws Exception
 	{
+		// The map is what the deposit step keeps back for the patches at this stop; empty here,
+		// because these tests are about whether a picked-clean crop is dug up and no bin is
+		// involved. See GuideTracker.compostThisStopWillUse.
 		Method method = GuideTracker.class.getDeclaredMethod(
-			"stepsFor", FarmPatch.class, int.class);
+			"stepsFor", FarmPatch.class, int.class, java.util.Map.class);
 		method.setAccessible(true);
 		try
 		{
 			@SuppressWarnings("unchecked")
-			List<GuideStep> steps = (List<GuideStep>) method.invoke(tracker, patch, 0);
+			List<GuideStep> steps = (List<GuideStep>) method.invoke(tracker, patch, 0,
+				java.util.Collections.emptyMap());
 			return steps;
 		}
 		catch (java.lang.reflect.InvocationTargetException e)
@@ -210,6 +261,10 @@ public class UntickedGroupIsNotReplantedTest
 			else if (type == com.dooglemaps.state.SeedInventoryStore.class)
 			{
 				args[i] = seeds;
+			}
+			else if (type == com.dooglemaps.state.CompostSelectionStore.class)
+			{
+				args[i] = compost;
 			}
 			else if (type == DoogleMapsConfig.class)
 			{

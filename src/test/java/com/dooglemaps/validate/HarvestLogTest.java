@@ -281,6 +281,57 @@ public class HarvestLogTest
 			1, stats.getTotalHarvests());
 	}
 
+	/**
+	 * A fruit tree and a cactus never change state when emptied, and must still close.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * {@code onPatchState} closed a record when the produce or the crop state changed. That is
+	 * enough for a bush — picking the last berry moves it HARVESTABLE to GROWING — and it is not
+	 * enough for the other two regrowing families. {@code PatchRules} maps a picked-clean palm to
+	 * {@code (PALM, HARVESTABLE, stage 0)} at varbit 206 and a bare cactus to
+	 * {@code (CACTUS, HARVESTABLE, stage 0)} at 15: same produce, same state, nothing on the
+	 * plant.
+	 *
+	 * <p>So those records never closed on a state change at all. They survived to the 100-tick
+	 * idle timeout and absorbed whatever experience arrived in the intervening minute. Found in
+	 * the harvest log, not by reading: <b>25 of 25 cactus rows and 22 of 22 palm rows</b> written
+	 * {@code completed=false}, with totals of 12443, 3712, 1092 and 1011 against ~250
+	 * predictions. One palm record swallowed a calquat check-health 76 seconds after the last
+	 * coconut.
+	 *
+	 * <p>The class javadoc named all three families and only the bush was ever tested.
+	 */
+	@Test
+	public void aFruitTreePickedCleanFinishesEvenThoughItStaysHarvestable()
+	{
+		FarmPatch patch = ripePalmPatch();
+
+		inventory();
+		inventory(Produce.PALM.getItemID(), 6);
+		assertEquals("fixture: the harvest opened", 1, log.getOpenHarvests().size());
+
+		ProduceState oneLeft = stockOf(patch, Produce.PALM, CropState.HARVESTABLE, 1);
+		assertNotNull("fixture: a palm at one coconut", oneLeft);
+		log.onPatchState(patch, oneLeft, oneLeft);
+		assertEquals("one coconut left is still the same harvest",
+			1, log.getOpenHarvests().size());
+
+		// Picked clean. Still PALM, still HARVESTABLE - only the stock says it is over.
+		ProduceState bare = stockOf(patch, Produce.PALM, CropState.HARVESTABLE, 0);
+		assertNotNull("fixture: a picked-clean palm still decodes harvestable", bare);
+		assertEquals("fixture: and it is the same produce and state", CropState.HARVESTABLE,
+			bare.getCropState());
+		log.onPatchState(patch, oneLeft, bare);
+
+		assertTrue("nothing left to pick is the end of the harvest, whatever the state says",
+			log.getOpenHarvests().isEmpty());
+
+		log.onGameTick(new net.runelite.api.events.GameTick());
+		assertEquals("and it counts as a finished patch, not one the timer gave up on",
+			1, stats.getTotalHarvests());
+	}
+
 	/** Part of a stock is still the same harvest, so picking one fruit must not close it. */
 	@Test
 	public void pickingPartOfARegrowingStockKeepsTheHarvestOpen()
@@ -290,8 +341,11 @@ public class HarvestLogTest
 		inventory();
 		inventory(Produce.JANGERBERRIES.getItemID(), 1);
 
-		ProduceState ripe = stateOf(patch, Produce.JANGERBERRIES, CropState.HARVESTABLE);
-		log.onPatchState(patch, ripe, ripe);
+		// Three of four still on the bush. stateOf would hand back stage 0 - an empty plant -
+		// which is the state that must CLOSE the record, so the fixture has to name the stock.
+		ProduceState threeLeft = stockOf(patch, Produce.JANGERBERRIES, CropState.HARVESTABLE, 3);
+		assertNotNull("fixture: a bush at three berries", threeLeft);
+		log.onPatchState(patch, threeLeft, threeLeft);
 
 		assertEquals("three berries left is the same harvest", 1, log.getOpenHarvests().size());
 	}
@@ -374,6 +428,68 @@ public class HarvestLogTest
 			record.isInferredFromXp());
 	}
 
+	/**
+	 * A flower pays for the whole patch in one drop, and that drop has to open the record.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * A limpwurt patch pays 142 once — its 120 to harvest plus the 21.5 it defers from planting —
+	 * where an ordinary crop pays a pick at a time. {@code openFromExperience} only ever asked
+	 * "is that one pick?", which for limpwurt means 120.5 give or take 6, so the single drop a
+	 * limpwurt harvest makes matched nothing and no record opened for it.
+	 *
+	 * <p>The roots do reach the inventory, so a record opened a moment later off the item delta —
+	 * but by then the award had been dropped on the floor. Eighty of the eighty-one limpwurt
+	 * patches picked clean in the harvest CSV record actual_xp=0.0 against a predicted 120.5, and
+	 * none of the forty "opening from experience alone" lines in the 2026-08-13 client logs is a
+	 * limpwurt.
+	 *
+	 * <p>The order here is the order the game uses: the experience arrives first and the roots
+	 * follow in the same tick, which is why the award has to be able to open a record rather than
+	 * merely join one.
+	 */
+	@Test
+	public void aFlowerPatchWholePatchAwardOpensTheHarvestItBelongsTo()
+	{
+		ripeLimpwurtPatch();
+
+		inventory();
+		farmingXp(1_000_000);
+		// 120 to harvest plus 21.5 deferred from planting, as the game pays it: one drop.
+		farmingXp(1_000_142);
+
+		HarvestRecord record = onlyOpenRecord();
+		assertEquals(Produce.LIMPWURT, record.getProduce());
+		assertEquals("the whole-patch award belongs to the patch that paid it",
+			142.0, record.getXpGained(), 0.001);
+
+		// The roots land after the award, and must join that record rather than start a second.
+		inventory(Produce.LIMPWURT.getItemID(), 7);
+		assertEquals("the same harvest, not a second one", 1, log.getOpenHarvests().size());
+		assertEquals(7, onlyOpenRecord().getItemsHarvested());
+		assertEquals(142.0, onlyOpenRecord().getXpGained(), 0.001);
+	}
+
+	/**
+	 * Widening the match must not widen it to the planting award on its own.
+	 *
+	 * <p>The whole-patch figure is the harvest award <i>plus</i> what planting deferred into it,
+	 * and only that sum. Accepting either half alone would let a limpwurt's 21.5 - which is what
+	 * arrives when someone plants a seed next door - invent a harvest of a patch nobody touched.
+	 */
+	@Test
+	public void aFlowerPatchDoesNotOpenOnHalfItsAward()
+	{
+		ripeLimpwurtPatch();
+
+		inventory();
+		farmingXp(1_000_000);
+		farmingXp(1_000_022);   // limpwurt's planting figure, not its harvest
+
+		assertTrue("21.5 is not what picking a flower patch pays",
+			log.getOpenHarvests().isEmpty());
+	}
+
 	/** Experience that matches no ripe crop nearby must not invent a harvest. */
 	@Test
 	public void unrelatedFarmingExperienceDoesNotOpenAHarvest()
@@ -386,6 +502,102 @@ public class HarvestLogTest
 
 		assertTrue("planting and check-health experience is not a pick",
 			log.getOpenHarvests().isEmpty());
+	}
+
+	/**
+	 * Clearing a patch pays one award more than its picks, and the prediction has to expect it.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * An allotment, hops, herb or flower patch pays nothing when the seed goes in. It pays the
+	 * planting figure at the moment it is picked clean, bundled into the drop for the last pick:
+	 * watermelon pays 55, 54, 55 ... and then 103 on the tick chat says "The allotment is now
+	 * empty", which is its 54.5 to pick and its 48.5 to plant.
+	 *
+	 * <p>The prediction knew only about the picks, so nearly every replanted patch reported a
+	 * mismatch of exactly one planting award. The residuals in the CSV cluster on the planting
+	 * figure itself and nowhere else: the watermelon rows that overshot all land between 47.6
+	 * and 49.3 against a constant of 48.5, snape grass 80.3 to 82.4 against 82, cotton 71.1 to
+	 * 72.4 against 72. No count is quoted because the file keeps growing — rows logged since
+	 * this fix sit at zero, and the band is the claim, not its population.
+	 *
+	 * <p>Both halves are pinned here, because "picked clean" is the whole of the condition: the
+	 * same four potatoes left standing must predict the picks alone. That is the control group
+	 * from the CSV as well, where the incomplete watermelon rows sit within a point of theirs.
+	 */
+	@Test
+	public void predictsTheAwardAPatchPaysWhenItIsPickedClean()
+	{
+		FarmPatch patch = ripePotatoPatch(CompostTier.NONE);
+
+		inventory();
+		inventory(Produce.POTATO.getItemID(), 4);
+
+		HarvestRecord record = onlyOpenRecord();
+		assertEquals("still standing, so only the four picks are paid for",
+			36.0, record.getPredictedXp(), 0.001);
+
+		ProduceState ripe = patch.getImplementation().forVarbitValue(10);
+		ProduceState weeds = patch.getImplementation().forVarbitValue(3);
+		assertNotNull(weeds);
+		log.onPatchState(patch, ripe, weeds);
+
+		assertEquals("picked clean, and clearing the patch pays a potato's 8 to plant on top",
+			44.0, record.getPredictedXp(), 0.001);
+	}
+
+	/**
+	 * The bundled drop that empties a herb patch is still a pick, and has to be counted as one.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * A grimy herb goes into the sack rather than the inventory, so experience is the only thing
+	 * counting picks — and the last drop of a herb patch is a pick <i>plus</i> the award for
+	 * clearing it, in one lump. A ranarr's is 57.5 where a pick is 30.5, which the one-pick test
+	 * rejects, so <b>every herb harvest came out a herb short</b>.
+	 *
+	 * <p>Visible in the CSV as an experience residual rather than as a yield one, because the
+	 * missing pick took its experience with it: all thirty-five ranarr rows sit 56.2 to 57.6 over
+	 * their prediction, which is 27 + 30.5. Watermelon never showed it, because its melons are in
+	 * the inventory and {@code getItemsHarvested} takes the larger of the two counts.
+	 */
+	@Test
+	public void theDropThatEmptiesAHerbPatchIsStillAPick()
+	{
+		ripeRanarrPatch();
+
+		inventory();
+		farmingXp(1_000_000);
+		farmingXp(1_000_031);   // 30.5, one pick
+		farmingXp(1_000_061);   // 30.5, two
+		farmingXp(1_000_118);   // 30.5 + 27, the pick that empties the patch
+
+		HarvestRecord record = onlyOpenRecord();
+		assertEquals("three herbs went into the sack, not two", 3, record.getItemsHarvested());
+		assertTrue("and none of them were seen arriving", record.isInferredFromXp());
+	}
+
+	/**
+	 * A patch empties once, so the bundled drop can only be counted once.
+	 *
+	 * <p>Snape grass is where this bites: it pays 82 to pick and 82 to plant, so the drop that
+	 * empties the patch is 164 — and so is any two picks that happen to land on one tick. There
+	 * is no telling them apart by size, so the tie is broken on the thing that is certain, which
+	 * is that a patch cannot be emptied twice.
+	 */
+	@Test
+	public void thePatchClearingAwardIsOnlyEverPaidOnce()
+	{
+		ripeSnapeGrassPatch();
+
+		inventory();
+		farmingXp(1_000_000);
+		farmingXp(1_000_082);   // one pick
+		farmingXp(1_000_246);   // 82 + 82, the pick that empties the patch
+		farmingXp(1_000_410);   // and again, which cannot be a second emptying
+
+		assertEquals("two picks and one emptying, not three picks",
+			2, onlyOpenRecord().getItemsHarvested());
 	}
 
 	/** The prediction travels with the record, so a CSV row explains itself later. */
@@ -425,12 +637,39 @@ public class HarvestLogTest
 	}
 
 	/**
-	 * A ripe jangerberry bush, wherever the game keeps one.
+	 * A palm laden with six coconuts, standing at it.
 	 *
-	 * <p>Found by asking the patch which varbit value means what, rather than by hardcoding
-	 * numbers: bush varbit values are not memorable and a wrong one would fail as "no such
-	 * state" rather than as the thing being tested.
+	 * <p>Seeded at full stock rather than at the first harvestable varbit, because for a fruit
+	 * tree that first value is stage 0 — a plant with nothing on it. See {@link #stockOf}.
 	 */
+	private FarmPatch ripePalmPatch()
+	{
+		FarmPatch patch = null;
+		for (FarmPatch candidate : FarmingWorldData.getPatches(
+			com.dooglemaps.data.PatchImplementation.FRUIT_TREE))
+		{
+			if (stockOf(candidate, Produce.PALM, CropState.HARVESTABLE, 6) != null)
+			{
+				patch = candidate;
+				break;
+			}
+		}
+		assertNotNull("no fruit tree patch can hold a palm any more", patch);
+
+		ProduceState laden = stockOf(patch, Produce.PALM, CropState.HARVESTABLE, 6);
+		patches.recordVarbit(patch, varbitFor(patch, laden), laden);
+
+		try
+		{
+			log = logWithPlayerAt(somewhereIn(patch.getRegion().getRegionId()));
+		}
+		catch (Exception e)
+		{
+			throw new IllegalStateException(e);
+		}
+		return patch;
+	}
+
 	private FarmPatch ripeJangerberryPatch()
 	{
 		FarmPatch patch = null;
@@ -465,6 +704,33 @@ public class HarvestLogTest
 	{
 		return new net.runelite.api.coords.WorldPoint(
 			((regionId >>> 8) << 6) + 32, ((regionId & 0xFF) << 6) + 32, 0);
+	}
+
+	/**
+	 * The same, at a named stock level — which for a regrowing crop is what is left on the plant.
+	 *
+	 * <h2>Why {@link #stateOf} is not enough for a regrowing crop</h2>
+	 *
+	 * It returns the <b>first</b> matching varbit, and for a bush or a fruit tree the lowest
+	 * harvestable value is stage 0 — a plant that is still "harvestable" with nothing on it. A
+	 * fixture built that way says "three berries left" and means "none left", which is how
+	 * {@code pickingPartOfARegrowingStockKeepsTheHarvestOpen} passed while asserting the
+	 * opposite of its own name.
+	 */
+	@javax.annotation.Nullable
+	private static ProduceState stockOf(FarmPatch patch, Produce produce, CropState state,
+		int stage)
+	{
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(value);
+			if (decoded != null && decoded.getProduce() == produce
+				&& decoded.getCropState() == state && decoded.getStage() == stage)
+			{
+				return decoded;
+			}
+		}
+		return null;
 	}
 
 	/** The first varbit value that decodes to this produce in this state, or null. */
@@ -526,6 +792,41 @@ public class HarvestLogTest
 
 		ProduceState ripe = stateOf(patch, Produce.RANARR, CropState.HARVESTABLE);
 		assertNotNull("no varbit value gives a ripe ranarr", ripe);
+		patches.recordVarbit(patch, varbitFor(patch, ripe), ripe);
+		return patch;
+	}
+
+	/**
+	 * Ripe snape grass in Falador's north allotment.
+	 *
+	 * <p>Snape grass because its two awards are equal — 82 to pick and 82 to plant — so the drop
+	 * that empties the patch is the same size as two picks. That collision is the reason the
+	 * clearing award is counted at most once.
+	 */
+	private FarmPatch ripeSnapeGrassPatch()
+	{
+		FarmPatch patch = FarmingWorldData.getPatch(FALADOR_NORTH);
+		assertNotNull("fixture patch no longer exists", patch);
+
+		ProduceState ripe = stateOf(patch, Produce.SNAPE_GRASS, CropState.HARVESTABLE);
+		assertNotNull("no varbit value gives ripe snape grass", ripe);
+		patches.recordVarbit(patch, varbitFor(patch, ripe), ripe);
+		return patch;
+	}
+
+	/**
+	 * A ripe limpwurt in Falador's flower patch, which the fixture is already standing beside.
+	 *
+	 * <p>A flower rather than a herb because it is the one family that pays for the whole patch
+	 * in a single drop instead of a drop per pick.
+	 */
+	private FarmPatch ripeLimpwurtPatch()
+	{
+		FarmPatch patch = FarmingWorldData.getPatch("12083.4773");
+		assertNotNull("fixture flower patch no longer exists", patch);
+
+		ProduceState ripe = stateOf(patch, Produce.LIMPWURT, CropState.HARVESTABLE);
+		assertNotNull("no varbit value gives a ripe limpwurt", ripe);
 		patches.recordVarbit(patch, varbitFor(patch, ripe), ripe);
 		return patch;
 	}

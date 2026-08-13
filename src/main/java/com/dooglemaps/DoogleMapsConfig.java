@@ -257,7 +257,7 @@ public interface DoogleMapsConfig extends Config
 			+ "you still have - ultra to super to ordinary - rather than skipping it. Says so "
 			+ "in the chatbox and on the infobox each time it happens, so a run never quietly "
 			+ "spends a tier you did not choose.",
-		position = 43,
+		position = 44,
 		section = guideSection
 	)
 	default boolean downgradeCompost()
@@ -276,7 +276,7 @@ public interface DoogleMapsConfig extends Config
 			+ "and mark on the seabed when a seaweed spore appears. They last thirty seconds "
 			+ "and are one of the few ways to restock, so picking up what you plant is what "
 			+ "keeps a seaweed run going.",
-		position = 42,
+		position = 43,
 		section = guideSection
 	)
 	default boolean notifySeaweedSpores()
@@ -292,7 +292,7 @@ public interface DoogleMapsConfig extends Config
 		keyName = "seedBoxLeftClick",
 		name = "Left-click Fill/Empty on the seed box",
 		description = "While a run is under way, put Fill or Empty under the seed box's left "
-			+ "click - Empty once the box is holding seeds and nothing loose in your pack "
+			+ "click - Empty once the box is holding seeds and nothing loose in your inventory "
 			+ "would fit in it, Fill otherwise. Only reorders the menu; the other option is "
 			+ "still a right-click away.",
 		position = 37,
@@ -334,6 +334,53 @@ public interface DoogleMapsConfig extends Config
 		section = guideSection
 	)
 	default boolean herbUseLeftClick()
+	{
+		return true;
+	}
+
+	/**
+	 * The same arrangement again, for the farmer who takes a payment per patch.
+	 *
+	 * <p>Sharper teeth than the other three. Those put a better option under the click; this one
+	 * stops a <b>wrong</b> one being there — Chet's menu opens on "Pay (East)" whichever patch
+	 * the guide is pointing at, so left-clicking him while the step means West pays for the
+	 * wrong nursery, and the payment is spent.
+	 */
+	/**
+	 * And the fairy ring, while the route is going through one.
+	 *
+	 * <p>A ring opens on Zanaris or on wherever you went last, and on a farm run it is neither:
+	 * the code is in the hop Shortest Path reported, which the panel is already showing. Configure
+	 * is the option that gets you there and the one the game buries.
+	 *
+	 * <p>Scoped to the route naming a ring, not to the whole run — walk past one on an unrelated
+	 * errand and its menu is the game's own. Core's Menu Entry Swapper offers the same swap by
+	 * name, which is the precedent every swap here leans on.
+	 */
+	@ConfigItem(
+		keyName = "fairyRingLeftClick",
+		name = "Left-click Configure on fairy rings",
+		description = "While the drawn route goes through a fairy ring, put Configure under the "
+			+ "left click so you can enter the code the panel is showing. Only reorders the "
+			+ "menu, and only while a ring is on the route.",
+		position = 45,
+		section = guideSection
+	)
+	default boolean fairyRingLeftClick()
+	{
+		return true;
+	}
+
+	@ConfigItem(
+		keyName = "payLeftClick",
+		name = "Left-click the right Pay option",
+		description = "While a step is asking you to pay a farmer who charges per patch - the "
+			+ "coral nurseries, the north and south allotments - put that patch's own Pay "
+			+ "option under the left click. Only reorders the menu, and only for that step.",
+		position = 42,
+		section = guideSection
+	)
+	default boolean payLeftClick()
 	{
 		return true;
 	}

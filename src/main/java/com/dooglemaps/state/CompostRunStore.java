@@ -10,8 +10,25 @@ import lombok.extern.slf4j.Slf4j;
 import net.runelite.client.config.ConfigManager;
 
 /**
- * The two choices a compost-bin run turns on: what fills the bins, and whether the finished
- * supercompost gets the volcanic-ash upgrade.
+ * The choices a compost-bin run turns on: what is banked to fill the guild's big bin, which
+ * crops may be fed to a bin straight out of the harvest, and whether the finished supercompost
+ * gets the volcanic-ash upgrade.
+ *
+ * <h2>Two sources, and they are different questions</h2>
+ *
+ * {@link #getFills()} is a <b>shopping list</b> — what to bring from a bank, in order. It applies
+ * to the one bin with a bank in its own region, which is the Farming Guild's. The other seven sit
+ * beside allotments with no bank near them, and hauling fifteen un-noted items across the map to
+ * each was the whole of a reported complaint.
+ *
+ * <p>{@link #getFodderCrops()} is a <b>permission set</b> — which crops the player is willing to
+ * put in a bin from what they have just picked, standing next to it. No order, because there is
+ * no queue: it is answered against whatever the patch gave you. Asked for from play in exactly
+ * those terms: <i>"some bins I'm happy to put all of my watermelons in, but I don't want to waste
+ * my snape grass"</i>.
+ *
+ * <p>One list, shared by both sizes of bin. "Which crops count as compost fodder" is a fact about
+ * what the player values, and it does not change because the bin is bigger.
  *
  * <p>Per RuneScape profile, like the seed selection — which item you can spare fifteen of is a
  * fact about an account's bank, not about the player. Read live rather than loaded, the way
@@ -36,6 +53,8 @@ public class CompostRunStore
 {
 	private static final String FILL_KEY = "compostBinFill";
 	private static final String ASH_KEY = "compostBinAsh";
+	private static final String FODDER_KEY = "compostBinFodder";
+	private static final String FODDER_CROPS_KEY = "compostBinFodderCrops";
 
 	/** The stored answer for "no fill chosen", also returned while nothing is stored. */
 	public static final int NO_FILL = -1;
@@ -226,6 +245,119 @@ public class CompostRunStore
 		{
 			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, ASH_KEY);
 		}
+		changed();
+	}
+
+	/**
+	 * Whether a bin may be fed from the harvest you are standing in front of.
+	 *
+	 * <p>Off by default, and that is deliberate rather than cautious: switching it on means
+	 * crops the player picked stop coming home, and nothing should start doing that because an
+	 * update shipped. The crop list narrows it further — this flag only says "the idea is on".
+	 */
+	public boolean isFodderEnabled()
+	{
+		return Boolean.TRUE.equals(configManager.getRSProfileConfiguration(
+			DoogleMapsConfig.GROUP, FODDER_KEY, boolean.class));
+	}
+
+	public void setFodderEnabled(boolean enabled)
+	{
+		if (enabled)
+		{
+			configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, FODDER_KEY, true);
+		}
+		else
+		{
+			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FODDER_KEY);
+		}
+		changed();
+	}
+
+	/**
+	 * The crops a bin may be fed from the pack, or empty while none is allowed.
+	 *
+	 * <p>Insertion-ordered so the panel's grid does not reshuffle as picks are made, but the
+	 * order carries no meaning — unlike {@link #getFills()}, nothing reads position. What picks
+	 * a crop when several qualify is the bin's own tier arithmetic; see {@code CompostBinPlan}.
+	 *
+	 * <p>Validated against {@link Compostables#allotmentFodder()} on the way out, which is
+	 * narrower than the fills' check and deliberately so: a bin is only ever offered fodder at
+	 * the stop it stands in, and what grows at that stop is the allotments. It also self-heals a
+	 * selection made before the list narrowed — a stored pineapple simply stops being returned.
+	 */
+	public java.util.Set<Integer> getFodderCrops()
+	{
+		String stored = configManager.getRSProfileConfiguration(
+			DoogleMapsConfig.GROUP, FODDER_CROPS_KEY, String.class);
+		if (stored == null || stored.isEmpty())
+		{
+			return java.util.Collections.emptySet();
+		}
+
+		java.util.Set<Integer> crops = new java.util.LinkedHashSet<>();
+		for (String part : stored.split(","))
+		{
+			try
+			{
+				int itemId = Integer.parseInt(part.trim());
+				if (Compostables.isAllotmentFodder(itemId))
+				{
+					crops.add(itemId);
+				}
+			}
+			catch (NumberFormatException e)
+			{
+				log.debug("Ignoring unreadable fodder entry \"{}\"", part);
+			}
+		}
+		return crops;
+	}
+
+	/**
+	 * Whether this crop may go in a bin out of the pack.
+	 *
+	 * <p>Both halves, so a caller cannot forget the toggle and act on a stale list: a player who
+	 * switched fodder off keeps their picks, and nothing acts on them until it is on again.
+	 */
+	public boolean allowsFodder(int itemId)
+	{
+		return isFodderEnabled() && getFodderCrops().contains(itemId);
+	}
+
+	/** Adds or removes a crop from the allowed set. */
+	public void toggleFodderCrop(int itemId)
+	{
+		java.util.Set<Integer> crops = new java.util.LinkedHashSet<>(getFodderCrops());
+		if (!crops.remove(itemId))
+		{
+			if (!Compostables.isAllotmentFodder(itemId))
+			{
+				log.warn("Refusing to store {} as bin fodder - it is not an allotment crop, and "
+					+ "a bin is only ever offered what grows at the stop it stands in", itemId);
+				return;
+			}
+			crops.add(itemId);
+		}
+
+		if (crops.isEmpty())
+		{
+			configManager.unsetRSProfileConfiguration(DoogleMapsConfig.GROUP, FODDER_CROPS_KEY);
+			changed();
+			return;
+		}
+
+		StringBuilder joined = new StringBuilder();
+		for (int crop : crops)
+		{
+			if (joined.length() > 0)
+			{
+				joined.append(',');
+			}
+			joined.append(crop);
+		}
+		configManager.setRSProfileConfiguration(
+			DoogleMapsConfig.GROUP, FODDER_CROPS_KEY, joined.toString());
 		changed();
 	}
 

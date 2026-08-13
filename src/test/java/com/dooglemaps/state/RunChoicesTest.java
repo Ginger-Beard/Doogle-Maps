@@ -186,13 +186,17 @@ public class RunChoicesTest
 
 	private CompostSelectionStore newCompost()
 	{
-		return construct(CompostSelectionStore.class, configManager, gson);
+		CompostSelectionStore store = construct(CompostSelectionStore.class, configManager, gson);
+		store.load();
+		return store;
 	}
 
 	private SeedSelectionStore newSeeds()
 	{
-		return construct(SeedSelectionStore.class, configManager, gson,
+		SeedSelectionStore store = construct(SeedSelectionStore.class, configManager, gson,
 			construct(com.dooglemaps.state.ContractState.class, configManager));
+		store.load();
+		return store;
 	}
 
 	/**
@@ -286,6 +290,8 @@ public class RunChoicesTest
 
 	private RunTypeStore newTypes()
 	{
-		return construct(RunTypeStore.class, configManager, gson);
+		RunTypeStore store = construct(RunTypeStore.class, configManager, gson);
+		store.load();
+		return store;
 	}
 }

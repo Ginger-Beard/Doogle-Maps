@@ -11,13 +11,24 @@
 # script is for when you want to see it in the client.
 #
 # Usage:
-#   ./run-client.sh            # build and launch
-#   ./run-client.sh --refresh  # also re-resolve dependencies
-#   ./run-client.sh --debug    # also listen on port 5005 for a debugger
+#   ./run-client.sh              # build and launch
+#   ./run-client.sh --refresh    # also re-resolve dependencies
+#   ./run-client.sh --debug      # also listen on port 5005 for a debugger
+#   ./run-client.sh --log-debug  # also log at DEBUG
 #
 # --debug lets an IDE hot-swap changed classes into the running client, so a relaunch is
 # only needed for changes hot-swap cannot take. See "Iterating without relaunching" in
 # DEVELOPMENT.md for what that covers and what it does not.
+#
+# --log-debug is unrelated to it, despite the name: it passes RuneLite's own --debug, which
+# turns the ROOT logger up to DEBUG for every plugin in the client. Loud. It is how you see
+# the lines this plugin logs at DEBUG rather than INFO - "Learned location" as each patch
+# position is picked up being the one it was added for:
+#
+#     grep -a "Learned location" ~/.runelite/logs/client.log
+#
+# The two flags are spelled differently on purpose. "Debug" means a debugger in one and a log
+# level in the other, and they are independent.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -43,11 +54,12 @@ windows_root="$(wslpath -w "$repo_root")"
 gradle_args=(runClient --project-cache-dir .gradle-windows -PbuildSuffix=windows)
 for arg in "$@"; do
 	case "$arg" in
-		--refresh) gradle_args+=(--refresh-dependencies) ;;
-		--debug)   gradle_args+=(-PdebugClient) ;;
+		--refresh)   gradle_args+=(--refresh-dependencies) ;;
+		--debug)     gradle_args+=(-PdebugClient) ;;
+		--log-debug) gradle_args+=(-PdebugLogging) ;;
 		*)
 			echo "unknown option: $arg" >&2
-			echo "usage: ./run-client.sh [--refresh] [--debug]" >&2
+			echo "usage: ./run-client.sh [--refresh] [--debug] [--log-debug]" >&2
 			exit 1
 			;;
 	esac

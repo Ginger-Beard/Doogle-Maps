@@ -49,6 +49,32 @@ public abstract class ProfileJsonStore
 		this.key = key;
 	}
 
+	/**
+	 * Whether the blob has ever been read into this instance, and for which RuneScape profile.
+	 *
+	 * <h2>A store that has not read cannot be allowed to write</h2>
+	 *
+	 * {@link #save()} serialises the <b>whole</b> in-memory map with no merge, so a save from a
+	 * store that never got its read replaces everything that was there with whatever it happens
+	 * to hold. That is not hypothetical: {@code patchLocations} was found holding six entries
+	 * against a hundred and seven observed patches, all six in the region of the last login.
+	 *
+	 * <p>The window is real because {@link #load()} tolerates having nothing to read. At the
+	 * login screen there is no RuneScape profile yet, {@code getRSProfileConfiguration} answers
+	 * null, {@code applyJson} is skipped and the map is left <b>empty by
+	 * {@code resetForLoad()}</b> rather than merely unpopulated. Anything that writes before the
+	 * profile resolves then persists that emptiness. {@code PatchLocationCapture} is the one
+	 * writer driven by an event that can fire that early — {@code GameObjectSpawned}, as the
+	 * login scene builds — which is why it was the store that lost its data.
+	 *
+	 * <p>Keyed on the profile rather than a bare "have I loaded" flag, because the same argument
+	 * covers switching accounts: a store still holding account A's map must not write it into
+	 * account B's blob. Both halves are needed — the flag catches "never read", the key catches
+	 * "read, but for someone else".
+	 */
+	private boolean everLoaded;
+	private String loadedProfile;
+
 	/** Reads this profile's blob, replacing everything held in memory. */
 	public final void load()
 	{
@@ -68,6 +94,13 @@ public abstract class ProfileJsonStore
 					log.warn("Discarding unreadable {}", key, e);
 				}
 			}
+
+			// Armed before afterLoad, deliberately. PatchStateStore.afterLoad saves its Time
+			// Tracking backfill, and arming afterwards would have the guard below silently
+			// discard it - a fix for one store quietly breaking another.
+			everLoaded = true;
+			loadedProfile = configManager.getRSProfileKey();
+
 			afterLoad();
 		}
 		loaded();
@@ -95,9 +128,30 @@ public abstract class ProfileJsonStore
 	 */
 	protected final void save()
 	{
+		String current = configManager.getRSProfileKey();
 		String json;
 		synchronized (this)
 		{
+			// Never write what was never read. See everLoaded for the data this lost.
+			//
+			// At WARN and unconditionally, because this firing is the proof of a real ordering
+			// fault - some writer running ahead of the load - and the whole reason the original
+			// was invisible is that it looked exactly like an ordinary save. A line here names
+			// the store, so the next instance is a search rather than an investigation.
+			if (!everLoaded)
+			{
+				log.warn("Refusing to write {} before it has been read - something wrote to it "
+					+ "ahead of load(), which would replace the stored copy with whatever is in "
+					+ "memory", key);
+				return;
+			}
+			if (!java.util.Objects.equals(loadedProfile, current))
+			{
+				log.warn("Refusing to write {}: it was read for profile {} and the live profile "
+					+ "is now {}. Waiting for the reload that belongs to this account.",
+					key, loadedProfile, current);
+				return;
+			}
 			json = gson.toJson(serialized());
 		}
 		configManager.setRSProfileConfiguration(DoogleMapsConfig.GROUP, key, json);

@@ -81,22 +81,32 @@ public enum CompostBin
 	}
 
 	/**
-	 * The patch types a "compost bin" tick actually covers.
+	 * The patch types a "compost bin" tick actually covers: <b>the guild's big bin, and only it</b>.
 	 *
-	 * <h2>One line, two implementations — and the fold has to happen everywhere</h2>
+	 * <h2>The tick used to mean all nine bins, and that was the wrong unit</h2>
 	 *
-	 * The run list offers a single "Compost bin" line carrying the ordinary bin's type, exactly
-	 * as the sidebar folds both sizes onto one tab. Turning that tick into patch types therefore
-	 * has to add the guild's big bin, and it was being done in {@code RunTypeStore.getSelected}
-	 * alone — so every caller that built its own set from the checkboxes silently dropped it.
+	 * It widened {@code COMPOST} to add {@code BIG_COMPOST}, so one line meant every bin in the
+	 * game. That made the run responsible for hauling fifteen un-noted items to each of the seven
+	 * beside the allotments — and there is no bank near any of them. Measured against
+	 * {@code BankLocations}: Catherby ~23 tiles, Kourend ~44, Falador ~65, Ardougne ~96, and
+	 * Civitas, Canifis and Prifddinas have no seeded bank at all. Only the Farming Guild has one
+	 * in its own region, which is why {@code RunPlanner.supplyPointIsHere} fires there and
+	 * nowhere else.
 	 *
-	 * <p>That is not a hypothetical. <b>The Farming Guild has no ordinary bin</b>: its only one
-	 * is the big one. A run ticked for bins with just the guild enabled therefore planned over a
-	 * type with no patches anywhere, and reported nothing to do while the player stood at the
-	 * guild bank looking at the bin. Reported from play.
+	 * <p>So the tick now covers the one bin a bank can supply. The other seven are fed from the
+	 * harvest standing next to them — every one shares a stop with the allotments that produce
+	 * it — and are serviced wherever the run already goes rather than being a reason to travel.
+	 * See {@code CompostRunStore.getFodderCrops}.
 	 *
-	 * <p>Here rather than in either caller because two copies of a rule like this drift, and the
-	 * failure when they do is silent in exactly this way.
+	 * <p><b>The stored key stays {@code COMPOST}.</b> Profiles hold {@code runTypes=["COMPOST"]}
+	 * and re-keying the group would silently untick the line for everyone who had it on. The
+	 * line's meaning narrowed; its identity did not.
+	 *
+	 * <p>Kept as a fold here rather than in either caller for the reason the original note gave,
+	 * which still holds: two copies of a rule like this drift, and the failure when they do is
+	 * silent. <b>The Farming Guild has no ordinary bin</b> — its only one is the big one — so a
+	 * caller that forgot the fold planned over a type with no patches anywhere and reported
+	 * nothing to do while the player stood at the guild looking at the bin. Reported from play.
 	 */
 	public static java.util.Set<PatchImplementation> coveredByTheBinTick(
 		java.util.Set<PatchImplementation> types)
@@ -105,9 +115,10 @@ public enum CompostBin
 		{
 			return types;
 		}
-		java.util.Set<PatchImplementation> widened = java.util.EnumSet.copyOf(types);
-		widened.add(PatchImplementation.BIG_COMPOST);
-		return widened;
+		java.util.Set<PatchImplementation> covered = java.util.EnumSet.copyOf(types);
+		covered.remove(PatchImplementation.COMPOST);
+		covered.add(PatchImplementation.BIG_COMPOST);
+		return covered;
 	}
 
 	/** Which bin a patch type is, or null if it is not a bin at all. */

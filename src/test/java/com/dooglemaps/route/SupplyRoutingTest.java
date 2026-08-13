@@ -85,6 +85,7 @@ public class SupplyRoutingTest
 			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
 			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
 			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 	}
 

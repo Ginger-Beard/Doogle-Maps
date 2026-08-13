@@ -334,7 +334,12 @@ public class GuideStepOverlay extends OverlayPanel
 		}
 		else if (status.getDestination() != null)
 		{
-			line("Travel to " + status.getDestination() + ".", java.awt.Color.WHITE);
+			// The place, and what is at it. A name alone only tells you the patches if you
+			// already know the farm - see GuideStatus.destinationPatches.
+			line("Travel to " + status.getDestination()
+				+ (status.getDestinationPatches() == null
+					? "." : " - " + status.getDestinationPatches() + "."),
+				java.awt.Color.WHITE);
 		}
 		else
 		{
@@ -382,10 +387,16 @@ public class GuideStepOverlay extends OverlayPanel
 	 *
 	 * <p>Silent once the pieces are worn, which is the same rule the highlight follows —
 	 * {@code CarriedItems.getInventoryCount} counts the pack alone, so equipping empties it.
+	 *
+	 * <p>And silent until the player is actually at the shore. The broad
+	 * {@code underwaterApproach()} is true from the first tick of any run with a seaweed or coral
+	 * stop on it, which is fine for the outline it was written for and wrong for a line of text —
+	 * it put "wear your diving gear" on the travel panel for the whole run, dive several
+	 * teleports away. See {@code GuideTracker.underwaterApproachAtHand}.
 	 */
 	private void appendDivingReminder()
 	{
-		if (tracker.underwaterApproach() == null)
+		if (tracker.underwaterApproachAtHand() == null)
 		{
 			return;
 		}

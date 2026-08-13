@@ -111,6 +111,7 @@ class CompostBinPanel extends JPanel
 	 */
 	private static final String SUPER_KEY = "binFillSuper";
 	private static final String ORDINARY_KEY = "binFillOrdinary";
+	private static final String FODDER_KEY = "binFodder";
 
 	private final CompostRunStore store;
 	private final BankContents bank;
@@ -127,6 +128,11 @@ class CompostBinPanel extends JPanel
 	private final WrappedText tomatoNote = new WrappedText();
 	private final JCheckBox ashBox = new JCheckBox();
 
+	private final JButton fodderHeading = new JButton();
+	private final JPanel fodderGrid = new JPanel();
+	private final JCheckBox fodderBox = new JCheckBox();
+	private final WrappedText fodderNote = new WrappedText();
+
 	CompostBinPanel(PanelLayoutStore layout, CompostRunStore store, BankContents bank,
 		CarriedItems carried, ItemManager itemManager,
 		com.dooglemaps.data.ItemNames itemNames)
@@ -142,7 +148,7 @@ class CompostBinPanel extends JPanel
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
 		setBorder(BorderFactory.createEmptyBorder(6, 0, 0, 0));
 
-		JLabel heading = new JLabel("Bin fill for the run");
+		JLabel heading = new JLabel("Farming Guild bin");
 		heading.setFont(FontManager.getRunescapeSmallFont());
 		heading.setForeground(TEXT);
 		heading.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
@@ -156,6 +162,19 @@ class CompostBinPanel extends JPanel
 
 		wire(superHeading, SUPER_KEY, superGrid);
 		wire(ordinaryHeading, ORDINARY_KEY, ordinaryGrid);
+		wire(fodderHeading, FODDER_KEY, fodderGrid);
+
+		fodderGrid.setBackground(getBackground());
+		fodderNote.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
+		Controls.styleCheckBox(fodderBox);
+		fodderBox.setBackground(getBackground());
+		fodderBox.setBorder(BorderFactory.createEmptyBorder(2, 6, 2, 6));
+		fodderBox.setText("Fill bins from your harvest");
+		fodderBox.addActionListener(e ->
+		{
+			store.setFodderEnabled(fodderBox.isSelected());
+			refresh();
+		});
 
 		Controls.styleCheckBox(ashBox);
 		ashBox.setBackground(getBackground());
@@ -186,8 +205,32 @@ class CompostBinPanel extends JPanel
 		footer.add(ashBox, BorderLayout.CENTER);
 		body.add(footer, BorderLayout.SOUTH);
 
+		// The second group: the seven bins beside the allotments, which have no bank near them
+		// and are fed from what you have just picked. Its own heading rather than a third
+		// collapsible under the guild's, because it answers a different question - not "what
+		// shall I bring" but "what am I willing to spare".
+		JPanel fodder = new JPanel(new BorderLayout(0, 4));
+		fodder.setBackground(getBackground());
+		fodder.setBorder(BorderFactory.createEmptyBorder(8, 0, 0, 0));
+
+		// No heading over this group. It had one - "Allotment bins" - and it was one label too
+		// many: the checkbox under it already says what the group does, and a title that only
+		// restates the control beneath it is furniture. Settled with the owner.
+		JPanel fodderTop = new JPanel(new BorderLayout(0, 2));
+		fodderTop.setBackground(getBackground());
+		fodderTop.add(fodderBox, BorderLayout.NORTH);
+		fodderTop.add(fodderNote, BorderLayout.CENTER);
+
+		fodder.add(fodderTop, BorderLayout.NORTH);
+		fodder.add(section(fodderHeading, fodderGrid), BorderLayout.CENTER);
+
+		JPanel all = new JPanel(new BorderLayout(0, 0));
+		all.setBackground(getBackground());
+		all.add(body, BorderLayout.NORTH);
+		all.add(fodder, BorderLayout.CENTER);
+
 		add(heading, BorderLayout.NORTH);
-		add(body, BorderLayout.CENTER);
+		add(all, BorderLayout.CENTER);
 	}
 
 	/** Wires one heading button to fold its grid, remembering the choice like every section. */
@@ -217,9 +260,10 @@ class CompostBinPanel extends JPanel
 	void refresh()
 	{
 		int superShown = fill(superGrid, Compostables.superCompostables(),
-			layout.isOpen(SUPER_KEY, true));
+			layout.isOpen(SUPER_KEY, true), false);
 		int ordinaryShown = fill(ordinaryGrid, Compostables.ordinaryCompostables(),
-			layout.isOpen(ORDINARY_KEY, true));
+			layout.isOpen(ORDINARY_KEY, true), false);
+		refreshFodder();
 
 		superHeading.setText(Controls.collapseLabel(
 			"Supercompost (" + superShown + ")", layout.isOpen(SUPER_KEY, true)));
@@ -268,6 +312,17 @@ class CompostBinPanel extends JPanel
 	 */
 	private String fillWarning()
 	{
+		// Fodder first, and it is the likelier trap of the two: a bin is fed from one crop at a
+		// time, so sparing tomatoes and nothing else means every bin you feed comes out rotten.
+		for (int crop : store.getFodderCrops())
+		{
+			if (Compostables.isRottenTomatoTrap(crop) && store.getFodderCrops().size() == 1)
+			{
+				return "Tomatoes are the only crop you have spared, and a bin filled only with "
+					+ "them makes rotten tomatoes rather than compost. Spare another crop too.";
+			}
+		}
+
 		for (int fill : store.getFills())
 		{
 			if (Compostables.isRottenTomatoTrap(fill))
@@ -321,7 +376,54 @@ class CompostBinPanel extends JPanel
 	 * <p>The count is reported even while the section is folded, because it is what the heading
 	 * shows — a folded "Compost (12)" is the whole reason folding is safe.
 	 */
-	private int fill(JPanel grid, Set<Integer> table, boolean open)
+	/**
+	 * The allotment-bins group: the toggle, the crop grid and the line explaining the trade.
+	 *
+	 * <p>Everything compostable in one grid rather than split by tier, because the question here
+	 * is "would I spare this" and the answer does not sort by what it produces. The tier is still
+	 * in each icon's tooltip, and {@code CompostBinPlan} prefers a supercompostable when it can
+	 * fill a bin outright.
+	 */
+	private void refreshFodder()
+	{
+		boolean on = store.isFodderEnabled();
+		fodderBox.setSelected(on);
+		fodderBox.setToolTipText(Tooltips.html(
+			"The seven bins beside the allotments have no bank near them - Falador is about "
+				+ "65 tiles, Ardougne 96 - so carrying their fill across the map costs a farm "
+				+ "run's worth of inventory.<br><br>With this on they are filled from the "
+				+ "harvest you are already holding when you finish the patches beside them, "
+				+ "and the run never banks for them."));
+
+		int shown = fill(fodderGrid, Compostables.allotmentFodder(),
+			on && layout.isOpen(FODDER_KEY, true), true);
+		// "Crops you will spare" was the first wording and it reads both ways: to spare something
+		// can mean to give it up or to save it from harm, and here the two readings are exact
+		// opposites. Reported as contradictory against the line below it, which is about crops
+		// going INTO a bin. "Compost these" has one meaning.
+		fodderHeading.setText(Controls.collapseLabel(
+			"Compost these (" + store.getFodderCrops().size() + ")",
+			layout.isOpen(FODDER_KEY, true)));
+		fodderHeading.setVisible(on);
+		fodderGrid.setVisible(on && layout.isOpen(FODDER_KEY, true));
+
+		if (!on)
+		{
+			fodderNote.setVisible(false);
+			return;
+		}
+
+		fodderNote.setForeground(store.getFodderCrops().isEmpty() ? NOTE : TEXT);
+		fodderNote.setText(store.getFodderCrops().isEmpty()
+			? "Pick the allotment crops you would rather compost than keep."
+			: shown == 0
+				? "You own none of the crops you picked, so nothing will go in a bin this run."
+				: "Put in the bin beside the patch that grew them, and never carried anywhere "
+					+ "else.");
+		fodderNote.setVisible(true);
+	}
+
+	private int fill(JPanel grid, Set<Integer> table, boolean open, boolean fodder)
 	{
 		grid.removeAll();
 		grid.setVisible(open);
@@ -337,7 +439,7 @@ class CompostBinPanel extends JPanel
 			shown++;
 			if (open)
 			{
-				grid.add(buildIcon(itemId, owned));
+				grid.add(buildIcon(itemId, owned, fodder));
 			}
 		}
 
@@ -359,14 +461,17 @@ class CompostBinPanel extends JPanel
 		return shown;
 	}
 
-	private JLabel buildIcon(int itemId, int owned)
+	private JLabel buildIcon(int itemId, int owned, boolean fodder)
 	{
 		FillIcon icon = new FillIcon();
 		icon.setPreferredSize(new Dimension(SLOT_WIDTH, SLOT_HEIGHT));
 		icon.setHorizontalAlignment(SwingConstants.CENTER);
 
-		boolean selected = store.getFills().contains(itemId);
-		icon.setPriority(store.priorityOf(itemId));
+		boolean selected = fodder
+			? store.getFodderCrops().contains(itemId)
+			: store.getFills().contains(itemId);
+		// No digit on the fodder grid: it is a permission set, and a set has no order to show.
+		icon.setPriority(fodder ? 0 : store.priorityOf(itemId));
 		Icons.setStack(icon, itemManager.getImage(itemId, owned, true));
 		icon.setOpaque(selected);
 		icon.setBackground(selected ? SELECTED_BACKGROUND : null);
@@ -381,10 +486,14 @@ class CompostBinPanel extends JPanel
 		icon.setToolTipText(Tooltips.html("<b>" + name + "</b><br>" + owned
 			+ " owned - a bin takes 15 un-noted, the big one 30.<br>A full bin of these makes "
 			+ makes + ".<br>"
-			+ (selected
-				? (priority > 0 ? "Number " + priority + " in the queue; click to remove."
-					: "Picked; click to clear.")
-				: "Click to fill the bins with these.")));
+			+ (fodder
+				? (selected
+					? "Spared for the bins; click to keep them instead."
+					: "Click to let the bins have these when you pick them.")
+				: selected
+					? (priority > 0 ? "Number " + priority + " in the queue; click to remove."
+						: "Picked; click to clear.")
+					: "Click to fill the bins with these.")));
 
 		icon.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR));
 		icon.addMouseListener(new MouseAdapter()
@@ -395,7 +504,16 @@ class CompostBinPanel extends JPanel
 				// The store toggles - picking a picked one removes it, and a fresh pick goes
 				// to the BACK of the queue, which is how reordering is done here and in the
 				// seed grid alike. The click's own refresh redraws the digits immediately.
-				store.toggleFill(itemId);
+				if (fodder)
+				{
+					store.toggleFodderCrop(itemId);
+				}
+				else
+				{
+					// The store toggles - a fresh pick goes to the BACK of the queue, which is
+					// how reordering is done here and in the seed grid alike.
+					store.toggleFill(itemId);
+				}
 				refresh();
 			}
 		});

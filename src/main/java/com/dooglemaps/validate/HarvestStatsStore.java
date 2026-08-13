@@ -55,13 +55,27 @@ public class HarvestStatsStore extends com.dooglemaps.state.ProfileJsonStore
 	 * <p>Split by compost tier because that is the single biggest lever on yield, and an
 	 * average that mixed untreated and ultracomposted patches would describe neither.
 	 */
-	public synchronized void record(HarvestRecord record)
+	public void record(HarvestRecord record)
 	{
 		if (record.getItemsHarvested() <= 0)
 		{
 			return;
 		}
 
+		synchronized (this)
+		{
+			mergeInto(record);
+		}
+
+		// Outside the monitor. ProfileJsonStore.save's javadoc forbids the other order by name,
+		// and documents the deadlock it caused: a save posts ConfigChanged synchronously into
+		// every subscriber, so holding this lock across it runs arbitrary plugin code under it.
+		save();
+	}
+
+	/** Folds one harvest into its crop's running totals. Callers hold the monitor. */
+	private void mergeInto(HarvestRecord record)
+	{
 		CropHarvestStats entry = stats.computeIfAbsent(
 			key(record.getProduce().getName(), record.getCompost().name()),
 			k ->
@@ -103,7 +117,6 @@ public class HarvestStatsStore extends com.dooglemaps.state.ProfileJsonStore
 		}
 
 		entry.setLastHarvest(Instant.now().getEpochSecond());
-		save();
 	}
 
 	// ------------------------------------------------------------------- reads
@@ -266,9 +279,12 @@ public class HarvestStatsStore extends com.dooglemaps.state.ProfileJsonStore
 	}
 
 	/** Wipes the history. Nothing calls this yet; a stats panel will want a reset button. */
-	public synchronized void clear()
+	public void clear()
 	{
-		stats.clear();
+		synchronized (this)
+		{
+			stats.clear();
+		}
 		save();
 	}
 

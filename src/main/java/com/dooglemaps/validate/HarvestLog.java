@@ -16,6 +16,7 @@ import com.dooglemaps.route.PatchLocationStore;
 import com.dooglemaps.state.PatchStateStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.timer.CropYieldModel;
+import com.dooglemaps.timer.FarmingBonuses;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -252,11 +253,11 @@ public class HarvestLog
 	}
 
 	/**
-	 * Starts a record for a pick seen only as experience.
+	 * Starts a record for a harvest seen only as experience.
 	 *
-	 * <p>Matched on the <b>exact</b> per-pick rate of a ripe patch nearby. Deliberately strict:
-	 * picks arrive one at a time, so a single pick's worth is what to expect, and requiring an
-	 * exact match stops planting or check-health experience from being mistaken for a harvest.
+	 * <p>Matched on the <b>exact</b> rate a ripe patch nearby pays — see
+	 * {@link #looksLikeAHarvestOf}. Deliberately strict: requiring an exact match is what stops
+	 * planting or check-health experience from being mistaken for a harvest.
 	 */
 	@Nullable
 	private HarvestRecord openFromExperience(double gained)
@@ -280,11 +281,7 @@ public class HarvestLog
 				continue;
 			}
 
-			CropXp rates = CropXp.forProduce(snapshot.getProduce());
-			// Against the boosted rate, not the published one: the Farmer's outfit adds up to
-			// 2.5% to everything, so the unboosted figure is not what actually arrives.
-			if (rates == null || !HarvestRecord.isOnePick(gained,
-				bonuses.current().applyOutfit(rates.getHarvestXp())))
+			if (!looksLikeAHarvestOf(gained, snapshot.getProduce()))
 			{
 				continue;
 			}
@@ -319,6 +316,58 @@ public class HarvestLog
 		open.put(best.getKey(), record);
 		lastActivePatch = best.getKey();
 		return record;
+	}
+
+	/**
+	 * Whether an experience drop is this crop being harvested and not something else.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * This asked one question — is that a single pick? — and a single pick is not a shape every
+	 * crop has. A flower patch pays for the whole patch in one drop: limpwurt's is 142, being its
+	 * 120 to harvest plus the 21.5 it defers from planting, against the 1.004 outfit. The per-pick
+	 * test allows 120.48 give or take 6.02, so <b>the only drop a limpwurt harvest ever makes was
+	 * rejected</b>. Across all four of the 2026-08-13 client logs there are forty "opening ... from
+	 * experience alone" lines and not one of them is a limpwurt, while the CSV holds eighty-one
+	 * limpwurt patches picked clean, eighty of which record 0.0 against a predicted 120.5.
+	 *
+	 * <p>That mattered even though limpwurt roots do reach the inventory, because the award lands
+	 * in the same tick as the roots but <i>ahead</i> of them — so at the moment it arrives there is
+	 * no open record to take it and this is the only thing that could have opened one. That is not
+	 * a guess about packet order: it is why "Opening Watermelon harvest ... from experience alone"
+	 * is logged for allotments whose melons are plainly in the inventory a moment later.
+	 *
+	 * <p>So a crop that pays once for the patch is matched against that whole-patch award as well,
+	 * with the planting figure {@link CropYieldModel#clearedPatchXp} says is bundled into it. Only
+	 * for those crops, and the caller's guards are untouched — the patch still has to be ripe,
+	 * within {@link #MAX_ATTRIBUTION_DISTANCE}, and not already being recorded — so this widens
+	 * what one drop can match by exactly one value, for one flower patch, at the one moment a
+	 * flower patch is being picked.
+	 */
+	private boolean looksLikeAHarvestOf(double gained, Produce produce)
+	{
+		CropXp rates = CropXp.forProduce(produce);
+		if (rates == null)
+		{
+			return false;
+		}
+
+		// Against the boosted rate, not the published one: the Farmer's outfit adds up to
+		// 2.5% to everything, so the unboosted figure is not what actually arrives.
+		FarmingBonuses current = bonuses.current();
+		double award = current.applyOutfit(rates.getHarvestXp());
+		if (HarvestRecord.isOnePick(gained, award))
+		{
+			return true;
+		}
+
+		Seed seed = Seed.forProduce(produce);
+		if (CropYieldModel.paysHarvestPerItem(seed))
+		{
+			return false;
+		}
+		return HarvestRecord.isOnePick(gained,
+			current.applyOutfit(rates.getHarvestXp() + CropYieldModel.clearedPatchXp(seed)));
 	}
 
 	/**
@@ -434,8 +483,33 @@ public class HarvestLog
 
 		// Still harvestable covers picking part of a stock: a palm at six fruit and the same
 		// palm at three are both harvestable, and both are the same harvest.
+		//
+		// ...and a palm at ZERO fruit is not, which this missed. The paragraph above says a
+		// harvest ends when there is nothing left to pick and calls out bushes, fruit trees and
+		// cacti by name; the test below it only ever exercised the bush shape, where picking the
+		// last berry moves the patch HARVESTABLE -> GROWING and the produce/state pair is enough.
+		//
+		// A fruit tree and a cactus do not do that. PatchRules maps a picked-clean palm to
+		// (PALM, HARVESTABLE, stage 0) at varbit 206, and a bare cactus to (CACTUS, HARVESTABLE,
+		// stage 0) at 15 — the same produce, the same state, an empty patch. So the record never
+		// closed on a state change at all and survived to the idle timeout, absorbing every
+		// experience drop that arrived in the intervening minute.
+		//
+		// Found in the harvest log rather than by reading: 25 of 25 cactus rows and 22 of 22 palm
+		// rows carry completed=false, with totals of 12443, 3712, 1092 and 1011 against ~250
+		// predictions. One palm record swallowed a calquat check-health 76 seconds after the last
+		// coconut; a cactus record swallowed a yew check from Lumbridge.
+		//
+		// The stock is the missing half, and the decode already carries it: for a crop that
+		// regrows, the harvest stage IS the count still on the plant — see GrowthTimer, which
+		// reads the same number as livesRemaining. For everything else the stage counts remaining
+		// lives and never reaches zero while harvestable, so the test is a no-op there.
+		boolean anythingLeft = current.getProduce() == null
+			|| current.getProduce().getRegrowTickrate() <= 0
+			|| current.getStage() > 0;
 		boolean stillPickable = current.getProduce() == record.getProduce()
-			&& current.getCropState() == CropState.HARVESTABLE;
+			&& current.getCropState() == CropState.HARVESTABLE
+			&& anythingLeft;
 		if (stillPickable)
 		{
 			return;
@@ -628,7 +702,7 @@ public class HarvestLog
 		// same experience divided and multiplied by the same constant. It would always agree,
 		// and an assertion that cannot fail is worse than no assertion.
 		if (!record.isInferredFromXp() && predictedXp > 0
-			&& Math.abs(predictedXp - record.getXpGained()) > 0.5)
+			&& Math.abs(predictedXp - record.getXpGained()) > xpMismatchTolerance(predictedXp))
 		{
 			// Worth shouting about: it means the per-pick figure in CropXp is wrong, which is
 			// a data bug rather than a modelling one.
@@ -636,6 +710,30 @@ public class HarvestLog
 				record.getProduce().getName(), predictedXp, record.getItemsHarvested(),
 				record.getXpGained());
 		}
+	}
+
+	/**
+	 * How far a harvest's experience may sit from its prediction before that is worth shouting.
+	 *
+	 * <p>Half a point used to be the bar and nothing could clear it, which made the warning
+	 * useless in both directions: it fired on every harvest, so a genuinely wrong constant would
+	 * have been indistinguishable from the noise.
+	 *
+	 * <p>{@code StatChanged} reports a whole-number total, so an observed drop is the difference
+	 * of two floors and a fractional rate surfaces as gains alternating either side. A record
+	 * that starts and ends part-way through a fraction inherits up to a point of that at each
+	 * end — which is not theory: eight of the nine limpwurt patches logged on 2026-08-13 paid
+	 * 142 and the ninth paid 141, because the ultracompost award immediately before it took the
+	 * fraction and paid 37 instead of 36. Hence two points rather than one.
+	 *
+	 * <p>The proportional half is for the Farmer's outfit, which is modelled at 2.5% for a full
+	 * set rather than measured, so any error in it scales with the harvest. Half a percent still
+	 * catches a per-pick constant that is wrong by a whole pick, which is the data bug this is
+	 * watching for.
+	 */
+	private static double xpMismatchTolerance(double predictedXp)
+	{
+		return Math.max(2.0, predictedXp * 0.005);
 	}
 
 	/**

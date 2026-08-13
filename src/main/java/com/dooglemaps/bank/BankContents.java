@@ -119,13 +119,26 @@ public class BankContents extends com.dooglemaps.state.ProfileJsonStore
 			counts.clear();
 			counts.putAll(incoming);
 			seen = true;
+		}
 
-			if (changed)
-			{
-				// On a real change only, like the notification: a bank fires this event for
-				// every deposit, and the write is what makes next session start informed.
-				save();
-			}
+		if (changed)
+		{
+			// On a real change only, like the notification: a bank fires this event for every
+			// deposit, and the write is what makes next session start informed.
+			//
+			// Outside the monitor, which is the part that was wrong. ProfileJsonStore.save's
+			// javadoc forbids the other order by name — "do not invoke this while holding the
+			// store's monitor, or the write happens under your lock and the hole is back" — and
+			// documents the deadlock it caused, found by a JVM thread dump. A save posts
+			// ConfigChanged synchronously into every subscriber, which is arbitrary plugin code
+			// reaching into other stores; the session log shows every one of this plugin's
+			// writes followed on the client thread by a third-party plugin's config reload, so
+			// the fan-out is observable rather than theoretical.
+			//
+			// Missed by the sweep that fixed the same shape in PatchStateStore,
+			// AvailabilityProfile, CompostSelectionStore, RunTypeStore and PatchLocationStore.
+			// Nothing exempted this class; it was simply not looked at.
+			save();
 		}
 
 		// Only on a real change. A bank fires this event for every deposit and withdrawal, and a

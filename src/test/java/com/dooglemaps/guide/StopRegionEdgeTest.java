@@ -59,6 +59,47 @@ public class StopRegionEdgeTest
 		when(region.getRegionId()).thenReturn(patchTile.getRegionID());
 		when(stop.getRegion()).thenReturn(region);
 		when(stop.getPatches()).thenReturn(Collections.singletonList(patch));
+		// Behaving like the real thing: a dry stop claims its own region and nothing else.
+		// standingAt asks claimsRegion rather than the bare id, so a mock that answers false
+		// to everything would make the stop's own ground read as somewhere else.
+		when(stop.claimsRegion(Mockito.anyInt())).thenAnswer(invocation ->
+			invocation.getArgument(0, Integer.class) == patchTile.getRegionID());
+	}
+
+	/**
+	 * A stop that stands in more ground than it is filed under still counts as being at.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The Great Conch's stop is region 12581 - the ship - while two of its patches are coral
+	 * nurseries on the seabed at 13194. {@code RunStop.claimsRegion} exists so every caller
+	 * answers "is the player at this stop" the same way, and its own comment says so; this one
+	 * was added afterwards and compared the bare id instead.
+	 *
+	 * <p>What it cost: the stop completes when the last nursery is planted or paid for, and
+	 * {@code appendLeavingErrandsAtFinishedStop} then asks this before re-attaching the leaving
+	 * errands. Underwater it got no, so the note that turns a pack of coral into one stack was
+	 * never offered. Reported from play as not being prompted to note at the nurseries.
+	 */
+	@Test
+	public void aStopIsStoodInWhereverItClaimsToReach() throws Exception
+	{
+		int seabed = 13194;
+		when(stop.claimsRegion(seabed)).thenReturn(true);
+
+		// A tile on the seabed - a different region id, and nowhere near the stop's own.
+		WorldPoint player = seabedTile(seabed);
+		assertTrue("fixture: the seabed is not the stop's own region",
+			player.getRegionID() != patchTile.getRegionID());
+		assertTrue("the stop says it reaches here, so the player is at it",
+			standingAt(player));
+	}
+
+	/** Any tile inside the given region, for a stop whose patches have no learnable position. */
+	private static WorldPoint seabedTile(int regionId)
+	{
+		return new WorldPoint(((regionId >> 8) & 0xFF) * 64 + 32,
+			(regionId & 0xFF) * 64 + 32, 0);
 	}
 
 	@Test

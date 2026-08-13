@@ -78,6 +78,17 @@ public class BankLocationStore extends com.dooglemaps.state.ProfileJsonStore
 		return BankLocations.SEED_VAULT;
 	}
 
+	/**
+	 * The bank chest ten tiles from the vault, for a trip that wants both.
+	 *
+	 * <p>Seeded rather than learned, so it can be routed to without the player ever having
+	 * opened it. See {@code RunPlanner.supplyTargetsFor}.
+	 */
+	public WorldPoint getFarmingGuildBank()
+	{
+		return BankLocations.FARMING_GUILD_BANK;
+	}
+
 	/** Records a bank the player has just used. */
 	public void record(WorldPoint location)
 	{
@@ -99,8 +110,13 @@ public class BankLocationStore extends com.dooglemaps.state.ProfileJsonStore
 			}
 
 			learned.add(new int[]{location.getX(), location.getY(), location.getPlane()});
-			save();
 		}
+
+		// Outside the monitor. ProfileJsonStore.save's javadoc forbids the other order by name,
+		// and documents the deadlock it caused: a save posts ConfigChanged synchronously into
+		// every subscriber, so holding this lock across it runs arbitrary plugin code under it.
+		// Third of three the earlier sweep missed, with BankContents and BoatHolds.
+		save();
 		log.debug("Learned bank at {}", location);
 	}
 

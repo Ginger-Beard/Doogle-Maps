@@ -16,6 +16,7 @@ import net.runelite.api.Scene;
 import net.runelite.api.Tile;
 import net.runelite.api.TileObject;
 import net.runelite.api.coords.WorldPoint;
+import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.GameTick;
 import net.runelite.api.gameval.VarbitID;
 import net.runelite.client.eventbus.Subscribe;
@@ -101,6 +102,34 @@ public class PlayerHouse
 	PlayerHouse(Client client)
 	{
 		this.client = client;
+	}
+
+	/**
+	 * Forgets the furniture the moment the scene under it is freed.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The scan below runs once a tick and the overlay draws every frame, so between a scene
+	 * reload and the next tick there were up to ~30 frames holding {@link TileObject}s whose
+	 * scene data the client had already released. Asking one of those for its clickbox threw
+	 * a {@code NullPointerException} <b>inside</b> the client — {@code fb.getClickbox} building
+	 * a model against freed state — and since {@code OverlayRenderer.safeRender} aborts the
+	 * whole overlay, everything drawn after the house teleports vanished for that frame too:
+	 * the route object, and every patch ahead. Twenty-two of the twenty-five traces in a week
+	 * of logs came in through here, in bursts, all of them around entering or leaving a house.
+	 *
+	 * <p>{@code LOADING} arrives on the tick the scene is rebuilt, which closes almost the whole
+	 * window; {@link com.dooglemaps.guide.GuideOverlay} still guards each object it draws,
+	 * because the other three traces came from scene scans this class knows nothing about.
+	 */
+	@Subscribe
+	public void onGameStateChanged(GameStateChanged event)
+	{
+		if (event.getGameState() != GameState.LOGGED_IN)
+		{
+			teleports = Collections.emptyList();
+			inside = false;
+		}
 	}
 
 	@Subscribe

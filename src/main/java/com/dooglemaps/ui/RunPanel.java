@@ -535,10 +535,7 @@ class RunPanel extends JPanel
 			dimIfUnticked(box);
 			// The label is abbreviated to fit two columns, so the tooltip carries the meaning
 			// rather than merely elaborating on it.
-			box.setToolTipText(option.isHarvestOnly()
-				? Tooltips.text("Harvest only: visit these to pick what is ready and nothing else "
-					+ "- the patch is not cleared, composted or replanted")
-				: null);
+			box.setToolTipText(tooltipFor(option));
 			box.addActionListener(e ->
 			{
 				dimIfUnticked(box);
@@ -555,6 +552,29 @@ class RunPanel extends JPanel
 			optionBoxes.put(option, box);
 			return box;
 		}
+	}
+
+	/**
+	 * What a run line's tooltip says, where the label alone cannot carry it.
+	 *
+	 * <p>The labels are abbreviated to fit two columns in a 225px sidebar, so the tooltip carries
+	 * the meaning rather than merely elaborating on it.
+	 */
+	private String tooltipFor(RunOption option)
+	{
+		if (option.isHarvestOnly())
+		{
+			return Tooltips.text("Harvest only: visit these to pick what is ready and nothing "
+				+ "else - the patch is not cleared, composted or replanted");
+		}
+		if (com.dooglemaps.data.CompostBin.forType(option.getType()) != null)
+		{
+			return Tooltips.text("The Farming Guild's big bin, which is the only one with a bank "
+				+ "beside it. The seven next to the allotments are not a run of their own - they "
+				+ "are filled from the harvest you are already holding when you finish the "
+				+ "patches beside them, which the Compost tab switches on.");
+		}
+		return null;
 	}
 
 	/**
@@ -903,8 +923,14 @@ class RunPanel extends JPanel
 				bins.add(type);
 			}
 		}
-		// Widened for the same reason the panel's own type set is: the guild's bin is the big
-		// one, and asking only about the type the checkbox carries misses it.
+		// Folded for the same reason the panel's own type set is: the tick carries the ordinary
+		// bin's type and means the guild's big one, so asking about the type on the checkbox
+		// would miss it entirely.
+		//
+		// No fodder test is needed here even though a fill can now come from the harvest.
+		// binWork counts no fillable items for a bin the guild's own allotments will supply, or
+		// for any of the seven beside the allotments, so this goes quiet by itself in exactly
+		// the cases where a "pick a fill" warning would be a false alarm.
 		return !bins.isEmpty()
 			&& planner.binWork(com.dooglemaps.data.CompostBin.coveredByTheBinTick(bins))
 				.fillableBins > 0;

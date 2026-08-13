@@ -170,6 +170,15 @@ public enum GuideAction
 	 * done, the run moves on, and the seed packs sit unclaimed until you next happen to be in the
 	 * guild, which for most people is the next contract.
 	 */
+	/**
+	 * A tree seed that has to spend time in a plant pot before it can go in the ground.
+	 *
+	 * <p>Not something the player can do at the patch: a plant pot of soil is a bank errand, and
+	 * the sapling then needs watering. So this step is a <b>diagnosis</b> rather than a click —
+	 * it says why the patch in front of you is not going to be planted this trip.
+	 */
+	POT_SEED("Pot the seed first"),
+
 	HAND_IN_CONTRACT("Hand in the contract"),
 
 	/**

@@ -78,7 +78,17 @@ task runClient(type: JavaExec) {
 	description = 'Run RuneLite with the plugin'
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = 'com.dooglemaps.DoogleMapsPluginTest'
-	args = ['--developer-mode']
+
+	// -PdebugLogging adds RuneLite's own --debug, which sets the ROOT logger to DEBUG - every
+	// plugin, not just this one. Worth knowing before reading the result: the volume is large
+	// and what you want is usually one grep out of it. The lines this was added for are
+	// PatchLocationStore's "Learned location", one per patch position learned.
+	//
+	// Nothing to do with -PdebugClient below, which is a debugger port. The two words mean
+	// different things here and the flags are deliberately not spelled the same.
+	args = project.hasProperty('debugLogging')
+		? ['--developer-mode', '--debug']
+		: ['--developer-mode']
 
 	// -PdebugClient opens a debugger port so an IDE can hot-swap changed classes into the
 	// running client, which saves a relaunch for anything that only changes a method body.

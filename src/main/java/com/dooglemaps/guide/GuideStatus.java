@@ -22,8 +22,8 @@ public class GuideStatus
 {
 	private static final GuideStatus IDLE =
 		new GuideStatus(Collections.emptyList(), false, false, 0, Collections.emptyList(), null,
-			null, null, Collections.emptyList(), null, Collections.emptyList(),
-			Collections.emptySet(), null);
+			null, Collections.emptyList(), null, null, Collections.emptyList(), null,
+			Collections.emptyList(), Collections.emptySet(), null);
 
 	/** Outstanding steps at the stop you are standing in. Empty while travelling. */
 	List<GuideStep> steps;
@@ -56,6 +56,45 @@ public class GuideStatus
 	 */
 	@javax.annotation.Nullable
 	String destination;
+
+	/**
+	 * What is waiting at {@link #destination}, in patch types, or null when that cannot be said.
+	 *
+	 * <h2>Why a place name is not enough</h2>
+	 *
+	 * While travelling there are no steps at all — the step list is what the stop you are
+	 * <i>standing in</i> wants — so the panel had only the stop's name to show, and a name only
+	 * tells you the patches if you already know the farm. "Rimmington" means the bush to somebody
+	 * who has run it a hundred times and nothing to anybody else; "Falador" means four different
+	 * things to everyone. Reported from play as travelling for a minute without being told what
+	 * was at the other end.
+	 *
+	 * <p>Patch <b>types</b> rather than what you will do there, deliberately. What a patch wants
+	 * depends on state that changes while you travel — a crop ripens, the clock promotes a bin —
+	 * so a promise made at the start of a leg can be wrong by the end of it. What is planted
+	 * cannot change under you, and it is the half the place name does not carry.
+	 *
+	 * <p>Separate from {@link #destination} rather than folded into it, because that string is
+	 * matched on: {@code GuideTracker.travelHint} keys the nexus row and the jewellery box line
+	 * off the destination's name, so appending to it would quietly stop those matching.
+	 */
+	@javax.annotation.Nullable
+	String destinationPatches;
+
+	/**
+	 * The patches at {@link #destination}, for outlining them on the way in. Empty when not
+	 * travelling.
+	 *
+	 * <h2>Why the overlay is handed these rather than fetching them</h2>
+	 *
+	 * The same reason it is handed everything else here: reaching the destination stop means
+	 * walking {@code RunPlanner}, which is synchronised, and the overlay draws every frame. This
+	 * is sampled once on the tick thread where the monitor already lives.
+	 *
+	 * <p>Separate from {@link #destinationPatches}, which is the same fact as a sentence. One is
+	 * read, the other is drawn, and a string is no use to an outline renderer.
+	 */
+	List<com.dooglemaps.data.FarmPatch> patchesAhead;
 
 	/**
 	 * What to travel with, or null when there is nothing to say — not travelling, or nothing
@@ -144,5 +183,39 @@ public class GuideStatus
 	public boolean isTravelling()
 	{
 		return running && steps.isEmpty();
+	}
+
+	/**
+	 * Whether the guide is asking for empty buckets right now.
+	 *
+	 * <p>The "drop empty buckets" arrangement rests on a bucket being spent the instant it
+	 * empties: composting a patch leaves one behind, it does nothing for the rest of the run, so
+	 * it is lit red and its left-click is Drop from the moment the run starts. A compost bin is
+	 * the one place that is false. Emptying a bin is <b>pouring compost into empty buckets</b> —
+	 * they are the tool the step needs, and marking them as litter while the guide asks for them
+	 * put Drop under the cursor on the very items the next click consumes. Reported from play.
+	 *
+	 * <p>The emptying sequence rather than every bin step: the ash immediately precedes the first
+	 * bucket, and the withdrawal is the guide fetching the buckets itself. Filling and closing a
+	 * bin want produce, not buckets, so those leave the arrangement alone.
+	 *
+	 * <p>Derived from the step list for the same reason {@link #isTravelling()} is. Both the
+	 * inventory overlay's highlight and {@code GuideMenuSwap}'s left-click ask this, and they
+	 * have to answer together — a bucket lit red whose left-click is not Drop, or the reverse,
+	 * is worse than either behaviour on its own.
+	 */
+	public boolean wantsEmptyBuckets()
+	{
+		for (GuideStep step : steps)
+		{
+			if (step.getAction() == GuideAction.EMPTY_BIN
+				|| step.getAction() == GuideAction.APPLY_ASH
+				|| (step.getAction() == GuideAction.WITHDRAW_TOOL
+					&& step.getItemId() == net.runelite.api.gameval.ItemID.BUCKET_EMPTY))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 }

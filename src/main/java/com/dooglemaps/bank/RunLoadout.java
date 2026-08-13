@@ -248,6 +248,38 @@ public class RunLoadout
 		return false;
 	}
 
+	/**
+	 * Whether a <b>tool</b> the run cannot proceed without is still sitting in a bank.
+	 *
+	 * <h2>Narrower than {@link #anythingLeftToWithdraw} on purpose</h2>
+	 *
+	 * That one answers "would a bank trip help", and is asked at the two ends of the supply leg.
+	 * This one is asked <b>once a tick, mid-run</b>, by {@code RunPlanner.reviewSupplies} — so it
+	 * has to be restricted to the case where diverting is unarguable. A tool is that case: without
+	 * an axe the tree cannot be chopped, without a spade the patch cannot be cleared, and no
+	 * amount of standing there changes it. A seed or a payment is not, because the run can
+	 * legitimately press on and skip that patch, and yanking the player to a bank for one would
+	 * undo "standing on work beats going shopping".
+	 *
+	 * <p>The case it exists for is the axe. {@code ToolNeeds} has never known about it — see
+	 * {@code reviewSupplies}, which asks that class and therefore could not see it — so a contract
+	 * taken from Jane for a patch still holding last run's tree left the player at the guild being
+	 * told to chop something they had nothing to chop with, with no trip back offered. Reported
+	 * from play.
+	 */
+	public boolean toolsLeftToWithdraw(Set<PatchImplementation> types)
+	{
+		for (LoadoutItem item : forRun(types))
+		{
+			if (item.getNeed() == LoadoutItem.Need.WITHDRAW
+				&& item.getCategory() == LoadoutItem.Category.TOOL)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** The last answer, and what it was worked out for. See {@link #forRun}. */
 	private List<LoadoutItem> tickCache;
 	private int cachedTick = -1;
@@ -1153,22 +1185,55 @@ public class RunLoadout
 	}
 
 	/**
-	 * How much bin fill one trip can actually carry.
+	 * How much bin fill this trip can actually carry: the room there is, right now.
 	 *
-	 * <p>The inventory, less a slot for the ash when the upgrade is on. Ash is the only other
-	 * thing this run brings from a bank, and it <b>stacks</b> — so 25 of it costs one slot
-	 * whatever the number says. Everything else the trip needs comes from the leprechaun
-	 * standing at the bin: the empty buckets, and the store the full ones go back into.
+	 * <h2>Why this is the live pack rather than the inventory's size</h2>
 	 *
-	 * <p>The buckets are deliberately not reserved for here. Emptying and depositing happen in
-	 * turns against whatever room is going — see {@code CompostBinPlan}, which takes as many
-	 * buckets as there are free slots and hands the compost straight back — so the produce does
-	 * not have to share the pack with them.
+	 * It was {@code INVENTORY_SIZE} less a slot for the ash, which assumed the fill had the
+	 * whole pack to itself. It does not. A compost run is routinely a compost <i>and</i> run —
+	 * a contract's seed, the secateurs, the spade, a handful of teleports — and none of that
+	 * was subtracted, so the row asked for twenty-seven pineapples into a pack with ten slots
+	 * free.
+	 *
+	 * <p>That was not merely an overcount. {@code BIN_FILL} is in
+	 * {@code CANNOT_PROCEED_WITHOUT}, so the row stayed {@code WITHDRAW} for the twenty-seventh
+	 * pineapple that would never fit, {@code anythingLeftToWithdraw} stayed true, and
+	 * {@code RunPlanner.suppliesOutstanding} held the run on the supply leg permanently — the
+	 * player was told to fetch what they had no room for and was never routed to the bin at
+	 * all. Reported from play.
+	 *
+	 * <p>Measured against the pack, the row asks for what fits and goes {@code HAVE} the moment
+	 * it does, so the leg closes and the run leaves. <b>One free slot is enough</b>: it fetches
+	 * one item, fills the bin one item further, and the bin is topped up on the next load —
+	 * which is what {@code CompostBinPlan.addFillStep}'s part-fill wording has always described.
+	 *
+	 * <p>What is already in the pack counts as room, because it is: a row asking for fifteen is
+	 * satisfied by fifteen already carried, not by fifteen more on top.
+	 *
+	 * <p>The ash still gets its slot, and only when none is carried yet — it <b>stacks</b>, so
+	 * 25 of it costs one slot whatever the number says, and reserving a slot for a stack already
+	 * in the pack would quietly cost the last pineapple.
+	 *
+	 * <p>The buckets are deliberately not reserved for. Emptying and depositing happen in turns
+	 * against whatever room is going — see {@code CompostBinPlan}, which takes as many buckets as
+	 * there are free slots and hands the compost straight back — so the produce does not have to
+	 * share the pack with them.
 	 */
 	private int fillBudget()
 	{
-		int reserved = compostRun.isAshing() ? 1 : 0;
-		return com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE - reserved;
+		int room = carried.getFreeSlots();
+		if (compostRun.isAshing()
+			&& carried.getInventoryCount(com.dooglemaps.data.CompostBin.VOLCANIC_ASH) == 0)
+		{
+			room--;
+		}
+
+		int alreadyCarried = 0;
+		for (int fill : compostRun.getFills())
+		{
+			alreadyCarried += carried.getInventoryCount(fill);
+		}
+		return Math.max(0, room) + alreadyCarried;
 	}
 
 	/**
@@ -1252,6 +1317,10 @@ public class RunLoadout
 	 * <p>The short case is the one worth wording carefully. A big bin alone cannot be filled in
 	 * a single inventory at all — thirty un-noted items against twenty-eight slots — so a player
 	 * heading to the guild expecting to finish it needs telling before they walk, not after.
+	 *
+	 * <p>"Room" rather than "a pack", throughout, because {@link #fillBudget()} is now the space
+	 * this trip actually has rather than the size of an empty inventory. Saying "a pack holds 6"
+	 * would read as a claim about inventories; what it is is a fact about this one, right now.
 	 */
 	private String fillReason(com.dooglemaps.route.RunPlanner.BinWork work, int wanted,
 		int binSize, boolean shortOfTheJob)
@@ -1259,19 +1328,22 @@ public class RunLoadout
 		String bins = work.fillableBins + (work.fillableBins == 1 ? " bin" : " bins");
 		if (!shortOfTheJob)
 		{
-			return "Fills your " + bins + " - un-noted, so it is " + wanted + " pack slots";
+			return "Fills your " + bins + " - un-noted, so it is " + wanted + " inventory slots";
 		}
-		if (binSize > fillBudget())
+
+		int budget = fillBudget();
+		String slots = budget + (budget == 1 ? " slot" : " slots");
+		if (binSize > budget)
 		{
-			// The big bin, which no inventory can fill in one go however it is arranged.
-			return "As many as a pack holds - the big bin takes " + binSize
-				+ " un-noted items and there are only " + fillBudget()
-				+ " slots, so it fills over two trips.";
+			// The big bin, or any bin against a pack that is already carrying most of a run.
+			return "As many as there is room for - the bin takes " + binSize
+				+ " un-noted items and you have " + slots
+				+ " going spare, so it fills over more than one load.";
 		}
 		return wanted / Math.max(1, binSize) + " bin"
 			+ (wanted / Math.max(1, binSize) == 1 ? "" : "s")
 			+ " worth - un-noted and unstackable, so your " + bins + " want "
-			+ work.fillItems + " items and a pack holds " + fillBudget()
+			+ work.fillItems + " items and you have room for " + budget
 			+ ". The rest needs another load.";
 	}
 

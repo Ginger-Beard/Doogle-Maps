@@ -82,7 +82,8 @@ public final class GuidePlan
 		PlantingGroup group, Seed chosen, SeedInventoryStore seeds,
 		CompostSelectionStore compostChoice,
 		CarriedItems carried, LeprechaunStore leprechaun, BarbarianFarming barbarianFarming,
-		boolean protecting, boolean harvestOnly, int patchesToTreat)
+		boolean protecting, boolean harvestOnly, int patchesToTreat, boolean binWantsThisCrop,
+		com.dooglemaps.data.ItemNames itemNames)
 	{
 		List<GuideStep> steps = new ArrayList<>();
 		if (projection == null)
@@ -245,8 +246,31 @@ public final class GuidePlan
 			// at a magic tree sent the player to him with nothing he would accept. A full pack
 			// is still a full pack — but the honest answer there is silence, not a trip that
 			// ends in "the leprechaun refuses". See Produce.isLeprechaunNotable.
+			// And not while a bin at this stop is waiting for exactly this crop. Noting it is
+			// what makes it useless to the bin - a bin refuses notes - so the two instructions
+			// are in direct conflict and the leprechaun's is the one that loses. Emptying
+			// fifteen into the bin frees the same slots and is the errand the player came for.
+			// Without this the harvest-fed bins were unfeedable in practice: the pack fills mid
+			// harvest, the note fires the moment it does, and the bin then finds nothing
+			// un-noted left to take.
+			//
+			// And only when you are actually carrying some. This named the crop growing in
+			// the patch in front of you rather than anything in your pack, so a full pack at
+			// a ripe irit said "note the irit" with the irit still in the ground - an
+			// instruction with nothing to perform it on. Reported from play mid compost-bin
+			// emptying, where the pack was full of buckets and the herb patch beside the bin
+			// supplied the wording.
+			//
+			// Un-noted only: a stack that is already noted is not something he can note
+			// again, and counting it would bring the same empty instruction back one step
+			// later. Silence when you hold none is the right answer here - the pack being
+			// full is real, but this branch's job is to name what to hand over, and the
+			// leaving errands (GuideTracker.appendNoteBeforeLeaving) name the biggest stack
+			// you are genuinely carrying once the patch work is done.
 			if (carried.getFreeSlots() <= FULL_INVENTORY_SLACK
-				&& projection.getProduce().isLeprechaunNotable())
+				&& projection.getProduce().isLeprechaunNotable()
+				&& carried.getInventoryCount(projection.getProduce().getItemID()) > 0
+				&& !binWantsThisCrop)
 			{
 				steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN, patch,
 					projection.getProduce().getItemID(), null,
@@ -340,7 +364,7 @@ public final class GuidePlan
 		// about the patches a run actually services.
 		if (!projection.isEmpty())
 		{
-			addProtectionStep(steps, projection, carried, protecting);
+			addProtectionStep(steps, projection, carried, protecting, itemNames);
 
 			// One exception: a seed that has just gone in, on a patch that was never treated.
 			// Compost works just as well applied after planting — the wiki's own herb-run guide
@@ -375,6 +399,25 @@ public final class GuidePlan
 		// are withdrawn it starts asking for its steps again by itself.
 		if (!seedAtHand(chosen, seeds))
 		{
+			// Except when the seed IS at hand and simply is not a sapling yet. A tree, fruit
+			// tree or calquat seed goes into a plant pot of soil, is watered, and only then can
+			// be planted - and none of that can be done at the patch, because a plant pot is a
+			// bank errand. So the silence above is the wrong answer here: the player is standing
+			// in front of the patch holding the thing they came for and being told nothing.
+			// Reported from play, at a calquat: "got sent to a calquat patch without turning
+			// into a sapling first".
+			//
+			// The bank leg already carries "needs potting into a sapling first" as a reason on
+			// its row (see RunLoadout), which is where it is cheapest to act on. This is what it
+			// says when that was missed, and it names the patch so the run does not merely go
+			// quiet at it.
+			if (chosen.isSapling() && unpottedInPack(chosen, seeds) > 0)
+			{
+				steps.add(GuideStep.withItem(GuideAction.POT_SEED, patch, chosen.getItemID(),
+					"The " + chosen.getName().toLowerCase() + " seed has to go in a plant pot "
+						+ "of soil and be watered before it can be planted - that is a bank "
+						+ "errand, not one you can do here."));
+			}
 			return steps;
 		}
 
@@ -443,7 +486,7 @@ public final class GuidePlan
 	 * loadout is where that should have been caught.
 	 */
 	private static void addProtectionStep(List<GuideStep> steps, PatchProjection projection,
-		CarriedItems carried, boolean protecting)
+		CarriedItems carried, boolean protecting, com.dooglemaps.data.ItemNames itemNames)
 	{
 		FarmPatch patch = projection.getPatch();
 		if (!protecting || projection.getProduce() == null
@@ -462,10 +505,23 @@ public final class GuidePlan
 			return;
 		}
 
+		// The item, not the crop. This read payment.getProduce(), which is the crop being
+		// protected — so every sentence on this branch paid for a thing with itself. Reported
+		// from play at the coral: "Pay the farmer 5 elkhorn to protect the elkhorn", when what
+		// Chet wants is five giant seaweed. Wrong everywhere, but only visible here: the
+		// planting sequence words its own payment step, and this branch fires only when you
+		// come back to a patch that is already in the ground and still unpaid.
+		//
+		// ItemNames rather than a hand-written label, which is the case its own class comment
+		// argues: half these payments are baskets and sacks, where the constant reads "basket
+		// tomato 5" and the game says "Basket of tomatoes". Every ProtectionPayment item id is
+		// read into it at login, so the fallback is for tests rather than for play.
+		String paying = itemNames == null
+			? null : itemNames.get(payment.getItemID());
 		steps.add(GuideStep.atNpc(GuideAction.PAY_FARMER, patch, payment.getItemID(),
 			patch.getFarmer(),
 			"Pay the farmer " + payment.getQuantity() + " "
-				+ payment.getProduce().getName().toLowerCase()
+				+ (paying == null ? "of the payment item" : paying.toLowerCase())
 				+ " to protect the " + projection.getProduce().getName().toLowerCase() + "."));
 	}
 
@@ -584,6 +640,21 @@ public final class GuidePlan
 	 * a tree patch actually takes. Also the tracker's test for wording the skip, so the two
 	 * cannot drift: the guide goes silent about a patch exactly when the panel explains why.
 	 */
+	/**
+	 * How many raw, unpotted seeds of this crop are on the player.
+	 *
+	 * <p>{@code getCount} counts both forms and {@code getPlantable} counts only the sapling, so
+	 * the difference is what is still in seed form — which is the state the patch cannot use and
+	 * the bank can fix.
+	 */
+	private static int unpottedInPack(Seed seed, SeedInventoryStore seeds)
+	{
+		int both = seeds.getCount(seed, SeedSource.INVENTORY)
+			+ seeds.getCount(seed, SeedSource.SEED_BOX);
+		return both - (seeds.getPlantable(seed, SeedSource.INVENTORY)
+			+ seeds.getPlantable(seed, SeedSource.SEED_BOX));
+	}
+
 	static boolean seedAtHand(Seed seed, SeedInventoryStore seeds)
 	{
 		return seeds.getPlantable(seed, SeedSource.INVENTORY)

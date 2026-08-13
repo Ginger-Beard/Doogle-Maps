@@ -117,3 +117,33 @@ config key. The run helpers themselves were looked at and deliberately not reuse
 on Quest Helper's own step and requirement framework, and their patch routing is a fixed region
 order, which is the design this plugin explicitly rejected in favour of handing every outstanding
 target to Shortest Path.
+
+## Dude Where's My Stuff
+
+[dude-wheres-my-stuff](https://github.com/Thource/dude-wheres-my-stuff) by Thource,
+BSD 2-Clause, "Copyright 2022 Thource".
+
+No source is copied. What was taken is a **fact**, and it is the answer to a question this
+plugin had been getting wrong for months: **the seed box has no item container.**
+
+`SeedInventoryStore` asked `getItemContainer(InventoryID.SEED_BOX)` on every tick and the client
+answered null every time — `box 0 read, 56 with no container` on one run, and not one successful
+reconcile in any archived log. Because nothing could ever read the box, its contents were derived
+entirely from Fill and Empty deltas, a derivation with no way back once it went wrong. It went
+wrong: 681 limpwurt seeds were filled into a box the model thought was full, the guard refused
+them, and a farm run then skipped the Farming Guild's flower patch for want of a seed that was
+sitting in the player's own box.
+
+Its `carryable/SeedBox` reads the **interface** instead — the children of what RuneLite's gameval
+names `InterfaceID.HosidiusSeedbox.SEED_LAYER`, each carrying an item id and a quantity — and
+keeps the box between openings from the game's own chat lines ("Stored 6 x Ranarr seed in your
+seed box.", "Emptied 4 x Ranarr seed to your inventory."). Both are game facts rather than
+authored code: the component is named in RuneLite core, and the wordings are Jagex's. One of
+those lines was already going past in this plugin's own log, where `HarvestLog` noted it as
+"the wording to match" and nothing acted on it.
+
+Credited because that is where the approach came from, not because the licence compels it for a
+widget id. What was deliberately not reused is the rest of the design: it models every storage in
+the game behind a common `CarryableStorage` type with its own UI, where this plugin wants one
+question answered — how many of a seed can be planted this run — and answers it inside
+`SeedInventoryStore` alongside the bank, the vault and the pack.

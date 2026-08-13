@@ -72,6 +72,9 @@ public class RunLoadoutTest
 	/** Stubbed per test where a farming contract is in play. */
 	private com.dooglemaps.state.ContractState contracts;
 
+	/** The grouper the planner uses; stubbed where a contract group is the point. */
+	private com.dooglemaps.state.PlantingGroups groups;
+
 	/** Stubbed per test where the bin run's fill or ash choice matters. */
 	private com.dooglemaps.state.CompostRunStore compostRun;
 
@@ -122,6 +125,9 @@ public class RunLoadoutTest
 		com.dooglemaps.state.PlayerLocation playerLocation =
 			construct(com.dooglemaps.state.PlayerLocation.class,
 				Mockito.mock(net.runelite.api.Client.class));
+		// Hoisted above the planner, which now reads the fodder toggle too - the loadout and
+		// the planner have to agree about the bins, so they share one mock rather than two.
+		compostRun = Mockito.mock(com.dooglemaps.state.CompostRunStore.class);
 		RunPlanner planner = construct(RunPlanner.class, availability,
 			construct(PatchLocationStore.class, configManager, gson),
 			construct(BankLocationStore.class, configManager, gson),
@@ -130,9 +136,10 @@ public class RunLoadoutTest
 				Mockito.mock(net.runelite.client.callback.ClientThread.class)),
 			playerLocation, Mockito.mock(ToolNeeds.class),
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
-			Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
+			groups = Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
 			plannerRunOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
+			compostRun,
 			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
 
 		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
@@ -179,7 +186,7 @@ public class RunLoadoutTest
 
 		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
 			toolNeeds, leprechaun, protection, itemNames, config, tickingClient(), runTypes,
-			contracts, compostRun = Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
+			contracts, compostRun,
 			boatHolds = construct(com.dooglemaps.bank.BoatHolds.class, configManager, gson));
 	}
 
@@ -639,22 +646,28 @@ public class RunLoadoutTest
 		patches.recordVarbit(bin, varbitValue, decoded);
 		availability.setAvailable(bin, true);
 
-		when(plannerRunOptions.isSelected(
-			com.dooglemaps.data.RunOption.full(
-				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
-			.thenReturn(true);
+		// The run tick no longer covers the seven beside the allotments - it means the guild's
+		// big bin alone. What puts a small bin in a run is the fodder toggle, so that is what a
+		// fixture for one has to set. See CompostBin.coveredByTheBinTick.
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(java.util.Collections.emptySet());
 	}
 
 	private static final Set<PatchImplementation> BINS = EnumSet.of(PatchImplementation.COMPOST);
+	private static final Set<PatchImplementation> BIG_BINS =
+		EnumSet.of(PatchImplementation.BIG_COMPOST);
 
 	/**
-	 * An empty bin with a fill chosen banks the fill, counted un-noted and by capacity.
+	 * An empty bin beside the allotments banks <b>nothing</b>, which is the whole change.
 	 *
-	 * <p>The quantity doubles as the pack-space warning: fifteen un-noted items is most of an
-	 * inventory, and the row is where that gets said before the trip rather than at the bin.
+	 * <p>It used to bank fifteen un-noted items - most of an inventory - carried all day to a bin
+	 * with no bank anywhere near it. Measured against {@code BankLocations}: Catherby ~23 tiles,
+	 * Falador ~65, Ardougne ~96, and three of the seven have no seeded bank at all. Reported from
+	 * play as running a whole farm run with a pack full of pineapples. It is fed from the harvest
+	 * standing next to it now; see {@code CompostBinPlan}.
 	 */
 	@Test
-	public void anEmptyBinBanksItsFill()
+	public void anEmptyAllotmentBinBanksNothing()
 	{
 		binAt(0);
 		when(compostRun.getFills())
@@ -662,10 +675,28 @@ public class RunLoadoutTest
 		names.put(ItemID.PINEAPPLE, "Pineapple");
 		bankHolds(ItemID.PINEAPPLE, 40);
 
-		LoadoutItem fill = itemNamed(BINS, "Pineapple");
+		assertNull("the seven are never the bank's problem", itemNamed(BINS, "Pineapple"));
+	}
+
+	/**
+	 * The guild's bin still banks its fill, counted un-noted and by capacity.
+	 *
+	 * <p>The one bin with a bank in its own region, so it is the one a run can be asked to carry
+	 * for. The quantity doubles as the pack-space warning: thirty un-noted items is more than an
+	 * inventory, and the row is where that gets said before the trip rather than at the bin.
+	 */
+	@Test
+	public void theGuildBinBanksItsFill()
+	{
+		bigBinAt(0);
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 40);
+
+		LoadoutItem fill = itemNamed(BIG_BINS, "Pineapple");
 		assertNotNull("the fill is what the bin trip is for", fill);
 		assertEquals(LoadoutItem.Need.WITHDRAW, fill.getNeed());
-		assertEquals("a normal bin takes fifteen", 15, fill.getQuantity());
 		assertEquals("bulk produce the trip is for, so it lays out with the seeds",
 			LoadoutItem.Category.BIN_FILL, fill.getCategory());
 	}
@@ -680,13 +711,13 @@ public class RunLoadoutTest
 	@Test
 	public void theFillNeverExceedsOnePackLoad()
 	{
-		binAt(0);
+		bigBinAt(0);
 		when(compostRun.getFills())
 			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
 		names.put(ItemID.PINEAPPLE, "Pineapple");
 		bankHolds(ItemID.PINEAPPLE, 500);
 
-		LoadoutItem fill = itemNamed(BINS, "Pineapple");
+		LoadoutItem fill = itemNamed(BIG_BINS, "Pineapple");
 		assertNotNull(fill);
 		assertTrue("asked for " + fill.getQuantity() + ", which no inventory holds",
 			fill.getQuantity() <= com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE);
@@ -719,8 +750,8 @@ public class RunLoadoutTest
 		assertTrue("and it asks for a packful: " + fill.getQuantity(),
 			fill.getQuantity() > 0
 				&& fill.getQuantity() <= com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE);
-		assertTrue("saying why it takes two trips: " + fill.getReason(),
-			fill.getReason().contains("two trips"));
+		assertTrue("saying why one load cannot do it: " + fill.getReason(),
+			fill.getReason().contains("more than one load"));
 	}
 
 	/** A bin at a chosen varbit in the guild, ticked into the run. */
@@ -737,6 +768,181 @@ public class RunLoadoutTest
 			com.dooglemaps.data.RunOption.full(
 				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
 			.thenReturn(true);
+	}
+
+	/**
+	 * The fill row asks for the room there is, not the room an empty pack would have.
+	 *
+	 * <p>A compost run is routinely a compost <i>and</i> run - a contract's seed, the secateurs,
+	 * a handful of teleports - and the budget used to be {@code INVENTORY_SIZE} less a slot for
+	 * the ash, as though the produce had the whole pack to itself.
+	 */
+	@Test
+	public void theFillAsksOnlyForWhatThePackCanActuallyHold()
+	{
+		bigBinAt(0);
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 500);
+		packFullExcept(1);
+
+		LoadoutItem fill = itemNamed(BIG_BINS, "Pineapple");
+		assertNotNull("one slot is still worth a pineapple", fill);
+		assertEquals("one free slot, so one item", 1, fill.getQuantity());
+		assertEquals("and the withdraw count follows it", 1, fill.getWithdrawCount());
+	}
+
+	/**
+	 * A pack with no room left does not hold the run at the bank.
+	 *
+	 * <p>The reported dead end, and the reason this is asserted on
+	 * {@link RunLoadout#anythingLeftToWithdraw} rather than on the row: {@code BIN_FILL} is in
+	 * {@code CANNOT_PROCEED_WITHOUT}, so a row stuck on {@code WITHDRAW} for produce that could
+	 * never fit kept {@code RunPlanner.suppliesOutstanding} true forever. The player was told to
+	 * fetch pineapples they had no room for and was never routed to the bin at all.
+	 */
+	@Test
+	public void aFullPackDoesNotHoldTheRunAtTheBank()
+	{
+		bigBinAt(0);
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 500);
+		carrying(ItemID.PINEAPPLE, 5);
+		packFullExcept(0);
+
+		LoadoutItem fill = itemNamed(BIG_BINS, "Pineapple");
+		assertNotNull(fill);
+		assertEquals("what is carried is the whole of what this trip can take",
+			LoadoutItem.Need.HAVE, fill.getNeed());
+		assertFalse("the supply leg has to be able to close",
+			loadout.anythingLeftToWithdraw(BIG_BINS));
+	}
+
+	/**
+	 * Fills the pack down to this many free slots with items nothing else looks at.
+	 *
+	 * <p>One slot per distinct id, which is how {@code CarriedItems.record} counts them - so the
+	 * filler has to be that many different ids rather than one big stack.
+	 */
+	private void packFullExcept(int freeSlots)
+	{
+		int used = carriedStock.size();
+		for (int i = 0; used + i < com.dooglemaps.guide.CarriedItems.INVENTORY_SIZE - freeSlots; i++)
+		{
+			carriedStock.put(FILLER_BASE + i, 1);
+		}
+		carried.record(containerOf(flatten(carriedStock)));
+		assertEquals("fixture did not leave the room it meant to",
+			freeSlots, carried.getFreeSlots());
+	}
+
+	/** Ids no data table in the plugin knows about, so the filler cannot be mistaken for kit. */
+	private static final int FILLER_BASE = 900_000;
+
+	// ------------------------------------------- the guild bin's two sources
+
+	/** Watermelon, harvestable — see PatchRules' allotment table. */
+	private static final int WATERMELON_READY = 62;
+	/** The same crop, still growing. */
+	private static final int WATERMELON_GROWING = 52;
+
+	/**
+	 * The guild's own allotments feed its bin, so nothing is banked for it.
+	 *
+	 * <p>The guild is the only place with allotments, a bin and a bank all in one region, so it
+	 * is the only bin that can be supplied either way. Every input to the choice is known before
+	 * the run starts, which is what lets the loadout answer it rather than the player.
+	 */
+	@Test
+	public void theGuildBinDoesNotBankWhatItsOwnAllotmentsWillGrow()
+	{
+		bigBinAt(0);
+		guildAllotmentAt(WATERMELON_READY);
+		fodder(ItemID.WATERMELON);
+		binFill(ItemID.PINEAPPLE);
+
+		assertNull("thirty watermelons are about to be picked ten tiles away",
+			itemNamed(BIG_BINS, "Pineapple"));
+	}
+
+	/** Not ready this trip is the same as not there: the bank has to supply it. */
+	@Test
+	public void theGuildBinBanksWhenItsAllotmentsAreStillGrowing()
+	{
+		bigBinAt(0);
+		guildAllotmentAt(WATERMELON_GROWING);
+		fodder(ItemID.WATERMELON);
+		binFill(ItemID.PINEAPPLE);
+
+		assertNotNull("nothing to pick yet, so bring some", itemNamed(BIG_BINS, "Pineapple"));
+	}
+
+	/** A crop the player will not spare is the same as no crop at all. */
+	@Test
+	public void theGuildBinBanksWhenTheCropIsNotOnTheFodderList()
+	{
+		bigBinAt(0);
+		guildAllotmentAt(WATERMELON_READY);
+		fodder(ItemID.POTATO);
+		binFill(ItemID.PINEAPPLE);
+
+		assertNotNull("watermelons are not spared, so they are not a source",
+			itemNamed(BIG_BINS, "Pineapple"));
+	}
+
+	/** And with the whole idea switched off, the bank is the only source there is. */
+	@Test
+	public void theGuildBinBanksWhenFodderIsOff()
+	{
+		bigBinAt(0);
+		guildAllotmentAt(WATERMELON_READY);
+		when(compostRun.isFodderEnabled()).thenReturn(false);
+		when(compostRun.getFodderCrops())
+			.thenReturn(java.util.Collections.singleton(ItemID.WATERMELON));
+		binFill(ItemID.PINEAPPLE);
+
+		assertNotNull(itemNamed(BIG_BINS, "Pineapple"));
+	}
+
+	/** Records the guild's north allotment at a varbit and switches the patch on. */
+	private void guildAllotmentAt(int varbitValue)
+	{
+		FarmPatch allotment = null;
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.ALLOTMENT))
+		{
+			if (patch.getRegion().getRegionId() == 4922)
+			{
+				allotment = patch;
+				break;
+			}
+		}
+		assertNotNull("fixture: the Farming Guild should have an allotment", allotment);
+		ProduceState decoded = allotment.getImplementation().forVarbitValue(varbitValue);
+		assertNotNull("varbit " + varbitValue + " decodes to nothing", decoded);
+		patches.recordVarbit(allotment, varbitValue, decoded);
+		availability.setAvailable(allotment, true);
+	}
+
+	private void fodder(int... itemIds)
+	{
+		java.util.Set<Integer> crops = new java.util.LinkedHashSet<>();
+		for (int itemId : itemIds)
+		{
+			crops.add(itemId);
+		}
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(crops);
+	}
+
+	private void binFill(int itemId)
+	{
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(itemId));
+		names.put(itemId, "Pineapple");
+		bankHolds(itemId, 500);
 	}
 
 	/** With no fill chosen there is no fill row - and no guessing at one. */
@@ -766,6 +972,33 @@ public class RunLoadoutTest
 		assertNotNull("the upgrade was asked for", ash);
 		assertEquals("the bin price, while everything is still in it", 25, ash.getQuantity());
 		assertEquals(LoadoutItem.Need.WITHDRAW, ash.getNeed());
+	}
+
+	/**
+	 * A ready bin banks its refill too - emptying it is what makes it empty.
+	 *
+	 * <p>The reported dead end: the fill was counted only for bins that were <i>already</i>
+	 * empty, so a run whose bins were all ready packed buckets and ash and no produce at all.
+	 * The bin emptied fine, the buckets went to the leprechaun, and then
+	 * {@code CompostBinPlan.addFillStep} had nothing in the pack to name - so the bin's last
+	 * step vanished, the stop read as finished and the run ended with the bin standing open.
+	 */
+	@Test
+	public void aReadyBinBanksTheFillItWillWantOnceEmptied()
+	{
+		bigBinAt(62);
+		when(compostRun.getFills())
+			.thenReturn(java.util.Collections.singletonList(ItemID.PINEAPPLE));
+		names.put(ItemID.PINEAPPLE, "Pineapple");
+		bankHolds(ItemID.PINEAPPLE, 500);
+
+		LoadoutItem fill = itemNamed(BIG_BINS, "Pineapple");
+		assertNotNull("a bin about to be emptied is a bin about to want filling", fill);
+		assertEquals(LoadoutItem.Need.WITHDRAW, fill.getNeed());
+		// Capped at what a pack holds rather than the big bin's thirty, which is a separate
+		// rule with its own test - what this one pins is that the ask exists at all.
+		assertTrue("a whole bin, because emptying it empties it: " + fill.getQuantity(),
+			fill.getQuantity() > com.dooglemaps.data.CompostBin.NORMAL.getCapacity());
 	}
 
 	/** Unticked, the ash stays out of the list however much of it the bank holds. */
@@ -1796,6 +2029,64 @@ public class RunLoadoutTest
 
 		assertNull("checking health swings nothing, and that is the whole visit",
 			axeIn(EnumSet.of(PatchImplementation.TREE)));
+	}
+
+	/**
+	 * A tree contract on a patch still holding last run's tree asks for the axe and the basket.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * Jane hands out a contract for a patch that is not empty — the tree in it grew while you were
+	 * away and has not been check-healthed. Planting the contract's crop means checking, chopping
+	 * and digging the stump out first, so the trip needs an <b>axe</b>; and the logs arrive one per
+	 * chop, before the leprechaun can note anything and he refuses logs anyway, so it needs
+	 * somewhere to put them. Reported from play as having to fetch both by hand.
+	 *
+	 * <p>Modelled with the contract's own {@code PlantingGroup}, which is the thing the earlier
+	 * axe tests do not do — they let the mocked grouper fall back to the plain group, and the
+	 * plain group answers a different question about harvest-only.
+	 */
+	@Test
+	public void aTreeContractOnAnUnclearedPatchAsksForTheAxeAndTheBasket()
+	{
+		FarmPatch tree = guildTreePatch();
+
+		// Varbit 12: an oak fully grown and NOT yet check-healthed - the state Jane can hand you.
+		ProduceState decoded = tree.getImplementation().forVarbitValue(12);
+		assertNotNull(decoded);
+		patches.recordVarbit(tree, 12, decoded);
+		availability.setAvailable(tree, true);
+
+		com.dooglemaps.data.PlantingGroup contract =
+			com.dooglemaps.data.PlantingGroup.contract(PatchImplementation.TREE);
+		when(groups.groupFor(tree)).thenReturn(contract);
+		when(plannerRunOptions.isSelected(
+			com.dooglemaps.data.RunOption.full(contract))).thenReturn(true);
+
+		bankHolds(ItemID.RUNE_AXE, 1);
+		bankHolds(ItemID.FORESTRY_BASKET_CLOSED, 1);
+		woodcuttingLevel(99);
+
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		LoadoutItem axe = axeIn(trees);
+		assertNotNull("without one the contract's patch cannot be cleared at all", axe);
+		assertEquals(LoadoutItem.Need.WITHDRAW, axe.getNeed());
+
+		LoadoutItem basket = itemNamed(trees, "Forestry basket");
+		assertNotNull("the logs arrive mid-chop, and the leprechaun refuses them", basket);
+	}
+
+	/** The Farming Guild's tree patch, which is the one a tree contract lands on. */
+	private static FarmPatch guildTreePatch()
+	{
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.TREE))
+		{
+			if (patch.getRegion().getRegionId() == 4922)
+			{
+				return patch;
+			}
+		}
+		throw new AssertionError("no tree patch at the Farming Guild");
 	}
 
 	/** Readies several herb patches, for the counts that only mean something above one. */

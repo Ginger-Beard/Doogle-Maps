@@ -71,6 +71,44 @@ public final class SeedAllocation
 	public static SeedAllocation forPatches(List<FarmPatch> patches, Set<Seed> selected,
 		Map<Seed, Integer> owned, int level, ProtectionBudget budget)
 	{
+		return forPatches(patches, selected, owned, level, budget, null);
+	}
+
+	/**
+	 * As above, with one patch given first claim on the scarcest good seed.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"when we're running out of a seed on this run and have 2 types (or more) for the
+	 * patches, we should prompt for position 1 first, not position 2. I just had a ranarr seed
+	 * (1) on me in my seed box, and snapdragons in my inv (2), and I was prompted to plant the
+	 * snapdragon, not the ranarr."</i>
+	 *
+	 * <p>Nothing was wrong with the <i>ranking</i> — {@code RunEstimate.bestFirst} has honoured
+	 * the player's click order since it replaced the expected-XP sort. The ranarr did get first
+	 * pick. It got first pick of the <b>lowest-keyed patch</b>, because the sort below is by
+	 * patch key, and the player was standing at a different one. One ranarr across five herb
+	 * patches is a correct allocation that reserves the good seed for a patch you may reach last,
+	 * or never.
+	 *
+	 * <p>So the patch in front of the player gets first claim. The key sort stays underneath it
+	 * and still decides everything else, which keeps the property it was added for: the same
+	 * inputs give the same answer, and the guide does not appear to change its mind about a patch
+	 * it has already spoken about.
+	 *
+	 * <p><b>Counts are untouched.</b> This only decides <i>which</i> patch receives a seed, never
+	 * how many of each the run plants — one ranarr and four snapdragons either way. That is what
+	 * lets {@code AllocationAgreementTest} keep comparing this against {@code RunEstimate}, which
+	 * works in counts and has no patches to order.
+	 *
+	 * @param firstClaim the patch to serve first, or null to order purely by key — which is what
+	 *                   the loadout and the planner pass, because they are pricing a run rather
+	 *                   than standing in one.
+	 */
+	public static SeedAllocation forPatches(List<FarmPatch> patches, Set<Seed> selected,
+		Map<Seed, Integer> owned, int level, ProtectionBudget budget,
+		@Nullable FarmPatch firstClaim)
+	{
 		Map<String, Seed> assigned = new LinkedHashMap<>();
 		if (patches.isEmpty())
 		{
@@ -82,6 +120,26 @@ public final class SeedAllocation
 		// a patch it had already told you about.
 		List<FarmPatch> ordered = new ArrayList<>(patches);
 		ordered.sort(Comparator.comparing(FarmPatch::getKey));
+
+		// ...and then the patch being worked on right now goes to the front, if it is one of
+		// these. Moved rather than sorted around, so the order of everything else is exactly the
+		// key order it would otherwise have been.
+		if (firstClaim != null)
+		{
+			int at = -1;
+			for (int i = 0; i < ordered.size(); i++)
+			{
+				if (ordered.get(i).getKey().equals(firstClaim.getKey()))
+				{
+					at = i;
+					break;
+				}
+			}
+			if (at > 0)
+			{
+				ordered.add(0, ordered.remove(at));
+			}
+		}
 
 		int next = 0;
 		for (Seed seed : RunEstimate.bestFirst(selected, ordered.get(0).getImplementation(), level))

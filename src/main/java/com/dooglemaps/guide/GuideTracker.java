@@ -103,6 +103,8 @@ public class GuideTracker
 	/** The bin run's fill and ash choices, for the compost-bin steps. */
 	private final com.dooglemaps.state.CompostRunStore compostRun;
 
+	private final com.dooglemaps.data.ItemNames itemNames;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -115,8 +117,10 @@ public class GuideTracker
 		com.dooglemaps.bank.RouteItem routeItem, net.runelite.api.Client client,
 		DroppedProduce droppedProduce, com.dooglemaps.route.BankLocationStore bankLocations,
 		com.dooglemaps.state.DailyTeleports dailyTeleports,
-		com.dooglemaps.state.CompostRunStore compostRun)
+		com.dooglemaps.state.CompostRunStore compostRun,
+		com.dooglemaps.data.ItemNames itemNames)
 	{
+		this.itemNames = itemNames;
 		this.compostRun = compostRun;
 		this.dailyTeleports = dailyTeleports;
 		this.bankLocations = bankLocations;
@@ -191,7 +195,15 @@ public class GuideTracker
 
 		List<GuideStep> steps = computeStepsHere();
 		List<RunStop> remaining = planner.getRemaining();
-		String destination = destinationName(remaining);
+
+		// Resolved once and used twice: the name for the panel, and the region for the planner,
+		// which stops re-deciding where the run is going once the route has named somewhere.
+		// Pushed rather than read over there because destinationStop is the careful half of the
+		// answer - Shortest Path's reply may name its pick or echo every target it was handed,
+		// so a stop is named only when exactly one matches. See RunPlanner.commitDestination.
+		RunStop heading = destinationStop(remaining);
+		String destination = heading == null ? null : heading.getName();
+		planner.commitDestination(heading == null ? -1 : heading.getRegion().getRegionId());
 
 		// Only while travelling. Standing at a patch with work to do, the teleport is the last
 		// thing anyone wants pointed at — the whole design is one instruction at a time.
@@ -220,12 +232,15 @@ public class GuideTracker
 
 		status = new GuideStatus(steps, planner.isActive(), planner.isAtBankLeg(),
 			remaining.size(), new ArrayList<>(planner.getCurrentTransports()),
-			destination, hint, here == null ? null : here.getName(), supplyLines(),
+			destination, describePatchesAt(heading),
+			heading == null ? java.util.Collections.<FarmPatch>emptyList()
+				: new ArrayList<>(heading.getPatches()),
+			hint, here == null ? null : here.getName(), supplyLines(),
 			planner.isActive() ? contractNote(here) : null,
 			planner.isActive() ? skipped : java.util.Collections.emptyList(),
 			planner.isActive() && planner.isAtBankLeg()
 				? planner.getSupplySources()
-				: java.util.Collections.emptySet(),
+				: contractFetchSources(steps, here),
 			planner.isActive() ? routeItem.currentName() : null);
 
 		routeFromTheFrontDoor();
@@ -394,6 +409,7 @@ public class GuideTracker
 	{
 		status = GuideStatus.idle();
 		working = null;
+		interrupted = null;
 		workingRegion = -1;
 		lastRegion = -1;
 		loggedErrandsAt = null;
@@ -528,7 +544,8 @@ public class GuideTracker
 	 */
 	private List<GuideStep> outstandingFor(FarmPatch patch, RunStop stop)
 	{
-		List<GuideStep> steps = new ArrayList<>(stepsFor(patch, patchesWanting(stop, patch)));
+		List<GuideStep> steps = new ArrayList<>(stepsFor(patch, patchesWanting(stop, patch),
+			compostThisStopWillUse(stop)));
 		steps.removeIf(step -> skippedSteps.contains(keyOf(step)));
 		return steps;
 	}
@@ -570,7 +587,9 @@ public class GuideTracker
 			// Also the moment to forget which patch was being worked: arriving somewhere new
 			// should pick the nearest thing there, not resume a patch two teleports away.
 			working = null;
+			interrupted = null;
 			appendLeavingErrandsAtFinishedStop(steps, player);
+			announceSkipsAtFinishedStop(player);
 			return steps;
 		}
 
@@ -578,6 +597,7 @@ public class GuideTracker
 		{
 			workingRegion = stop.getRegion().getRegionId();
 			working = null;
+			interrupted = null;
 		}
 
 		List<FarmPatch> ordered = sortedByDistance(stop, player);
@@ -592,13 +612,15 @@ public class GuideTracker
 
 		if (first != null)
 		{
-			steps.addAll(stepsFor(first, patchesWanting(stop, first)));
+			steps.addAll(stepsFor(first, patchesWanting(stop, first),
+				compostThisStopWillUse(stop)));
 		}
 		for (FarmPatch patch : offered)
 		{
 			if (!patch.getKey().equals(first == null ? null : first.getKey()))
 			{
-				steps.addAll(stepsFor(patch, patchesWanting(stop, patch)));
+				steps.addAll(stepsFor(patch, patchesWanting(stop, patch),
+					compostThisStopWillUse(stop)));
 			}
 		}
 
@@ -621,7 +643,8 @@ public class GuideTracker
 				if (projection != null
 					&& (projection.hasProduceToPick() || projection.needsHealthCheck()))
 				{
-					steps.addAll(stepsFor(patch, patchesWanting(stop, patch), true));
+					steps.addAll(stepsFor(patch, patchesWanting(stop, patch),
+						compostThisStopWillUse(stop), true));
 				}
 			}
 		}
@@ -648,7 +671,152 @@ public class GuideTracker
 		appendLeprechaunErrands(steps, stop);
 		appendContractErrands(steps, stop);
 		insertPickUpDrops(steps, stop, player);
+		noteStopOrder(stop, steps);
 		return steps;
+	}
+
+	/**
+	 * Past this many distinct patch types, the stop is described by its size instead.
+	 *
+	 * <p>Three fits the line. The Farming Guild has eleven, and listing them would push the
+	 * destination off the panel to tell you something you would read as noise anyway — at that
+	 * size "nine patches" is the useful fact and the types are not.
+	 */
+	private static final int TYPES_WORTH_NAMING = 3;
+
+	/**
+	 * What is waiting at a stop, in patch types. Null when there is nothing to say.
+	 *
+	 * <h2>Types, not work</h2>
+	 *
+	 * See {@link GuideStatus#getDestinationPatches()}. What a patch <i>wants</i> can change while
+	 * you travel — a crop ripens, a bin's clock finishes — so a promise made when the leg starts
+	 * can be wrong by the time you arrive. What is planted cannot change under you.
+	 *
+	 * <p>Counted per type and ordered by the stop's own patch list, so two farms with the same
+	 * types read the same way round. Pluralised properly because "2 allotment" reads as a typo
+	 * and this line is on screen for the length of a journey.
+	 */
+	@Nullable
+	static String describePatchesAt(@Nullable RunStop stop)
+	{
+		if (stop == null || stop.getPatches().isEmpty())
+		{
+			return null;
+		}
+
+		java.util.Map<PatchImplementation, Integer> counts = new java.util.LinkedHashMap<>();
+		for (FarmPatch patch : stop.getPatches())
+		{
+			counts.merge(patch.getImplementation(), 1, Integer::sum);
+		}
+
+		if (counts.size() > TYPES_WORTH_NAMING)
+		{
+			int patches = stop.getPatches().size();
+			return patches + " patches";
+		}
+
+		StringBuilder said = new StringBuilder();
+		for (java.util.Map.Entry<PatchImplementation, Integer> entry : counts.entrySet())
+		{
+			if (said.length() > 0)
+			{
+				said.append(", ");
+			}
+			String name = entry.getKey().getDisplayName().toLowerCase(java.util.Locale.ROOT);
+			said.append(entry.getValue() == 1
+				? name
+				: entry.getValue() + " " + plural(name));
+		}
+		return said.toString();
+	}
+
+	/**
+	 * The plural of a patch type's name.
+	 *
+	 * <p>Only the sibilant rule, because that is the only one the patch names need: "bush"
+	 * becomes "bushes" and "cactus" becomes "cactuses", where everything else takes a plain s.
+	 * "Cactuses" over "cacti" deliberately — it is the form the game's own interfaces use.
+	 */
+	private static String plural(String name)
+	{
+		return name.endsWith("s") || name.endsWith("x") || name.endsWith("z")
+			|| name.endsWith("ch") || name.endsWith("sh")
+			? name + "es"
+			: name + "s";
+	}
+
+	/** The last stop ordering logged, so it is said once per distinct answer. */
+	@Nullable
+	private String loggedStopOrder;
+
+	/**
+	 * Says what the panel is actually about to show, in order.
+	 *
+	 * <h2>This logged the wrong list, and cost a round</h2>
+	 *
+	 * It was handed {@code ordered} — the distance sort with {@code contractFirst} and
+	 * {@code binsFirst} applied — on the assumption that this was the order the steps came out
+	 * in. It is not. {@link #chooseWorkingPatch} runs afterwards and hoists the patch you are
+	 * part way through to the top, so the log read "bin first" while the screen said "harvest".
+	 * A diagnostic that measures something adjacent to the question confirms fixes that never
+	 * reached the player, which is exactly what happened.
+	 *
+	 * <p>So it takes the finished list now: after the working patch is chosen, after the skips
+	 * are dropped, after the errands are woven in. The first entry is the current step. Keyed by
+	 * patch as well as action, because a stop with six patches called "Farming Guild" told
+	 * nobody which one was which.
+	 */
+	private void noteStopOrder(RunStop stop, List<GuideStep> steps)
+	{
+		StringBuilder line = new StringBuilder();
+		for (GuideStep step : steps)
+		{
+			line.append(step.getPatch() == null ? "?" : step.getPatch().getKey())
+				.append('=').append(step.getAction().name()).append("; ");
+		}
+
+		String key = stop.getRegion().getRegionId() + "#" + line;
+		if (key.equals(loggedStopOrder))
+		{
+			return;
+		}
+		loggedStopOrder = key;
+		log.info("Stop {} will show, in order: {}", stop.getName(),
+			line.length() == 0 ? "nothing" : line);
+	}
+
+	/**
+	 * Why a stop that just completed under your feet is not asking for anything else.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * {@link #announceSkips} exists to say "skipping the allotment - your watermelon seeds are
+	 * in your bank", and it could not reach the one moment it is for. Picking the last crop
+	 * empties the patch on the same tick; an empty patch with no seed at hand produces no steps;
+	 * no steps at any patch completes the stop; a completed stop leaves {@code getRemaining()},
+	 * so {@code stopAt} answers null and {@link #computeStepsHere} returns before the
+	 * announcement is ever built. The player is left standing in Falador being told to teleport.
+	 *
+	 * <p>Same failure shape as the leaving errands above and the same repair: the words belong to
+	 * the stop rather than to a patch, so they are re-attached here once it has gone. Anchored to
+	 * {@code workingRegion} for the same reason, so walking back through a stop finished an hour
+	 * ago says nothing.
+	 *
+	 * <p>Read before {@code working} is cleared by the caller — it is not used here, but the
+	 * order matters if that ever changes.
+	 */
+	private void announceSkipsAtFinishedStop(WorldPoint player)
+	{
+		for (RunStop stop : planner.getStops())
+		{
+			if (stop.getRegion().getRegionId() == workingRegion && standingAt(stop, player))
+			{
+				announceSkips(stop, stop.getPatches());
+				return;
+			}
+		}
 	}
 
 	/**
@@ -715,7 +883,7 @@ public class GuideTracker
 
 		GuideStep pickup = GuideStep.of(GuideAction.PICK_UP_DROPS, stop.getPatches().get(0),
 			"Pick up the " + drops.get(0).getProduce().getContractName().toLowerCase()
-				+ " your full pack dropped on the ground.");
+				+ " your full inventory dropped on the ground.");
 
 		// Skippable like any other step: waving it past is the player saying the crops are
 		// abandoned, and it must not come back every tick until they despawn. The stop-wide
@@ -937,6 +1105,63 @@ public class GuideTracker
 			.build());
 	}
 
+	/** Bins already warned about this session, so the notice is said once per bin. */
+	private final java.util.Set<String> announcedMissingAsh = new java.util.HashSet<>();
+
+	/**
+	 * Says, once per bin, that a supercompost bin is about to be emptied without its upgrade.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"I was just sent to ardougne farm without volcanic ash to fill the bin… I gathered a
+	 * bunch at the start of a run, but as the run finished up new runs became available and I
+	 * never clicked stop, I just kept going, hence not having enough."</i>
+	 *
+	 * <p>{@code CompostBinPlan} gates the {@code APPLY_ASH} step on the ash actually being in the
+	 * pack, on the reasoning that "an instruction that cannot be followed is the loadout's failure
+	 * to prevent". That holds for a run that stays inside the plan it was stocked for, and a run
+	 * that keeps absorbing newly-ready stops outgrows that plan by design — the loadout is
+	 * computed once, at the bank. So the guide went quiet and the bin came out as plain
+	 * supercompost, with nothing said and nothing to notice.
+	 *
+	 * <p>A notice rather than a step, deliberately, and it is the same distinction the gate
+	 * itself draws: there is no ash to fetch here, the leprechaun does not store it, so "use ash
+	 * on the bin" would be an instruction with no click behind it. What the player can act on is
+	 * the knowledge — bank for ash, or empty it and accept supercompost — and that is a decision,
+	 * not a step. Same shape and same wording style as {@link #noteCompostDowngrade}.
+	 *
+	 * <p>Only once the bin is actually finished. A closed bin forty minutes from done is not a
+	 * loss yet, and saying so then is noise the player cannot use.
+	 */
+	private void noteMissingAsh(com.dooglemaps.data.CompostBin bin, FarmPatch patch,
+		PatchProjection projection)
+	{
+		PatchSnapshot snapshot = patches.get(patch);
+		if (snapshot == null
+			|| !(projection.isReady() || projection.getCropState() == CropState.HARVESTABLE))
+		{
+			return;
+		}
+
+		int held = carried.getInventoryCount(com.dooglemaps.data.CompostBin.VOLCANIC_ASH);
+		if (!CompostBinPlan.upgradeWouldBeLost(bin, snapshot.getProduce(),
+				compostRun.isAshing(), held)
+			|| !announcedMissingAsh.add(patch.getKey()))
+		{
+			return;
+		}
+
+		chat.queue(net.runelite.client.chat.QueuedMessage.builder()
+			.type(net.runelite.api.ChatMessageType.GAMEMESSAGE)
+			.runeLiteFormattedMessage(new net.runelite.client.chat.ChatMessageBuilder()
+				.append(java.awt.Color.ORANGE,
+					"This bin is ready and you have " + (held == 0 ? "no" : String.valueOf(held))
+						+ " volcanic ash - it needs " + bin.ashNeeded()
+						+ ". Emptying it now gives supercompost rather than ultracompost.")
+				.build())
+			.build());
+	}
+
 	/** The downgrade in force, for the infobox, or null when the run is using what was picked. */
 	@Nullable
 	private volatile CompostTier downgradedTo;
@@ -1012,6 +1237,7 @@ public class GuideTracker
 			loggedErrandsAt = null;
 			lastNamedStop = null;
 			working = null;
+			interrupted = null;
 			workingRegion = -1;
 			return;
 		}
@@ -1032,6 +1258,9 @@ public class GuideTracker
 		// set so the planner never has to ask the loadout — which is what removed the
 		// construction cycle between the two.
 		planner.setWithdrawOutstanding(loadout.anythingLeftToWithdraw(planner.coveredTypes()));
+		// And the narrower half of it, for the one thing worth diverting mid-run over. See
+		// RunLoadout.toolsLeftToWithdraw and RunPlanner.reviewSupplies.
+		planner.setToolOutstanding(loadout.toolsLeftToWithdraw(planner.coveredTypes()));
 	}
 
 	/**
@@ -1200,7 +1429,21 @@ public class GuideTracker
 		skipped = reasons;
 	}
 
-	/** Where the seeds the pack lacks actually are, for the skip wording above. */
+	/**
+	 * Where the seeds the pack lacks actually are, for the skip wording above.
+	 *
+	 * <h2>The seed box is the one answer that can be out of date</h2>
+	 *
+	 * Its contents are remembered across sessions and derived from Fill and Empty deltas in
+	 * between, and the client holds no container for it to be checked against until the box has
+	 * been opened — {@code getItemContainer} answers null, which the reconcile now says out loud.
+	 * So "not in your pack" can mean "and not in your box either" or it can mean "and I last saw
+	 * inside your box some time before this session".
+	 *
+	 * <p>Reported from play as being sent away from Falador with the watermelon seeds sitting in
+	 * the box. The plugin was wrong, and worse, it was wrong confidently. It now says which of
+	 * the two it means, so an answer that cannot be trusted does not read like one that can.
+	 */
 	private String whereSeedsAre(Seed seed)
 	{
 		if (seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.BANK) > 0)
@@ -1211,7 +1454,13 @@ public class GuideTracker
 		{
 			return "in the seed vault";
 		}
-		return "not in your pack";
+		// "Inventory", never "pack", in anything the player reads: a seed pack is a real item -
+		// the farming contract reward you open for random seeds - so "not in your pack" reads as
+		// a statement about that rather than about your inventory. Said from play.
+		return seeds.hasSeenTheBoxThisSession()
+			? "not in your inventory"
+			: "not in your inventory - and your seed box has not been opened this session, so "
+				+ "what I have for it is from last time. Open it once if this looks wrong";
 	}
 
 	/** Patches this stop is passing over, in words. Rebuilt each tick with the step list. */
@@ -1410,6 +1659,29 @@ public class GuideTracker
 	@Nullable
 	private String contractSeedStorageHere(RunStop stop, Seed seed)
 	{
+		com.dooglemaps.state.SeedSource source = contractSeedSourceHere(stop, seed);
+		if (source == com.dooglemaps.state.SeedSource.BANK)
+		{
+			return "bank";
+		}
+		return source == com.dooglemaps.state.SeedSource.SEED_VAULT ? "seed vault" : null;
+	}
+
+	/**
+	 * The same question as a {@link com.dooglemaps.state.SeedSource}, for the object to outline.
+	 *
+	 * <p>The words were all this used to produce, and the words are only half the instruction:
+	 * {@code GuideOverlay.highlightSupplyPoints} marks the bank booths and the vault from
+	 * {@code GuideStatus.getSupplySources}, which was populated <b>only on the bank leg</b>. A
+	 * contract is taken from Jane in the middle of a run, so the fetch step said "withdraw your
+	 * irit seed from the seed vault here" while nothing in the room lit up. Reported from play.
+	 *
+	 * <p>Kept as one method with the wording rather than two tests of the same thing, so the
+	 * sentence and the outline can never name different containers.
+	 */
+	@Nullable
+	private com.dooglemaps.state.SeedSource contractSeedSourceHere(RunStop stop, Seed seed)
+	{
 		int region = stop.getRegion().getRegionId();
 		if (seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.BANK) > 0)
 		{
@@ -1417,16 +1689,49 @@ public class GuideTracker
 			{
 				if (bank.getRegionID() == region)
 				{
-					return "bank";
+					return com.dooglemaps.state.SeedSource.BANK;
 				}
 			}
 		}
 		if (seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.SEED_VAULT) > 0
 			&& bankLocations.getSeedVault().getRegionID() == region)
 		{
-			return "seed vault";
+			return com.dooglemaps.state.SeedSource.SEED_VAULT;
 		}
 		return null;
+	}
+
+	/**
+	 * The container a current contract-seed fetch is pointing at, or an empty set.
+	 *
+	 * <p>So the supply-point outline is not the bank leg's alone. Derived from the step that is
+	 * actually on the list rather than from the contract state, because the step is what carries
+	 * every other condition — the run's own types, an empty patch to plant in, the seed not
+	 * already in hand — and re-deciding those here is how the outline and the instruction come
+	 * to disagree.
+	 */
+	private java.util.Set<com.dooglemaps.state.SeedSource> contractFetchSources(
+		java.util.List<GuideStep> steps, @Nullable RunStop here)
+	{
+		Seed seed = contracts.getContractSeed();
+		if (here == null || seed == null)
+		{
+			return java.util.Collections.emptySet();
+		}
+		boolean fetching = false;
+		for (GuideStep step : steps)
+		{
+			fetching |= step.getAction() == GuideAction.FETCH_SEED;
+		}
+		if (!fetching)
+		{
+			return java.util.Collections.emptySet();
+		}
+
+		com.dooglemaps.state.SeedSource source = contractSeedSourceHere(here, seed);
+		return source == null
+			? java.util.Collections.emptySet()
+			: java.util.Collections.singleton(source);
 	}
 
 	/**
@@ -2061,6 +2366,9 @@ public class GuideTracker
 	 * <p>Any remaining underwater stop counts, not the nearest — a run with one is a run
 	 * heading there eventually, and the steps only exist in the scene when the player is
 	 * already standing on the right shore, so an early outline is impossible anyway.
+	 *
+	 * <p>That last clause is what makes this safe <b>for an outline</b> and unsafe for anything
+	 * else; see {@link #underwaterApproachAtHand()}.
 	 */
 	@Nullable
 	public com.dooglemaps.data.UnderwaterApproach.Approach underwaterApproach()
@@ -2078,6 +2386,45 @@ public class GuideTracker
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * The same approach, but only once the player is standing at it.
+	 *
+	 * <h2>Why the broad answer will not do here</h2>
+	 *
+	 * {@link #underwaterApproach()} is true from the first tick of any run with a seaweed or
+	 * coral stop on it, and gets away with it because what it feeds is a scene outline: the steps
+	 * are not in the scene anywhere else, so a premature answer draws nothing. A line of text has
+	 * no such protection. "Wear your diving gear before the steps down" therefore sat on the
+	 * travel panel for the whole run — through the herb stops, the bank leg and every hop in
+	 * between — telling a player to suit up for a dive several teleports away. Reported from
+	 * play: the gear should not be asked for until the dive is what is actually happening.
+	 *
+	 * <p>The player's own region rather than the route's destination, and that is deliberate.
+	 * {@code getCurrentDestinations()} can be every outstanding target at once rather than the
+	 * one Shortest Path settled on — {@code GuideStatus.destination} says as much, and only names
+	 * a stop when exactly one matches — so "are we heading there" is a question the route cannot
+	 * always answer, and a wrong answer here is the bug this exists to fix. Where the player is
+	 * standing is never ambiguous.
+	 *
+	 * <p>It also happens to be the moment the instruction means anything. The approach region is
+	 * the shore the router stops at, the steps down are in it, and the whole point of the line is
+	 * the ordering of the two actions taken there.
+	 */
+	@Nullable
+	public com.dooglemaps.data.UnderwaterApproach.Approach underwaterApproachAtHand()
+	{
+		com.dooglemaps.data.UnderwaterApproach.Approach approach = underwaterApproach();
+		if (approach == null)
+		{
+			return null;
+		}
+
+		WorldPoint player = playerLocation();
+		return player != null && player.getRegionID() == approach.getRegionId()
+			? approach
+			: null;
 	}
 
 	/** The object the route's first hop goes through, or null. Live, like the transports. */
@@ -2280,7 +2627,19 @@ public class GuideTracker
 	@Nullable
 	private FarmPatch chooseWorkingPatch(List<FarmPatch> ordered, RunStop stop)
 	{
-		if (working != null)
+		// The latch holds you to the patch you are part way through, and it outranks the
+		// ordering the list arrived in — including {@code binsFirst}. That is what it is for,
+		// and it is why moving a hungry bin to the front of {@code ordered} changed nothing on
+		// screen: this runs afterwards and puts the patch back.
+		//
+		// It must not hold when the job it is holding you to cannot be done. A full pack and a
+		// harvest is exactly that: you cannot pick into no slots, so "carry on with this patch"
+		// is an instruction with no next click, and the thing that unblocks it — the bin beside
+		// the patch, which binsFirst has already put at the front — is the one the latch is
+		// hiding. Reported from play repeatedly as the bin never being offered mid harvest.
+		boolean stuck = working != null && cannotCarryOn(patchIn(ordered, working), stop);
+
+		if (working != null && !stuck)
 		{
 			for (FarmPatch patch : ordered)
 			{
@@ -2296,7 +2655,10 @@ public class GuideTracker
 		// what lets one trip to the leprechaun note both harvests — settled with the owner,
 		// like the stickiness above. Only the handoff is special-cased: the opening pick at a
 		// stop is still simply the nearest patch with work.
-		if (working != null)
+		//
+		// Skipped while stuck for the same reason: the twin's work is another harvest, and a
+		// full pack blocks that one too.
+		if (working != null && !stuck)
 		{
 			FarmPatch finished = patchIn(ordered, working);
 			if (finished != null
@@ -2315,17 +2677,120 @@ public class GuideTracker
 			}
 		}
 
+		// Back to whatever the detour interrupted, before the ordering gets a say.
+		FarmPatch resumed = resumeInterrupted(ordered, stop);
+		if (resumed != null)
+		{
+			return resumed;
+		}
+
+		// The detour the block sent you on, and the patch it interrupted, are BOTH remembered.
+		//
+		// The first attempt at this simply declined to move the latch while stuck, on the
+		// reasoning that a blocked patch is interrupted rather than finished. That returned you
+		// to the allotment correctly — and it returned you the instant the bin gave back a single
+		// slot, with the bin still open and fodder still in the pack. Reported from play at
+		// Falador: told to carry on harvesting before the fodder was in the bin. The detour has a
+		// job of its own and has to be allowed to finish it.
+		//
+		// So the latch moves to the detour as it always did, and what is added is the memory of
+		// where it came from. The detour keeps the latch for as long as it has work — which is
+		// the ordinary stickiness, applied to the bin — and when it runs out, the handoff below
+		// puts you back on the half-picked patch instead of the first thing in the ordering.
 		for (FarmPatch patch : ordered)
 		{
 			if (!outstandingFor(patch, stop).isEmpty())
 			{
+				if (stuck && !patch.getKey().equals(working))
+				{
+					interrupted = working;
+				}
 				working = patch.getKey();
 				return patch;
 			}
 		}
 
+		// Unreachable while stuck, and worth knowing why: cannotCarryOn only answers true for a
+		// patch that has outstanding steps, so the loop above must have found at least that one.
 		working = null;
+		interrupted = null;
 		return null;
+	}
+
+	/**
+	 * The patch a detour interrupted, so the guide can hand you back to it.
+	 *
+	 * <p>Set only when a full pack forces the latch off a half-picked patch, and read only when
+	 * whatever it was forced onto has finished. Cleared with {@link #working} — the stop is the
+	 * scope, and walking out of it forgets both.
+	 *
+	 * <p>One deep, deliberately. A detour cannot itself be interrupted: {@link #cannotCarryOn}
+	 * only answers true for a patch whose next step is a harvest, and the things a full pack
+	 * sends you to — a bin to fill, the leprechaun — are never harvests. A stack would be
+	 * machinery for a state that cannot arise.
+	 */
+	@Nullable
+	private String interrupted;
+
+	/**
+	 * Hands you back to the patch a full pack made you leave, once the detour is done.
+	 *
+	 * <h2>Why the ordering cannot do this by itself</h2>
+	 *
+	 * Because the ordering does not know you were part way through anything. It is distance with
+	 * {@code binsFirst} applied, so when the bin stops asking for fodder the next patch in line
+	 * wins — at Falador that is whichever allotment is nearest, and at Ardougne it was the herb
+	 * patch. Both reported from play, and both are the same missing fact: the run left a job
+	 * unfinished and nothing wrote that down.
+	 *
+	 * <p>Checked before the generic fallback and after the ordinary latch, so it only ever
+	 * decides the case it is for: the latched patch has run out of work, and the patch it
+	 * displaced still has some.
+	 */
+	@Nullable
+	private FarmPatch resumeInterrupted(List<FarmPatch> ordered, RunStop stop)
+	{
+		if (interrupted == null)
+		{
+			return null;
+		}
+
+		FarmPatch patch = patchIn(ordered, interrupted);
+		if (patch == null || outstandingFor(patch, stop).isEmpty())
+		{
+			// Finished some other way, or no longer at this stop. Nothing to go back to.
+			interrupted = null;
+			return null;
+		}
+
+		// Still blocked, so going back would be the same dead end that caused the detour. Leave
+		// the memory in place and let the ordering offer whatever else there is.
+		if (cannotCarryOn(patch, stop))
+		{
+			return null;
+		}
+
+		interrupted = null;
+		working = patch.getKey();
+		return patch;
+	}
+
+	/**
+	 * Whether the patch the latch is holding has nothing you could actually click next.
+	 *
+	 * <p>One case, and it is the one that matters: its next step is a harvest and there is no
+	 * room to harvest into. Deliberately narrow — the latch exists so the guide does not hop
+	 * between patches mid-job, and every other kind of "outstanding" step is still performable
+	 * with a full pack.
+	 */
+	private boolean cannotCarryOn(@Nullable FarmPatch patch, RunStop stop)
+	{
+		if (patch == null || carried.getFreeSlots() > 0)
+		{
+			return false;
+		}
+		List<GuideStep> its = outstandingFor(patch, stop);
+		return !its.isEmpty() && its.get(0).getAction() == GuideAction.HARVEST;
 	}
 
 	@Nullable
@@ -2390,14 +2855,101 @@ public class GuideTracker
 
 		SeedAllocation allocation = SeedAllocation.forPatches(plantable,
 			selection.getSelectedFor(group), owned, seeds.getFarmingLevel(),
-			new ProtectionBudget(payments, seed -> protection.isProtecting(group, seed)));
+			new ProtectionBudget(payments, seed -> protection.isProtecting(group, seed)),
+			// The patch in front of the player gets the best seed still going. See
+			// SeedAllocation.forPatches: the ranking was always the player's click order, but the
+			// scarce seed was being reserved for whichever patch sorted first by key.
+			patchUnderfoot(plantable));
 
 		allocations.put(group.getKey(), allocation);
 		return allocation;
 	}
 
+	/**
+	 * Whether a spirit tree hop is one this account can actually take.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"just got routed to the farming guild via POH spirit tree - farming guild. Don't have
+	 * that yet, I see the jewellery box is also highlighted though."</i> Five of the ten spirit
+	 * tree destinations are farm patches rather than fixed network stops, and a tree is only in
+	 * the network once somebody has grown one. Shortest Path plans through them regardless — it
+	 * has one boolean for spirit trees and no per-destination control — and this plugin was
+	 * agreeing, so the guild's tree was outlined beside the jewellery box that genuinely reaches
+	 * the guild by skills necklace.
+	 *
+	 * <p>The patch state is the answer, and it is one this plugin has and the router does not:
+	 * the guild's spirit tree patch read {@code varbitValue 0, WEEDS} throughout that session.
+	 *
+	 * <p><b>Permissive by construction.</b> Only an <i>empty</i> patch says no. Anything standing
+	 * in it — growing, diseased, needing a check, or a state we have not seen before — says yes,
+	 * and an unseen patch says yes as well. Wrongly hiding a teleport the player owns is a far
+	 * worse failure than wrongly offering one they do not, and it is the same direction
+	 * {@code SpiritTrees} errs in for the planting cap.
+	 */
+	public boolean spiritTreeUsableFor(String destination)
+	{
+		FarmPatch patch = HouseTeleports.spiritTreePatchFor(destination);
+		if (patch == null)
+		{
+			// A network stop, or not a spirit tree destination at all. Nothing to grow.
+			return true;
+		}
+
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		return projection == null || !projection.isEmpty();
+	}
+
 	/** Allocations built this tick, cleared at the start of the next. */
 	private final Map<String, SeedAllocation> allocations = new java.util.HashMap<>();
+
+	/**
+	 * How close counts as being at a patch, for {@link #patchUnderfoot}.
+	 *
+	 * <p>Ten, the same number {@code RunPlanner.ARRIVED_TILES} uses for arriving at a stop. The
+	 * two are answering the same question — is the player <i>here</i> — and having them disagree
+	 * would mean the run considered you arrived while the allocation did not.
+	 */
+	private static final int UNDERFOOT_TILES = 10;
+
+	/**
+	 * The patch the player is standing at, out of the ones this group can still plant.
+	 *
+	 * <p>One value per tick, which is what lets {@link #allocations} stay keyed by group alone:
+	 * the answer cannot differ between two patches asking in the same tick, because it is about
+	 * where the <i>player</i> is rather than which patch is asking.
+	 *
+	 * <p>Null away from the patches, at the bank and mid-journey, and that is the right answer
+	 * there: with nobody standing anywhere the key order is as good a claim as any, and it is the
+	 * one the loadout is pricing against.
+	 */
+	@Nullable
+	private FarmPatch patchUnderfoot(List<FarmPatch> plantable)
+	{
+		WorldPoint player = playerLocation();
+		if (player == null)
+		{
+			return null;
+		}
+
+		FarmPatch nearest = null;
+		int best = Integer.MAX_VALUE;
+		for (FarmPatch patch : plantable)
+		{
+			WorldPoint where = locations.getLocation(patch);
+			if (where == null || where.getPlane() != player.getPlane())
+			{
+				continue;
+			}
+			int distance = player.distanceTo(where);
+			if (distance <= UNDERFOOT_TILES && distance < best)
+			{
+				best = distance;
+				nearest = patch;
+			}
+		}
+		return nearest;
+	}
 
 	// A public stepsFor(patch) overload lived here, documented for a panel's per-patch view
 	// that was never built. It read the tick-scoped allocations map with no synchronisation,
@@ -2405,9 +2957,10 @@ public class GuideTracker
 	// HashMap at worst, a wrong allocation shown at best. Deleted rather than fixed: dead
 	// code cannot be wrong, and a future panel wants the GuideStatus snapshot anyway.
 
-	private List<GuideStep> stepsFor(FarmPatch patch, int patchesToTreat)
+	private List<GuideStep> stepsFor(FarmPatch patch, int patchesToTreat,
+		Map<Integer, Integer> compostToKeep)
 	{
-		return stepsFor(patch, patchesToTreat, false);
+		return stepsFor(patch, patchesToTreat, compostToKeep, false);
 	}
 
 	/**
@@ -2415,7 +2968,8 @@ public class GuideTracker
 	 * option says — for the guild patches the contract holds back, whose picking is offered
 	 * while their planting is not.
 	 */
-	private List<GuideStep> stepsFor(FarmPatch patch, int patchesToTreat, boolean harvestShapedOnly)
+	private List<GuideStep> stepsFor(FarmPatch patch, int patchesToTreat,
+		Map<Integer, Integer> compostToKeep, boolean harvestShapedOnly)
 	{
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		if (projection == null)
@@ -2427,12 +2981,18 @@ public class GuideTracker
 		// group allocation, no protection - so it branches off before any of that is asked.
 		// Off the snapshot rather than the projection, for the two counts only the snapshot
 		// carries; see CompostBinPlan's class note.
+		//
+		// The one thing the snapshot cannot answer rides along separately. A bin is marked
+		// health-check-required, so the projection never promotes a finished closed bin to
+		// HARVESTABLE - and isReady() is the same test RunPlanner.binActionable keeps the
+		// stop open on, so passing it is what stops the guide and the planner disagreeing.
 		com.dooglemaps.data.CompostBin bin =
 			com.dooglemaps.data.CompostBin.forType(patch.getImplementation());
 		if (bin != null)
 		{
+			noteMissingAsh(bin, patch, projection);
 			return CompostBinPlan.forBin(bin, patch, patches.get(patch), compostRun, carried,
-				leprechaun);
+				leprechaun, projection.isReady(), compostToKeep);
 		}
 
 		PatchSnapshot snapshot = patches.get(patch);
@@ -2477,7 +3037,159 @@ public class GuideTracker
 			snapshot == null ? null : snapshot.getCompost(),
 			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
 			!alreadyPaid && protection.isProtecting(group, inGround),
-			harvestShapedOnly || !fullRun, patchesToTreat);
+			harvestShapedOnly || !fullRun, patchesToTreat,
+			binHereWants(patch, projection.getProduce()),
+			itemNames);
+	}
+
+	/**
+	 * Whether a bin at this patch's stop is waiting for the crop this patch is about to give.
+	 *
+	 * <p>The one thing {@code GuidePlan} cannot work out for itself: it is a pure function of one
+	 * patch, and this is a fact about the patch next to it. Passed in rather than looked up there
+	 * so that stays true.
+	 *
+	 * <p>Its whole job is to stop the leprechaun's "note this" and the bin's "put this in me"
+	 * being given for the same crop at the same moment, with the note winning and quietly making
+	 * the produce useless to the bin. See {@code GuidePlan}'s full-pack branch.
+	 */
+	private boolean binHereWants(FarmPatch patch, com.dooglemaps.data.Produce produce)
+	{
+		if (produce == null || patch.getRegion() == null)
+		{
+			return false;
+		}
+
+		for (FarmPatch sibling : patch.getRegion().getPatches())
+		{
+			if (fodderWantedBy(sibling) == produce.getItemID())
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The crop this bin would take off you right now, or {@code NO_FILL} if it is not a bin,
+	 * not open, or holding out for more than you are carrying.
+	 *
+	 * <h2>Why "would take", and not "is allowed to take"</h2>
+	 *
+	 * This began as the looser test — an open bin plus a crop on the fodder list — and that is
+	 * not the same statement. {@code CompostBinPlan} declines to offer a token fill: below a
+	 * third of the bin the step is not worth the click, and the bin keeps its contents across
+	 * runs anyway. So an open bin, three watermelons, and a full pack answered <i>yes, the bin
+	 * wants these</i> to the branch that suppresses the leprechaun, while the bin itself
+	 * produced no step at all. Nothing to note, nothing to fill, and the harvest that needed a
+	 * free slot still being asked for.
+	 *
+	 * <p>Asking {@link CompostBinPlan#fodderFor} instead means there is exactly one rule about
+	 * what a bin will take, in the class that acts on it, and no way for the two to drift.
+	 */
+	private int fodderWantedBy(FarmPatch bin)
+	{
+		com.dooglemaps.data.CompostBin size =
+			com.dooglemaps.data.CompostBin.forType(bin.getImplementation());
+		int room = binRoom(bin);
+		if (size == null || room <= 0)
+		{
+			return com.dooglemaps.state.CompostRunStore.NO_FILL;
+		}
+
+		int fill = CompostBinPlan.fodderFor(size, room, compostRun, carried);
+		noteBinDecision(bin, size, room, fill);
+		return fill;
+	}
+
+	/**
+	 * How much more this bin will take, or 0 when it wants no produce at all.
+	 *
+	 * <h2>The snapshot's stage, never the projection's</h2>
+	 *
+	 * {@code CompostBinPlan}'s class note says why: <i>"the projection exists to move a crop
+	 * forward through time, and in doing so it flattens the two numbers a bin turns on: a
+	 * FILLING bin's item count is not carried at all"</i>. Read from the projection, this number
+	 * froze wherever the projection left it.
+	 *
+	 * <p>Caught in the log at the Farming Guild's big bin: <b>"room for 27"</b> on every line
+	 * while the player filled it from 25 to 30, and still <b>"room for 27 -&gt; fill with
+	 * 5982"</b> on the tick it was full and {@code CompostBinPlan} was already saying to close
+	 * it. The two halves of the plugin were reading one bin and disagreeing about it.
+	 *
+	 * <p>The fill step was never the casualty — {@code CompostBinPlan} has always used the
+	 * snapshot. What was wrong is everything gated on <i>does this bin still want feeding</i>:
+	 * {@link #binHereWants} suppresses the leprechaun's note for a crop a bin waits on, and
+	 * {@link #binsFirst} decides where the bin sits in the stop. A full bin went on claiming both.
+	 *
+	 * <p>Extracted so those callers and {@link #fodderWantedBy} cannot drift apart again — the
+	 * disagreement above was two copies of one sum, and this is the sum.
+	 */
+	private int binRoom(FarmPatch bin)
+	{
+		com.dooglemaps.data.CompostBin size =
+			com.dooglemaps.data.CompostBin.forType(bin.getImplementation());
+		if (size == null)
+		{
+			return 0;
+		}
+		PatchProjection projection = growthTimer.project(bin, patches.get(bin));
+		if (projection == null)
+		{
+			return 0;
+		}
+
+		// Room in it, which is the only state that wants produce. A ready bin wants buckets and
+		// a composting one wants nothing at all.
+		if (projection.getCropState() == com.dooglemaps.data.CropState.EMPTY)
+		{
+			return size.getCapacity();
+		}
+		if (projection.getCropState() != com.dooglemaps.data.CropState.FILLING)
+		{
+			return 0;
+		}
+
+		com.dooglemaps.state.PatchSnapshot snapshot = patches.get(bin);
+		return snapshot == null ? 0 : Math.max(0, size.getCapacity() - (snapshot.getStage() + 1));
+	}
+
+	/** The last decision logged for each bin, so each is said once per distinct answer. */
+	private final Map<String, String> loggedBinDecision = new java.util.HashMap<>();
+
+	/**
+	 * Says what a bin at this stop was offered and why, once per distinct answer.
+	 *
+	 * <p>This has been reported three times in different clothes — the bin never offered, the
+	 * bin offered too late, the guide asking for another watermelon with nowhere to put it — and
+	 * each time the answer was a handful of live counts that had all moved on before it could be
+	 * looked at. The inputs are: whether fodder is on at all, which crops are allowed, how many
+	 * of them are in the pack, how much room the bin has, and whether the pack is full (which
+	 * waives the minimum). This line carries the lot.
+	 */
+	private void noteBinDecision(FarmPatch bin, com.dooglemaps.data.CompostBin size, int room,
+		int fill)
+	{
+		// Per bin, not one field for all of them. Every stop's bins are asked each tick by the
+		// idle report, so a single "last answer" field was overwritten by the next bin and every
+		// line re-logged on every tick - three a second in play.
+		String key = room + "#" + fill + "#" + carried.getFreeSlots();
+		if (key.equals(loggedBinDecision.get(bin.getKey())))
+		{
+			return;
+		}
+		loggedBinDecision.put(bin.getKey(), key);
+
+		java.util.List<String> held = new java.util.ArrayList<>();
+		for (int crop : compostRun.getFodderCrops())
+		{
+			held.add(crop + "x" + carried.getInventoryCount(crop));
+		}
+		log.info("Compost bin {} ({}): room for {}, fodder {} (allowed {}), {} free slots -> {}",
+			bin.getKey(), size, room, compostRun.isFodderEnabled() ? "on" : "off", held,
+			carried.getFreeSlots(),
+			fill == com.dooglemaps.state.CompostRunStore.NO_FILL
+				? "nothing it will take" : "fill with " + fill);
 	}
 
 	// An expectedYield() helper lived here, feeding GuidePlan's pre-harvest seed-box nudge.
@@ -2513,12 +3225,75 @@ public class GuideTracker
 			key -> countWanting(stop, tier));
 	}
 
+	/**
+	 * Compost in the pack that this stop is about to use, by bucket item id.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"when I'm foddering the bin I'm told to go deposit my compost back at the lep before I
+	 * use them"</i>. A bin and its allotments are one stop, so the run withdraws four
+	 * ultracompost for the patches and then walks past the bin — and {@code addDepositStep}
+	 * handed over every filled bucket in the pack, because "carrying compost onward buys
+	 * nothing". True of compost that came <i>out of the bin</i>, and false of compost withdrawn
+	 * thirty seconds ago for the patches at this very stop. The step order from the session log
+	 * says it plainly:
+	 *
+	 * <pre>
+	 * 6192.4774=WITHDRAW_COMPOST; 6192.4774=APPLY_COMPOST; 6192.4772=HARVEST;
+	 * 6192.4771=HARVEST; 6192.4775=DEPOSIT_COMPOST; 6192.4773=HARVEST;
+	 * </pre>
+	 *
+	 * Withdraw, use one, store the rest — with three allotments still to be picked that will each
+	 * want a bucket. That is the back-and-forth to the leprechaun.
+	 *
+	 * <p>{@code CompostBinPlan}'s own note already spotted half of this — <i>"the buckets are not
+	 * clutter in that case, they are the compost for the patches being replanted at this same
+	 * stop"</i> — but the remedy was to move the deposit <i>after</i> the fill rather than to stop
+	 * depositing what is about to be used. The insight was right and the fix was one step short.
+	 *
+	 * <p>Per tier, because a stop can mix them, and counted from the same {@link #countWanting}
+	 * the withdrawal is sized from — so the two cannot disagree about how many buckets this stop
+	 * has a use for.
+	 */
+	private Map<Integer, Integer> compostThisStopWillUse(RunStop stop)
+	{
+		Map<Integer, Integer> keep = new java.util.HashMap<>();
+		for (CompostTier tier : CompostTier.values())
+		{
+			if (tier == CompostTier.NONE)
+			{
+				continue;
+			}
+			int wanted = compostWanting.computeIfAbsent(
+				stop.getRegion().getRegionId() + "#" + tier.name(),
+				key -> countWanting(stop, tier));
+			if (wanted > 0)
+			{
+				keep.put(tier.getItemID(), wanted);
+			}
+		}
+		return keep;
+	}
+
 	private int countWanting(RunStop stop, CompostTier tier)
 	{
 		int count = 0;
 		for (FarmPatch other : stop.getPatches())
 		{
-			if (compost.get(groups.groupFor(other)) != tier)
+			com.dooglemaps.data.PlantingGroup otherGroup = groups.groupFor(other);
+			if (compost.get(otherGroup) != tier)
+			{
+				continue;
+			}
+
+			// Only patches this run will actually plant, which is the only reason a bucket is
+			// ever wanted. The tier is a property of the group and survives the line being
+			// unticked or set to harvest-only, so without this a Falador allotment being picked
+			// and left counted towards "withdraw 4 ultracompost" and one bucket came back unused
+			// every time. The same test stepsFor uses to decide whether the patch gets a compost
+			// step at all — the withdrawal and the steps it is meant to supply were answering two
+			// different questions. Reported from play as the count being unpredictable.
+			if (!runTypes.isSelected(com.dooglemaps.data.RunOption.full(otherGroup)))
 			{
 				continue;
 			}
@@ -2580,7 +3355,7 @@ public class GuideTracker
 			// play: every tree family's Produce item IS its logs, and "Any type of logs" is on
 			// his refusal list. See Produce.isLeprechaunNotable for the full set and the roots
 			// that are still worth the trip.
-			if (!produce.isLeprechaunNotable())
+			if (!produce.isLeprechaunNotable() || binAtThisStopWants(stop, produce.getItemID()))
 			{
 				continue;
 			}
@@ -2600,6 +3375,10 @@ public class GuideTracker
 		// an open sack swallows them before they reach the pack — so no sack check is needed.
 		for (int itemId : NotableHarvests.ids())
 		{
+			if (binAtThisStopWants(stop, itemId))
+			{
+				continue;
+			}
 			int held = carried.getInventoryCount(itemId);
 			if (held > most)
 			{
@@ -2619,6 +3398,47 @@ public class GuideTracker
 		steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN,
 			stop.getPatches().get(0), noteItem, null,
 			"Note your " + noteName + " with the leprechaun before moving on."));
+	}
+
+	/**
+	 * Whether a bin at this stop is still waiting for this crop, so noting it would waste it.
+	 *
+	 * <h2>The two instructions are in direct conflict</h2>
+	 *
+	 * A bin refuses noted items. So "note your watermelons with the leprechaun" and "put your
+	 * watermelons in the bin" cannot both be followed, and following the first makes the second
+	 * impossible — the produce is still in your pack, and now useless to the thing standing next
+	 * to it. Reported from play, in those words: <i>"I'm getting prompted to note my watermelon
+	 * instead of using it on the bin"</i>.
+	 *
+	 * <p>{@code GuidePlan}'s mid-harvest note already stands down for this. This is the other
+	 * one, said as you leave, and it needed the same guard — being later in the list is not
+	 * protection when the crop is gone by the time the bin's step is reached.
+	 *
+	 * <p>Only the crop the bin wants is held back. Everything else in the pack is noted exactly
+	 * as before, so a stop with a bin does not stop being tidied up.
+	 */
+	private boolean binAtThisStopWants(RunStop stop, int itemId)
+	{
+		if (!compostRun.allowsFodder(itemId))
+		{
+			return false;
+		}
+		for (FarmPatch patch : stop.getPatches())
+		{
+			if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) == null)
+			{
+				continue;
+			}
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null
+				&& (projection.getCropState() == com.dooglemaps.data.CropState.EMPTY
+					|| projection.getCropState() == com.dooglemaps.data.CropState.FILLING))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -2865,6 +3685,21 @@ public class GuideTracker
 	@Nullable
 	private RunStop destinationStop(List<RunStop> remaining)
 	{
+		// The run's own answer first, when it has one. Working the destination out of Shortest
+		// Path's reply is inference from evidence that is often briefly unavailable - wiped when a
+		// route is re-asked, discarded while instanced, and sometimes carrying hops with no
+		// landing worth matching - and every gap is a second where the leg has no name. That was
+		// harmless until the nexus row and the jewellery box line started being matched BY
+		// destination: a nameless leg stops highlighting the thing you are meant to click.
+		// Reported from play as the Catherby teleport dropping out of the infobox and the nexus
+		// list on the way into the house. See RunPlanner.committedStop.
+		RunStop committed = planner.committedStop();
+		if (committed != null && remaining.contains(committed))
+		{
+			lastNamedStop = committed;
+			return committed;
+		}
+
 		List<WorldPoint> points = new ArrayList<>(planner.getCurrentDestinations());
 		for (int i = points.size() - 1; i >= 0; i--)
 		{
@@ -2891,12 +3726,25 @@ public class GuideTracker
 			}
 		}
 
-		// Inside the house the router often has nothing to say at all: the reroute from the
-		// front door produces a pure walk, whose answer carries no transports and so no points.
-		// The journey has not changed — only the wording went quiet — so the last name stands
-		// while its stop is still outstanding. Only in the house, deliberately: an overworld
-		// walking leg with no transports genuinely might be heading somewhere new.
-		if (house.isInside() && lastNamedStop != null && remaining.contains(lastNamedStop))
+		// The router having said nothing is not the same as the leg having changed.
+		//
+		// This used to be gated on being inside the house, on the grounds that "an overworld
+		// walking leg with no transports genuinely might be heading somewhere new". True of a
+		// leg whose answer arrived and matched nothing — which is the case above, and still
+		// returns null. Not true of one where the answer is <b>absent</b>: the route is wiped
+		// the moment a fresh one is asked for, discarded outright while instanced, and empty for
+		// a second or two around every teleport. None of that is news about where you are going.
+		//
+		// The house gate was too narrow for the case it was written for. Reported from play as
+		// the Catherby teleport dropping out of the nexus list on the way into the house, and
+		// the log shows the leg was already nameless five seconds BEFORE the house was entered —
+		// outside it, where this did not apply. The nexus row and the jewellery box line are
+		// matched by destination, so a nameless leg silently stops highlighting the thing you
+		// are meant to click.
+		//
+		// Still bounded: the name only stands while its stop is outstanding, and a route that
+		// does arrive replaces it immediately.
+		if (points.isEmpty() && lastNamedStop != null && remaining.contains(lastNamedStop))
 		{
 			return lastNamedStop;
 		}
@@ -2915,9 +3763,14 @@ public class GuideTracker
 	{
 		// Exact region matches first, so a stop can never lose its own region's ground to a
 		// neighbour's edge tolerance.
+		//
+		// claimsRegion rather than the bare id, for the stop that stands in more ground than it
+		// is filed under: the coral nurseries are at 13194 and the Great Conch stop at 12581, so
+		// standing among the patches found no stop, produced no steps, and left the player told
+		// to travel to a place they were already in. Reported from play.
 		for (RunStop stop : planner.getRemaining())
 		{
-			if (stop.getRegion().getRegionId() == player.getRegionID())
+			if (stop.claimsRegion(player.getRegionID()))
 			{
 				return stop;
 			}
@@ -2956,7 +3809,15 @@ public class GuideTracker
 	private boolean standingAt(RunStop stop, WorldPoint player)
 	{
 		int region = stop.getRegion().getRegionId();
-		if (region == player.getRegionID())
+		// claimsRegion, not the bare id. A stop can stand in more ground than it is filed
+		// under - the coral nurseries are region 13194 while the Great Conch stop is 12581 -
+		// and RunStop.claimsRegion exists precisely so every caller answers that the same way.
+		// This one was added afterwards and did not, which is how the leaving errands
+		// disappeared underwater: the stop completes when the last nursery is planted or paid
+		// for, appendLeavingErrandsAtFinishedStop asks this, gets no, and the note that would
+		// have turned a pack of coral into one stack is never offered. Reported from play as
+		// not being prompted to note at the nurseries.
+		if (stop.claimsRegion(player.getRegionID()))
 		{
 			return true;
 		}
@@ -3016,23 +3877,91 @@ public class GuideTracker
 	 * are the only case — stay in distance order relative to each other.
 	 */
 	/**
-	 * Moves a compost bin to the very front of its stop.
+	 * Moves a compost bin to the front of its stop, or to the back, depending what it is waiting
+	 * for.
 	 *
-	 * <p>Applied <b>after</b> {@link #contractFirst}, so it outranks even the contract, and the
-	 * owner's reasoning is about inventory rather than priority: emptying a bin frees the pack
-	 * and restocks the compost every other patch at that stop is about to want. Doing it last
-	 * means arriving at the herbs with fifteen slots of produce still in hand and no
-	 * ultracompost, which is the trip the bin was on the run to prevent.
+	 * <h2>Emptying goes first; being fed goes last</h2>
 	 *
-	 * <p>It also costs nothing to be wrong about. A bin cannot be a contract's patch — Jane
-	 * never assigns one — and its work shares no tool, seed or payment with anything else at
-	 * the stop, so putting it first can never take a click away from another patch.
+	 * A <b>ready</b> bin goes to the very front, applied after {@link #contractFirst} so it
+	 * outranks even the contract. The owner's reasoning is about inventory rather than priority:
+	 * emptying a bin frees the pack and restocks the compost every other patch at that stop is
+	 * about to want. Doing it last means arriving at the herbs with fifteen slots of produce
+	 * still in hand and no ultracompost, which is the trip the bin was on the run to prevent.
+	 *
+	 * <p>A bin waiting to be <b>filled</b> now goes last, and it has to: the seven beside the
+	 * allotments are fed from the harvest, and you cannot fill a bin from a harvest that has not
+	 * happened. Putting it first there would offer a fill you are not holding, produce no step,
+	 * and — through the idle report — quietly complete the stop.
+	 *
+	 * <p>Split on what the bin is waiting for rather than on which bin it is, so the guild's big
+	 * one is ordered correctly both ways: last on the trips its own allotments feed it, first on
+	 * the trips it arrives already carrying a banked fill.
+	 *
+	 * <p>Either way it costs nothing to be wrong about. A bin cannot be a contract's patch —
+	 * Jane never assigns one — and its work shares no tool, seed or payment with anything else
+	 * at the stop, so moving it can never take a click away from another patch.
 	 */
 	private void binsFirst(List<FarmPatch> ordered)
 	{
-		ordered.sort((a, b) -> Boolean.compare(
-			com.dooglemaps.data.CompostBin.forType(b.getImplementation()) != null,
-			com.dooglemaps.data.CompostBin.forType(a.getImplementation()) != null));
+		// Three ranks, stable within each: ready bins, everything else, bins awaiting a fill.
+		ordered.sort(java.util.Comparator.comparingInt(this::binRank));
+	}
+
+	/** -1 for a bin with compost to collect, 1 for one waiting to be fed, 0 for a patch. */
+	private int binRank(FarmPatch patch)
+	{
+		if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) == null)
+		{
+			return 0;
+		}
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		if (projection == null)
+		{
+			// Never seen it, so nothing is known about what it holds. Treated as waiting to be
+			// fed, which is the harmless half: a bin that turns out to be ready still gets its
+			// emptying steps, just after the patches rather than before them.
+			return 1;
+		}
+		boolean ready = projection.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE
+			|| (projection.getCropState() == com.dooglemaps.data.CropState.GROWING
+				&& projection.isReady());
+		if (ready)
+		{
+			return -1;
+		}
+
+		// A bin waiting to be fed goes last — until the pack is full and it will take what is
+		// filling it, at which point it is not an errand to get to afterwards, it is the only
+		// thing you can do. Last was right for the ordinary case and a dead end for this one:
+		// the harvest that would feed the bin cannot proceed, the note that would free the
+		// slots is suppressed precisely because the bin wants the crop, and the bin's own step
+		// sits behind the harvest that is stuck. Reported from play as being told to harvest
+		// more watermelons with no room for them and never once being offered the bin.
+		int fill = fodderWantedBy(patch);
+		if (fill == com.dooglemaps.state.CompostRunStore.NO_FILL)
+		{
+			return 1;
+		}
+		if (carried.getFreeSlots() <= 0)
+		{
+			return -1;
+		}
+
+		// And when what you are holding would FINISH it, which is the other time last is wrong.
+		//
+		// Reported from play at the Farming Guild: the big bin four short of full, six
+		// watermelons in the pack, and the fill step sitting fourth behind planting an allotment
+		// and two more harvests. Everything about that is individually defensible and the sum of
+		// it is a bin left open with the crop that would close it in hand.
+		//
+		// Finishing it, specifically, rather than merely having something it would take. "Some
+		// fodder" is true almost continuously once a harvest starts, and hoisting on that would
+		// put the bin ahead of the very harvest meant to feed it — which is the dead end the
+		// last-rank exists to prevent. Closing it is different in kind: it is a few clicks that
+		// end the errand, bank the compost and free the slots for good, where carrying on risks
+		// the pack filling or the crop being noted out of reach.
+		int room = binRoom(patch);
+		return room > 0 && carried.getInventoryCount(fill) >= room ? -1 : 1;
 	}
 
 	private void contractFirst(List<FarmPatch> ordered)

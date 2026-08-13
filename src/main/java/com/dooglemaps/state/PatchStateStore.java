@@ -50,6 +50,16 @@ public class PatchStateStore extends ProfileJsonStore
 
 	private final List<Runnable> changeListeners = new CopyOnWriteArrayList<>();
 
+	/**
+	 * Depth of open {@link #asOneWrite} calls. Above zero, a change is noted and held for the
+	 * flush rather than written where it happened. A depth rather than a flag so a nested
+	 * batch cannot flush its caller's work early.
+	 */
+	private int batchDepth;
+
+	/** Whether anything actually changed inside the open batch, so the flush knows to write. */
+	private boolean batchDirty;
+
 	@Inject
 	PatchStateStore(ConfigManager configManager, Gson gson)
 	{
@@ -168,12 +178,119 @@ public class PatchStateStore extends ProfileJsonStore
 	// ----------------------------------------------------------------- writes
 
 	/**
+	 * Runs a burst of recording and persists all of it with a single write at the end.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * A session's config log held 93 writes of the {@code patches} blob, 18.5KB apiece — 85% of
+	 * every serialised byte this plugin produced — arriving in bursts on the second: ten writes
+	 * at 22:41:42, immediately after "Entered farming region(s) [Kourend]", nine more at
+	 * 22:42:08, nine at 22:42:09. That is {@code PatchInteractionTracker}'s region scan. It walks
+	 * every patch of every loaded region, and the first scan after arriving somewhere finds all
+	 * of them changed at once because it is catching up on days of growth — a fact that class
+	 * already recognises for growth-tick purposes and did not act on for writes.
+	 *
+	 * <p>The cost is not the bytes. {@link ConfigManager} posts {@code ConfigChanged}
+	 * <b>synchronously</b> into every subscriber in the client, so ten changed patches meant ten
+	 * trips through every other installed plugin's config handling, on the client thread, inside
+	 * one tick — the fan-out {@code ProfileJsonStore.save} exists to keep off a held monitor.
+	 * One blob describing ten changed patches says everything ten blobs said.
+	 *
+	 * <p>{@code work} runs <b>outside</b> this store's monitor, and the flush is in a
+	 * {@code finally}: a scan that returns early or throws part-way still persists what it
+	 * managed to record. Silently losing a region's capture to one unmapped varbit would be a
+	 * worse bug than the one this fixes.
+	 *
+	 * <p>Nothing is required to use this. A {@link #recordVarbit} outside a batch still writes
+	 * before it returns, which is what its many callers rely on.
+	 */
+	public void asOneWrite(Runnable work)
+	{
+		openBatch();
+		try
+		{
+			work.run();
+		}
+		finally
+		{
+			closeBatch();
+		}
+	}
+
+	private synchronized void openBatch()
+	{
+		batchDepth++;
+	}
+
+	/** Closes one batch, and writes once if it was the outermost and anything moved. */
+	private void closeBatch()
+	{
+		boolean flush;
+		synchronized (this)
+		{
+			flush = --batchDepth == 0 && batchDirty;
+			if (flush)
+			{
+				batchDirty = false;
+			}
+		}
+
+		if (flush)
+		{
+			// Outside the monitor, for the reason persistChange gives.
+			save();
+			fireChanged();
+		}
+	}
+
+	/**
+	 * Persists and announces a change — now, or once at the end of the open batch.
+	 *
+	 * <p>Called outside {@code applyVarbit}'s monitor, deliberately, like fireChanged always
+	 * was. The save posts ConfigChanged through the EventBus, and posting into arbitrary
+	 * subscriber code with this store's monitor held deadlocked the client against a Swing panel
+	 * refresh holding AvailabilityProfile — see ProfileJsonStore.save.
+	 */
+	private void persistChange()
+	{
+		if (heldForBatch())
+		{
+			return;
+		}
+
+		save();
+		fireChanged();
+	}
+
+	/**
+	 * Marks the open batch dirty and reports whether there is one.
+	 *
+	 * <p>Split out so it is the only lock {@link #persistChange} takes: the save that follows a
+	 * false answer is then provably not under this monitor, which is the whole rule here.
+	 */
+	private synchronized boolean heldForBatch()
+	{
+		if (batchDepth == 0)
+		{
+			return false;
+		}
+
+		batchDirty = true;
+		return true;
+	}
+
+	/**
 	 * Records a patch's contents as decoded from its varbit.
 	 *
 	 * <p>This is the sequential state machine of the spec: as the player harvests,
 	 * composts, plants and pays, the varbit walks through those states and we follow it.
 	 * Compost and protection are tracked separately (the varbit does not carry them) and
 	 * are cleared here whenever the patch reaches a state that discards them.
+	 *
+	 * <p>A change is on disk by the time this returns, unless an {@link #asOneWrite} batch is
+	 * open on this store, in which case it is on disk by the time that batch closes. Note the
+	 * wording: the batch is store-global, not per caller, so a write made while <i>someone
+	 * else</i> holds one is deferred to that batch's close too.
 	 *
 	 * @return true if anything actually changed
 	 */
@@ -182,12 +299,7 @@ public class PatchStateStore extends ProfileJsonStore
 		boolean changed = applyVarbit(patch, varbitValue, decoded);
 		if (changed)
 		{
-			// Outside applyVarbit's monitor, deliberately, like fireChanged always was. The
-			// save posts ConfigChanged through the EventBus, and posting into arbitrary
-			// subscriber code with this store's monitor held deadlocked the client against a
-			// Swing panel refresh holding AvailabilityProfile — see ProfileJsonStore.save.
-			save();
-			fireChanged();
+			persistChange();
 		}
 		return changed;
 	}
@@ -247,8 +359,7 @@ public class PatchStateStore extends ProfileJsonStore
 		if (applyCompost(patch, tier))
 		{
 			// Same shape as recordVarbit, same reason: never save under the monitor.
-			save();
-			fireChanged();
+			persistChange();
 		}
 	}
 
@@ -275,8 +386,32 @@ public class PatchStateStore extends ProfileJsonStore
 	 *
 	 * <p><b>Only fills gaps.</b> Anything we have observed ourselves wins, because ours is live
 	 * and theirs is whatever was last written — so this never overwrites a fact, only supplies a
-	 * missing one. Called on load rather than per tick: it answers a question about the past, and
-	 * the past does not change.
+	 * missing one.
+	 *
+	 * <h2>Not only on load, and that was the bug</h2>
+	 *
+	 * This ran once, at login, on the reasoning that it "answers a question about the past, and
+	 * the past does not change". The premise is right and the conclusion does not follow: what
+	 * changes is <i>our</i> answer. Reported from play at the Great Conch — the guide asked for a
+	 * protection payment on a coral patch that had not even been harvested, and asked for it on
+	 * both nurseries at once.
+	 *
+	 * <p>The session's own records settle who was wrong. Time Tracking held
+	 * {@code 12581.4771.protected=true} and {@code .4772.protected=true} throughout, while this
+	 * store flipped both to false in a single write at 12:15:56 — with the varbit unchanged at
+	 * 4 (GROWING), no coral harvest anywhere in the log, and the player standing in Ardougne at
+	 * the time. Our flag was wrong and the game's record proved it, but nothing ever asked again.
+	 *
+	 * <p>So the reconciliation runs on region entry as well. It is a read of the client's own
+	 * config and it can only ever restore a payment the player genuinely made, which makes it
+	 * safe to repeat: the failure it heals costs real money, and the failure it could cause —
+	 * believing a patch is protected when it is not — is one it is structurally incapable of,
+	 * because it never sets false.
+	 *
+	 * <p>It does <b>not</b> explain how the flag was lost. Nothing in this plugin sets protection
+	 * false except {@link #applyVarbit}'s spent-payment rule, which needs the crop to leave or
+	 * turn HARVESTABLE — neither happened — and {@code applyProtected}, which only ever receives
+	 * true from {@code ProtectionCapture}. That is still open; this stops it costing anything.
 	 */
 	public void backfillFrom(TimeTrackingState timeTracking)
 	{
@@ -333,8 +468,7 @@ public class PatchStateStore extends ProfileJsonStore
 	{
 		if (applyProtected(patch, isProtected))
 		{
-			save();
-			fireChanged();
+			persistChange();
 		}
 	}
 

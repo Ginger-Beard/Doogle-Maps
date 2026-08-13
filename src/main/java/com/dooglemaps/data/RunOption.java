@@ -73,6 +73,21 @@ public class RunOption
 		{
 			return "Farming Contract";
 		}
+
+		// The bin line carries the ordinary bin's type and means the guild's big one — see
+		// CompostBin.coveredByTheBinTick, which narrowed the tick without re-keying the group so
+		// existing profiles keep their choice. A bare "Compost bin" would now be a promise about
+		// nine bins that the run keeps for one.
+		//
+		// It stays under "Compost" rather than being renamed to something like "Big bin", and
+		// that is not cosmetic: the list is alphabetical and read by eye, so re-lettering a line
+		// moves it. Renamed, it sorted between Belladonna and Bush and was reported as
+		// **missing from the run menu** by someone looking under C for the line they had been
+		// ticking for weeks. A label is an address as much as a name.
+		if (group.getType() == PatchImplementation.COMPOST)
+		{
+			return "Compost (Guild)";
+		}
 		return harvestOnly ? group.getDisplayName() + " (H/O)" : group.getDisplayName();
 	}
 

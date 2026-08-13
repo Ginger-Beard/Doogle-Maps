@@ -288,7 +288,9 @@ public class HarvestStatsStoreTest
 	{
 		try
 		{
-			return construct(HarvestStatsStore.class, configManager, new Gson());
+			HarvestStatsStore store = construct(HarvestStatsStore.class, configManager, new Gson());
+			store.load();
+			return store;
 		}
 		catch (Exception e)
 		{

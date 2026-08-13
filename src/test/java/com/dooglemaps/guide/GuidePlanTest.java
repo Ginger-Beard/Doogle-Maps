@@ -47,6 +47,10 @@ import static org.mockito.Mockito.when;
  */
 public class GuidePlanTest
 {
+	/** Empty, so the payment step falls back rather than naming an item. */
+	private static final com.dooglemaps.data.ItemNames NAMES =
+		com.dooglemaps.Construct.construct(com.dooglemaps.data.ItemNames.class);
+
 	/** Falador's north allotment: known-good varbit fixtures, and it can be composted. */
 	private static final String FALADOR_NORTH = "12083.4771";
 
@@ -125,7 +129,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1);
+			leprechaun, barbarian, false, false, 1, false, NAMES);
 
 		assertEquals("the spade first - the game refuses the pick without it",
 			GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
@@ -163,7 +167,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1);
+			leprechaun, barbarian, false, false, 1, false, NAMES);
 
 		assertEquals(GuideAction.HARVEST, steps.get(0).getAction());
 		assertTrue("no box step anywhere before the pick", steps.stream().noneMatch(
@@ -177,10 +181,13 @@ public class GuidePlanTest
 		FarmPatch patch = statePatch(10);
 		stockInventory(Seed.POTATO, 9);
 
+		// Twenty-seven potatoes and the box: full, and full of the thing the note names. The
+		// dummy ids this used to carry made the asserted instruction unperformable - see
+		// carryingFullPackOf.
 		int[] items = new int[28 * 2];
 		for (int i = 0; i < 27; i++)
 		{
-			items[i * 2] = 1000 + i;
+			items[i * 2] = Produce.POTATO.getItemID();
 			items[i * 2 + 1] = 1;
 		}
 		items[54] = net.runelite.api.gameval.ItemID.SEED_BOX;
@@ -190,7 +197,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1);
+			leprechaun, barbarian, false, false, 1, false, NAMES);
 
 		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
 		assertTrue("no seed-box step anywhere in the list", steps.stream().noneMatch(
@@ -202,12 +209,18 @@ public class GuidePlanTest
 	 *
 	 * <p>Telling someone to keep harvesting into a pack with no room is the sort of guidance
 	 * that gets a plugin turned off.
+	 *
+	 * <p>The pack is full <b>of potatoes</b>, which it did not used to be: the fixture filled it
+	 * with dummy ids and the assertion still expected "note the potato". That passed because the
+	 * branch named the crop in the ground rather than anything in the pack, which is the defect
+	 * this fixture now avoids reproducing. Mid harvest the pack really is full of the crop, so
+	 * this is also the more honest picture of the moment.
 	 */
 	@Test
 	public void afullInventorySendsYouToTheLeprechaunFirst()
 	{
 		FarmPatch patch = statePatch(10);
-		carryingFullPack();
+		carryingFullPackOf(Produce.POTATO.getItemID());
 
 		GuideStep step = firstStep(patch, Seed.POTATO);
 		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, step.getAction());
@@ -468,7 +481,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.WITHDRAW_COMPOST, steps.get(0).getAction());
 		assertTrue("and it should ask for the three still missing, not all four: "
@@ -487,7 +500,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
 	}
@@ -540,7 +553,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection,
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.CLEAR, steps.get(0).getAction());
 		assertTrue(steps.get(0).getText(),
@@ -559,7 +572,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			autoweeded().project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
 	}
@@ -589,7 +602,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4);
+			leprechaun, barbarian, false, false, 4, false, NAMES);
 
 		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("4"));
 	}
@@ -926,7 +939,7 @@ public class GuidePlanTest
 		assertTrue("a harvest-only run is finished with this patch",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch), null,
 				seeds, compost, carried, leprechaun, barbarian,
-				/* protecting */ false, /* harvestOnly */ true, 1).isEmpty());
+				/* protecting */ false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
 	}
 
 	/**
@@ -954,11 +967,221 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ true, /* harvestOnly */ false, 1);
+			/* protecting */ true, /* harvestOnly */ false, 1, false, NAMES);
 		assertFalse("the payment is the one thing this patch still wants", steps.isEmpty());
 		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
 		assertEquals("the gardener is what gets highlighted",
 			patch.getFarmer(), steps.get(0).getNpcId());
+	}
+
+	/**
+	 * The payment step names what the farmer wants, not what is in the ground.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The sentence was built from {@code payment.getProduce()}, which is the crop being
+	 * <i>protected</i> — so every payment on this branch bought a thing with itself. Reported
+	 * from the coral nurseries, where Chet wants five giant seaweed and the guide said "Pay the
+	 * farmer 5 elkhorn to protect the elkhorn", an offer the game has no idea what to do with.
+	 *
+	 * <p>An oak is used because the two words are unmistakably different and the payment is a
+	 * basket — which is the case {@code ItemNames} exists for, since the constant would read
+	 * "basket tomato 5" where the game says "Basket of tomatoes".
+	 */
+	@Test
+	public void thePaymentStepNamesThePaymentAndNotTheCrop()
+	{
+		FarmPatch patch = growingIn(PatchImplementation.TREE);
+		assertNotNull("no tree patch has a growing fixture", patch);
+
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		com.dooglemaps.data.ProtectionPayment payment =
+			com.dooglemaps.data.ProtectionPayment.forProduce(projection.getProduce());
+		assertNotNull(payment);
+		carrying(payment.getItemID(), payment.getQuantity());
+
+		com.dooglemaps.data.ItemNames named = namesFor(payment.getItemID(), "Basket of tomatoes");
+		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
+			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			/* protecting */ true, /* harvestOnly */ false, 1, false, named);
+
+		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
+		String text = steps.get(0).getText();
+		assertTrue("the farmer's price, not the crop: " + text,
+			text.contains(payment.getQuantity() + " basket of tomatoes"));
+		assertTrue("and it still says what is being protected: " + text,
+			text.contains("to protect the "
+				+ projection.getProduce().getName().toLowerCase()));
+	}
+
+	/**
+	 * A tree seed at the patch is named as a seed, not left in silence.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * A tree, fruit tree or calquat seed has to spend time in a plant pot of soil and be watered
+	 * before it can go in the ground, and none of that can be done at a patch — a plant pot is a
+	 * bank errand. {@code seedAtHand} correctly says no, so the whole planting branch went quiet
+	 * and the player stood in front of the patch holding the thing they came for, told nothing.
+	 * Reported from play: "got sent to a calquat patch without turning into a sapling first".
+	 */
+	@Test
+	public void anUnpottedTreeSeedSaysSoAtThePatch()
+	{
+		FarmPatch patch = emptyPatchFor(Seed.CALQUAT);
+		assertNotNull("no empty calquat fixture", patch);
+		assertTrue("fixture: a calquat is a sapling crop", Seed.CALQUAT.isSapling());
+
+		// The raw seed, which is what almost always sits in a bank, and no sapling.
+		carrying(Seed.CALQUAT.getItemID(), 1);
+		seeds.record(SeedSource.INVENTORY.getContainerId(),
+			containerOf(Seed.CALQUAT.getItemID(), 1));
+
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
+			group(patch), Seed.CALQUAT, seeds, compost, carried, leprechaun, barbarian,
+			/* protecting */ false, /* harvestOnly */ false, 1, false, NAMES);
+
+		assertFalse("standing at the patch with the seed and told nothing", steps.isEmpty());
+		assertEquals(GuideAction.POT_SEED, steps.get(0).getAction());
+		assertTrue("it names the pot: " + steps.get(0).getText(),
+			steps.get(0).getText().contains("plant pot"));
+	}
+
+	/** With the sapling in hand it plants, exactly as before. */
+	@Test
+	public void aPottedSaplingStillPlantsNormally()
+	{
+		FarmPatch patch = emptyPatchFor(Seed.CALQUAT);
+		assertNotNull(patch);
+
+		carrying(Seed.CALQUAT.getPlantedItemID(), 1);
+		seeds.record(SeedSource.INVENTORY.getContainerId(),
+			containerOf(Seed.CALQUAT.getPlantedItemID(), 1));
+
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
+			group(patch), Seed.CALQUAT, seeds, compost, carried, leprechaun, barbarian,
+			/* protecting */ false, /* harvestOnly */ false, 1, false, NAMES);
+
+		assertFalse(steps.isEmpty());
+		assertFalse("nothing to pot when it is already a sapling",
+			steps.stream().anyMatch(step -> step.getAction() == GuideAction.POT_SEED));
+	}
+
+	/** An empty patch of the family this seed goes in, with its varbit recorded as bare. */
+	private FarmPatch emptyPatchFor(Seed seed)
+	{
+		for (FarmPatch patch : com.dooglemaps.data.FarmingWorldData.getPatches(
+			seed.getProduce().getPatchImplementation()))
+		{
+			// Varbit 3, not 0: the weeds stage runs backwards (stage = 3 - varbit), so a bare
+			// patch reads 3 and a fully weedy one reads 0. A weedy patch wants raking first and
+			// never reaches the planting branch this is about.
+			recordValue(patch, 3);
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null && projection.isEmpty())
+			{
+				return patch;
+			}
+		}
+		return null;
+	}
+
+	private static net.runelite.api.ItemContainer containerOf(int itemId, int quantity)
+	{
+		net.runelite.api.ItemContainer container =
+			Mockito.mock(net.runelite.api.ItemContainer.class);
+		when(container.getItems()).thenReturn(
+			new net.runelite.api.Item[]{new net.runelite.api.Item(itemId, quantity)});
+		return container;
+	}
+
+	/**
+	 * A full pack at a ripe patch only offers the note if you are holding the crop.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The step named the crop growing in the patch in front of you rather than anything in your
+	 * pack, so a full pack at a ripe irit said "note the irit" with the irit still in the
+	 * ground — an instruction with nothing to perform it on. Reported from play mid compost-bin
+	 * emptying: the pack was full of buckets and the herb patch beside the bin supplied the
+	 * wording.
+	 */
+	@Test
+	public void aFullPackDoesNotOfferToNoteACropStillInTheGround()
+	{
+		FarmPatch patch = harvestablePatch(PatchImplementation.HERB);
+		assertNotNull("no ripe herb fixture", patch);
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		assertNotNull(projection);
+		assertTrue("fixture: there is something on it", projection.hasProduceToPick());
+
+		// A pack with no room and none of this crop in it - buckets, mid bin emptying.
+		carryingFullPackOf(net.runelite.api.gameval.ItemID.BUCKET_COMPOST);
+
+		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
+			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			/* protecting */ false, /* harvestOnly */ true, 1, false, NAMES);
+
+		assertFalse("nothing to note, so nothing to say about noting",
+			steps.stream().anyMatch(
+				step -> step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN));
+	}
+
+	/** Holding some of it, the note is exactly the right thing to say. */
+	@Test
+	public void aFullPackOfTheCropStillOffersTheNote()
+	{
+		FarmPatch patch = harvestablePatch(PatchImplementation.HERB);
+		assertNotNull(patch);
+		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+		assertNotNull(projection);
+
+		carryingFullPackOf(projection.getProduce().getItemID());
+
+		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
+			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			/* protecting */ false, /* harvestOnly */ true, 1, false, NAMES);
+
+		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
+		assertTrue(steps.get(0).getText().contains(
+			projection.getProduce().getName().toLowerCase()));
+	}
+
+	/** A patch of this family with something ripe on it, or null. */
+	private FarmPatch harvestablePatch(PatchImplementation type)
+	{
+		for (FarmPatch patch : com.dooglemaps.data.FarmingWorldData.getPatches(type))
+		{
+			for (int value = 0; value < 80; value++)
+			{
+				recordValue(patch, value);
+				PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+				if (projection != null && projection.hasProduceToPick()
+					&& projection.getProduce() != null
+					&& projection.getProduce().isLeprechaunNotable())
+				{
+					return patch;
+				}
+			}
+		}
+		return null;
+	}
+
+	/** An ItemNames holding one real name, read the way the client reads them. */
+	private static com.dooglemaps.data.ItemNames namesFor(int itemId, String name)
+	{
+		com.dooglemaps.data.ItemNames names =
+			com.dooglemaps.Construct.construct(com.dooglemaps.data.ItemNames.class);
+		net.runelite.api.ItemComposition composition =
+			Mockito.mock(net.runelite.api.ItemComposition.class);
+		when(composition.getName()).thenReturn(name);
+		net.runelite.client.game.ItemManager manager =
+			Mockito.mock(net.runelite.client.game.ItemManager.class);
+		when(manager.getItemComposition(itemId)).thenReturn(composition);
+		names.record(manager, java.util.Collections.singletonList(itemId));
+		return names;
 	}
 
 	/** The first instruction for this patch once its varbit reads the given value. */
@@ -1140,7 +1363,7 @@ public class GuidePlanTest
 		assertTrue("nothing to do here on a harvest-only visit",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch),
 				null, seeds, compost, carried, leprechaun, barbarian,
-				false, /* harvestOnly */ true, 1).isEmpty());
+				false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
 	}
 
 	/**
@@ -1465,7 +1688,7 @@ public class GuidePlanTest
 		assertNotNull("fixture patch has no projection", projection);
 		return GuidePlan.forPatch(projection,
 			patches.get(patch) == null ? null : patches.get(patch).getCompost(),
-			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1);
+			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1, false, NAMES);
 	}
 
 	private GuideStep firstStep(FarmPatch patch, Seed chosen)
@@ -1522,6 +1745,25 @@ public class GuidePlanTest
 	private void carryingFullPack()
 	{
 		carryingItems(CarriedItems.INVENTORY_SIZE);
+	}
+
+	/**
+	 * A full pack made of one crop, which is what a pack fills up <i>with</i> mid harvest.
+	 *
+	 * <p>{@link #carryingFullPack} fills it with dummy ids instead, and that is the right
+	 * fixture for "there is no room" but the wrong one for "note this": the note branch now
+	 * checks you are holding the crop it names, because naming a crop still in the ground is an
+	 * instruction with nothing to perform it on.
+	 */
+	private void carryingFullPackOf(int itemId)
+	{
+		int[] items = new int[CarriedItems.INVENTORY_SIZE * 2];
+		for (int i = 0; i < CarriedItems.INVENTORY_SIZE; i++)
+		{
+			items[i * 2] = itemId;
+			items[i * 2 + 1] = 1;
+		}
+		carrying(items);
 	}
 
 	/** A pack holding this many distinct items, and so that many used slots. */

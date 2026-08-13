@@ -15,6 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Set;
 import java.util.function.Predicate;
 import org.junit.Test;
 
@@ -110,6 +111,73 @@ public class AllocationAgreementTest
 	}
 
 	/** Real tree patches, so the allocation sorts by the same keys the client would give it. */
+	/**
+	 * The scarce top-priority seed goes in the patch you are standing at.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"when we're running out of a seed on this run and have 2 types (or more) for the
+	 * patches, we should prompt for position 1 first, not position 2. I just had a ranarr seed
+	 * (1) on me in my seed box, and snapdragons in my inv (2), and I was prompted to plant the
+	 * snapdragon, not the ranarr."</i>
+	 *
+	 * <p>The ranking was never wrong — {@code RunEstimate.bestFirst} has honoured click order
+	 * since it replaced the expected-XP sort, and the ranarr did get first pick. It got first pick
+	 * of the <b>lowest-keyed patch</b>, and the player was standing at a different one. One good
+	 * seed across five patches is a correct allocation that reserves it for a patch you may reach
+	 * last, or never.
+	 */
+	@Test
+	public void theScarceFirstChoiceGoesToThePatchInFrontOfYou()
+	{
+		Set<Seed> selected = new LinkedHashSet<>();
+		selected.add(Seed.MAGIC);   // position 1, and there is only one of it
+		selected.add(Seed.YEW);     // position 2, plenty
+
+		Map<Seed, Integer> owned = new HashMap<>();
+		owned.put(Seed.MAGIC, 1);
+		owned.put(Seed.YEW, 40);
+
+		List<FarmPatch> patches = treePatches(4);
+		FarmPatch standingAt = patches.get(3);
+
+		// Without a claim, the single magic goes to whichever patch sorts first by key.
+		SeedAllocation byKey = SeedAllocation.forPatches(patches, selected, owned, 99,
+			ProtectionBudget.NONE);
+		assertEquals("fixture: the patch being stood at is not the key-first one",
+			Seed.YEW, byKey.seedFor(standingAt));
+
+		SeedAllocation claimed = SeedAllocation.forPatches(patches, selected, owned, 99,
+			ProtectionBudget.NONE, standingAt);
+		assertEquals("the one magic belongs in the patch you are at",
+			Seed.MAGIC, claimed.seedFor(standingAt));
+
+		assertEquals("and it is still one magic and three yews, whichever patch got which",
+			byKey.counts(), claimed.counts());
+	}
+
+	/** A claim for a patch this allocation was never given changes nothing. */
+	@Test
+	public void aClaimForAPatchThatIsNotHereIsIgnored()
+	{
+		Set<Seed> selected = new LinkedHashSet<>();
+		selected.add(Seed.MAGIC);
+		selected.add(Seed.YEW);
+
+		Map<Seed, Integer> owned = new HashMap<>();
+		owned.put(Seed.MAGIC, 1);
+		owned.put(Seed.YEW, 40);
+
+		List<FarmPatch> patches = treePatches(3);
+		FarmPatch elsewhere = FarmingWorldData.getPatches(PatchImplementation.HERB).get(0);
+
+		assertEquals(
+			SeedAllocation.forPatches(patches, selected, owned, 99, ProtectionBudget.NONE)
+				.counts(),
+			SeedAllocation.forPatches(patches, selected, owned, 99, ProtectionBudget.NONE,
+				elsewhere).counts());
+	}
+
 	private static List<FarmPatch> treePatches(int count)
 	{
 		List<FarmPatch> patches = new ArrayList<>(

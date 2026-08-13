@@ -772,6 +772,12 @@ public class DoogleMapsPlugin extends Plugin
 		// being written off as finished, so it must not be undone by the review that runs next.
 		runPlanner.reviewContract();
 
+		// And the allotment bins, for the same reason and by the same means. Their stops are
+		// planned once at the start, so switching "fill bins from your harvest" on mid-run - or a
+		// bin finishing its compost an hour in - would otherwise be invisible for the rest of the
+		// trip. They still only ever join a stop the run is already making.
+		runPlanner.reviewBins();
+
 		// And a tool can leave your pack mid-run - deposited by accident is the reported way -
 		// which nothing used to notice, because whether the run needed a bank was decided once
 		// at the start. Silent unless the leprechaun has none either, since his copy is the

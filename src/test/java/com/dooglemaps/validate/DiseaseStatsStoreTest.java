@@ -277,7 +277,9 @@ public class DiseaseStatsStoreTest
 	{
 		try
 		{
-			return construct(DiseaseStatsStore.class, configManager, new Gson());
+			DiseaseStatsStore store = construct(DiseaseStatsStore.class, configManager, new Gson());
+			store.load();
+			return store;
 		}
 		catch (Exception e)
 		{

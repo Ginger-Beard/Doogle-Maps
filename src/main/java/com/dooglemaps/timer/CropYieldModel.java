@@ -1,6 +1,7 @@
 package com.dooglemaps.timer;
 
 import com.dooglemaps.data.CompostTier;
+import com.dooglemaps.data.CropXp;
 import com.dooglemaps.data.CropYield;
 import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.Produce;
@@ -279,7 +280,78 @@ public final class CropYieldModel
 		{
 			return 0;
 		}
-		return seed.getPatchType() == PatchImplementation.FLOWER ? 1 : expectedYield;
+		return paysHarvestPerItem(seed) ? expectedYield : 1;
+	}
+
+	/**
+	 * Whether the harvest award is paid per item picked rather than once for the patch.
+	 *
+	 * <p>The same fact {@link #xpHarvestsFor} multiplies by, asked as a yes or no, because two
+	 * callers need to know it without having a yield to hand: one is deciding whether a single
+	 * experience drop can be a single pick, the other whether it can be a whole patch.
+	 */
+	public static boolean paysHarvestPerItem(Seed seed)
+	{
+		return seed != null && seed.getPatchType() != PatchImplementation.FLOWER;
+	}
+
+	/**
+	 * Patch families that pay their planting award when the patch is picked clean.
+	 *
+	 * <p>Not a wiki claim — it is what the player's own experience drops say, and they say it
+	 * twice over. Putting a seed into one of these pays <b>nothing</b> at the moment it goes in,
+	 * and the drop that lands with the pick that empties the patch is larger than an ordinary
+	 * pick by exactly the published planting figure. From {@code client_2026-08-13.2.log}, all
+	 * against the 1.004 outfit this account was wearing:
+	 *
+	 * <ul>
+	 *   <li><b>allotment</b> — watermelon pays 55, 54, 55 ... and then 103 on the tick chat says
+	 *       "The allotment is now empty" (line 1051). 54.5 to pick + 48.5 to plant = 103.</li>
+	 *   <li><b>hops</b> — hemp pays 37 a pick and 70 at the end. 37 + 33 = 70.</li>
+	 *   <li><b>herb</b> — avantoe pays 62 a pick and 116 at the end. 61.5 + 54.5 = 116.</li>
+	 *   <li><b>flower</b> — a limpwurt patch pays exactly once, and that once is 142 in eight of
+	 *       the nine harvests logged that day. 120 + 21.5 = 141.5, times 1.004 = 142.07.</li>
+	 * </ul>
+	 *
+	 * <p>A short, evidenced list rather than a rule read off the data, because every rule that
+	 * suggests itself is wrong somewhere:
+	 *
+	 * <ul>
+	 *   <li>"the crop does not regrow" takes in mushroom and calquat. Both mushroom patches in
+	 *       the harvest CSV were picked clean and their experience lands within a point of the
+	 *       harvest award alone — 347 and 348 against 347.6 — with no sign of the 61.5 to
+	 *       plant.</li>
+	 *   <li>"planted from a seed rather than a sapling" takes in belladonna, which pays its 91
+	 *       the instant the seed goes in, twice over at 22:01:21 and 22:10:40.</li>
+	 *   <li>"anything whose planting award is deferred" takes in trees, which defer theirs to
+	 *       <i>check-health</i> and not to a harvest: a yew check pays 7180 where the check award
+	 *       alone is 7069.9, the difference being its 81 to plant. A tree has no harvest record
+	 *       for that to land in, so including it would only misprice something else.</li>
+	 * </ul>
+	 */
+	private static final java.util.Set<PatchImplementation> PAYS_PLANTING_WHEN_CLEARED =
+		java.util.EnumSet.of(PatchImplementation.ALLOTMENT, PatchImplementation.HOPS,
+			PatchImplementation.HERB, PatchImplementation.FLOWER);
+
+	/**
+	 * The award a patch pays on top of the last pick, at the moment it is picked clean.
+	 *
+	 * <p>The other half of {@link #xpHarvestsFor}: that says how many times the harvest award is
+	 * paid, this says what arrives alongside the last of them. Zero for every family not in
+	 * {@link #PAYS_PLANTING_WHEN_CLEARED}, and unboosted — the outfit is the caller's to apply,
+	 * because a caller adding this to a harvest award wants one multiplication over the sum.
+	 *
+	 * <p>Nothing here knows whether the patch was actually picked clean; that is the record's
+	 * question, and a patch left standing pays none of this.
+	 */
+	public static double clearedPatchXp(Seed seed)
+	{
+		if (seed == null || !PAYS_PLANTING_WHEN_CLEARED.contains(seed.getPatchType()))
+		{
+			return 0;
+		}
+		CropXp rates = CropXp.forSeed(seed);
+		return rates == null ? 0 : rates.getPlantXp();
 	}
 
 	/** Whether this is a crop where a per-patch yield figure means anything. */
