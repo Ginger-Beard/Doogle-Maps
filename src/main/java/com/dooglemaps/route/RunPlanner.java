@@ -1271,10 +1271,13 @@ public class RunPlanner
 		// however much of it you carry, and without it a small bin filled from harvest could never
 		// be upgraded to ultracompost through the plugin at all. That is a real feature lost for a
 		// slot saved, so the fill is the only thing withheld.
+		//
+		// The type test stays even though a covered set can never contain COMPOST: a caller that
+		// passes the raw type gets those bins from the loop above, and counting them twice would
+		// double every figure on the row.
 		if (compostRun.isFodderEnabled() && !types.contains(PatchImplementation.COMPOST))
 		{
-			for (FarmPatch patch
-				: availability.getAvailablePatches(PatchImplementation.COMPOST))
+			for (FarmPatch patch : allotmentBinsInTheRun(types))
 			{
 				count(counts, com.dooglemaps.data.CompostBin.NORMAL, patch, false);
 			}
@@ -1282,6 +1285,48 @@ public class RunPlanner
 
 		return new BinWork(counts.readyBins, counts.readyBuckets, counts.ashNeeded,
 			counts.fillableBins, counts.fillItems);
+	}
+
+	/**
+	 * The allotment bins the run will actually stand in front of, and no others.
+	 *
+	 * <h2>Availability is not the run</h2>
+	 *
+	 * {@link #binWork} asked {@code availability.getAvailablePatches(COMPOST)} for these, which is
+	 * every bin the account can reach rather than every bin the trip goes past — and unlike the
+	 * loop above it, nothing narrowed the answer afterwards. So a run over the trees was told to
+	 * bank <b>175 volcanic ash</b>, seven bins' worth, for a route that passed at most one of them.
+	 * Reported from play, and the buckets were overstated the same way.
+	 *
+	 * <p>The rule these bins arrive by is {@link #addOpportunisticBins}: a bin joins a stop the run
+	 * is <b>already</b> making and never creates one. That rule lives in the plan, not in a
+	 * predicate, so this reads the plan rather than restating it — anything the run would adopt is
+	 * in a stop's patch list, and anything it would not is not. Reading it back also picks up
+	 * {@link #reviewBins} mid-run and survives {@link #mergeSharedStops} folding a bin's region
+	 * into its host, which a region-set test would have got wrong in exactly that case.
+	 *
+	 * <p>The live stops while a run is on, and a fresh plan otherwise — which is the same pair
+	 * {@code coveredTypes} chooses between, and for the same reason: at the bank, before the
+	 * button, the plan is the only statement of where the trip goes.
+	 */
+	private List<FarmPatch> allotmentBinsInTheRun(Set<PatchImplementation> types)
+	{
+		Collection<RunStop> planned = active && !stops.isEmpty()
+			? stops.values()
+			: planStops(types).values();
+
+		List<FarmPatch> bins = new ArrayList<>();
+		for (RunStop stop : planned)
+		{
+			for (FarmPatch patch : stop.getPatches())
+			{
+				if (patch.getImplementation() == PatchImplementation.COMPOST)
+				{
+					bins.add(patch);
+				}
+			}
+		}
+		return bins;
 	}
 
 	/** The running totals {@link #binWork} builds, so both of its loops share one accumulation. */
@@ -3676,11 +3721,25 @@ public class RunPlanner
 		return router.isRouteDepartsPoh();
 	}
 
-	/** The object the route's first hop goes through — "Spirit tree" — or null. */
+	/**
+	 * The object the route's next hop goes through — "Spirit tree", "Climb-over Crumbling
+	 * wall" — or null. Next, not first: see {@link #noteTravelProgress}.
+	 */
 	@Nullable
-	public String getFirstTransportObject()
+	public String getNextTransportObject()
 	{
-		return router.getFirstTransportObject();
+		return router.getNextTransportObject();
+	}
+
+	/**
+	 * Tells the route where the player has got to, so hops already taken stop being "next".
+	 *
+	 * <p>Once a tick from the guide, which owns the tick and the player's tile; see
+	 * {@link ShortestPathIntegration#noteProgress}.
+	 */
+	public void noteTravelProgress(@Nullable WorldPoint player)
+	{
+		router.noteProgress(player);
 	}
 
 	/** Whether a route has been asked for and not answered yet. Volatile read, no lock. */

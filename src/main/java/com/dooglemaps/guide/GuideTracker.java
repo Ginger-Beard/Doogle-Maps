@@ -183,6 +183,9 @@ public class GuideTracker
 		allocations.clear();
 		compostWanting.clear();
 		retargetIfMoved();
+		// Before the status snapshot below reads the route, so the object it points at is
+		// this tick's next hop rather than one already taken.
+		planner.noteTravelProgress(playerLocation());
 
 		// Before anything reads getRemaining(), so completion is judged against this tick's
 		// answer rather than last tick's.
@@ -2427,11 +2430,11 @@ public class GuideTracker
 			: null;
 	}
 
-	/** The object the route's first hop goes through, or null. Live, like the transports. */
+	/** The object the route's next hop goes through, or null. Live, like the transports. */
 	@Nullable
 	public String routeObjectName()
 	{
-		return planner.getFirstTransportObject();
+		return planner.getNextTransportObject();
 	}
 
 	/** Where the first step that happens at the leprechaun is, or -1 if there is none. */
@@ -3491,7 +3494,21 @@ public class GuideTracker
 	private void retargetIfMoved()
 	{
 		WorldPoint player = playerLocation();
-		int region = player == null ? -1 : player.getRegionID();
+		if (player == null)
+		{
+			// Unknown is not "moved". The position store blanks itself for the LOADING state
+			// of every teleport, and this handler runs before it re-samples (GameTick
+			// subscribers go in class-name order), so the tick after a teleport used to read
+			// as region -1 and retarget from nowhere. Nowhere, to the router, is the player's
+			// RAW tile — inside the house that is instance space with no map under it, and
+			// the answer is an empty path. Worse than useless: the request cleared the route
+			// state the in-house retarget a tick later needed (whether the plan already went
+			// through the house), so a nexus leg was re-planned from the front door — and
+			// the empty answer, arriving late, was taken as that plan. Reported from play,
+			// Catherby via the nexus. Waiting one tick for a real tile costs nothing.
+			return;
+		}
+		int region = player.getRegionID();
 
 		if (region != lastRegion)
 		{

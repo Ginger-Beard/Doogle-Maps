@@ -1251,12 +1251,18 @@ public class GuideOverlay extends Overlay
 		return optionWords > allowed ? 0 : objectName.length();
 	}
 
-	/** Every object in the scene the route's hop names, impostors followed. */
+	/**
+	 * Every object in the scene the route's hop names, impostors followed.
+	 *
+	 * <p>Wall, decorative and ground objects too, not only game objects: an agility shortcut
+	 * is as likely to be a wall object (a broken wall, a crack, a window) as a game object,
+	 * and a scan of game objects alone left those unlit however well the name matched.
+	 */
 	private java.util.List<TileObject> scanForObjects(String hop)
 	{
 		java.util.List<TileObject> found = new java.util.ArrayList<>();
 		java.util.Set<Long> seen = new java.util.HashSet<>();
-		int best = 0;
+		int[] best = {0};
 		net.runelite.api.WorldView worldView = client.getTopLevelWorldView();
 		net.runelite.api.Tile[][][] tiles = worldView.getScene().getTiles();
 		for (net.runelite.api.Tile[] column : tiles[worldView.getPlane()])
@@ -1269,37 +1275,47 @@ public class GuideOverlay extends Overlay
 				}
 				for (net.runelite.api.GameObject object : tile.getGameObjects())
 				{
-					if (object == null || !seen.add(object.getHash()))
-					{
-						continue;
-					}
-					net.runelite.api.ObjectComposition definition =
-						client.getObjectDefinition(object.getId());
-					if (definition != null && definition.getImpostorIds() != null)
-					{
-						net.runelite.api.ObjectComposition impostor = definition.getImpostor();
-						definition = impostor != null ? impostor : definition;
-					}
-
-					int match = definition == null
-						? 0
-						: routeObjectMatch(hop, definition.getName());
-					if (match == 0 || match < best)
-					{
-						continue;
-					}
-					// A longer name has turned up, so everything matched on a shorter one was a
-					// coincidence of the wording — see routeObjectMatch.
-					if (match > best)
-					{
-						best = match;
-						found.clear();
-					}
-					found.add(object);
+					considerRouteObject(hop, object, seen, found, best);
 				}
+				considerRouteObject(hop, tile.getWallObject(), seen, found, best);
+				considerRouteObject(hop, tile.getDecorativeObject(), seen, found, best);
+				considerRouteObject(hop, tile.getGroundObject(), seen, found, best);
 			}
 		}
 		return found;
+	}
+
+	/** One candidate for {@link #scanForObjects}; {@code best} is the longest match so far. */
+	private void considerRouteObject(String hop, @Nullable TileObject object,
+		java.util.Set<Long> seen, java.util.List<TileObject> found, int[] best)
+	{
+		if (object == null || !seen.add(object.getHash()))
+		{
+			return;
+		}
+		net.runelite.api.ObjectComposition definition =
+			client.getObjectDefinition(object.getId());
+		if (definition != null && definition.getImpostorIds() != null)
+		{
+			net.runelite.api.ObjectComposition impostor = definition.getImpostor();
+			definition = impostor != null ? impostor : definition;
+		}
+
+		int match = definition == null
+			? 0
+			: routeObjectMatch(hop, definition.getName());
+		if (match == 0 || match < best[0])
+		{
+			return;
+		}
+		// A longer name has turned up, so everything matched on a shorter one was a
+		// coincidence of the wording — see routeObjectMatch.
+		if (match > best[0])
+		{
+			best[0] = match;
+			found.clear();
+		}
+		found.add(object);
 	}
 
 	private void highlightHouseTeleports(Graphics2D graphics, Color colour)

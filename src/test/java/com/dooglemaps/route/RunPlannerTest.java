@@ -2650,6 +2650,73 @@ public class RunPlannerTest
 	}
 
 	/**
+	 * A bin the run never goes near is not packed for either.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"should not prompt for volcanic ash if I don't have compost checked for the run"</i> —
+	 * with the session log showing <b>Volcanic ash x175</b> on a run over
+	 * {@code types [TREE, FRUIT_TREE]}. A hundred and seventy-five is seven bins at twenty-five,
+	 * which is every allotment bin in the game: {@code binWork} asked availability for them
+	 * rather than asking the run, so it counted bins the route passes nowhere near. The bins
+	 * themselves obey {@link #anAllotmentBinNeverEarnsAStopOfItsOwn} — it was only the bank list
+	 * that had not heard.
+	 */
+	@Test
+	public void anAllotmentBinTheRunNeverReachesIsNotPackedFor()
+	{
+		FarmPatch bin = patch(FALADOR_BIN);
+		record(FALADOR_BIN, readySupercompostValue());
+		availability.setAvailable(bin, true);
+
+		// The run is somewhere else entirely, which is the whole of the complaint.
+		record(ARDOUGNE_HERB, 43);
+		availability.setAvailable(patch(ARDOUGNE_HERB), true);
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+
+		RunPlanner.BinWork work = planner.binWork(EnumSet.of(PatchImplementation.HERB));
+		assertEquals("no ash for a bin the run does not visit", 0, work.ashNeeded);
+		assertEquals("and no buckets to empty it with", 0, work.readyBins);
+	}
+
+	/** ...but the same bin at a stop the run is making is packed for in full. */
+	@Test
+	public void anAllotmentBinAtAStopTheRunMakesIsPackedFor()
+	{
+		FarmPatch bin = patch(FALADOR_BIN);
+		record(FALADOR_BIN, readySupercompostValue());
+		availability.setAvailable(bin, true);
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+
+		RunPlanner.BinWork work = planner.binWork(EnumSet.of(PatchImplementation.HERB));
+		assertEquals("the bin is at the herbs' own stop, so its ash is worth a slot",
+			com.dooglemaps.data.CompostBin.NORMAL.ashNeeded(), work.ashNeeded);
+		assertEquals(1, work.readyBins);
+		assertEquals("its fill is still the harvest's job, never the bank's", 0, work.fillItems);
+	}
+
+	/** A bin varbit meaning "finished, and what is in it is supercompost" — the ash's one target. */
+	private int readySupercompostValue()
+	{
+		FarmPatch bin = patch(FALADOR_BIN);
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = bin.getImplementation().forVarbitValue(value);
+			if (decoded != null && decoded.getProduce() == Produce.SUPERCOMPOST
+				&& decoded.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE)
+			{
+				return value;
+			}
+		}
+		throw new AssertionError("no finished-supercompost varbit decodes for the Falador bin");
+	}
+
+	/**
 	 * A bins-only run with just the Farming Guild enabled finds the guild's bin.
 	 *
 	 * <h2>The guild has no ordinary compost bin — only the big one</h2>

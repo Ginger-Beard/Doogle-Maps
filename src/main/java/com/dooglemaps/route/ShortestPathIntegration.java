@@ -268,7 +268,8 @@ public class ShortestPathIntegration
 		// because the gap between the two is exactly when the stale list was being shown.
 		currentTransports = new ArrayList<>();
 		currentDestinations = new HashSet<>();
-		firstTransportObject = null;
+		hops = new ArrayList<>();
+		hopsPassed = 0;
 		routeDepartsPoh = false;
 		// ...and the gap itself is now a stated fact, because empty-while-waiting and
 		// empty-as-the-answer mean different things: "no transports" as an *answer* is what
@@ -321,6 +322,8 @@ public class ShortestPathIntegration
 		// reading a dead route's landing points indefinitely. The stalest of the reported
 		// "area mismatch" generators.
 		currentDestinations = new HashSet<>();
+		hops = new ArrayList<>();
+		hopsPassed = 0;
 		routeDepartsPoh = false;
 		awaitingRoute = false;
 		routeRequested = false;
@@ -361,6 +364,16 @@ public class ShortestPathIntegration
 	 * Real answers arrive within a second or two; ten is generous.
 	 */
 	private static final long ROUTE_ANSWER_TIMEOUT_MILLIS = 10_000;
+
+	/**
+	 * How long after a request its answers keep being read while the player is instanced.
+	 *
+	 * <p>Shortest Path's default calculation cutoff is three seconds of no progress, and a
+	 * request that supersedes a running one makes the old one post first (see the note in
+	 * {@link #onPluginMessage}), so the real answer can be the second or third message. Past
+	 * this the messages are the router's own instance recomputes and are ignored as before.
+	 */
+	private static final long ROUTE_SETTLE_MILLIS = 5_000;
 
 	/** See {@link #awaitingRoute} — false once the reply lands or the timeout passes. */
 	public boolean isAwaitingRoute()
@@ -411,14 +424,27 @@ public class ShortestPathIntegration
 		// highlights followed the garbage route. Reported from play. An answer we are
 		// actually waiting on — the front-door reroute, which posts an explicit start — is
 		// still read; it is the unsolicited ones that carry nothing worth knowing.
-		if (!awaitingRoute && Boolean.TRUE.equals(playerInInstance.get()))
+		//
+		// "Waiting on" is a window, not the first message to land. Shortest Path runs a
+		// pathfinder's completion callback even when that pathfinder was CANCELLED by a newer
+		// request, and the callback posts whatever path the newest pathfinder holds at that
+		// instant — usually nothing yet. So two requests a tick apart produce a junk
+		// "no transports" message before the real answer, and taking the first message as the
+		// answer then threw the real one away as an instance recompute. Reported from play:
+		// entering the house on a nexus leg to Catherby, the panel lost the destination and
+		// the nexus row while the nexus itself stayed lit off the previous route. Every
+		// message inside the window is read and the latest wins; the window is the router's
+		// own no-progress cutoff with room to spare.
+		if (!isAwaitingRoute() && Boolean.TRUE.equals(playerInInstance.get())
+			&& System.currentTimeMillis() - requestedAtMillis > ROUTE_SETTLE_MILLIS)
 		{
 			return;
 		}
 
 		List<WorldPoint> landings = readPoints(event, KEY_DESTINATION);
 		currentTransports = readTransports(event);
-		firstTransportObject = readFirstObject(event);
+		hops = readHops(event);
+		hopsPassed = 0;
 
 		boolean departsPoh = false;
 		for (WorldPoint origin : readPoints(event, KEY_ORIGIN))
@@ -525,31 +551,142 @@ public class ShortestPathIntegration
 	}
 
 	/**
-	 * The object the route's first hop goes through — "Spirit tree" — or null when the first
-	 * hop is not an object (an item, a spell, or nothing at all).
+	 * One hop of the drawn route, as the transports message describes it: where it is taken,
+	 * where it lands, and the object it goes through when it is an object at all.
+	 */
+	static final class Hop
+	{
+		@Nullable
+		final WorldPoint origin;
+		@Nullable
+		final WorldPoint destination;
+		/** The object's menu row with the id taken off — "Climb-over Crumbling wall" — or null for an item or spell. */
+		@Nullable
+		final String object;
+
+		Hop(@Nullable WorldPoint origin, @Nullable WorldPoint destination, @Nullable String object)
+		{
+			this.origin = origin;
+			this.destination = destination;
+			this.object = object;
+		}
+	}
+
+	/** Every hop of the current route, in path order. Volatile like the lists. */
+	private volatile List<Hop> hops = new ArrayList<>();
+
+	/**
+	 * How many leading hops the player has already taken; see {@link #noteProgress}.
+	 *
+	 * <p>Only ever advanced, and only from the tick, until a new answer resets it.
+	 */
+	private volatile int hopsPassed;
+
+	/**
+	 * How near a hop's landing tile counts as having taken the hop.
+	 *
+	 * <p>Teleports land a tile or two off their nominal destination; shortcuts land exactly.
+	 * Nearness alone would pass a wall crossing before it is crossed — the two sides are three
+	 * tiles apart — so the player must also be nearer the landing than the departure.
+	 */
+	private static final int HOP_TAKEN_TILES = 5;
+
+	/**
+	 * Advances past the hops the player has already taken, so {@link #getNextTransportObject}
+	 * points at what is still ahead.
+	 *
+	 * <p>The route's first hop is not the next thing to click for long: a plan that reads
+	 * "Falador teleport, climb the crumbling wall" has the wall as its second hop, and the
+	 * message describing it is not re-sent when the teleport lands unless the player strays
+	 * from the drawn line. Reading only the first hop meant the agility shortcuts along a walk
+	 * were never outlined at all — the first hop was a teleport, or a door, or the shortcut
+	 * had been passed and a later one was up. Reported from play.
+	 *
+	 * <p>Once a tick, from the client thread, with the player's tile.
+	 */
+	public void noteProgress(@Nullable WorldPoint player)
+	{
+		if (player == null)
+		{
+			return;
+		}
+		List<Hop> route = hops;
+		int passed = hopsPassed;
+		// The furthest hop the player is standing at the far end of, so a spread of duplicate
+		// rows for one edge — several Transport objects share an edge — passes as one.
+		for (int i = passed; i < route.size(); i++)
+		{
+			if (taken(route.get(i), player))
+			{
+				passed = i + 1;
+			}
+		}
+		if (passed != hopsPassed)
+		{
+			hopsPassed = passed;
+			routeGeneration++;
+		}
+	}
+
+	static boolean taken(Hop hop, WorldPoint player)
+	{
+		if (hop.destination == null)
+		{
+			return false;
+		}
+		int toLanding = player.distanceTo(hop.destination);
+		if (toLanding > HOP_TAKEN_TILES)
+		{
+			return false;
+		}
+		return hop.origin == null || toLanding < player.distanceTo(hop.origin);
+	}
+
+	/**
+	 * The object the route's next hop goes through — "Spirit tree", "Climb-over Crumbling
+	 * wall" — or null when the next hop is not an object (an item, a spell, or nothing at all).
 	 *
 	 * <p>For the overlay: the drawn line says where to walk, but nothing in the scene was
 	 * marked as the thing to click when the hop was neither an item nor house furniture. The
-	 * GE's spirit tree went entirely unhighlighted. Reported from play.
+	 * GE's spirit tree went entirely unhighlighted. Reported from play. "Next", not "first":
+	 * see {@link #noteProgress}.
 	 */
-	@Getter
-	private volatile String firstTransportObject;
-
 	@Nullable
-	private static String readFirstObject(PluginMessage event)
+	public String getNextTransportObject()
 	{
+		List<Hop> route = hops;
+		int index = hopsPassed;
+		return index < route.size() ? route.get(index).object : null;
+	}
+
+	/**
+	 * The message's parallel per-hop lists zipped into hops.
+	 *
+	 * <p>Tolerant of ragged lists — a point list shorter than the object list, or the other
+	 * way about — because the message is another plugin's and its shape is not ours to assume.
+	 */
+	private static List<Hop> readHops(PluginMessage event)
+	{
+		List<WorldPoint> origins = readPoints(event, KEY_ORIGIN);
+		List<WorldPoint> destinations = readPoints(event, KEY_DESTINATION);
 		Object objectInfo = event.getData().get(KEY_OBJECT_INFO);
-		if (!(objectInfo instanceof List) || ((List<?>) objectInfo).isEmpty())
+		List<?> objects = objectInfo instanceof List ? (List<?>) objectInfo : new ArrayList<>();
+
+		int count = Math.max(objects.size(), Math.max(origins.size(), destinations.size()));
+		List<Hop> read = new ArrayList<>(count);
+		for (int i = 0; i < count; i++)
 		{
-			return null;
+			String object = null;
+			if (i < objects.size() && objects.get(i) instanceof String
+				&& !((String) objects.get(i)).isEmpty())
+			{
+				String name = objectName((String) objects.get(i));
+				object = name.isEmpty() ? null : name;
+			}
+			read.add(new Hop(i < origins.size() ? origins.get(i) : null,
+				i < destinations.size() ? destinations.get(i) : null, object));
 		}
-		Object first = ((List<?>) objectInfo).get(0);
-		if (!(first instanceof String) || ((String) first).isEmpty())
-		{
-			return null;
-		}
-		String name = objectName((String) first);
-		return name.isEmpty() ? null : name;
+		return read;
 	}
 
 	/**
