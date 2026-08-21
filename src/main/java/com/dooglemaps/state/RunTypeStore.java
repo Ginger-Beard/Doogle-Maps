@@ -47,6 +47,35 @@ public class RunTypeStore extends ProfileJsonStore
 	 */
 	private final Set<String> selected = new java.util.LinkedHashSet<>();
 
+	/**
+	 * Told when the run's lines change, so what reads them can catch up.
+	 *
+	 * <h2>Why this class needed them and the others already had them</h2>
+	 *
+	 * Every other store the panel writes to announces itself — the seed stores, the compost
+	 * choice, the protection split — and the plugin turns that into one refresh of the sidebar and
+	 * the infobox. This one never did, so changing which patch types a run covers updated the
+	 * boxes and nothing else: the in-game ready count went on filtering by the <i>previous</i>
+	 * selection until the twenty-second idle refresh happened along.
+	 *
+	 * <p>Never noticed while ticking boxes one at a time, because the count moves by one patch type
+	 * and a stale number looks like a slow one. Applying a run preset changes six or eight lines at
+	 * once, which is what made it obvious. Reported from play.
+	 */
+	private final java.util.List<Runnable> changeListeners =
+		new java.util.concurrent.CopyOnWriteArrayList<>();
+
+	/** Told after the selection changes, outside this store's monitor. */
+	public void addChangeListener(Runnable listener)
+	{
+		changeListeners.add(listener);
+	}
+
+	public void removeChangeListener(Runnable listener)
+	{
+		changeListeners.remove(listener);
+	}
+
 	@Inject
 	RunTypeStore(ConfigManager configManager, Gson gson)
 	{
@@ -231,6 +260,14 @@ public class RunTypeStore extends ProfileJsonStore
 		// See ProfileJsonStore.save.
 		save();
 		log.debug("Run covers {}", keys);
+
+		// And outside it for the same reason the stores that already do this give: a listener
+		// reads back through the public getters, and calling out with the lock held is how
+		// deadlocks start. See ProfileJsonStore.loaded.
+		for (Runnable listener : changeListeners)
+		{
+			listener.run();
+		}
 	}
 
 	@Override

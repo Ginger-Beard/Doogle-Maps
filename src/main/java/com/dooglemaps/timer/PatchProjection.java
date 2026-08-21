@@ -164,6 +164,26 @@ public class PatchProjection
 			// field note on varbitValue.
 			return varbitValue == CELASTRUS_DEPLETED;
 		}
+		// A fruit tree is chopped like any other tree, but only once its fruit is gone.
+		//
+		// The grown palm's own menu says both — the client sources record it as
+		// "Palm tree[Chop-down,Inspect,Guide,Pick-coconut]" — and the order between them is the
+		// player's to make, not ours to invent: felling a tree with five coconuts still on it
+		// throws them away. So this waits for the picking to be finished, which lets the harvest
+		// branch above the chop in {@code GuidePlan} run itself out first and makes the sequence
+		// check-health, harvest, chop, dig the stump.
+		//
+		// hasProduceToPick, not the raw stage: a fruit tree's harvestable stage IS its fruit
+		// count, so a stripped one reads stage 0 — the same as its stump, which the {@code
+		// !stump} test above has already taken out.
+		if (patch.getImplementation() == PatchImplementation.FRUIT_TREE)
+		{
+			return cropState == CropState.HARVESTABLE
+				&& !stump
+				&& !isEmpty()
+				&& !hasProduceToPick();
+		}
+
 		return cropState == CropState.HARVESTABLE
 			&& !stump
 			&& !isEmpty()

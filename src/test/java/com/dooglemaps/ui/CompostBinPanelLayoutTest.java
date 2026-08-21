@@ -97,16 +97,71 @@ public class CompostBinPanelLayoutTest
 		}
 	}
 
-	/** Every section is present to be measured in the first place. */
+	/**
+	 * Every section is present to be measured in the first place, the outer one first.
+	 *
+	 * <p>Four now rather than three: the whole tab folds under one heading, so a player who has
+	 * finished configuring compost gets the sidebar back for the run planner and the patch
+	 * statuses. The three inner sections still fold on their own inside it.
+	 */
 	@Test
-	public void thereAreThreeOfThem()
+	public void thereAreFourOfThem()
 	{
 		java.util.List<JButton> headings = headings(panel);
-		assertEquals("the guild bin's two tiers, and the allotment bins' fodder list",
-			3, headings.size());
-		assertTrue(headings.get(0).getText().contains("Supercompost"));
-		assertTrue(headings.get(1).getText().contains("Compost"));
-		assertTrue(headings.get(2).getText().contains("Compost these"));
+		assertEquals("the outer collapse, the guild bin's two tiers, and the fodder list",
+			4, headings.size());
+		assertTrue("the outer collapse comes first: " + headings.get(0).getText(),
+			headings.get(0).getText().contains("Compost"));
+		assertTrue(headings.get(1).getText().contains("Supercompost"));
+		assertTrue(headings.get(2).getText().contains("Compost"));
+		assertTrue(headings.get(3).getText().contains("Compost these"));
+	}
+
+	/**
+	 * Folding the outer section takes everything with it — both lists, both checkboxes and the
+	 * fodder group — which is the whole point of it.
+	 */
+	@Test
+	public void theOuterCollapseFoldsTheEntireTab()
+	{
+		java.util.List<JButton> headings = headings(panel);
+		JButton outer = headings.get(0);
+		assertTrue("it starts open", innerSectionsVisible(panel) > 0);
+
+		outer.doClick();
+
+		assertEquals("nothing below the heading survives the fold",
+			0, innerSectionsVisible(panel));
+		assertTrue("and the heading says it is folded: " + outer.getText(),
+			outer.getText().startsWith("▸"));
+	}
+
+	/** How many of the inner heading buttons are actually on screen. */
+	private static int innerSectionsVisible(Container container)
+	{
+		java.util.List<JButton> headings = headings(container);
+		int visible = 0;
+		for (int i = 1; i < headings.size(); i++)
+		{
+			if (headings.get(i).isShowing() || isEffectivelyVisible(headings.get(i)))
+			{
+				visible++;
+			}
+		}
+		return visible;
+	}
+
+	/** Visible in its own right and in every ancestor up to the panel. */
+	private static boolean isEffectivelyVisible(java.awt.Component component)
+	{
+		for (java.awt.Component c = component; c != null; c = c.getParent())
+		{
+			if (!c.isVisible())
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** With fodder off the allotment group folds away, leaving the guild bin's two. */
@@ -137,7 +192,7 @@ public class CompostBinPanelLayoutTest
 				visible++;
 			}
 		}
-		assertEquals("only the guild bin's two lists are on show", 2, visible);
+		assertEquals("the outer collapse, plus only the guild bin's two lists", 3, visible);
 	}
 
 	/** Every heading button in the panel, in the order they are laid out down the sidebar. */

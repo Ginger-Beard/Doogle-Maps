@@ -83,6 +83,9 @@ public class RunLoadoutTest
 
 	/** The boats' cargo holds, empty until a test stows something. */
 	private com.dooglemaps.bank.BoatHolds boatHolds;
+
+	/** A second loadout whose tick never advances; see the note in setUp. */
+	private RunLoadout frozenLoadout;
 	private SeedInventoryStore seeds;
 	private com.dooglemaps.DoogleMapsConfig config;
 
@@ -174,6 +177,10 @@ public class RunLoadoutTest
 		// everything - the seed display names lean on exactly that difference.
 		when(itemNames.get(Mockito.anyInt(), Mockito.any()))
 			.thenAnswer(i -> names.getOrDefault(i.<Integer>getArgument(0), i.getArgument(1)));
+		// The one-arg form answers null for the unrecorded, like the real class - the name-based
+		// sizing leans on exactly that to fall through to the client.
+		when(itemNames.get(Mockito.anyInt()))
+			.thenAnswer(i -> names.get(i.<Integer>getArgument(0)));
 
 		// A mock rather than a real store: every test here is a full run, and isHarvestOnly
 		// defaults to false, which is what "a full run" means. The harvest-only path has its own
@@ -188,6 +195,13 @@ public class RunLoadoutTest
 			toolNeeds, leprechaun, protection, itemNames, config, tickingClient(), runTypes,
 			contracts, compostRun,
 			boatHolds = construct(com.dooglemaps.bank.BoatHolds.class, configManager, gson));
+
+		// The same collaborators over a client whose tick never moves, so forRun's cache actually
+		// holds. Only one test wants it — see whatIsStillWantedFallsWithinOneTick — and it is built
+		// here because the collaborators above are locals.
+		frozenLoadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried,
+			bank, toolNeeds, leprechaun, protection, itemNames, config, frozenClient(), runTypes,
+			contracts, compostRun, boatHolds);
 	}
 
 	/**
@@ -209,6 +223,333 @@ public class RunLoadoutTest
 		assertNotNull("the chosen compost should still be mentioned", entry);
 		assertEquals("even with 500 in the bank, the leprechaun is the answer",
 			LoadoutItem.Need.AT_LEPRECHAUN, entry.getNeed());
+	}
+
+	/**
+	 * The count the quantity swap sizes from falls as the pack fills, within a single tick.
+	 *
+	 * <h2>Why this is the test that matters for that feature</h2>
+	 *
+	 * {@code forRun} is cached on the tick, and a player clicking Withdraw-10 then Withdraw-5 does
+	 * both inside one 600ms tick. A swap reading a tick-old {@code outstanding} would still believe
+	 * fifteen were wanted on the second click, offer ten again, and take twenty-five — the exact
+	 * over-withdrawal the feature exists to prevent. See the spec, §8.
+	 *
+	 * <p>So the tick is deliberately <b>not</b> advanced between the reads below: the whole point
+	 * is that the answer moves anyway, because the intent is cached and the pack is not.
+	 */
+	@Test
+	public void whatIsStillWantedFallsWithinOneTick()
+	{
+		// The tree-protection fixture, which is the one proven to raise a counted payment row.
+		readyAllTreePatches();
+		selection.toggle(Seed.MAGIC);
+		bankHolds(Seed.MAGIC.getItemID(), 5);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(Seed.MAGIC.getItemID(), 5));
+		protection.setProtecting(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE), Seed.MAGIC, true);
+		bankHolds(ItemID.COCONUT, 200);
+
+		java.util.Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+
+		int wanted = loadout.stillWantedNow(ItemID.COCONUT, trees);
+		assertTrue("the fixture must actually want some, or this test proves nothing: " + wanted,
+			wanted > 0);
+
+		carrying(ItemID.COCONUT, 25);
+		assertEquals("twenty-five in the pack is twenty-five fewer to fetch, on the same tick",
+			wanted - 25, loadout.stillWantedNow(ItemID.COCONUT, trees));
+
+		// ...and now against a client whose tick does not move, so forRun's cache genuinely
+		// holds. This is the half the ordinary fixture cannot show: tickingClient() advances the
+		// tick on every call, which defeats the cache and would let a tick-old read pass this
+		// test unnoticed.
+		RunLoadout frozen = frozenLoadout;
+
+		int before = frozen.stillWantedNow(ItemID.COCONUT, trees);
+		assertTrue("the frozen fixture wants some too: " + before, before > 0);
+
+		carrying(ItemID.COCONUT, 50);
+		assertEquals("the cached row still says what it said",
+			before, cachedWithdrawCount(frozen, ItemID.COCONUT, trees));
+		assertEquals("but what is still wanted has moved with the pack",
+			Math.max(0, before - 25), frozen.stillWantedNow(ItemID.COCONUT, trees));
+	}
+
+	/**
+	 * Empty buckets are sized even though they come from his store rather than a bank.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"still not working on empty bucket withdraw for compost"</i>. {@code stillWantedNow}
+	 * accepted only {@code WITHDRAW}, and the leprechaun keeps a thousand buckets — so their row
+	 * says {@code AT_LEPRECHAUN}, and the one place a bin run does most of its collecting was the
+	 * one place the swap stood down.
+	 *
+	 * <p>Asserted through the need rather than around it, because the name is about <b>where</b>
+	 * they are and not about whether any are wanted.
+	 */
+	@Test
+	public void bucketsFromHisStoreAreStillSized()
+	{
+		bigBinAt(62);   // finished compost, so the run wants buckets to take it out in
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.BIG_COMPOST);
+
+		LoadoutItem row = null;
+		for (LoadoutItem item : loadout.forRun(bins))
+		{
+			if (item.getItemId() == ItemID.BUCKET_EMPTY)
+			{
+				row = item;
+			}
+		}
+		assertNotNull("the fixture must raise a bucket row, or this proves nothing", row);
+		assertEquals("and it should be his, which is the whole point",
+			LoadoutItem.Need.AT_LEPRECHAUN, row.getNeed());
+
+		assertTrue("his store is still somewhere to collect from: "
+				+ loadout.stillWantedNow(ItemID.BUCKET_EMPTY, bins),
+			loadout.stillWantedNow(ItemID.BUCKET_EMPTY, bins) > 0);
+	}
+
+	/**
+	 * ...and they are sized by <b>name</b> too, which is how his store actually asks.
+	 *
+	 * <p>His menu entries carry no item id on the entry or the widget — the id-based lookup stood
+	 * the swap down at the one interface the feature was built for, and it held in the suite only
+	 * because the test mocked a widget that knew the id. The one thing his menu does carry is the
+	 * item's printed name, and the row's name is the same rendering of the same item.
+	 */
+	@Test
+	public void bucketsFromHisStoreAreSizedByNameToo()
+	{
+		bigBinAt(62);
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.BIG_COMPOST);
+
+		assertEquals("the name answers exactly what the id answers",
+			loadout.stillWantedNow(ItemID.BUCKET_EMPTY, bins),
+			loadout.stillWantedNow("Empty bucket", bins));
+		assertTrue(loadout.stillWantedNow("Empty bucket", bins) > 0);
+	}
+
+	/**
+	 * The game's own name for the item sizes the row too — which is the name a menu prints.
+	 *
+	 * <h2>The reported dead end, round four, and the one the decision log caught</h2>
+	 *
+	 * <i>"remove menu still not swapping"</i> — and this time {@code client.log} answered
+	 * instead of costing a session: {@code item id=-1 name='Bucket' wanted=0 -> nothing to
+	 * promote}. The row is labelled "Empty bucket" so the bank list reads unambiguously, but a
+	 * menu prints the <b>game's</b> name for the item, and the game calls item 1925 plain
+	 * "Bucket". Matching menu names against row labels was comparing the plugin's wording with
+	 * the game's, and they part company at exactly this row.
+	 *
+	 * <p>So both names answer — the label, and the game's name for the row's item id.
+	 */
+	@Test
+	public void theGamesOwnNameForTheItemSizesTheRowToo()
+	{
+		bigBinAt(62);
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+		// What the game calls item 1925, which is not what the row's label calls it.
+		names.put(ItemID.BUCKET_EMPTY, "Bucket");
+
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.BIG_COMPOST);
+
+		assertEquals("the menu's name answers exactly what the id answers",
+			loadout.stillWantedNow(ItemID.BUCKET_EMPTY, bins),
+			loadout.stillWantedNow("Bucket", bins));
+		assertTrue(loadout.stillWantedNow("Bucket", bins) > 0);
+	}
+
+	/**
+	 * A withdrawal wanting at least a whole pack answers "take All" — and only that kind.
+	 *
+	 * <p>The big bin's thirty buckets against an empty pack's twenty-eight slots is the case the
+	 * rule exists for; the normal bin's fifteen against the same pack is the case that keeps the
+	 * ladder. Ash is the deliberate exception even when the numbers say otherwise: it stacks, so
+	 * All would take the bank's whole pile rather than what fits, which is the overshoot the
+	 * whole feature promises never to make.
+	 */
+	@Test
+	public void wantingAWholePackAnswersAll()
+	{
+		binAt(62);
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+		// A pack mostly full of the run, so the fifteen buckets wanted are more than fit.
+		net.runelite.api.Item[] held = new net.runelite.api.Item[20];
+		for (int i = 0; i < held.length; i++)
+		{
+			held[i] = new net.runelite.api.Item(4000 + i, 1);
+		}
+		net.runelite.api.ItemContainer pack =
+			Mockito.mock(net.runelite.api.ItemContainer.class);
+		when(pack.getItems()).thenReturn(held);
+		carried.record(pack);
+
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.COMPOST);
+
+		assertTrue("fifteen buckets into eight free slots is a packful",
+			loadout.fillsThePack(ItemID.BUCKET_EMPTY, bins));
+	}
+
+	@Test
+	public void wantingLessThanAPackKeepsTheLadder()
+	{
+		binAt(62);
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.COMPOST);
+
+		assertTrue("the fixture must still want the buckets",
+			loadout.stillWantedNow(ItemID.BUCKET_EMPTY, bins) > 0);
+		assertFalse("fifteen into twenty-eight free is not a packful",
+			loadout.fillsThePack(ItemID.BUCKET_EMPTY, bins));
+	}
+
+	@Test
+	public void ashNeverAnswersAllHoweverMuchIsWanted()
+	{
+		bigBinAt(62);
+		when(compostRun.isAshing()).thenReturn(true);
+		bankHolds(com.dooglemaps.data.CompostBin.VOLCANIC_ASH, 5000);
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.BIG_COMPOST);
+
+		assertTrue("the ash is wanted...",
+			loadout.stillWantedNow(com.dooglemaps.data.CompostBin.VOLCANIC_ASH, bins) > 0);
+		assertFalse("...but it stacks, so All would take the bank's whole pile",
+			loadout.fillsThePack(com.dooglemaps.data.CompostBin.VOLCANIC_ASH, bins));
+	}
+
+	/**
+	 * Done means "tracked and now covered", never merely "answers zero".
+	 *
+	 * <p>{@code stillWantedNow} answers zero for a satisfied row, for a seed the swap must never
+	 * size, and for an item that was never the run's business — and the Examine swap is only
+	 * safe for the first. A pack holding every bucket the bins want is done; the same pack a
+	 * bucket short is not; and a seed is never done however many are carried, because it was
+	 * never sized to begin with.
+	 */
+	@Test
+	public void doneMeansTrackedAndCovered()
+	{
+		binAt(62);
+		leprechaunHolds(FarmingTool.EMPTY_BUCKET, 1000);
+		Set<PatchImplementation> bins = EnumSet.of(PatchImplementation.COMPOST);
+
+		assertFalse("a bucket short is not done",
+			loadout.doneWithdrawing(ItemID.BUCKET_EMPTY, bins));
+
+		// Every bucket the bin wants, in the pack.
+		int wanted = loadout.stillWantedNow(ItemID.BUCKET_EMPTY, bins);
+		net.runelite.api.Item[] held = new net.runelite.api.Item[wanted];
+		for (int i = 0; i < held.length; i++)
+		{
+			held[i] = new net.runelite.api.Item(ItemID.BUCKET_EMPTY, 1);
+		}
+		net.runelite.api.ItemContainer pack =
+			Mockito.mock(net.runelite.api.ItemContainer.class);
+		when(pack.getItems()).thenReturn(held);
+		carried.record(pack);
+
+		assertTrue("every bucket collected is done",
+			loadout.doneWithdrawing(ItemID.BUCKET_EMPTY, bins));
+	}
+
+	/** A seed is never done, because it was never the swap's to size. */
+	@Test
+	public void aSeedIsNeverDoneWithdrawing()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		bankHolds(Seed.RANARR.getItemID(), 50);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(Seed.RANARR.getItemID(), 50));
+
+		assertFalse(loadout.doneWithdrawing(Seed.RANARR.getItemID(), HERBS));
+	}
+
+	/**
+	 * Seeds are never sized, so the swap leaves them on whatever the player normally uses.
+	 *
+	 * <p>The owner's call and the reasoning is worth keeping: over-withdrawing a seed is nearly
+	 * free and under-withdrawing costs a patch, which is the opposite of the bucket case that
+	 * prompted the feature.
+	 */
+	@Test
+	public void seedsAreNeverSized()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		bankHolds(Seed.RANARR.getItemID(), 50);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(Seed.RANARR.getItemID(), 50));
+
+		assertEquals("a seed row is not something to size a click from",
+			0, loadout.stillWantedNow(Seed.RANARR.getItemID(), HERBS));
+	}
+
+	/**
+	 * A tree run whose saplings are all being paid for banks no compost at all.
+	 *
+	 * <h2>The bank half of the guide's refusal</h2>
+	 *
+	 * A protection payment is immunity outright, and a tree has no lives mechanic for compost to
+	 * improve, so the guide will not ask for a bucket on a protected sapling — see
+	 * {@code CropYieldModel.compostWastedOnProtected}. Banking one anyway would be a slot spent
+	 * on an item no step is ever going to name, which is precisely the noise this list exists to
+	 * avoid. Asked for from play.
+	 */
+	@Test
+	public void aFullyProtectedTreeRunBanksNoCompost()
+	{
+		readyTreePatch();
+		selection.toggle(Seed.YEW);
+		compost.set(PatchImplementation.TREE, CompostTier.ULTRACOMPOST);
+		bankHolds(CompostTier.ULTRACOMPOST.getItemID(), 500);
+		protection.setProtecting(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE), Seed.YEW, true);
+
+		assertNull("nothing on this run can use it", treeCompostRow());
+	}
+
+	/**
+	 * ...and the same run with the protection off banks it again, so the row is answering the
+	 * protection question rather than having quietly gone missing.
+	 */
+	@Test
+	public void anUnprotectedTreeRunStillBanksItsCompost()
+	{
+		readyTreePatch();
+		selection.toggle(Seed.YEW);
+		compost.set(PatchImplementation.TREE, CompostTier.ULTRACOMPOST);
+		bankHolds(CompostTier.ULTRACOMPOST.getItemID(), 500);
+
+		assertNotNull("unprotected, the bucket is the only disease cover there is",
+			treeCompostRow());
+	}
+
+	/**
+	 * The compost row of a <b>tree</b> run, or null.
+	 *
+	 * <p>{@code find} runs the herb set, which is what nearly every test here wants; these two
+	 * are about trees and would otherwise both answer null for the wrong reason.
+	 */
+	@Nullable
+	private LoadoutItem treeCompostRow()
+	{
+		for (LoadoutItem item : loadout.forRun(EnumSet.of(PatchImplementation.TREE)))
+		{
+			if (item.getCategory() == LoadoutItem.Category.COMPOST)
+			{
+				return item;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -975,16 +1316,28 @@ public class RunLoadoutTest
 	}
 
 	/**
-	 * A ready bin banks its refill too - emptying it is what makes it empty.
+	 * A ready bin banks NO fill while the compost is still in it.
 	 *
-	 * <p>The reported dead end: the fill was counted only for bins that were <i>already</i>
-	 * empty, so a run whose bins were all ready packed buckets and ash and no produce at all.
-	 * The bin emptied fine, the buckets went to the leprechaun, and then
-	 * {@code CompostBinPlan.addFillStep} had nothing in the pack to name - so the bin's last
-	 * step vanished, the stop read as finished and the run ended with the bin standing open.
+	 * <h2>Two dead ends have fought over this line, and this is the second's turn</h2>
+	 *
+	 * This test used to assert the opposite — "a bin about to be emptied is a bin about to
+	 * want filling" — because the fill was once counted only for bins <i>already</i> empty, so
+	 * an all-ready run packed buckets and ash and no produce, and the run ended with the bin
+	 * standing open. Counting the ready bin's fill up front fixed that and caused this:
+	 * <i>"I'm getting prompted to take watermelons out for the big bin before emptying it
+	 * first"</i>. The fill cannot go into a bin still holding compost, and it cannot share the
+	 * pack with the emptying either — that phase wants free slots for the buckets — so the
+	 * withdrawal did not just come early, it blocked the step in front of it, and the player
+	 * banked it again at the guild to make room. Reported from play.
+	 *
+	 * <p>The first dead end stays fixed by different means than the up-front row:
+	 * {@code divertForSupplies} now exists, so the moment the emptied bin's varbit reads empty
+	 * the fill row goes WITHDRAW (see {@code anEmptiedBigBinAsksForItsFill}) and a run out of
+	 * work with a withdrawal outstanding is sent back for another load rather than ended — at
+	 * the guild, the one place a bank-fed bin exists, that is a walk to the chest in-region.
 	 */
 	@Test
-	public void aReadyBinBanksTheFillItWillWantOnceEmptied()
+	public void aReadyBinBanksNoFillUntilItIsEmptied()
 	{
 		bigBinAt(62);
 		when(compostRun.getFills())
@@ -992,13 +1345,8 @@ public class RunLoadoutTest
 		names.put(ItemID.PINEAPPLE, "Pineapple");
 		bankHolds(ItemID.PINEAPPLE, 500);
 
-		LoadoutItem fill = itemNamed(BIG_BINS, "Pineapple");
-		assertNotNull("a bin about to be emptied is a bin about to want filling", fill);
-		assertEquals(LoadoutItem.Need.WITHDRAW, fill.getNeed());
-		// Capped at what a pack holds rather than the big bin's thirty, which is a separate
-		// rule with its own test - what this one pins is that the ask exists at all.
-		assertTrue("a whole bin, because emptying it empties it: " + fill.getQuantity(),
-			fill.getQuantity() > com.dooglemaps.data.CompostBin.NORMAL.getCapacity());
+		assertNull("the pack belongs to the emptying until the compost is out",
+			itemNamed(BIG_BINS, "Pineapple"));
 	}
 
 	/** Unticked, the ash stays out of the list however much of it the bank holds. */
@@ -1278,6 +1626,16 @@ public class RunLoadoutTest
 	 *
 	 * <p>Jewellery is the case: a games necklace is eight different items and the game names each
 	 * one for its charges, so an exact list means eight entries that all mean "my games necklace".
+	 *
+	 * <h2>Matched by every charge, offered as one</h2>
+	 *
+	 * This used to assert a row per charge, which is what the code did and is not what a wildcard
+	 * is for. Matching every charge is the point — {@code isOnTeleportList} still answers yes to
+	 * all of them, so the bank lights them all — but a loadout row is <i>advice</i>, and "withdraw
+	 * your games necklace" is one piece of advice however many charges are in the bank.
+	 *
+	 * <p>Reported from play, on a teleport crystal: told to withdraw the (5) and the (1) while the
+	 * (2) was in the pack, because each charge was a different item and none was the one carried.
 	 */
 	@Test
 	public void aWildcardMatchesEveryChargeOfAnItem()
@@ -1291,9 +1649,39 @@ public class RunLoadoutTest
 		names.put(3861, "Games necklace(1)");
 		when(config.teleportItems()).thenReturn("Games necklace*");
 
-		assertNotNull(find(LoadoutItem.Category.TELEPORT, "Games necklace(8)"));
-		assertNotNull("one entry, every charge", find(LoadoutItem.Category.TELEPORT,
-			"Games necklace(1)"));
+		int rows = 0;
+		for (LoadoutItem item : loadout.forRun(HERBS))
+		{
+			if (item.getCategory() == LoadoutItem.Category.TELEPORT)
+			{
+				rows++;
+			}
+		}
+		assertEquals("one necklace, one row, whatever the bank is holding", 1, rows);
+
+		assertTrue("and every charge is still matched, so the bank lights them all",
+			loadout.isOnTeleportList(3853) && loadout.isOnTeleportList(3861));
+	}
+
+	/** A charge in the pack satisfies the row, whichever charge the bank happens to hold. */
+	@Test
+	public void aCarriedChargeSatisfiesTheWholeTeleport()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+
+		bankHolds(3853, 1);
+		names.put(3853, "Games necklace(8)");
+		names.put(3861, "Games necklace(1)");
+		carrying(3861, 1);
+		when(config.teleportItems()).thenReturn("Games necklace*");
+
+		LoadoutItem row = find(LoadoutItem.Category.TELEPORT);
+		assertNotNull(row);
+		assertEquals("the one in the pack is what the row should name",
+			"Games necklace(1)", row.getName());
+		assertEquals("and it is not something to go and fetch",
+			LoadoutItem.Need.HAVE, row.getNeed());
 	}
 
 	/** A wildcard is still a pattern, not a substring: it must not swallow the whole bank. */
@@ -2409,6 +2797,28 @@ public class RunLoadoutTest
 	 * answer from before its own setup. An always-advancing tick disables the cache without the
 	 * production code needing to know it is under test.
 	 */
+	/** A client stuck on one tick, so {@code RunLoadout.forRun}'s cache actually holds. */
+	private static net.runelite.api.Client frozenClient()
+	{
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		when(client.getTickCount()).thenReturn(7);
+		return client;
+	}
+
+	/** The count the cached row carries, which is the thing {@code stillWantedNow} must not use. */
+	private static int cachedWithdrawCount(RunLoadout from, int itemId,
+		java.util.Set<PatchImplementation> types)
+	{
+		for (LoadoutItem item : from.forRun(types))
+		{
+			if (item.getItemId() == itemId)
+			{
+				return item.getWithdrawCount();
+			}
+		}
+		return 0;
+	}
+
 	private static net.runelite.api.Client tickingClient()
 	{
 		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);

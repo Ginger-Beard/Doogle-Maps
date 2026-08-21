@@ -213,8 +213,21 @@ public final class CompostBinPlan
 	{
 		if (carried.hasAny(ItemID.BOTTOMLESS_COMPOST_BUCKET,
 				ItemID.BOTTOMLESS_COMPOST_BUCKET_FILLED)
-			|| isRottenTomatoes(snapshot.getProduce())
-			|| carried.getInventoryCount(ItemID.BUCKET_EMPTY) > 0)
+			|| isRottenTomatoes(snapshot.getProduce()))
+		{
+			return false;
+		}
+
+		// Enough, not any.
+		//
+		// This declined the moment a single empty bucket was in the pack — "buckets already in
+		// the pack need no trip" — which is right in spirit and wrong in degree: a bucket comes
+		// out one compost at a time, so a bin holding thirty wants thirty. Withdraw one and the
+		// step vanished, taking the highlight with it and leaving the player at a full bin with
+		// nothing being asked of them. Reported from play at the guild's big bin, whose own
+		// diagnostic line said it plainly: "so 30 bucket(s)".
+		int held = carried.getInventoryCount(ItemID.BUCKET_EMPTY);
+		if (held >= remaining)
 		{
 			return false;
 		}
@@ -238,11 +251,26 @@ public final class CompostBinPlan
 			{
 				return true;
 			}
+
+			// No compost to hand over and no room to fetch into: there is no bucket
+			// instruction that can be followed from here. This used to fall through to the
+			// fetch below, whose floor asked for one bucket regardless — "withdraw 1 empty
+			// bucket" into a pack with nowhere to put it. Reported from play as the free-slot
+			// maths being off by one; the maths was right and the floor was wrong. The other
+			// steps at the stop are what make room — the note step for a full harvest, the
+			// fill step for a bin standing open — and the fetch comes back the tick a slot
+			// does.
+			return false;
 		}
 
 		if (leprechaun.has(FarmingTool.EMPTY_BUCKET))
 		{
-			int take = Math.max(1, Math.min(remaining, carried.getFreeSlots()));
+			// Less what is already in hand, so a part-fetched trip asks for the rest rather than
+			// for the lot again. No floor: a free slot is guaranteed above, and min() already
+			// answers 1 in the one-free-slot case — a bin empties a bucket at a time from a
+			// single slot, slow but possible. The old max(1, ...) only ever changed the answer
+			// at zero free slots, where it asked for a bucket that could not fit.
+			int take = Math.min(remaining - held, carried.getFreeSlots());
 			steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_TOOL, patch,
 				ItemID.BUCKET_EMPTY, null,
 				"Withdraw " + take + " empty bucket" + (take == 1 ? "" : "s")
@@ -289,9 +317,12 @@ public final class CompostBinPlan
 			return;
 		}
 
+		// No trailing "withdraw them at any patch later" - the same call the note step already
+		// took, and for the same reason: a player who has used the leprechaun's store once knows
+		// it is not a one-way trip, and reading it at every bin is noise. Removed by request.
 		steps.add(GuideStep.atLeprechaun(GuideAction.DEPOSIT_COMPOST, patch, shownItem, null,
 			"Store your " + held + " bucket" + (held == 1 ? "" : "s")
-				+ " of compost with the tool leprechaun - withdraw them at any patch later."));
+				+ " of compost with the tool leprechaun."));
 	}
 
 	/**

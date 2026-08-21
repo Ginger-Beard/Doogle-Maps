@@ -70,11 +70,52 @@ public final class GuidePlan
 	}
 
 	/**
+	 * An English plural for a crop or patch-type name, for the step wording.
+	 *
+	 * <h2>The -y rule is why this is here rather than inlined</h2>
+	 *
+	 * It lived in {@code GuideTracker}, where every caller passed a patch-type name — "herb",
+	 * "allotment" — and none of them ended in a consonant and a y, so adding an s was always
+	 * right. The shortened note step passes <b>produce</b> names, and the first one anybody would
+	 * read it on is the strawberry: "note your strawberrys" is the kind of wrong that makes a
+	 * plugin look unfinished.
+	 *
+	 * <p>Vowel then y keeps the s — a "storey" is "storeys" — which is the rule rather than an
+	 * exception to it.
+	 */
+	static String plural(String name)
+	{
+		if (name == null || name.isEmpty())
+		{
+			return name;
+		}
+		if (name.endsWith("s") || name.endsWith("x") || name.endsWith("z")
+			|| name.endsWith("ch") || name.endsWith("sh"))
+		{
+			return name + "es";
+		}
+		if (name.endsWith("y") && name.length() > 1
+			&& "aeiou".indexOf(name.charAt(name.length() - 2)) < 0)
+		{
+			return name.substring(0, name.length() - 1) + "ies";
+		}
+		return name + "s";
+	}
+
+	/**
 	 * Everything still to do at one patch, next thing first.
 	 *
 	 * <p>Empty when the patch wants nothing — either it is growing, or it has been dealt with.
 	 *
 	 * @param carried        what is in the pack, for deciding when to note and what to withdraw
+	 * @param protecting     whether a payment step is still owed — false once the farmer has
+	 *                       taken it, which is why it cannot answer the compost question
+	 * @param paidToProtect  whether this crop is or will be protected by payment, paid or not.
+	 *                       Only the compost branches want this: a bucket on a protected seed
+	 *                       with no lives mechanic buys nothing, and "the farmer has already
+	 *                       been paid" is the moment {@code protecting} goes false while the
+	 *                       crop is at its most protected. See
+	 *                       {@code CropYieldModel.compostWastedOnProtected}.
 	 * @param patchesToTreat how many patches at this stop want this patch's compost, so the
 	 *                       withdrawal can name a number rather than leaving you guessing
 	 */
@@ -82,7 +123,8 @@ public final class GuidePlan
 		PlantingGroup group, Seed chosen, SeedInventoryStore seeds,
 		CompostSelectionStore compostChoice,
 		CarriedItems carried, LeprechaunStore leprechaun, BarbarianFarming barbarianFarming,
-		boolean protecting, boolean harvestOnly, int patchesToTreat, boolean binWantsThisCrop,
+		boolean protecting, boolean paidToProtect, boolean harvestOnly, int patchesToTreat,
+		boolean binWantsThisCrop,
 		com.dooglemaps.data.ItemNames itemNames)
 	{
 		List<GuideStep> steps = new ArrayList<>();
@@ -193,7 +235,15 @@ public final class GuidePlan
 		//     regrow for re-chopping, and the chop only clears the patch for a replant the
 		//     player has said they are not making. A checked tree on a harvest-only run is a
 		//     finished one.
-		if (projection.isChoppable() && !harvestOnly)
+		//     One extra condition for a fruit tree, and it is the difference between clearing
+		//     ground and destroying it. A farmed tree does not come back, so chopping one is
+		//     simply how the patch is finished; a fruit tree regrows its fruit forever, so
+		//     felling one with nothing to put in its place costs the player the tree. It is
+		//     therefore only offered where the run actually has a sapling for that patch — the
+		//     same test the picked-clean bush below makes, for the same reason.
+		if (projection.isChoppable() && !harvestOnly
+			&& (patch.getImplementation() != PatchImplementation.FRUIT_TREE
+				|| (chosen != null && seedAtHand(chosen, seeds))))
 		{
 			steps.add(GuideStep.of(GuideAction.CHOP, patch,
 				patch.getImplementation() == PatchImplementation.CRYSTAL_TREE
@@ -272,11 +322,13 @@ public final class GuidePlan
 				&& carried.getInventoryCount(projection.getProduce().getItemID()) > 0
 				&& !binWantsThisCrop)
 			{
+				// Short, and the same words as the leaving errand's version of this. Neither the
+				// reason ("your inventory is full") nor the place ("with the tool leprechaun")
+				// tells the player anything they cannot see: the pack is in front of them and the
+				// step highlights him. Shortened by request, with the leaving errand.
 				steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN, patch,
 					projection.getProduce().getItemID(), null,
-					"Your inventory is full - note the "
-						+ projection.getProduce().getName().toLowerCase()
-						+ " with the tool leprechaun."));
+					"Note your " + plural(projection.getProduce().getName().toLowerCase()) + "."));
 			}
 			// The harvest itself takes a spade for these families — wiki-checked ("a spade
 			// to harvest herbs"), and the game refuses the pick outright without one. The
@@ -372,8 +424,13 @@ public final class GuidePlan
 			// silence here, and an untreated patch, precisely because they did it the other
 			// way round. Limited to the first growth stage so it cannot start nagging about a
 			// crop planted days ago.
-			CompostTier wantedAfterPlanting = usableCompost(compostChoice.get(group), carried,
-				leprechaun);
+			// Asked of the crop actually standing there rather than of `chosen`, which is null
+			// once the ground is occupied. Same seed the payment above is being made for, so the
+			// two answers cannot disagree about what is in the patch.
+			CompostTier wantedAfterPlanting = com.dooglemaps.timer.CropYieldModel
+				.compostWastedOnProtected(Seed.forProduce(projection.getProduce()), paidToProtect)
+				? CompostTier.NONE
+				: usableCompost(compostChoice.get(group), carried, leprechaun);
 			if (projection.getStage() == 0 && wantedAfterPlanting != CompostTier.NONE
 				&& applied != wantedAfterPlanting
 				&& projection.getCropState() == CropState.GROWING)
@@ -424,7 +481,17 @@ public final class GuidePlan
 		// 3. Compost, then the seed. Preferred in that order because it is one fewer thing to
 		//    remember once a crop is in the ground — but not required: see the just-planted
 		//    case above, which catches anyone doing it the wiki's way round.
-		CompostTier wanted = usableCompost(compostChoice.get(group), carried, leprechaun);
+		//
+		//    Unless the farmer is being paid for this one. A payment is immunity outright, so on
+		//    a seed with no lives mechanic the bucket has nothing left to buy — the player was
+		//    being asked to spend an ultracompost and a click preparing ground for a sapling that
+		//    was about to be made disease-proof anyway. Asked of the seed, not the patch type:
+		//    a protected ranarr still wants its compost, because there the bucket is buying herbs
+		//    rather than survival. See CropYieldModel.compostWastedOnProtected.
+		CompostTier wanted = com.dooglemaps.timer.CropYieldModel
+			.compostWastedOnProtected(chosen, paidToProtect)
+			? CompostTier.NONE
+			: usableCompost(compostChoice.get(group), carried, leprechaun);
 		if (wanted != CompostTier.NONE && applied != wanted)
 		{
 			addCompostSteps(steps, patch, wanted, carried, patchesToTreat);

@@ -1007,7 +1007,49 @@ public class RunPlanner
 			types.isEmpty()
 				? EnumSet.noneOf(PatchImplementation.class)
 				: EnumSet.copyOf(types),
-			previewStops(types), countActionable(types), byGroup, ripe, survival);
+			previewStops(types), countActionable(types), byGroup, ripe, survival,
+			fillableBinsIn(types));
+	}
+
+	/**
+	 * How many bins in this selection the run could put produce into.
+	 *
+	 * <p>The run panel's "No fill picked for the compost bins." line is gated on this being
+	 * more than zero: emptying finished compost is a complete bin run on its own — the buckets
+	 * come from the leprechaun and no produce is involved — so someone whose bins are all
+	 * sitting full would otherwise be told to fix something they never wanted.
+	 *
+	 * <h2>The tick is folded, because it names one bin and means both</h2>
+	 *
+	 * The checkbox carries the ordinary bin's type and covers the guild's big one as well, so
+	 * asking {@link #binWork} about the type on the checkbox would miss the big bin entirely.
+	 * {@code CompostBin.coveredByTheBinTick} is the same fold the panel used to do for itself,
+	 * and it lives here now because the call it guards does.
+	 *
+	 * <p>Package-private rather than private so {@code RunPlannerTest} can put the fold under
+	 * test directly — it was covered from the panel's side while the call was there, and the
+	 * coverage should not be lost by moving the call.
+	 *
+	 * <p>No fodder test is needed even though a fill can now come from the harvest:
+	 * {@link #binWork} counts no fillable items for a bin the guild's own allotments will
+	 * supply, or for any of the seven beside the allotments, so this goes quiet by itself in
+	 * exactly the cases where a "pick a fill" warning would be a false alarm.
+	 */
+	int fillableBinsIn(Set<PatchImplementation> types)
+	{
+		Set<PatchImplementation> bins = EnumSet.noneOf(PatchImplementation.class);
+		for (PatchImplementation type : types)
+		{
+			if (com.dooglemaps.data.CompostBin.forType(type) != null)
+			{
+				bins.add(type);
+			}
+		}
+		if (bins.isEmpty())
+		{
+			return 0;
+		}
+		return binWork(com.dooglemaps.data.CompostBin.coveredByTheBinTick(bins)).fillableBins;
 	}
 
 	public void publishSnapshot(RunSnapshot snapshot)
@@ -1355,25 +1397,73 @@ public class RunPlanner
 		PatchProjection projection = growthTimer.project(patch, snapshot);
 		if (projection == null)
 		{
+			binDecodes.remove(patch.getKey());
 			addFill(counts, bin.getCapacity(), banksTheFill);
 			return;
 		}
 
 		boolean ready = projection.getCropState() == CropState.HARVESTABLE
 			|| (projection.getCropState() == CropState.GROWING && projection.isReady());
+		if (!ready)
+		{
+			// Forgotten the moment the bin stops being ready, so coming back to ready prints
+			// again. Without this a bin emptied and refilled to the same stage would match the
+			// entry left over from before it was emptied and say nothing — and "no recent line"
+			// has to mean "unchanged", never "no longer counted". See logBinDecode.
+			binDecodes.remove(patch.getKey());
+		}
 		if (ready)
 		{
 			counts.readyBins++;
-			counts.readyBuckets += projection.getCropState() == CropState.HARVESTABLE
+			int buckets = projection.getCropState() == CropState.HARVESTABLE
 				? snapshot.getStage() + 1
 				: bin.getCapacity();
+			counts.readyBuckets += buckets;
+
+			// One line per ready bin, because the number it produces has no other way of being
+			// seen and it decides how many buckets the run asks for.
+			//
+			// Reported from play: the empty-bucket highlight vanished after a single bucket, which
+			// can only happen if this came out as 1. The arithmetic is right — a bin's stage is
+			// its compost count less one, so a full normal bin is stage 14 and wants fifteen — so
+			// the question is whether the SNAPSHOT is telling the truth about the stage, and that
+			// is not answerable from in front of the client. The raw varbit is printed beside the
+			// decode for exactly that: a stale snapshot shows up here as a stage that does not
+			// match the bin the player is standing at.
+			//
+			// Only when the answer changes. The loadout is rebuilt once a tick for the whole run —
+			// {@code DoogleMapsPlugin.onGameTick} asks anythingLeftToWithdraw every tick, and the
+			// per-tick cache in RunLoadout means that build is the one everybody shares — so this
+			// wrote the same sentence a hundred times a minute and buried everything around it.
+			// A repeat carries no information the first line did not: what this was added to catch
+			// is the decode being WRONG, and a decode that changes is exactly what still prints.
+			logBinDecode(patch, bin, snapshot, projection, buckets);
 			if (projection.getProduce() == Produce.SUPERCOMPOST
 				|| projection.getProduce() == Produce.BIG_SUPERCOMPOST)
 			{
 				counts.ashNeeded += bin.ashNeeded();
 			}
-			// And then it is an empty bin, at the same stop, on the same visit.
-			addFill(counts, bin.getCapacity(), banksTheFill);
+			// And then it is an empty bin at the same stop — but NOT on this bank visit.
+			//
+			// The fill used to be counted here in full, and the supply leg withdrew it before
+			// the run set off: a pack of watermelons for a bin that cannot take a single one
+			// until its compost is out. The two phases have opposite pack profiles — emptying
+			// wants free slots (the buckets come from the leprechaun in batches the size of
+			// whatever room is going; see CompostBinPlan), filling wants a pack of un-noted
+			// items — so the fill did not just arrive early, it physically blocked the step
+			// before it. Reported from play at the guild: told to carry thirty watermelons to
+			// a full big bin, then having to bank them again to make room for the emptying.
+			//
+			// So a ready bank-fed bin counts as fillable — the "pick a fill" warning and the
+			// worth-routing-to answer both still see it — and contributes no fill items until
+			// its varbit actually reads EMPTY. From there the ordinary machinery takes over:
+			// the row goes WITHDRAW, and divertForSupplies makes the collection the run's next
+			// leg — at the guild, the one place a bank-fed bin exists, that is a walk to the
+			// chest in the same region rather than a teleport.
+			if (banksTheFill)
+			{
+				counts.fillableBins++;
+			}
 			return;
 		}
 		if (projection.getCropState() == CropState.EMPTY)
@@ -1385,6 +1475,40 @@ public class RunPlanner
 			addFill(counts, Math.max(0, bin.getCapacity() - (snapshot.getStage() + 1)),
 				banksTheFill);
 		}
+	}
+
+	/**
+	 * The last decode printed for each bin, so an unchanged one is not printed again.
+	 *
+	 * <p>Only ever touched from {@link #count}, which is only ever reached through the
+	 * synchronised {@link #binWork} — the same monitor everything else in here is under.
+	 *
+	 * <p>One short string per ready bin, dropped again the moment the bin stops being ready — see
+	 * {@link #count}. That is what keeps "nothing printed lately" meaning "the answer has not
+	 * changed" rather than "this bin is no longer counted at all", which is the difference that
+	 * makes the line worth reading in a log a week later.
+	 */
+	private final Map<String, String> binDecodes = new java.util.HashMap<>();
+
+	/** The debug line from {@link #count}, printed when this bin's answer is not the last one. */
+	private void logBinDecode(FarmPatch patch, com.dooglemaps.data.CompostBin bin,
+		com.dooglemaps.state.PatchSnapshot snapshot, PatchProjection projection, int buckets)
+	{
+		if (!log.isDebugEnabled())
+		{
+			return;
+		}
+
+		String decode = snapshot.getVarbitValue() + "/" + projection.getCropState() + "/"
+			+ snapshot.getStage() + "/" + buckets + "/" + bin.ashNeeded();
+		if (decode.equals(binDecodes.put(patch.getKey(), decode)))
+		{
+			return;
+		}
+
+		log.debug("Ready bin {} ({}): varbit {} -> {} stage {}, so {} bucket(s), ash {}",
+			patch.getKey(), bin, snapshot.getVarbitValue(), projection.getCropState(),
+			snapshot.getStage(), buckets, bin.ashNeeded());
 	}
 
 	private static void addFill(Counts counts, int items, boolean banksTheFill)
@@ -1510,7 +1634,22 @@ public class RunPlanner
 	 */
 	private boolean wantsReplantClear(FarmPatch patch)
 	{
-		if (!com.dooglemaps.data.SpadeClearedCrops.isSpadeCleared(patch.getImplementation()))
+		// Two ways ground gets cleared for a replant, and a fruit tree is the second.
+		//
+		// A bush or a cactus comes straight out with a spade. A fruit tree is chopped and then
+		// its stump is dug — two clicks rather than one — but the routing question is identical:
+		// a picked-clean tree on a run that means to replant it is not finished with, and
+		// treating it as finished is what made the run walk away from a stripped palm without
+		// ever offering the chop. Reported from play, on a fruit tree run.
+		//
+		// Deliberately not added to SpadeClearedCrops. That set answers "does a spade take this
+		// straight out", which {@code GuideTracker.contractSeedFetch} relies on to decide
+		// whether ground can be cleared this trip, and a fruit tree cannot be — it wants an axe
+		// first. Two questions, two answers, kept apart.
+		boolean chopThenDig =
+			patch.getImplementation() == com.dooglemaps.data.PatchImplementation.FRUIT_TREE;
+		if (!chopThenDig
+			&& !com.dooglemaps.data.SpadeClearedCrops.isSpadeCleared(patch.getImplementation()))
 		{
 			return false;
 		}
@@ -3010,6 +3149,94 @@ public class RunPlanner
 	}
 
 	/** Collects a supply trip deferred because the run started standing on work. */
+	/**
+	 * Sends the run to a supply point it is standing next to, once the stop here is done.
+	 *
+	 * <h2>The reported dead end, twice in one session</h2>
+	 *
+	 * <i>"never got routed back to the bank for watermelons to the big bin, I did it anyways and
+	 * then it started to realize it"</i> — and twenty minutes later — <i>"just filled it and now
+	 * its sending me to ardougne instead of to get the rest of my melons. its like its
+	 * prioritizing the next patch over the bank step."</i>
+	 *
+	 * <p>Both are the same hole. Supplies that become outstanding <b>mid-run</b> — the emptied
+	 * big bin's fill is the case that exists today — had exactly one collector:
+	 * {@link #divertForSupplies()}, which by design fires only when the run would otherwise
+	 * end. So a run with stops left walked away from the guild's own chest, fill in the bank
+	 * fourteen tiles from the bin, and meant to come back for it at the end of the run by
+	 * teleport. The session log shows it plainly: {@code Stop complete at Farming Guild} at
+	 * 21:36 with the melons sitting in the chest, and {@code FILL_BIN} appearing only at 21:55,
+	 * after the player had collected them unprompted.
+	 *
+	 * <h2>The gates, each of which is load-bearing</h2>
+	 *
+	 * <b>The stop here must be complete.</b> This is {@code divertForSupplies}' anti-yank rule
+	 * one scope down: the fill row goes outstanding the moment the emptied bin frees the slots,
+	 * which is mid-stop, stood at the bin, with harvests still to do — re-entering the bank leg
+	 * there would blank the step list under the player's feet. Complete-here is the moment
+	 * nothing is interrupted, and it is also when the run would otherwise commit to the next
+	 * stop.
+	 *
+	 * <p><b>The supply point must be in this region.</b> The same line {@code start()} draws
+	 * with {@code canBankHere}: "standing on work beats going shopping" is about travel, and a
+	 * chest in the region you already occupy costs none. Anywhere else, the end-of-run divert
+	 * keeps the job — a mid-run teleport to a bank and back is a cost the owner has not asked
+	 * for.
+	 *
+	 * <p><b>A waived leg still wins.</b> Skip during a supply leg means no for the rest of the
+	 * run, here as everywhere.
+	 *
+	 * <p>Per tick rather than on the completion edge, deliberately: at the moment the stop
+	 * completes the pack is often still full of the harvest, the fill row asks for nothing
+	 * (see {@code RunLoadout.fillBudget}), and only after the noting and depositing does it go
+	 * WITHDRAW — by which time the edge has passed. The gates above make the steady-state
+	 * cheap: the flag test is a pushed boolean, and the walk runs only while standing at a
+	 * finished stop.
+	 */
+	public void reviewNearbySupplies()
+	{
+		synchronized (this)
+		{
+			if (!active || atBankLeg || bankLegWaived)
+			{
+				return;
+			}
+		}
+
+		// Store walks, outside the lock like every other one — see the ordering note at the
+		// top of the file.
+		if (!suppliesOutstanding() || !supplyPointIsHere())
+		{
+			return;
+		}
+
+		// Read before the monitor, like supplyPointIsHere reads it — the location store has
+		// its own lock and the planner's must not be held while taking it.
+		int region = playerLocation.getRegionId();
+
+		boolean collect;
+		synchronized (this)
+		{
+			RunStop here = stops.get(region);
+			collect = here != null && isComplete(here)
+				&& !atBankLeg && !bankLegWaived;
+			if (collect)
+			{
+				supplyOwed = true;
+				atBankLeg = true;
+				// The next leg is the supply point; the one after it is chosen from there.
+				committedRegion = -1;
+			}
+		}
+
+		if (collect)
+		{
+			log.info("Supplies outstanding and a supply point is in this region - "
+				+ "collecting before moving on");
+			retarget();
+		}
+	}
+
 	private void pickUpDeferredSupplies()
 	{
 		synchronized (this)

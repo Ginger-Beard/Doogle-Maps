@@ -947,8 +947,92 @@ public class SeedInventoryStore
 			box.values().removeIf(count -> count <= 0);
 			statedByMessage.put(itemId, client.getTickCount());
 		}
-		if (store(SeedSource.SEED_BOX, box))
+		boolean changed;
+		synchronized (this)
 		{
+			deferringBoxWrites = true;
+		}
+		try
+		{
+			changed = store(SeedSource.SEED_BOX, box);
+		}
+		finally
+		{
+			synchronized (this)
+			{
+				deferringBoxWrites = false;
+			}
+		}
+
+		if (changed)
+		{
+			synchronized (this)
+			{
+				boxWritePending = true;
+			}
+		}
+	}
+
+	/**
+	 * Whether {@link #store} should hold its write, because a burst of box messages is arriving.
+	 *
+	 * <p>Only ever true inside {@link #moveInSeedBox}, and cleared in a {@code finally} so a throw
+	 * cannot leave the store silently unable to persist anything.
+	 */
+	private boolean deferringBoxWrites;
+
+	/** A box move has been absorbed and not yet written. See {@link #flushSeedBoxWrites}. */
+	private boolean boxWritePending;
+
+	/**
+	 * Writes and announces a tick's worth of seed box movement, once.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"theres a bit of a game stutter every time I fill/empty my seedbox"</i>.
+	 *
+	 * <p>The box states its movement in the chat box — <i>"Stored 6 x Ranarr seed in your seed
+	 * box."</i> — and it states it <b>once per seed kind</b>. {@code SeedCapture.onChatMessage}
+	 * turns each into a {@link #moveInSeedBox}, and each of those used to write config and fire
+	 * every change listener. A box holding six kinds therefore did six config writes and six full
+	 * sidebar rebuilds inside one tick.
+	 *
+	 * <p>Both halves of that are known to be expensive here and both have been the cause of a
+	 * reported stutter before. A config write posts {@code ConfigChanged} <b>synchronously</b> into
+	 * every subscriber in the client, so six writes are six passes through every other installed
+	 * plugin — the same shape as the per-patch write burst on region entry, which
+	 * {@code PatchStateStore.asOneWrite} exists to stop. And {@link #store}'s own note already
+	 * records the other half: <i>"writing config on each one is what made banking feel like it
+	 * stuttered."</i>
+	 *
+	 * <h2>Why coalesced to the tick rather than batched round a block</h2>
+	 *
+	 * {@code asOneWrite} takes a {@code Runnable} because the patch scan is one loop with a
+	 * beginning and an end. A chat burst has neither: the messages are separate events, and
+	 * nothing in the plugin knows how many are coming. So the write is held and flushed from the
+	 * next tick instead, which bounds it at one write and one rebuild per tick however many kinds
+	 * moved.
+	 *
+	 * <p>Called first in {@code SeedCapture.onGameTick}, before it relearns the pack, so the
+	 * previous tick's messages are settled before anything reads this tick's. The cost is that the
+	 * panel can be up to one tick behind a box click, which is the same 600ms every other derived
+	 * answer in the plugin already is.
+	 */
+	public void flushSeedBoxWrites()
+	{
+		boolean flush;
+		synchronized (this)
+		{
+			flush = boxWritePending;
+			boxWritePending = false;
+		}
+
+		if (flush)
+		{
+			// Outside the monitor, both of them: save posts ConfigChanged and fireChanged calls
+			// out to listeners that read back through the public getters. Same rule
+			// PatchStateStore.closeBatch follows, for the same reason.
+			save();
 			fireChanged();
 		}
 	}
@@ -1048,7 +1132,8 @@ public class SeedInventoryStore
 			// like it stuttered. Note that the expensive half - fireChanged, which rebuilds the
 			// visible tab - is gated separately by the caller on this method's return value, so
 			// it is unaffected either way.
-			if (source.isPersisted() && (changed || now - lastSaved >= SAVE_STAMP_SECONDS))
+			if (source.isPersisted() && !deferringBoxWrites
+				&& (changed || now - lastSaved >= SAVE_STAMP_SECONDS))
 			{
 				save();
 			}

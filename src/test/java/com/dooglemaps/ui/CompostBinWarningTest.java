@@ -70,7 +70,8 @@ public class CompostBinWarningTest
 			Mockito.mock(com.dooglemaps.state.CompostSelectionStore.class),
 			config,
 			Mockito.mock(com.dooglemaps.guide.GuideTracker.class),
-			compostRun);
+			compostRun,
+			Mockito.mock(com.dooglemaps.state.RunPresetStore.class));
 	}
 
 	/** The reported bug: a chosen fill, and the line still cried "no seed". */
@@ -78,7 +79,7 @@ public class CompostBinWarningTest
 	public void aChosenFillSilencesTheWarning() throws Exception
 	{
 		when(compostRun.hasFill()).thenReturn(true);
-		binWork(1);
+		snapshot(1);
 
 		assertFalse("a bin has no seed to pick, so the line must not ask for one",
 			warningShown());
@@ -89,7 +90,7 @@ public class CompostBinWarningTest
 	public void anUnpickedFillIsWarnedAboutAsAFill() throws Exception
 	{
 		when(compostRun.hasFill()).thenReturn(false);
-		binWork(1);
+		snapshot(1);
 
 		assertTrue(warningShown());
 		assertTrue("worded for a bin, not a seed: " + warningText(),
@@ -108,28 +109,52 @@ public class CompostBinWarningTest
 	public void binsWithNothingToFillAreNotNaggedAbout() throws Exception
 	{
 		when(compostRun.hasFill()).thenReturn(false);
-		binWork(0);
+		snapshot(0);
 
 		assertFalse(warningShown());
 	}
 
-	/** Both sizes answer to the one tick, so the guild's big bin is counted too. */
+	/**
+	 * The count comes off the snapshot, and the planner's monitor is never taken from here.
+	 *
+	 * <h2>What this pins</h2>
+	 *
+	 * This line used to call {@code RunPlanner.binWork} directly — synchronised, walking every
+	 * bin of every ticked type — from the Swing thread, on every refresh, while the client
+	 * thread walked the same methods every tick. It was the last query in this panel still
+	 * doing that; the other five moved to {@code RunSnapshot} when it was introduced and this
+	 * one arrived afterwards, so there was no field for it. The {@code never()} is the point of
+	 * the test: a future edit that reaches for the planner again fails here rather than in a
+	 * freeze report.
+	 *
+	 * <p>Both bin sizes answering to the one tick is still tested, in
+	 * {@code RunPlannerTest.fillableBinsInFoldsTheTickToTheGuildsBigBin} — the fold moved into
+	 * the planner with the call it guards.
+	 */
 	@Test
-	public void theBigBinIsCountedUnderTheSameTick() throws Exception
+	public void theCountComesFromTheSnapshotAndNotThePlanner() throws Exception
 	{
 		when(compostRun.hasFill()).thenReturn(false);
-		binWork(0);
-		when(planner.binWork(Mockito.argThat(types -> types != null
-			&& types.contains(PatchImplementation.BIG_COMPOST))))
-			.thenReturn(construct(RunPlanner.BinWork.class, 0, 0, 0, 1, 30));
+		snapshot(1);
 
-		assertTrue("a fillable big bin alone still earns the line", warningShown());
+		assertTrue("a fillable bin still earns the line", warningShown());
+		Mockito.verify(planner, Mockito.never()).binWork(Mockito.any());
 	}
 
-	private void binWork(int fillableBins)
+	/**
+	 * Publishes a snapshot keyed on the selection under test, which is what makes the panel
+	 * read it rather than fall back to asking the planner live.
+	 */
+	private void snapshot(int fillableBins)
 	{
-		when(planner.binWork(Mockito.any())).thenReturn(
-			construct(RunPlanner.BinWork.class, 0, 0, 0, fillableBins, fillableBins * 15));
+		when(planner.getSnapshot()).thenReturn(new com.dooglemaps.route.RunSnapshot(
+			BINS,
+			Collections.emptyList(),
+			Collections.emptyMap(),
+			Collections.emptyMap(),
+			Collections.emptyMap(),
+			Collections.emptyMap(),
+			fillableBins));
 	}
 
 	private boolean warningShown() throws Exception

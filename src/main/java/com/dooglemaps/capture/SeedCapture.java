@@ -95,6 +95,12 @@ public class SeedCapture
 	@Subscribe
 	public void onGameTick(net.runelite.api.events.GameTick event)
 	{
+		// First, and before the relearn below reads anything. A fill states itself once per seed
+		// kind in the chat box, so six kinds arrive as six messages inside one tick; holding the
+		// write until here is what stops that being six config writes and six sidebar rebuilds.
+		// See SeedInventoryStore.flushSeedBoxWrites, which explains why this is coalesced to the
+		// tick rather than batched round a block the way the patch scan is.
+		seeds.flushSeedBoxWrites();
 		seeds.relearnInventoryFromClient();
 	}
 

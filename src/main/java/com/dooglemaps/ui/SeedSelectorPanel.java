@@ -407,11 +407,12 @@ class SeedSelectorPanel extends JPanel
 		seedBody.setBackground(getBackground());
 		seedBody.add(message, BorderLayout.NORTH);
 		seedBody.add(rows, BorderLayout.CENTER);
-		seedBody.setVisible(seedsVisible);
-
-		add(heading, BorderLayout.NORTH);
-		add(seedBody, BorderLayout.CENTER);
-
+		// Inside the collapse, not below it — the whole setup block, not just the seed grid.
+		// The compost picker, its note and the per-seed protection rows are all answers to
+		// "what is going in this patch and how is it being treated", which is the question the
+		// heading names. Left outside, a collapsed "Select seed" still showed a dropdown and a
+		// column of seed names, which is the one thing collapsing it was meant to put away.
+		// Asked for from play.
 		JPanel below = new JPanel(new BorderLayout(0, 2));
 		below.setBackground(getBackground());
 		if (usesCompost())
@@ -420,7 +421,12 @@ class SeedSelectorPanel extends JPanel
 		}
 		below.add(compostNote, BorderLayout.CENTER);
 		below.add(protectPanel, BorderLayout.SOUTH);
-		add(below, BorderLayout.SOUTH);
+		seedBody.add(below, BorderLayout.SOUTH);
+
+		seedBody.setVisible(seedsVisible);
+
+		add(heading, BorderLayout.NORTH);
+		add(seedBody, BorderLayout.CENTER);
 	}
 
 	void refresh()

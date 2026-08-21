@@ -359,6 +359,33 @@ public final class HouseTeleports
 		return false;
 	}
 
+	/**
+	 * Whether this piece of furniture is a spirit tree, and so subject to the grown-tree check.
+	 *
+	 * <h2>Why the check has to be asked about the furniture and not just the hop</h2>
+	 *
+	 * {@code GuideTracker.spiritTreeUsableFor} answers "has a tree actually been grown at the
+	 * place this hop names", and {@link #spiritTreePatchFor} finds that place by looking for a
+	 * known spirit-tree name <b>anywhere in the hop string</b>. A hop names its vehicle as well as
+	 * its destination, so <i>"Teleport Menu Fancy Jewellery Box - J: Farming Guild"</i> contains
+	 * "farming guild" and is read as a spirit tree question — and answered no, because the guild's
+	 * spirit tree patch is empty.
+	 *
+	 * <p>That vetoed the <b>jewellery box</b>, which has nothing to do with spirit trees. Reported
+	 * from play: teleported to the house for the Farming Guild and nothing was outlined, with the
+	 * box plainly in the room. The log had both halves — {@code Ornate Jewellery Box#29156} in the
+	 * furniture and {@code Fancy Jewellery Box - J: Farming Guild} in the hops — and still no
+	 * match, which is what ruled out the name matching and left the guard.
+	 *
+	 * <p>It bites at exactly the destinations that are also spirit-tree stops: the Farming Guild,
+	 * Hosidius, Etceteria, Brimhaven, Port Sarim. Anywhere else the guard passes and nobody notices.
+	 */
+	public static boolean isSpiritTree(@javax.annotation.Nullable String furnitureName)
+	{
+		return furnitureName != null
+			&& furnitureName.toLowerCase().contains("spirit tree");
+	}
+
 	public static boolean furnitureServesHop(String furnitureName, String hop)
 	{
 		if (furnitureName == null || hop == null)

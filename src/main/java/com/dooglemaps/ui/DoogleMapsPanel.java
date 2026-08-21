@@ -154,7 +154,8 @@ public class DoogleMapsPanel extends PluginPanel
 		com.dooglemaps.guide.CarriedItems carriedItems, com.dooglemaps.data.ItemNames itemNames,
 		com.dooglemaps.state.ContractState contracts,
 		com.dooglemaps.guide.GuideTracker guideTracker,
-		com.dooglemaps.state.CompostRunStore compostRun)
+		com.dooglemaps.state.CompostRunStore compostRun,
+		com.dooglemaps.state.RunPresetStore runPresets)
 	{
 		// Wrapped, so a long list of patches scrolls rather than being clipped.
 		super(true);
@@ -180,7 +181,7 @@ public class DoogleMapsPanel extends PluginPanel
 		this.contracts = contracts;
 		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems,
 			runPlanner, selection, seeds, runTypes, bonuses, compost, config, guideTracker,
-			compostRun);
+			compostRun, runPresets);
 		this.statsPanel = new HarvestStatsPanel(harvestStats, harvestHistory, diseaseStats, seeds,
 			availability, compost, bonuses, itemPrices);
 

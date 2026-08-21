@@ -2717,6 +2717,195 @@ public class RunPlannerTest
 	}
 
 	/**
+	 * A ready bin's fill is the NEXT bank visit's problem, never this one's.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"I'm getting prompted to take watermelons out for the big bin before emptying it
+	 * first"</i> — and the two cannot share a pack: emptying wants free slots for the buckets,
+	 * the fill is thirty un-noted items, so the player had to bank the fill again at the guild
+	 * to make room for the emptying the guide should have led with.
+	 *
+	 * <p>The bin still counts as fillable — it is about to be — so the "pick a fill" warning
+	 * and the worth-visiting answer keep seeing it. Only the items wait for the varbit to
+	 * actually read empty.
+	 */
+	@org.junit.Test
+	public void aReadyBigBinsFillWaitsForTheEmptying()
+	{
+		com.dooglemaps.data.FarmPatch bin = com.dooglemaps.data.FarmingWorldData
+			.getPatches(PatchImplementation.BIG_COMPOST).get(0);
+		availability.setAvailable(bin, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
+		when(compostRun.isFodderEnabled()).thenReturn(false);
+		int ready = readyBigBinValue(bin);
+		stateStore.recordVarbit(bin, ready, bin.getImplementation().forVarbitValue(ready));
+
+		RunPlanner.BinWork work =
+			planner.binWork(EnumSet.of(PatchImplementation.BIG_COMPOST));
+		assertEquals("the emptying is this visit's work", 1, work.readyBins);
+		// One per compost still in it — the exact count is the stage decode's business.
+		assertTrue("buckets are still asked for", work.readyBuckets > 0);
+		assertEquals("still fillable, so the pick-a-fill warning stands", 1, work.fillableBins);
+		assertEquals("but no fill items until the compost is out", 0, work.fillItems);
+	}
+
+	/** ...and the moment the varbit reads empty, the fill is asked for in full. */
+	@org.junit.Test
+	public void anEmptiedBigBinAsksForItsFill()
+	{
+		com.dooglemaps.data.FarmPatch bin = com.dooglemaps.data.FarmingWorldData
+			.getPatches(PatchImplementation.BIG_COMPOST).get(0);
+		availability.setAvailable(bin, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
+		when(compostRun.isFodderEnabled()).thenReturn(false);
+		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
+
+		RunPlanner.BinWork work =
+			planner.binWork(EnumSet.of(PatchImplementation.BIG_COMPOST));
+		assertEquals(0, work.readyBins);
+		assertEquals(1, work.fillableBins);
+		assertEquals(com.dooglemaps.data.CompostBin.BIG.getCapacity(), work.fillItems);
+	}
+
+	/**
+	 * A finished stop with a supply point in its own region collects before moving on.
+	 *
+	 * <h2>The reported dead end, twice in one session</h2>
+	 *
+	 * <i>"never got routed back to the bank for watermelons to the big bin, I did it anyways and
+	 * then it started to realize it"</i>, then <i>"just filled it and now its sending me to
+	 * ardougne instead of to get the rest of my melons."</i> Mid-run supplies had exactly one
+	 * collector — {@code divertForSupplies}, which fires only when the run would otherwise end —
+	 * so the run walked away from the guild's own chest with the bin's fill inside it.
+	 *
+	 * <p>The whole lifecycle is walked because each leg of it is a gate with a reason: the
+	 * starting supply leg ends first (this is about supplies going outstanding <b>mid-run</b>),
+	 * and the mid-work check is the anti-yank rule — the fill row opens the moment the emptied
+	 * bin frees the slots, stood at the bin with work left, and nothing may be interrupted.
+	 */
+	@org.junit.Test
+	public void aFinishedStopWithASupplyPointHereCollectsBeforeMovingOn()
+	{
+		com.dooglemaps.data.FarmPatch bin = readyGuildBinRun();
+
+		// The starting supply leg runs its course: nothing to collect, so it ends at once.
+		org.junit.Assert.assertTrue("a bin run starting at the guild opens at its chest",
+			planner.isAtBankLeg());
+		planner.leaveBank();
+		org.junit.Assert.assertFalse("nothing outstanding, so the leg ends",
+			planner.isAtBankLeg());
+
+		// The fill goes outstanding mid-run — the guide pushes this flag every tick — but the
+		// stop still has work, so nothing may be interrupted.
+		planner.setWithdrawOutstanding(true);
+		planner.reviewNearbySupplies();
+		org.junit.Assert.assertFalse("mid-work is never yanked to a bank",
+			planner.isAtBankLeg());
+
+		// The stop finishes — the bin exempted is how the guide reports it unactionable.
+		planner.setNothingToDo(java.util.Collections.singleton(bin.getKey()));
+		planner.reviewNearbySupplies();
+		org.junit.Assert.assertTrue(
+			"done here, wanting supplies, chest in this region: collect them now",
+			planner.isAtBankLeg());
+	}
+
+	/** Without a withdrawal outstanding, a finished stop routes onward exactly as before. */
+	@org.junit.Test
+	public void aFinishedStopWithNothingOutstandingIsNotSentToTheBank()
+	{
+		com.dooglemaps.data.FarmPatch bin = readyGuildBinRun();
+		planner.leaveBank();
+
+		planner.setNothingToDo(java.util.Collections.singleton(bin.getKey()));
+		planner.reviewNearbySupplies();
+
+		org.junit.Assert.assertFalse(planner.isAtBankLeg());
+	}
+
+	/** A run over the guild's ready big bin, with the player standing in the guild. */
+	private com.dooglemaps.data.FarmPatch readyGuildBinRun()
+	{
+		com.dooglemaps.data.FarmPatch bin = com.dooglemaps.data.FarmingWorldData
+			.getPatches(PatchImplementation.BIG_COMPOST).get(0);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
+		availability.setAvailable(bin, true);
+		// Ready, which is what makes the bin actionable and the stop exist — and the state the
+		// report started from: the emptying is what puts the fill in play.
+		int ready = readyBigBinValue(bin);
+		stateStore.recordVarbit(bin, ready, bin.getImplementation().forVarbitValue(ready));
+		standingIn(4922);
+
+		planner.start(EnumSet.of(PatchImplementation.BIG_COMPOST));
+		org.junit.Assert.assertEquals("the guild stop must exist, or these prove nothing",
+			1, planner.getStops().size());
+		return bin;
+	}
+
+	/** A big-bin varbit meaning "finished compost, ready to scoop", whatever the tier. */
+	private static int readyBigBinValue(com.dooglemaps.data.FarmPatch bin)
+	{
+		for (int value = 0; value < 256; value++)
+		{
+			ProduceState decoded = bin.getImplementation().forVarbitValue(value);
+			if (decoded != null
+				&& decoded.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE)
+			{
+				return value;
+			}
+		}
+		throw new AssertionError("no finished varbit decodes for the big bin");
+	}
+
+	/**
+	 * The bin-type fold lives here now, so it is tested here.
+	 *
+	 * <h2>Why the fold has to happen inside</h2>
+	 *
+	 * The run list offers one "Compost bin" line carrying the ordinary bin's type, and the guild
+	 * has no ordinary bin — only the big one. Asking {@code binWork} about the type on the
+	 * checkbox therefore matches nothing in the guild, which is the same trap
+	 * {@code CompostBin.coveredByTheBinTick} exists for elsewhere.
+	 *
+	 * <p>This assertion used to live in {@code CompostBinWarningTest}, where the panel did the
+	 * fold for itself before calling the planner from the Swing thread. The call moved onto the
+	 * snapshot to get off that thread; the fold moved with it, and so does its test.
+	 */
+	@org.junit.Test
+	public void fillableBinsInFoldsTheTickToTheGuildsBigBin()
+	{
+		com.dooglemaps.data.FarmPatch bin = com.dooglemaps.data.FarmingWorldData
+			.getPatches(PatchImplementation.BIG_COMPOST).get(0);
+		availability.setAvailable(bin, true);
+		when(runOptions.isSelected(com.dooglemaps.data.RunOption.full(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.COMPOST))))
+			.thenReturn(true);
+		// Empty, so there is room to put produce in.
+		stateStore.recordVarbit(bin, 0, bin.getImplementation().forVarbitValue(0));
+
+		java.util.Set<PatchImplementation> ticked = EnumSet.of(PatchImplementation.COMPOST);
+		org.junit.Assert.assertEquals("the tick alone names no bin the guild has",
+			0, planner.binWork(ticked).fillableBins);
+		org.junit.Assert.assertEquals("...and folded, it finds the empty big bin standing there",
+			1, planner.fillableBinsIn(ticked));
+	}
+
+	/** A selection with no bin in it answers zero without asking about bins at all. */
+	@org.junit.Test
+	public void fillableBinsInIsZeroForASelectionWithNoBin()
+	{
+		org.junit.Assert.assertEquals(0,
+			planner.fillableBinsIn(EnumSet.of(PatchImplementation.HERB)));
+	}
+
+	/**
 	 * A bins-only run with just the Farming Guild enabled finds the guild's bin.
 	 *
 	 * <h2>The guild has no ordinary compost bin — only the big one</h2>

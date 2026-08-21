@@ -372,6 +372,24 @@ public interface DoogleMapsConfig extends Config
 	}
 
 	@ConfigItem(
+		keyName = "withdrawAmountSwap",
+		name = "Left-click the amount the run wants",
+		description = "At a bank or the tool leprechaun, put the withdraw amount closest to what "
+			+ "the run still needs under the left click - ten, then five, then one, or All when "
+			+ "the run wants at least a whole pack of something unstackable, since All then "
+			+ "takes exactly what fits. Once the count is collected the left click becomes "
+			+ "Examine, so a stray click takes nothing extra. Never takes more than the list "
+			+ "asks for, never touches Withdraw-X, and never applies to seeds. Only reorders "
+			+ "the menu, and only while a run is on.",
+		position = 46,
+		section = guideSection
+	)
+	default boolean withdrawAmountSwap()
+	{
+		return true;
+	}
+
+	@ConfigItem(
 		keyName = "payLeftClick",
 		name = "Left-click the right Pay option",
 		description = "While a step is asking you to pay a farmer who charges per patch - the "

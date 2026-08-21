@@ -458,6 +458,73 @@ public class LeprechaunErrandOrderTest
 		method.invoke(null, steps);
 	}
 
+	/**
+	 * One trip for the compost, however many patches it treats.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"in the infobox plan I have withdraw compost listed multiple times"</i>. Falador emitted
+	 * it once per patch — three copies at one stop, each already worded as enough for all three,
+	 * because {@code addCompostSteps} takes {@code patchesToTreat} and the treating is per patch
+	 * while the withdrawal is not.
+	 */
+	@Test
+	public void oneWithdrawalCoversEveryPatchAtTheStop() throws Exception
+	{
+		List<GuideStep> steps = new ArrayList<>();
+		for (int i = 0; i < 3; i++)
+		{
+			steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+				com.dooglemaps.data.CompostTier.ULTRACOMPOST.getItemID(), null, "Withdraw 3 ultracompost."));
+			steps.add(GuideStep.withItem(GuideAction.APPLY_COMPOST, somePatch(),
+				com.dooglemaps.data.CompostTier.ULTRACOMPOST.getItemID(), "Treat the patch with ultracompost."));
+		}
+
+		collapseWithdrawals(steps);
+
+		assertEquals("one trip to his compost, not three",
+			1, steps.stream()
+				.filter(step -> step.getAction() == GuideAction.WITHDRAW_COMPOST)
+				.count());
+		assertEquals("but every patch still gets treated",
+			3, steps.stream()
+				.filter(step -> step.getAction() == GuideAction.APPLY_COMPOST)
+				.count());
+	}
+
+	/**
+	 * Two tiers are two trips, so the collapse keys on the bucket rather than on the action.
+	 *
+	 * <p>A split herb type can want ultracompost on the protected patches and supercompost on the
+	 * rest. Collapsing by action alone would drop one and send the run out short of a bucket it
+	 * had been told to bring.
+	 */
+	@Test
+	public void twoDifferentTiersAreTwoWithdrawals() throws Exception
+	{
+		List<GuideStep> steps = new ArrayList<>();
+		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+			com.dooglemaps.data.CompostTier.ULTRACOMPOST.getItemID(), null, "Withdraw 2 ultracompost."));
+		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+			com.dooglemaps.data.CompostTier.SUPERCOMPOST.getItemID(), null, "Withdraw 3 supercompost."));
+		steps.add(GuideStep.atLeprechaun(GuideAction.WITHDRAW_COMPOST, somePatch(),
+			com.dooglemaps.data.CompostTier.ULTRACOMPOST.getItemID(), null, "Withdraw 2 ultracompost."));
+
+		collapseWithdrawals(steps);
+
+		assertEquals("one per tier, and the duplicate ultra is gone", 2, steps.size());
+		assertEquals(com.dooglemaps.data.CompostTier.ULTRACOMPOST.getItemID(), steps.get(0).getItemId());
+		assertEquals(com.dooglemaps.data.CompostTier.SUPERCOMPOST.getItemID(), steps.get(1).getItemId());
+	}
+
+	private static void collapseWithdrawals(List<GuideStep> steps) throws Exception
+	{
+		Method method = GuideTracker.class.getDeclaredMethod(
+			"collapseDuplicateWithdrawals", List.class);
+		method.setAccessible(true);
+		method.invoke(null, steps);
+	}
+
 	private static FarmPatch otherPatch()
 	{
 		return FarmingWorldData.getPatches(

@@ -249,6 +249,344 @@ public class RunLoadout
 	}
 
 	/**
+	 * How many of this item the run still wants, counted <b>now</b> rather than a tick ago.
+	 *
+	 * <p>What the withdraw-quantity swap sizes its click from. See
+	 * {@code docs/withdraw-quantity-swap-spec.md} §8, which is the reason this exists at all
+	 * rather than the swap simply reading {@code getWithdrawCount} off the row.
+	 *
+	 * <h2>Half cached and half live, because the two halves move at different speeds</h2>
+	 *
+	 * {@link #forRun} is cached on {@code (tick, types)} and has to be — four callers want the
+	 * whole list every tick while a bank is open, and each build walks the planner. But a player
+	 * clicking Withdraw-10 and then Withdraw-5 does both inside one 600ms tick, and a swap reading
+	 * a tick-old {@code outstanding} would still believe fifteen were wanted on the second click.
+	 * It would offer ten again and take twenty-five: the exact over-withdrawal the feature exists
+	 * to prevent, caused by the feature.
+	 *
+	 * <p>So the run's <b>intent</b> comes from the cached row — {@code quantity} is fixed for the
+	 * whole run, thirty cactus spines is thirty whatever you are holding — and what is
+	 * <b>carried</b> is read live from {@code CarriedItems}, which updates on
+	 * {@code ItemContainerChanged} and therefore on the withdrawal itself rather than on the tick.
+	 * Only the fast-moving half is read fast.
+	 *
+	 * <h2>What is eligible, and what is deliberately not</h2>
+	 *
+	 * Bin fills, empty buckets, ash and protection payments, plus saplings — all things where
+	 * taking too many costs pack space the run needs. <b>Seeds are not</b>, and that is the owner's
+	 * call rather than an oversight: seeds are the item where over-withdrawing is nearly free and
+	 * under-withdrawing costs a patch, which is the opposite of the bucket case. Saplings are
+	 * excluded from that exception because a sapling is one patch, one item — there is no stack to
+	 * be generous with.
+	 *
+	 * <p>Rows with no computed count answer 0 and are left alone by construction. The compost tier
+	 * rows are the live case: {@code getWithdrawCount}'s own note records that their true bucket
+	 * count is not worked out yet, so there is nothing to size a click from and nothing pretends
+	 * otherwise.
+	 *
+	 * @return how many are still wanted, or 0 for anything this must not size
+	 */
+	public int stillWantedNow(int itemId, Set<PatchImplementation> types)
+	{
+		for (LoadoutItem item : forRun(types))
+		{
+			// Skipped rather than answered: an item can appear on the list more than once — a
+			// HAVE row from one group beside a WITHDRAW row from another — and the collectible
+			// row is the one the question is about.
+			if (item.getItemId() != itemId || !stillToCollect(item.getNeed()))
+			{
+				continue;
+			}
+			return sizeRow(item);
+		}
+		return 0;
+	}
+
+	/**
+	 * As above, for the run that is actually under way.
+	 *
+	 * <p>Saves the caller holding a planner of its own purely to ask it which types are covered —
+	 * this class already has one, and the two would only ever agree.
+	 */
+	public int stillWantedNow(int itemId)
+	{
+		return stillWantedNow(itemId, planner.coveredTypes());
+	}
+
+	/**
+	 * As above, by the item's <b>name</b>, for the interface that names it and nothing else.
+	 *
+	 * <p>The leprechaun's store. Its menu entries carry no item id on the entry or the widget, so
+	 * matching by id stood the swap down at the one place the feature was built for — see
+	 * {@code GuideMenuSwap.itemNameOf}, which is where the name comes from. The rows' names are
+	 * {@code ItemNames}' rendering of the same items the menu is naming, so the two agree by
+	 * construction.
+	 *
+	 * <p>First match wins, which is safe at the sizes involved: the sizeable categories — fills,
+	 * buckets, ash, payments, saplings — never put two rows with one name on the same list.
+	 */
+	public int stillWantedNow(@javax.annotation.Nullable String name)
+	{
+		return stillWantedNow(name, planner.coveredTypes());
+	}
+
+	public int stillWantedNow(@javax.annotation.Nullable String name,
+		Set<PatchImplementation> types)
+	{
+		if (name == null || name.isEmpty())
+		{
+			return 0;
+		}
+		for (LoadoutItem item : forRun(types))
+		{
+			if (!rowIsNamed(item, name) || !stillToCollect(item.getNeed()))
+			{
+				continue;
+			}
+			return sizeRow(item);
+		}
+		return 0;
+	}
+
+	/**
+	 * Whether a menu's printed name means this row's item.
+	 *
+	 * <h2>The row's label is the plugin's wording, and a menu never prints that</h2>
+	 *
+	 * The name arriving here is read off a menu entry's target, and a menu prints the
+	 * <b>game's</b> name for the item. The bucket row is where the two part company: the row
+	 * says "Empty bucket" so the bank list reads unambiguously, and the game calls item 1925
+	 * plain "Bucket" — so the leprechaun's store offered <i>'Bucket'</i> and the row lookup
+	 * matched nothing. From the session log, which is what the decision line exists for:
+	 * {@code item id=-1 name='Bucket' wanted=0 -> nothing to promote}.
+	 *
+	 * <p>So both names answer: the row's own label, and the game's name for the row's item id.
+	 * The game name comes from {@code ItemNames} where it has been recorded, and from the client
+	 * outright when this is the client thread — which the name path's one caller
+	 * ({@code GuideMenuSwap}, on {@code PostMenuSort}) always is. Off the client thread an
+	 * unrecorded name simply does not match, which fails toward no swap.
+	 */
+	private boolean rowIsNamed(LoadoutItem item, String name)
+	{
+		if (name.equalsIgnoreCase(item.getName()))
+		{
+			return true;
+		}
+
+		String gameName = itemNames.get(item.getItemId());
+		if (gameName == null && client.isClientThread())
+		{
+			net.runelite.api.ItemComposition definition =
+				client.getItemDefinition(item.getItemId());
+			gameName = definition == null ? null : definition.getName();
+		}
+		return gameName != null && name.equalsIgnoreCase(gameName);
+	}
+
+	/**
+	 * Whether this withdrawal wants at least a whole pack, so All is the right click.
+	 *
+	 * <h2>Why All is safe exactly here and nowhere else</h2>
+	 *
+	 * For an <b>unstackable</b> item, Withdraw-All takes what fits and stops — the pack is the
+	 * cap. So once the run wants as much as the pack holds, All cannot overshoot: it takes
+	 * {@code min(freeSlots, bank)}, and {@code wanted >= freeSlots} makes that at most wanted.
+	 * The no-overshoot property the ladder was built on survives intact, and a thirty-melon bin
+	 * load becomes one click instead of three. Asked for by the owner in exactly those terms.
+	 *
+	 * <p>For a stackable it is the opposite: All takes the <i>whole bank stack</i> into one
+	 * slot, however large, and "wanted vs free slots" measures nothing. Volcanic ash is the one
+	 * stackable these categories hold, so it is excluded by id rather than by asking the client
+	 * for a definition — deterministic, and honest about being a list of one.
+	 *
+	 * <p>Fills and buckets only. A payment is counted <b>noted</b> — that is how anyone carries
+	 * thirty of them — and a bank in noted-withdrawal mode hands All of a noted item over as one
+	 * stack, which is the overshoot again by another door. Saplings never want a packful.
+	 */
+	public boolean fillsThePack(int itemId, Set<PatchImplementation> types)
+	{
+		for (LoadoutItem item : forRun(types))
+		{
+			if (item.getItemId() != itemId || !stillToCollect(item.getNeed()))
+			{
+				continue;
+			}
+			return fillsThePack(item);
+		}
+		return false;
+	}
+
+	public boolean fillsThePack(int itemId)
+	{
+		return fillsThePack(itemId, planner.coveredTypes());
+	}
+
+	/** As above by the item's printed name, for the interface that names it and nothing else. */
+	public boolean fillsThePack(@javax.annotation.Nullable String name)
+	{
+		if (name == null || name.isEmpty())
+		{
+			return false;
+		}
+		for (LoadoutItem item : forRun(planner.coveredTypes()))
+		{
+			if (!rowIsNamed(item, name) || !stillToCollect(item.getNeed()))
+			{
+				continue;
+			}
+			return fillsThePack(item);
+		}
+		return false;
+	}
+
+	/**
+	 * Whether the run tracked this withdrawal and now has all of it.
+	 *
+	 * <h2>Done is not the same as "answers zero", and the difference is every other item</h2>
+	 *
+	 * {@code stillWantedNow} answers zero for three unlike things: a row that has been
+	 * satisfied, a row the swap must never size (a seed, deliberately), and an item that was
+	 * never the run's business at all. The Examine swap exists for the first alone — swapping a
+	 * seed's or a stranger's left click to Examine would break ordinary banking — so this asks
+	 * the narrow question: a <b>sizeable</b> row with a real count, whose count is now covered.
+	 *
+	 * <p>Covered either way it shows: the cached row still reads {@code WITHDRAW} for the rest
+	 * of the tick after the last withdrawal (the carried count is live, the need is not), and
+	 * {@code HAVE} from the next build on. Both mean the same thing to a click.
+	 */
+	public boolean doneWithdrawing(int itemId, Set<PatchImplementation> types)
+	{
+		for (LoadoutItem item : forRun(types))
+		{
+			if (item.getItemId() == itemId && rowIsDone(item))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	public boolean doneWithdrawing(int itemId)
+	{
+		return doneWithdrawing(itemId, planner.coveredTypes());
+	}
+
+	/** As above by the item's printed name, for the interface that names it and nothing else. */
+	public boolean doneWithdrawing(@javax.annotation.Nullable String name)
+	{
+		if (name == null || name.isEmpty())
+		{
+			return false;
+		}
+		for (LoadoutItem item : forRun(planner.coveredTypes()))
+		{
+			if (rowIsNamed(item, name) && rowIsDone(item))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private boolean rowIsDone(LoadoutItem item)
+	{
+		if (!sizeable(item) || item.getQuantity() <= 0)
+		{
+			return false;
+		}
+		if (item.getNeed() == LoadoutItem.Need.HAVE)
+		{
+			return true;
+		}
+		return stillToCollect(item.getNeed()) && sizeRow(item) == 0;
+	}
+
+	private boolean fillsThePack(LoadoutItem item)
+	{
+		if (item.getCategory() != LoadoutItem.Category.BIN_FILL
+			&& item.getCategory() != LoadoutItem.Category.COMPOST)
+		{
+			return false;
+		}
+		if (item.getItemId() == com.dooglemaps.data.CompostBin.VOLCANIC_ASH)
+		{
+			return false;
+		}
+
+		int wanted = sizeRow(item);
+		int free = carried.getFreeSlots();
+		return wanted > 0 && free > 0 && wanted >= free;
+	}
+
+	/** The sizing shared by the id and name lookups above: wanted less carried, or 0. */
+	private int sizeRow(LoadoutItem item)
+	{
+		if (!sizeable(item))
+		{
+			return 0;
+		}
+
+		int wanted = item.getQuantity();
+		if (wanted <= 0)
+		{
+			return 0;
+		}
+
+		// Noted only where a note is as good, which is payments and nothing else — the
+		// gardener takes them noted. A noted bucket composts nothing and a noted seed plants
+		// nothing, so everywhere else the pack count is the un-noted one. Both readings are
+		// CarriedItems' own; see getCountIncludingNoted.
+		int held = item.getCategory() == LoadoutItem.Category.PAYMENT
+			? carried.getCountIncludingNoted(item.getItemId())
+			: carried.getInventoryCount(item.getItemId());
+
+		return Math.max(0, wanted - held);
+	}
+
+	/**
+	 * Whether a need means "you have not got them all yet", wherever they are coming from.
+	 *
+	 * <h2>{@code AT_LEPRECHAUN} is not "nothing to do"</h2>
+	 *
+	 * This asked for {@code WITHDRAW} alone at first, and that quietly excluded the case the
+	 * feature was built for. Empty buckets and compost come out of the <b>leprechaun's</b> store —
+	 * he keeps a thousand of each, which is why banking them is wasted space and why their row
+	 * says {@code AT_LEPRECHAUN} rather than {@code WITHDRAW}. So the one place a bin run does
+	 * most of its collecting was the one place the swap stood down. Reported from play: no swap on
+	 * the empty buckets for a compost trip.
+	 *
+	 * <p>The name is about where they are, not about whether they are wanted. Both needs mean the
+	 * same thing to a click: some are still missing and there is somewhere in front of you to get
+	 * them from.
+	 *
+	 * <p>{@code MISSING} and {@code UNKNOWN} are deliberately not here. Neither has anywhere to
+	 * take them from, so neither can have a menu open on it.
+	 */
+	private static boolean stillToCollect(LoadoutItem.Need need)
+	{
+		return need == LoadoutItem.Need.WITHDRAW || need == LoadoutItem.Need.AT_LEPRECHAUN;
+	}
+
+	/** Whether a row is one the quantity swap may size a click from. See {@link #stillWantedNow}. */
+	private static boolean sizeable(LoadoutItem item)
+	{
+		switch (item.getCategory())
+		{
+			case BIN_FILL:
+			case COMPOST:
+			case PAYMENT:
+				return true;
+			case SEED:
+				// Saplings only. A tree seed is one patch and one item; every other seed is a
+				// stack the owner would rather have too much of than too little.
+				Seed seed = Seed.forItemId(item.getItemId());
+				return seed != null && seed.isSapling();
+			default:
+				return false;
+		}
+	}
+
+	/**
 	 * Whether a <b>tool</b> the run cannot proceed without is still sitting in a bank.
 	 *
 	 * <h2>Narrower than {@link #anythingLeftToWithdraw} on purpose</h2>
@@ -565,6 +903,10 @@ public class RunLoadout
 		// more than one seed for a patch type" — but it stops the split multiplying it.
 		Map<PlantingGroup, List<FarmPatch>> actionable = planner.actionableByGroup(types);
 
+		// Stock left after the groups already served, so two groups cannot both plan to plant the
+		// same seeds. See allocate.
+		Map<Seed, Integer> unspent = new java.util.HashMap<>();
+
 		int potsNeeded = 0;
 		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionable.entrySet())
 		{
@@ -583,7 +925,12 @@ public class RunLoadout
 			//
 			// The same allocation the guide plants from and the estimate prices, so the three
 			// cannot disagree about what is going in the ground. See AllocationAgreementTest.
-			Map<Seed, Integer> share = allocate(group, plantable).counts();
+			Map<Seed, Integer> share = allocate(group, plantable, unspent).counts();
+			// Booked before the next group asks. Nothing else has to change: a group whose seed
+			// has been used up simply allocates its next choice, which is the spill the single
+			// group case has always done.
+			share.forEach((seed, patches) ->
+				unspent.merge(seed, -patches * seed.getSeedsPerPatch(), Integer::sum));
 
 			for (Seed seed : selection.getSelectedFor(group))
 			{
@@ -784,7 +1131,8 @@ public class RunLoadout
 	 * point is that the bank list and the guide agree. Anything else and you bank for one plan and
 	 * plant another.
 	 */
-	private SeedAllocation allocate(PlantingGroup group, List<FarmPatch> plantable)
+	private SeedAllocation allocate(PlantingGroup group, List<FarmPatch> plantable,
+		Map<Seed, Integer> unspent)
 	{
 		Set<Seed> picked = selection.getSelectedFor(group);
 
@@ -798,7 +1146,16 @@ public class RunLoadout
 			// what to take out of the bank, and an acorn is exactly the thing to take: you pot it
 			// on the way. Measuring plantable here made a tree run tell you to bring nothing
 			// whenever your seeds were still seeds.
-			owned.put(seed, seeds.getOwned(seed));
+			// Less whatever an earlier group in this loop already spoke for.
+			//
+			// Each call used to start from the full owned count, so a seed picked in two groups
+			// was planned into both — two ranarrs covering two protected patches AND two
+			// ordinary ones, from a stock of two. Nothing reconciled it, so the bank list asked
+			// for a run the player could not plant and the groups that should have spilled to
+			// their second choice never did. The split makes this reachable in ordinary play:
+			// protected herbs and ordinary herbs are two groups over one stock of seeds.
+			owned.put(seed, Math.max(0,
+				seeds.getOwned(seed) + unspent.getOrDefault(seed, 0)));
 
 			ProtectionPayment payment = ProtectionPayment.forSeed(seed);
 			if (payment != null && protection.isProtecting(group, seed))
@@ -835,6 +1192,10 @@ public class RunLoadout
 			{
 				continue;
 			}
+			if (everySeedIsProtectedAndUnimproved(group))
+			{
+				continue;
+			}
 			CompostTier tier = compost.get(group);
 			if (tier != CompostTier.NONE)
 			{
@@ -854,6 +1215,40 @@ public class RunLoadout
 				LoadoutItem.Category.COMPOST, compostNeed(tier, have), 0,
 				compostReason(tier, have)));
 		}
+	}
+
+	/**
+	 * Whether every seed this group would plant is one the guide will refuse to compost.
+	 *
+	 * <h2>The bank half of {@code CropYieldModel.compostWastedOnProtected}</h2>
+	 *
+	 * The guide decides per patch, holding one seed; this list is built per group, before a
+	 * patch is in front of anyone. So the group is only dropped when the answer is the same for
+	 * <b>every</b> seed picked for it — otherwise a herb tab with a protected magic sapling
+	 * alongside a ranarr would bank no compost for the ranarr, and the run would arrive unable
+	 * to do the thing the guide is about to ask for.
+	 *
+	 * <p>{@code allMatch} on an empty selection is vacuously true, which is the wrong answer
+	 * here — "nothing picked" is not "nothing wants compost" — so an empty pick keeps the
+	 * bucket. The group is going to be told it has no seed anyway, and this is not the line
+	 * that should say so.
+	 */
+	private boolean everySeedIsProtectedAndUnimproved(PlantingGroup group)
+	{
+		Set<Seed> picked = selection.getSelectedFor(group);
+		if (picked.isEmpty())
+		{
+			return false;
+		}
+		for (Seed seed : picked)
+		{
+			if (!com.dooglemaps.timer.CropYieldModel.compostWastedOnProtected(
+				seed, protection.isProtecting(group, seed)))
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/**
@@ -939,6 +1334,14 @@ public class RunLoadout
 		// the old behaviour and it asked you to bank things you had no intention of using —
 		// which, on a tree run, is several stacks of fruit nobody wanted.
 		Map<PlantingGroup, List<FarmPatch>> actionable = planner.actionableByGroup(types);
+
+		// Its own ledger, spent down exactly as addSeeds spends its own. The two loops walk the
+		// same groups in the same order over the same stock, so they reach the same allocation —
+		// which is the property that matters here: a payment banked for a patch the seed list
+		// never intends to plant is a stack of fruit nobody wanted, and the reverse is a patch
+		// planted unprotected.
+		Map<Seed, Integer> unspent = new java.util.HashMap<>();
+
 		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionable.entrySet())
 		{
 			PlantingGroup group = entry.getKey();
@@ -948,8 +1351,11 @@ public class RunLoadout
 				continue;
 			}
 
-			for (Map.Entry<Seed, Integer> share
-				: allocate(group, entry.getValue()).counts().entrySet())
+			Map<Seed, Integer> allocated = allocate(group, entry.getValue(), unspent).counts();
+			allocated.forEach((seed, patches) ->
+				unspent.merge(seed, -patches * seed.getSeedsPerPatch(), Integer::sum));
+
+			for (Map.Entry<Seed, Integer> share : allocated.entrySet())
 			{
 				Seed seed = share.getKey();
 				int patches = share.getValue();
@@ -1651,11 +2057,44 @@ public class RunLoadout
 	 */
 	private void addListedTeleports(List<LoadoutItem> items)
 	{
+		// One row per teleport, not per charge.
+		//
+		// The id set behind this deliberately holds every charge — that is what a wildcard is for,
+		// and what {@code isOnTeleportList} needs so the bank lights all of them — but a row is
+		// advice, and "withdraw your games necklace" is one piece of advice however many charges
+		// the bank happens to be holding. Listing them separately told the player to take out the
+		// (5) and the (1) of a teleport crystal while the (2) sat in their pack, because each
+		// charge was a different item and none of them was the one being carried. Reported from
+		// play.
+		//
+		// Grouped by the name with its charge stripped, and a group counts as HAVE if <b>any</b>
+		// of its charges is carried, which is the question the player is actually asking.
+		Map<String, List<Integer>> byTeleport = new java.util.LinkedHashMap<>();
 		for (int itemId : listedTeleportIds())
 		{
-			items.add(new LoadoutItem(itemId, itemNames.get(itemId, "Teleport"),
+			byTeleport.computeIfAbsent(chargeless(itemNames.get(itemId, "Teleport").toLowerCase()),
+				k -> new ArrayList<>()).add(itemId);
+		}
+
+		for (List<Integer> charges : byTeleport.values())
+		{
+			int shown = charges.get(0);
+			boolean have = false;
+			for (int itemId : charges)
+			{
+				if (carried.has(itemId))
+				{
+					// The one in the pack is the one to name, so the row reads as the item the
+					// player is looking at rather than as some other charge of it.
+					shown = itemId;
+					have = true;
+					break;
+				}
+			}
+
+			items.add(new LoadoutItem(shown, itemNames.get(shown, "Teleport"),
 				LoadoutItem.Category.TELEPORT,
-				carried.has(itemId) ? LoadoutItem.Need.HAVE : LoadoutItem.Need.WITHDRAW, 0,
+				have ? LoadoutItem.Need.HAVE : LoadoutItem.Need.WITHDRAW, 0,
 				"On your teleport list"));
 		}
 	}
@@ -1773,6 +2212,30 @@ public class RunLoadout
 			}
 		}
 		return new LinkedHashSet<>(found.values());
+	}
+
+	/**
+	 * An item name without its charge count, for grouping the variants of one teleport.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"in my inventory I have one with (2) teleports, and the notification icon is telling me to
+	 * withdraw (5) and (1) of it"</i>, with "Teleport crystal" on the teleport list.
+	 *
+	 * <p>The grouping above already prefers a variant you are carrying — that is what the
+	 * {@code carried.has} test is for — but it keyed on the <b>whole</b> name, and
+	 * "teleport crystal (5)" and "teleport crystal (1)" are different strings. So each charge
+	 * became a teleport of its own: two rows telling you to withdraw the same item twice, neither
+	 * satisfied by the one already in your pack.
+	 *
+	 * <p>Digits only, and anchored to the end, because that is the charge convention and nothing
+	 * else uses it — a "Slayer ring (eternal)" keeps its suffix and stays its own item. The space
+	 * is optional because the game is inconsistent about it: "Teleport crystal (5)" has one,
+	 * "Games necklace(8)" does not.
+	 */
+	private static String chargeless(String name)
+	{
+		return name == null ? null : name.replaceAll("\\s*\\(\\d+\\)$", "").trim();
 	}
 
 	private static boolean matchesName(Set<String> exact, List<String> wildcards,

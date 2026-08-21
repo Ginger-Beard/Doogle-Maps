@@ -117,7 +117,7 @@ public class EmptyBucketsWantedTest
 			? Collections.emptyList()
 			: Arrays.asList(steps);
 		return new GuideStatus(list, true, false, 1, Collections.emptyList(), null, null,
-			Collections.emptyList(), null, null,
+			Collections.emptyList(), null, null, Collections.emptyList(),
 			Collections.emptyList(), null, Collections.emptyList(), Collections.emptySet(), null);
 	}
 }

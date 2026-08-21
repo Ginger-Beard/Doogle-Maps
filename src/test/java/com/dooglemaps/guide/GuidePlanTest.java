@@ -31,6 +31,7 @@ import org.mockito.Mockito;
 import static com.dooglemaps.Construct.construct;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -129,7 +130,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, false, NAMES);
+			leprechaun, barbarian, false, false, false, 1, false, NAMES);
 
 		assertEquals("the spade first - the game refuses the pick without it",
 			GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
@@ -167,7 +168,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, false, NAMES);
+			leprechaun, barbarian, false, false, false, 1, false, NAMES);
 
 		assertEquals(GuideAction.HARVEST, steps.get(0).getAction());
 		assertTrue("no box step anywhere before the pick", steps.stream().noneMatch(
@@ -197,7 +198,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 1, false, NAMES);
+			leprechaun, barbarian, false, false, false, 1, false, NAMES);
 
 		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
 		assertTrue("no seed-box step anywhere in the list", steps.stream().noneMatch(
@@ -397,6 +398,166 @@ public class GuidePlanTest
 		assertEquals(CompostTier.ULTRACOMPOST.getItemID(), step.getItemId());
 	}
 
+	/**
+	 * A sapling the farmer is being paid for is planted straight into untreated ground.
+	 *
+	 * <h2>Paying and composting are the same purchase here</h2>
+	 *
+	 * A protection payment is immunity outright, not a better chance, and a tree has no lives
+	 * mechanic for compost to improve — so on a protected sapling the bucket buys nothing at all.
+	 * Asked for from play: <i>"when paying for protection we shouldn't compost (on that specific
+	 * seed/sapling)"</i>.
+	 */
+	@Test
+	public void aProtectedSaplingIsNotComposted()
+	{
+		FarmPatch patch = treePatch();
+		compost.set(PatchImplementation.TREE, CompostTier.ULTRACOMPOST);
+		carrying(CompostTier.ULTRACOMPOST.getItemID(), 1,
+			FarmingTool.SPADE.getItemID(), 1);
+		stockInventory(Seed.OAK, 1);
+
+		List<GuideStep> steps = steps(patch, Seed.OAK, group(patch), true);
+
+		assertFalse("the sapling still wants planting", steps.isEmpty());
+		assertEquals("straight to the ground, with no bucket in between",
+			GuideAction.PLANT, steps.get(0).getAction());
+		for (GuideStep step : steps)
+		{
+			assertNotEquals("a protected tree gains nothing from compost",
+				GuideAction.APPLY_COMPOST, step.getAction());
+			assertNotEquals("and so has no reason to fetch any",
+				GuideAction.WITHDRAW_COMPOST, step.getAction());
+		}
+	}
+
+	/**
+	 * ...but a protected <b>herb</b> is still composted, because there the two buy different
+	 * things: the payment buys survival and the compost buys herbs.
+	 *
+	 * <p>The counter-case to the test above, and the reason the rule is per seed rather than per
+	 * "is this protected". Suppressing here would quietly cost a harvest on every protected
+	 * allotment and herb run.
+	 */
+	@Test
+	public void aProtectedCropWithLivesIsStillComposted()
+	{
+		FarmPatch patch = statePatch(3);    // raked, empty
+		compost.set(PatchImplementation.ALLOTMENT, CompostTier.ULTRACOMPOST);
+		carrying(CompostTier.ULTRACOMPOST.getItemID(), 1);
+		stockInventory(Seed.POTATO, 10);
+
+		List<GuideStep> steps = steps(patch, Seed.POTATO, group(patch), true);
+
+		assertFalse(steps.isEmpty());
+		assertEquals("compost still goes on first - it is buying yield, not immunity",
+			GuideAction.APPLY_COMPOST, steps.get(0).getAction());
+	}
+
+	/**
+	 * A fruit tree is picked first and chopped second, which is a different order from a tree.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"I'm not being prompted to chop down my palm tree on a fruit tree run - after
+	 * harvesting"</i>. {@code isChoppable} listed trees, hardwoods, the crystal tree and the
+	 * celastrus, and no fruit tree — so the chop never existed, the stripped palm stopped being
+	 * actionable, and the run walked away from a patch it meant to replant.
+	 *
+	 * <p>The order is the careful part and is why this is not simply one more entry in that
+	 * list. A tree is check, chop, dig. A fruit tree is check, <b>harvest</b>, chop, dig — and
+	 * felling one with coconuts still on it throws them away, so the chop waits for the picking
+	 * to finish rather than racing it.
+	 */
+	@Test
+	public void aFruitTreeIsHarvestedBeforeItIsChopped()
+	{
+		FarmPatch patch = fruitTreePatch(212);      // palm, checked, six coconuts on it
+		stockInventory(Seed.PALM, 1);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+
+		GuideStep step = firstStep(patch, Seed.PALM);
+		assertEquals("six coconuts are still worth taking before the axe comes out",
+			GuideAction.HARVEST, step.getAction());
+	}
+
+	/** Stripped, the same tree is chopped — the step that did not exist at all. */
+	@Test
+	public void aStrippedFruitTreeIsChopped()
+	{
+		FarmPatch patch = fruitTreePatch(206);      // palm, checked, no coconuts left
+		stockInventory(Seed.PALM, 1);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+
+		GuideStep step = firstStep(patch, Seed.PALM);
+		assertEquals(GuideAction.CHOP, step.getAction());
+		assertTrue(step.getText(), step.getText().toLowerCase().contains("palm"));
+	}
+
+	/**
+	 * ...but not without a sapling to put in its place.
+	 *
+	 * <p>The difference between clearing ground and destroying it. A farmed tree never comes
+	 * back, so chopping it is simply how the patch finishes; a fruit tree regrows its fruit
+	 * forever, and felling one with nothing to replace it costs the player the tree.
+	 */
+	@Test
+	public void aStrippedFruitTreeIsLeftStandingWithNothingToReplant()
+	{
+		FarmPatch patch = fruitTreePatch(206);
+		carrying(FarmingTool.SPADE.getItemID(), 1);   // no sapling owned at all
+
+		for (GuideStep step : steps(patch, null))
+		{
+			assertNotEquals("no replacement means the tree stays up",
+				GuideAction.CHOP, step.getAction());
+		}
+	}
+
+	/** And the stump it leaves is dug, which needed the stump to be recognised at all. */
+	@Test
+	public void aFruitTreeStumpIsDugUp()
+	{
+		FarmPatch patch = fruitTreePatch(225);      // the palm stump, per the client sources
+		stockInventory(Seed.PALM, 1);
+		carrying(FarmingTool.SPADE.getItemID(), 1);
+
+		GuideStep step = firstStep(patch, Seed.PALM);
+		assertEquals(GuideAction.CLEAR, step.getAction());
+		assertTrue(step.getText(), step.getText().toLowerCase().contains("stump"));
+	}
+
+	/** Any fruit tree patch, put into the state the given varbit value decodes to. */
+	private FarmPatch fruitTreePatch(int varbitValue)
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(PatchImplementation.FRUIT_TREE).get(0);
+		assertNotNull("no fruit tree patch in the generated world data", patch);
+		ProduceState decoded = patch.getImplementation().forVarbitValue(varbitValue);
+		assertNotNull("varbit " + varbitValue + " does not decode", decoded);
+		patches.recordVarbit(patch, varbitValue, decoded);
+		return patch;
+	}
+
+	/**
+	 * The note step's plural, which is the half of the shortened wording that can be wrong.
+	 *
+	 * <p>The rule moved here from {@code GuideTracker} when the note step was shortened to "Note
+	 * your strawberries." — every caller it had until then passed a patch-type name, none of which
+	 * ends in a consonant and a y, so adding an s was always right. Produce names are not so kind.
+	 */
+	@Test
+	public void cropNamesArePluralisedTheWayEnglishDoes()
+	{
+		assertEquals("strawberries", GuidePlan.plural("strawberry"));
+		assertEquals("watermelons", GuidePlan.plural("watermelon"));
+		assertEquals("limpwurts", GuidePlan.plural("limpwurt"));
+		// The -es families, which the rule already had.
+		assertEquals("hopses", GuidePlan.plural("hops"));
+		assertEquals("bushes", GuidePlan.plural("bush"));
+		// A vowel before the y keeps its s, which is the rule rather than an exception.
+		assertEquals("storeys", GuidePlan.plural("storey"));
+	}
+
 	/** Nothing to apply it with means the withdrawal comes first. */
 	@Test
 	public void compostYouAreNotCarryingIsWithdrawnFirst()
@@ -481,7 +642,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, false, NAMES);
+			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.WITHDRAW_COMPOST, steps.get(0).getAction());
 		assertTrue("and it should ask for the three still missing, not all four: "
@@ -500,7 +661,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, false, NAMES);
+			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
 	}
@@ -553,7 +714,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection,
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, false, NAMES);
+			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.CLEAR, steps.get(0).getAction());
 		assertTrue(steps.get(0).getText(),
@@ -572,7 +733,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			autoweeded().project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, false, NAMES);
+			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
 	}
@@ -602,7 +763,7 @@ public class GuidePlanTest
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
 			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
-			leprechaun, barbarian, false, false, 4, false, NAMES);
+			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("4"));
 	}
@@ -939,7 +1100,7 @@ public class GuidePlanTest
 		assertTrue("a harvest-only run is finished with this patch",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch), null,
 				seeds, compost, carried, leprechaun, barbarian,
-				/* protecting */ false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
+				/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
 	}
 
 	/**
@@ -967,7 +1128,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ true, /* harvestOnly */ false, 1, false, NAMES);
+			/* protecting */ true, /* paidToProtect */ true, /* harvestOnly */ false, 1, false, NAMES);
 		assertFalse("the payment is the one thing this patch still wants", steps.isEmpty());
 		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
 		assertEquals("the gardener is what gets highlighted",
@@ -1003,7 +1164,7 @@ public class GuidePlanTest
 		com.dooglemaps.data.ItemNames named = namesFor(payment.getItemID(), "Basket of tomatoes");
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ true, /* harvestOnly */ false, 1, false, named);
+			/* protecting */ true, /* paidToProtect */ true, /* harvestOnly */ false, 1, false, named);
 
 		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
 		String text = steps.get(0).getText();
@@ -1040,7 +1201,7 @@ public class GuidePlanTest
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), Seed.CALQUAT, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ false, /* harvestOnly */ false, 1, false, NAMES);
+			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ false, 1, false, NAMES);
 
 		assertFalse("standing at the patch with the seed and told nothing", steps.isEmpty());
 		assertEquals(GuideAction.POT_SEED, steps.get(0).getAction());
@@ -1062,7 +1223,7 @@ public class GuidePlanTest
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), Seed.CALQUAT, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ false, /* harvestOnly */ false, 1, false, NAMES);
+			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ false, 1, false, NAMES);
 
 		assertFalse(steps.isEmpty());
 		assertFalse("nothing to pot when it is already a sapling",
@@ -1122,7 +1283,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ false, /* harvestOnly */ true, 1, false, NAMES);
+			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ true, 1, false, NAMES);
 
 		assertFalse("nothing to note, so nothing to say about noting",
 			steps.stream().anyMatch(
@@ -1142,7 +1303,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
-			/* protecting */ false, /* harvestOnly */ true, 1, false, NAMES);
+			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ true, 1, false, NAMES);
 
 		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
 		assertTrue(steps.get(0).getText().contains(
@@ -1363,7 +1524,7 @@ public class GuidePlanTest
 		assertTrue("nothing to do here on a harvest-only visit",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch),
 				null, seeds, compost, carried, leprechaun, barbarian,
-				false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
+				false, false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
 	}
 
 	/**
@@ -1684,11 +1845,19 @@ public class GuidePlanTest
 	private List<GuideStep> steps(FarmPatch patch, Seed chosen,
 		com.dooglemaps.data.PlantingGroup group)
 	{
+		return steps(patch, chosen, group, false);
+	}
+
+	/** As above, for a crop the farmer is being paid to protect. */
+	private List<GuideStep> steps(FarmPatch patch, Seed chosen,
+		com.dooglemaps.data.PlantingGroup group, boolean paidToProtect)
+	{
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		assertNotNull("fixture patch has no projection", projection);
 		return GuidePlan.forPatch(projection,
 			patches.get(patch) == null ? null : patches.get(patch).getCompost(),
-			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, false, 1, false, NAMES);
+			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, paidToProtect,
+			false, 1, false, NAMES);
 	}
 
 	private GuideStep firstStep(FarmPatch patch, Seed chosen)

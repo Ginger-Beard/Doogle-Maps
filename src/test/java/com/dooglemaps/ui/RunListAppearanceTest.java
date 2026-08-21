@@ -34,6 +34,7 @@ import static org.mockito.Mockito.when;
 public class RunListAppearanceTest
 {
 	private RunTypeStore runTypes;
+	private com.dooglemaps.route.RunPlanner planner;
 	private RunPanel panel;
 
 	@Before
@@ -60,13 +61,24 @@ public class RunListAppearanceTest
 		when(config.showTree()).thenReturn(true);
 		when(config.showBush()).thenReturn(true);
 
+		planner = Mockito.mock(com.dooglemaps.route.RunPlanner.class);
+		// refresh() prices the run from a snapshot; an empty one is enough for a colour test and
+		// keeps the fixture from having to invent a plan.
+		com.dooglemaps.route.RunSnapshot empty = new com.dooglemaps.route.RunSnapshot(
+			java.util.EnumSet.noneOf(PatchImplementation.class),
+			java.util.Collections.emptyList(), java.util.Collections.emptyMap(),
+			java.util.Collections.emptyMap(), java.util.Collections.emptyMap(),
+			java.util.Collections.emptyMap(), 0);
+		when(planner.getSnapshot()).thenReturn(empty);
+		when(planner.snapshotFor(Mockito.any())).thenReturn(empty);
+
 		panel = construct(RunPanel.class,
 			Mockito.mock(PanelLayoutStore.class),
 			groups,
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
 			Mockito.mock(com.dooglemaps.bank.BankContents.class),
 			Mockito.mock(com.dooglemaps.guide.CarriedItems.class),
-			Mockito.mock(com.dooglemaps.route.RunPlanner.class),
+			planner,
 			Mockito.mock(com.dooglemaps.state.SeedSelectionStore.class),
 			Mockito.mock(com.dooglemaps.state.SeedInventoryStore.class),
 			runTypes,
@@ -74,7 +86,8 @@ public class RunListAppearanceTest
 			Mockito.mock(com.dooglemaps.state.CompostSelectionStore.class),
 			config,
 			Mockito.mock(com.dooglemaps.guide.GuideTracker.class),
-			Mockito.mock(com.dooglemaps.state.CompostRunStore.class));
+			Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
+			Mockito.mock(com.dooglemaps.state.RunPresetStore.class));
 	}
 
 	/**
@@ -151,6 +164,46 @@ public class RunListAppearanceTest
 			RunPanel.class.getDeclaredMethod("dimIfUnticked", JCheckBox.class);
 		method.setAccessible(true);
 		method.invoke(null, box);
+	}
+
+	/**
+	 * A tick that moves without a click is coloured too.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"this broke the checkbox highlighting, random items are highlighted unrelated to the
+	 * saved profile"</i>, on the run presets landing.
+	 *
+	 * <p>The tick colour is the plugin's own, so it only changes where something asks for it. The
+	 * checkbox's own listener asked; {@code refresh} did not — and while clicking was the only way
+	 * to move a box, nothing could tell. Applying a preset moves every box at once from inside
+	 * {@code refresh}, so each one kept the colour of the selection before it: boxes lit with
+	 * nothing ticked, ticked boxes reading as off.
+	 *
+	 * <p>Driven through the store rather than through a click, because that is the path that was
+	 * broken — a test that clicked would have gone on passing.
+	 */
+	@Test
+	public void aTickChangedWithoutAClickIsRecoloured() throws Exception
+	{
+		JCheckBox box = boxesIn(panel).stream().filter(b -> !b.isSelected()).findFirst()
+			.orElseThrow(() -> new AssertionError("no unticked line to work with"));
+		Color whenUnticked = box.getForeground();
+
+		// The store is what refresh() re-reads, so moving it is what a preset does.
+		when(runTypes.isSelected(Mockito.any())).thenReturn(true);
+		panel.refresh();
+
+		assertTrue("the box followed the store", box.isSelected());
+		assertTrue("but kept its unticked colour: " + box.getForeground(),
+			brightness(box.getForeground()) > brightness(whenUnticked));
+
+		when(runTypes.isSelected(Mockito.any())).thenReturn(false);
+		panel.refresh();
+
+		assertFalse(box.isSelected());
+		assertEquals("and back again when the ticks come off",
+			whenUnticked, box.getForeground());
 	}
 
 	private JCheckBox boxLabelled(String label)

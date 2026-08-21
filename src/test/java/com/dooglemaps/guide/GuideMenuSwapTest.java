@@ -403,7 +403,8 @@ public class GuideMenuSwapTest
 		when(tracker.liveTransports())
 			.thenReturn(hops("Teleport to House", "Configure Fairy ring - A I S"));
 
-		GuideMenuSwap swap = construct(GuideMenuSwap.class, client, tracker, config, seeds);
+		GuideMenuSwap swap = construct(GuideMenuSwap.class, client, tracker, config, seeds,
+			Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
 		swap.onPostMenuSort(new net.runelite.api.events.PostMenuSort());
 
 		assertEquals("Configure belongs under the left click, which is the last entry",
@@ -423,7 +424,7 @@ public class GuideMenuSwapTest
 	{
 		return new GuideStatus(java.util.Collections.emptyList(), true, false, 0,
 			java.util.Arrays.asList(hops), null, null, java.util.Collections.emptyList(), null,
-			null, java.util.Collections.emptyList(),
+			null, java.util.Collections.emptyList(), java.util.Collections.emptyList(),
 			null, java.util.Collections.emptyList(), java.util.Collections.emptySet(), null);
 	}
 }

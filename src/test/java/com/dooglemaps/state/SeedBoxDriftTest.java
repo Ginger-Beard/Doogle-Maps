@@ -51,6 +51,85 @@ public class SeedBoxDriftTest
 	}
 
 	/**
+	 * A whole fill costs one config write and one refresh, not one of each per seed kind.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"theres a bit of a game stutter every time I fill/empty my seedbox"</i>. The box states
+	 * its movement once per seed kind, so six kinds arrived as six messages inside one tick — and
+	 * each one wrote config and rebuilt the sidebar. A config write posts {@code ConfigChanged}
+	 * synchronously into every plugin in the client, which is the same burst
+	 * {@code PatchStateStore.asOneWrite} exists to stop on region entry.
+	 *
+	 * <p>Asserted on the write count rather than on elapsed time, because the stutter is not
+	 * something a test can feel — it is six passes through every other installed plugin, and the
+	 * number of passes is the thing that has to stay at one.
+	 *
+	 * <p>Scoped to the {@code seeds} key deliberately. {@code rememberSeen} writes its own
+	 * {@code seedsEverSeen} key, once for each seed kind the account has never held before, and
+	 * that one is not batched — it fires once in an account's life per crop and never again, so it
+	 * is not what anybody feels. Naming the key here keeps this test about the burst it was
+	 * written for rather than quietly acquiring a second subject.
+	 */
+	@Test
+	public void aFillOfManyKindsWritesOnce()
+	{
+		ConfigManager configManager = Mockito.mock(ConfigManager.class);
+		SeedInventoryStore store = construct(SeedInventoryStore.class, client, configManager,
+			new Gson());
+		store.load();
+		Mockito.clearInvocations(configManager);
+
+		java.util.concurrent.atomic.AtomicInteger refreshes =
+			new java.util.concurrent.atomic.AtomicInteger();
+		store.addChangeListener(refreshes::incrementAndGet);
+
+		store.addToSeedBox(Seed.RANARR.getPlantedItemID(), 6);
+		store.addToSeedBox(Seed.SNAPDRAGON.getPlantedItemID(), 4);
+		store.addToSeedBox(Seed.TOADFLAX.getPlantedItemID(), 3);
+		store.addToSeedBox(Seed.AVANTOE.getPlantedItemID(), 2);
+
+		assertEquals("nothing is announced while the messages are still arriving",
+			0, refreshes.get());
+		Mockito.verify(configManager, Mockito.never())
+			.setRSProfileConfiguration(Mockito.anyString(), Mockito.eq("seeds"),
+				Mockito.anyString());
+
+		store.flushSeedBoxWrites();
+
+		assertEquals("and the whole fill costs one refresh", 1, refreshes.get());
+		Mockito.verify(configManager, Mockito.times(1))
+			.setRSProfileConfiguration(Mockito.anyString(), Mockito.eq("seeds"),
+				Mockito.anyString());
+	}
+
+	/** Nothing is lost by holding it: every kind is in the box once the flush lands. */
+	@Test
+	public void everySeedInTheFillSurvivesTheFlush()
+	{
+		seeds.addToSeedBox(Seed.RANARR.getPlantedItemID(), 6);
+		seeds.addToSeedBox(Seed.SNAPDRAGON.getPlantedItemID(), 4);
+		seeds.flushSeedBoxWrites();
+
+		assertEquals(6, seeds.getCount(Seed.RANARR, SeedSource.SEED_BOX));
+		assertEquals(4, seeds.getCount(Seed.SNAPDRAGON, SeedSource.SEED_BOX));
+	}
+
+	/** A flush with nothing held does nothing at all, so an idle tick stays free. */
+	@Test
+	public void anIdleFlushIsFree()
+	{
+		java.util.concurrent.atomic.AtomicInteger refreshes =
+			new java.util.concurrent.atomic.AtomicInteger();
+		seeds.addChangeListener(refreshes::incrementAndGet);
+
+		seeds.flushSeedBoxWrites();
+		seeds.flushSeedBoxWrites();
+
+		assertEquals(0, refreshes.get());
+	}
+
+	/**
 	 * A lagged read is still ignored, which is the behaviour the window exists for.
 	 *
 	 * <p>Pinned first, because the fixes below narrow this window and must not open it.

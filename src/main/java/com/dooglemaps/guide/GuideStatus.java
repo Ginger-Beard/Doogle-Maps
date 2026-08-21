@@ -22,8 +22,8 @@ public class GuideStatus
 {
 	private static final GuideStatus IDLE =
 		new GuideStatus(Collections.emptyList(), false, false, 0, Collections.emptyList(), null,
-			null, Collections.emptyList(), null, null, Collections.emptyList(), null,
-			Collections.emptyList(), Collections.emptySet(), null);
+			null, Collections.emptyList(), null, null, Collections.emptyList(),
+			Collections.emptyList(), null, Collections.emptyList(), Collections.emptySet(), null);
 
 	/** Outstanding steps at the stop you are standing in. Empty while travelling. */
 	List<GuideStep> steps;
@@ -83,7 +83,12 @@ public class GuideStatus
 
 	/**
 	 * The patches at {@link #destination}, for outlining them on the way in. Empty when not
-	 * travelling.
+	 * travelling, and empty on the supply leg.
+	 *
+	 * <p>The supply leg is a leg with no steps, so it looks like travel to the overlay and used to
+	 * be drawn as travel — harmless wherever the bank is a region away from the patches, and the
+	 * Farming Guild's is not: banking there lit every patch in the guild while the run had not
+	 * started on them. See {@code GuideTracker.patchesAhead}.
 	 *
 	 * <h2>Why the overlay is handed these rather than fetching them</h2>
 	 *
@@ -121,6 +126,24 @@ public class GuideStatus
 	 * inside a renderer can only ever belong to that renderer.
 	 */
 	List<String> supplies;
+
+	/**
+	 * What the run still wants withdrawn, with counts, for the infobox tooltip. Empty when no
+	 * run is on.
+	 *
+	 * <p>Distinct from {@link #supplies}: that is the supply <i>leg's</i> checklist and goes
+	 * quiet once the leg ends, while this stands for the whole run — a fill left in the bank
+	 * mid-run belongs here and not there. Teleports are on neither; see the builder's note.
+	 *
+	 * <p>Here for the same reason as everything else in the snapshot: the infobox recomputes on
+	 * every store change, from whichever thread fired it, and building this walks the loadout
+	 * and the planner — the cross-thread lock traffic {@code RunSnapshot} exists to remove, one
+	 * surface over. Sampled on the tick, where the loadout's per-tick cache means the walk has
+	 * already been paid for by {@code DoogleMapsPlugin.onGameTick}'s own
+	 * {@code anythingLeftToWithdraw} call. The cost is the same one every field here carries:
+	 * the list can be up to one tick behind a withdrawal.
+	 */
+	List<String> toWithdraw;
 
 	/**
 	 * Something about the farming contract that is worth saying but cannot be clicked, or null.

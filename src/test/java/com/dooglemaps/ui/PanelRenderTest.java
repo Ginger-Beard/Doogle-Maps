@@ -184,7 +184,9 @@ public class PanelRenderTest
 			construct(com.dooglemaps.state.ContractState.class, configManager),
 			Mockito.mock(com.dooglemaps.guide.GuideTracker.class),
 			construct(com.dooglemaps.state.CompostRunStore.class,
-				Mockito.mock(net.runelite.client.config.ConfigManager.class)));
+				Mockito.mock(net.runelite.client.config.ConfigManager.class)),
+			construct(com.dooglemaps.state.RunPresetStore.class,
+				Mockito.mock(net.runelite.client.config.ConfigManager.class), gson));
 	}
 
 	/**

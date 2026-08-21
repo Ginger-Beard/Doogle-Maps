@@ -8,6 +8,7 @@ import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
 import java.util.EnumMap;
 import java.util.Map;
+import javax.annotation.Nullable;
 
 /**
  * How many items a patch gives, whichever way the game happens to decide it.
@@ -191,6 +192,33 @@ public final class CropYieldModel
 	public static boolean respondsToCompost(Seed seed)
 	{
 		return seed != null && CropYield.forSeed(seed) != null;
+	}
+
+	/**
+	 * Whether a bucket on this seed buys nothing, because the farmer is being paid to protect it.
+	 *
+	 * <h2>Paying and composting are the same purchase, on the crops with no lives</h2>
+	 *
+	 * Compost does two things: it cuts the disease chance, and on the lives family — herbs,
+	 * allotments, hops, giant seaweed — it raises the yield. A protection payment makes the crop
+	 * <b>immune</b>, not merely safer ({@code DiseaseRisk.survivalChance} returns 1 outright for a
+	 * protected patch), so the first of those is already bought and paid for. On a seed with no
+	 * lives mechanic the second does not exist, and there is nothing left for the bucket to do.
+	 *
+	 * <p>So this is deliberately <b>per seed and not per patch type</b>. A protected ranarr still
+	 * wants ultracompost — the payment bought immunity, the compost is buying herbs, and they are
+	 * different purchases. A protected magic sapling wants none: the payment is the whole of the
+	 * protection, and treating it is a bucket spent on a tree that gives one log either way.
+	 * {@link #compostOnlyHelpsDisease} asks the same question of a whole type, which is the right
+	 * grain for showing a dropdown and the wrong one for deciding a step.
+	 *
+	 * <p>An unknown seed is never suppressed. "We do not know what is going in" is not a reason to
+	 * skip preparing the ground, and the run can always be told to compost something it need not
+	 * have — the failure in the other direction costs a harvest.
+	 */
+	public static boolean compostWastedOnProtected(@Nullable Seed seed, boolean paidToProtect)
+	{
+		return seed != null && paidToProtect && !respondsToCompost(seed);
 	}
 
 	/**

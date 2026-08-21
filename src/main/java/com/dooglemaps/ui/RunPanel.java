@@ -163,14 +163,19 @@ class RunPanel extends JPanel
 	/** The bin run's fill choice, which is a compost bin's answer to "what will you plant". */
 	private final com.dooglemaps.state.CompostRunStore compostRun;
 
+	/** Named sets of the tickboxes below, so a herb run and a tree run are one click apart. */
+	private final com.dooglemaps.state.RunPresetStore presets;
+
 	RunPanel(PanelLayoutStore layout, PlantingGroups groups,
 		ProtectionSelectionStore protection, BankContents bank,
 		CarriedItems carried, RunPlanner planner,
 		SeedSelectionStore selection, SeedInventoryStore seeds,
 		RunTypeStore runTypes, FarmingBonusStore bonuses, CompostSelectionStore compost,
 		com.dooglemaps.DoogleMapsConfig config, com.dooglemaps.guide.GuideTracker guideTracker,
-		com.dooglemaps.state.CompostRunStore compostRun)
+		com.dooglemaps.state.CompostRunStore compostRun,
+		com.dooglemaps.state.RunPresetStore presets)
 	{
+		this.presets = presets;
 		this.compostRun = compostRun;
 		this.guideTracker = guideTracker;
 		this.config = config;
@@ -259,8 +264,9 @@ class RunPanel extends JPanel
 
 		JPanel choices = new JPanel(new BorderLayout(0, 0));
 		choices.setBackground(getBackground());
-		choices.add(typeSelection, BorderLayout.NORTH);
-		choices.add(noSeeds, BorderLayout.CENTER);
+		choices.add(buildPresets(), BorderLayout.NORTH);
+		choices.add(typeSelection, BorderLayout.CENTER);
+		choices.add(noSeeds, BorderLayout.SOUTH);
 
 		JPanel body = new JPanel(new BorderLayout(0, 4));
 		body.setBackground(getBackground());
@@ -427,6 +433,258 @@ class RunPanel extends JPanel
 	 * under the other, so the padding is gone and with it every mid-list gap. At most one cell
 	 * is ever empty now: the bottom of the right column, when the count is odd.
 	 */
+	/** Marks "the ticks match nothing saved", so the box never claims a preset you have edited away from. */
+	private static final String UNSAVED = "(unsaved)";
+
+	private final javax.swing.JComboBox<String> presetBox = new javax.swing.JComboBox<>();
+
+	/** Set while the code is driving the combo, so its own listener does not re-apply. */
+	private boolean applyingPreset;
+
+	/**
+	 * The preset row: pick a saved circuit, save the current one, or forget one.
+	 *
+	 * <h2>Why this exists above a list that is already persisted</h2>
+	 *
+	 * {@code RunTypeStore} already remembers the boxes, which removes the chore for the circuit
+	 * you did last. It does nothing for the others — and nobody has one circuit. A herb run and a
+	 * tree run are different sets of six or eight lines in an alphabetical list, and switching
+	 * between them by hand is both tedious and silently wrong when a line is missed.
+	 *
+	 * <p>Editable on purpose: typing a name and pressing Save makes a preset, pressing Save with
+	 * one selected overwrites it. That is two behaviours from one control, which is what "just a
+	 * simple dropdown with save/delete" asks for.
+	 */
+	private JPanel buildPresets()
+	{
+		JPanel row = new JPanel(new BorderLayout(4, 0));
+		row.setBackground(getBackground());
+		row.setBorder(BorderFactory.createEmptyBorder(0, 6, 4, 6));
+
+		// The sidebar's own combo styling, the same call the compost picker makes, so the two
+		// dropdowns read as one control rather than one of them arriving from the look and feel.
+		Controls.styleComboBox(presetBox);
+
+		// ...and then the two things that styling assumes it is talking to a fixed list.
+		//
+		// styleComboBox switches focus off, which is right for a picker you can only choose from
+		// and wrong here: this one is typed into, and an unfocusable box cannot be. The editor is
+		// a text field of the look and feel's own making, so it arrives light-on-light against a
+		// dark sidebar and has to be painted to match by hand.
+		presetBox.setEditable(true);
+		presetBox.setFocusable(true);
+		presetBox.setRequestFocusEnabled(true);
+		presetBox.setFont(FontManager.getRunescapeSmallFont());
+
+		java.awt.Component editor = presetBox.getEditor().getEditorComponent();
+		editor.setFont(FontManager.getRunescapeSmallFont());
+		editor.setBackground(ColorScheme.DARKER_GRAY_COLOR);
+		editor.setForeground(java.awt.Color.WHITE);
+		if (editor instanceof javax.swing.JTextField)
+		{
+			javax.swing.JTextField field = (javax.swing.JTextField) editor;
+			field.setBorder(BorderFactory.createEmptyBorder(2, 4, 2, 4));
+			// Without this the caret is painted in the look and feel's colour, which on this
+			// background is very nearly invisible — you can type and not see where.
+			field.setCaretColor(java.awt.Color.WHITE);
+		}
+		presetBox.setToolTipText(Tooltips.html(
+			"Saved sets of run lines. Pick one to tick exactly those boxes.<br><br>"
+				+ "Type a name and press Save to store the boxes as they are now; pressing Save "
+				+ "with a saved name selected replaces it."));
+		presetBox.addActionListener(e ->
+		{
+			if (applyingPreset)
+			{
+				return;
+			}
+			Object chosen = presetBox.getSelectedItem();
+			if (chosen == null || UNSAVED.equals(chosen))
+			{
+				return;
+			}
+			applyPreset(String.valueOf(chosen));
+		});
+
+		JButton save = new JButton("Save");
+		Controls.styleButton(save);
+		save.setFont(FontManager.getRunescapeSmallFont());
+		save.setToolTipText(Tooltips.html("Store the ticked lines under the name in the box."));
+		save.addActionListener(e -> savePreset());
+
+		JButton delete = new JButton("Delete");
+		Controls.styleButton(delete);
+		delete.setFont(FontManager.getRunescapeSmallFont());
+		// Deleting a bookmark should not change where you are standing, so the ticks are left
+		// exactly as they are.
+		delete.setToolTipText(Tooltips.html(
+			"Forget the selected preset. The ticked lines are left as they are."));
+		delete.addActionListener(e -> deletePreset());
+
+		JPanel buttons = new JPanel(new GridLayout(1, 2, 4, 0));
+		buttons.setBackground(getBackground());
+		buttons.add(save);
+		buttons.add(delete);
+
+		row.add(presetBox, BorderLayout.CENTER);
+		row.add(buttons, BorderLayout.EAST);
+		return row;
+	}
+
+	/** Ticks exactly the lines a preset names, and nothing else on offer. */
+	private void applyPreset(String name)
+	{
+		java.util.Set<String> keys = presets.keysOf(name);
+		if (keys == null)
+		{
+			return;
+		}
+
+		java.util.Set<RunOption> ticked = new java.util.LinkedHashSet<>();
+		for (RunOption option : offeredOptions())
+		{
+			if (keys.contains(option.getKey()))
+			{
+				ticked.add(option);
+			}
+		}
+
+		// Through setSelected rather than around it: that method carries the offered-list rule
+		// (a line not on show keeps whatever it had) and the contract retargeting, and a preset
+		// writing the blob directly would bypass both.
+		runTypes.setSelected(ticked, offeredOptions());
+		presets.setLastUsed(name);
+		refresh();
+	}
+
+	/** Stores the ticked lines under whatever name is in the box. */
+	private void savePreset()
+	{
+		Object typed = presetBox.getEditor().getItem();
+		String name = typed == null ? "" : String.valueOf(typed).trim();
+		if (UNSAVED.equals(name))
+		{
+			name = "";
+		}
+
+		java.util.Set<String> keys = new java.util.LinkedHashSet<>();
+		for (RunOption option : getSelectedOptions())
+		{
+			keys.add(option.getKey());
+		}
+
+		String saved = presets.save(name, keys);
+		if (saved != null)
+		{
+			presets.setLastUsed(saved);
+		}
+		if (saved == null)
+		{
+			// Blank name, or nothing ticked. Nothing to say that the empty box does not already
+			// say — and a dialog here would be the plugin scolding someone mid-click.
+			return;
+		}
+		refreshPresets(saved);
+	}
+
+	private void deletePreset()
+	{
+		Object chosen = presetBox.getSelectedItem();
+		if (chosen == null || UNSAVED.equals(chosen))
+		{
+			return;
+		}
+		presets.delete(String.valueOf(chosen));
+		refreshPresets(null);
+	}
+
+	/** The names currently in the dropdown, so a refresh can tell whether it has to rebuild. */
+	private List<String> shownPresets = new ArrayList<>();
+
+	/**
+	 * Rebuilds the dropdown and decides what it should claim to be showing.
+	 *
+	 * <p>Selects the preset whose lines exactly match the ticks, or {@link #UNSAVED} when none
+	 * does — so the control never says "Herb run" over a set of boxes that is no longer the herb
+	 * run. Order is not compared; the ticks are a set.
+	 */
+	private void refreshPresets(@javax.annotation.Nullable String prefer)
+	{
+		java.util.Set<String> current = new java.util.LinkedHashSet<>();
+		for (RunOption option : getSelectedOptions())
+		{
+			current.add(option.getKey());
+		}
+
+		// The preset the ticks currently are, preferring the one just used so a saved set keeps
+		// its name rather than being re-derived to whichever equal preset sorts first.
+		String match = prefer;
+		if (match == null || !presets.matches(match, current))
+		{
+			match = presets.lastUsed();
+			if (match == null || !presets.matches(match, current))
+			{
+				match = null;
+				for (String name : presets.names())
+				{
+					if (presets.matches(name, current))
+					{
+						match = name;
+						break;
+					}
+				}
+			}
+		}
+
+		// Nothing below happens unless it has to.
+		//
+		// This used to rebuild the combo and re-set its selection on every call, and refresh() is
+		// called on every tick and every state change — several times a second. An editable
+		// JComboBox does not survive that: the text being typed into its editor is wiped before it
+		// can be saved, and an open popup closes under the mouse before anything can be picked
+		// from it. The control was unusable, which is the whole feature. Reported from play.
+		List<String> names = presets.names();
+		if (!names.equals(shownPresets))
+		{
+			applyingPreset = true;
+			try
+			{
+				presetBox.removeAllItems();
+				presetBox.addItem(UNSAVED);
+				for (String name : names)
+				{
+					presetBox.addItem(name);
+				}
+				shownPresets = names;
+			}
+			finally
+			{
+				applyingPreset = false;
+			}
+		}
+
+		// And never while the player is using the control: mid-type, or with the list open. Both
+		// are a decision in progress, and the ticks it would be re-derived from are the ones they
+		// are in the middle of changing.
+		Object wanted = match == null ? UNSAVED : match;
+		if (presetBox.isPopupVisible()
+			|| presetBox.getEditor().getEditorComponent().isFocusOwner()
+			|| wanted.equals(presetBox.getSelectedItem()))
+		{
+			return;
+		}
+
+		applyingPreset = true;
+		try
+		{
+			presetBox.setSelectedItem(wanted);
+		}
+		finally
+		{
+			applyingPreset = false;
+		}
+	}
+
 	private void buildTypeBoxes()
 	{
 		List<RunOption> options = offeredOptions();
@@ -798,6 +1056,11 @@ class RunPanel extends JPanel
 		boolean running = planner.isActive();
 
 		updateRunControls(running);
+		// Kept in step with the ticks on every refresh, not only when a preset is used: the boxes
+		// can move underneath it — a click, a profile load, a type switched off in the settings —
+		// and a dropdown still naming "Herb run" over a changed set would be lying quietly.
+		refreshPresets(null);
+		presetBox.setEnabled(!running);
 		optionBoxes.forEach((option, box) ->
 		{
 			box.setEnabled(!running);
@@ -807,6 +1070,19 @@ class RunPanel extends JPanel
 			{
 				box.setSelected(runTypes.isSelected(option));
 			}
+			// And re-colour, every time, because setSelected does not.
+			//
+			// The tick colour is the plugin's own — see dimIfUnticked — so it only changes where
+			// something calls for it. The click listener does; this loop did not, and for as long
+			// as clicking was the only way to move a box that was invisible. Applying a preset
+			// moves them all at once from here, and every box kept the colour of the selection
+			// before it: boxes highlighted with nothing ticked, ticked boxes reading as off.
+			// Reported from play as random items highlighted unrelated to the preset.
+			//
+			// Unconditional rather than inside the branch above. The colour can be stale even
+			// when the tick is already right — a box the loop synced last refresh, then a preset
+			// put back — and it is one field assignment either way.
+			dimIfUnticked(box);
 		});
 
 		// Rebuilt whether or not a run is under way, which it used not to be.
@@ -915,25 +1191,11 @@ class RunPanel extends JPanel
 			return false;
 		}
 
-		Set<PatchImplementation> bins = EnumSet.noneOf(PatchImplementation.class);
-		for (PatchImplementation type : types)
-		{
-			if (com.dooglemaps.data.CompostBin.forType(type) != null)
-			{
-				bins.add(type);
-			}
-		}
-		// Folded for the same reason the panel's own type set is: the tick carries the ordinary
-		// bin's type and means the guild's big one, so asking about the type on the checkbox
-		// would miss it entirely.
-		//
-		// No fodder test is needed here even though a fill can now come from the harvest.
-		// binWork counts no fillable items for a bin the guild's own allotments will supply, or
-		// for any of the seven beside the allotments, so this goes quiet by itself in exactly
-		// the cases where a "pick a fill" warning would be a false alarm.
-		return !bins.isEmpty()
-			&& planner.binWork(com.dooglemaps.data.CompostBin.coveredByTheBinTick(bins))
-				.fillableBins > 0;
+		// From the snapshot, not from planner.binWork: that call is synchronised and walks
+		// every bin of every ticked type, and this line runs on every refresh. It was the last
+		// query in this panel still taking the planner's monitor from the EDT. The bin-type
+		// fold it used to do here moved with it - see RunPlanner.fillableBinsIn.
+		return snapshotFor(types).getFillableBins() > 0;
 	}
 
 	/**

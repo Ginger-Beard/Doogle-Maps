@@ -177,6 +177,32 @@ public class GuideTracker
 	/** The region the player was in last tick, for noticing a teleport. */
 	private int lastRegion = -1;
 
+	/**
+	 * Derives the whole of this tick's guidance: the step list, the destination and the status
+	 * the panel and the overlays read.
+	 *
+	 * <h2>Some of what this reads is one tick old, by construction</h2>
+	 *
+	 * The event bus orders same-priority subscribers by <b>fully-qualified</b> class name
+	 * ({@code EventBus.register}, {@code thenComparing(s -> s.object.getClass().getName())}), so
+	 * this plugin's tick runs in package order. Everything in {@code com.dooglemaps.capture} and
+	 * {@code CarriedItems} therefore ticks <i>before</i> this — the patch scan, the seed and
+	 * protection captures and the pack are all this tick's, which is what the step derivation
+	 * needs and why the arrangement is worth knowing about rather than fixing.
+	 *
+	 * <p>What sorts <i>after</i> this is {@code com.dooglemaps.state}: {@code PlayerLocation},
+	 * {@code LeprechaunStore} and {@code PlayerHouse}. So {@link #playerLocation()} — read here
+	 * for {@code retargetIfMoved}, {@code noteTravelProgress}, {@code stopAt}, the drop pick-up
+	 * and the leaving errands — is the tile as of the <b>previous</b> tick, and the leprechaun's
+	 * tools are likewise one tick behind. That is 600ms and benign for every current caller, but
+	 * it is real: within-stop ordering is nearest-first from that tile, so while the player walks
+	 * between two close patches the sort input is somewhere they have already left.
+	 *
+	 * <p>The consequence for anyone editing: <b>the package a tick subscriber lives in is
+	 * load-bearing</b>. Moving one between packages silently changes when it runs relative to
+	 * this method. See {@code open-issues.txt}, where making the ordering explicit with
+	 * {@code @Subscribe} priorities is recorded as deliberately deferred.
+	 */
 	@Subscribe
 	public void onGameTick(GameTick event)
 	{
@@ -210,7 +236,23 @@ public class GuideTracker
 
 		// Only while travelling. Standing at a patch with work to do, the teleport is the last
 		// thing anyone wants pointed at — the whole design is one instruction at a time.
+		//
+		// Recorded every tick, whatever else is true, so the comparison is always against the
+		// previous tick rather than against whenever this last happened to be reached. Left
+		// inside the && it was short-circuited away on every tick with a step at the stop, so
+		// the "previous" destination could be minutes old and the gate answered nonsense.
+		boolean settled = destinationSettled(destination);
+
+		// ...and only once the destination has stopped moving. See destinationSettled.
+		//
+		// Not on the supply leg. There the destination is a bank, chosen fresh from the router's
+		// reply every tick because commitDestination is deliberately ignored while atBankLeg —
+		// so it never agrees with itself two ticks running and the gate held the hint off for the
+		// whole leg. That left the patches-ahead outline as the only thing lit, which reads as
+		// "every patch in the region is highlighted" with no teleport marked at all. Reported
+		// from play, on the way to the bank at the start of a run.
 		TravelHint hint = planner.isActive() && steps.isEmpty()
+			&& (settled || planner.isAtBankLeg())
 			? travelHint(destination)
 			: null;
 
@@ -236,9 +278,9 @@ public class GuideTracker
 		status = new GuideStatus(steps, planner.isActive(), planner.isAtBankLeg(),
 			remaining.size(), new ArrayList<>(planner.getCurrentTransports()),
 			destination, describePatchesAt(heading),
-			heading == null ? java.util.Collections.<FarmPatch>emptyList()
-				: new ArrayList<>(heading.getPatches()),
-			hint, here == null ? null : here.getName(), supplyLines(),
+			patchesAhead(heading, planner.isAtBankLeg(),
+				planner.isActive() && steps.isEmpty()),
+			hint, here == null ? null : here.getName(), supplyLines(), withdrawLines(),
 			planner.isActive() ? contractNote(here) : null,
 			planner.isActive() ? skipped : java.util.Collections.emptyList(),
 			planner.isActive() && planner.isAtBankLeg()
@@ -247,6 +289,54 @@ public class GuideTracker
 			planner.isActive() ? routeItem.currentName() : null);
 
 		routeFromTheFrontDoor();
+	}
+
+	/** The destination the previous tick resolved, for {@link #destinationSettled}. */
+	@Nullable
+	private String lastHintDestination;
+
+	/** Whether {@link #lastHintDestination} holds a real answer rather than "not asked yet". */
+	private boolean hintDestinationKnown;
+
+	/**
+	 * Whether the leg has been going to the same place long enough to point at an item for it.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"finished up at ardougne farm, prompted to tele home via home tab, by the time I clicked
+	 * it swapped to my ardougne cloak: kandarin monastery. Now I'm in my POH and the nexus and
+	 * jewelery box are highlighted with no sub-menu highlighting."</i>
+	 *
+	 * <p>The destination is re-resolved every tick, and the moment a stop <b>completes</b> is
+	 * exactly when it leaves {@link RunPlanner#getRemaining()} and the next leg is chosen greedily
+	 * from wherever the player is standing. {@link RunPlanner#committedStop} latches a leg once
+	 * chosen, so it was not wrong here — it simply had nothing left to hold at the instant
+	 * Ardougne finished. So the highlight moved between the eye and the click, and the click
+	 * landed on the answer to a question that had already changed.
+	 *
+	 * <p>The second half of that report is why this is not cosmetic. Following the stale highlight
+	 * put the player in their house with the destination now somewhere else, and the nexus and
+	 * jewellery box lit with <b>nothing lit inside them</b> — the outer highlight and the sub-menu
+	 * row are resolved separately, so once the two disagree the inner one cannot be derived at all.
+	 * A highlight that can be wrong by the time it is followed is worse than no highlight.
+	 *
+	 * <p>So: one tick of agreement before anything is pointed at. A destination that has just
+	 * changed shows nothing for a tick rather than showing the old answer or a half-resolved new
+	 * one, and the run is left saying where it is going in words — which never went wrong — while
+	 * it settles. The owner's read, and the shape they asked for: do not highlight until the
+	 * destination is known and locked in.
+	 *
+	 * <p>Nameless legs are unaffected: a null destination equals a null destination, so a hint
+	 * that travels without a name — the vehicle coming from the hops — settles immediately, as it
+	 * did before.
+	 */
+	private boolean destinationSettled(@Nullable String destination)
+	{
+		boolean settled = hintDestinationKnown
+			&& java.util.Objects.equals(destination, lastHintDestination);
+		lastHintDestination = destination;
+		hintDestinationKnown = true;
+		return settled;
 	}
 
 	/** Whether the front-door reroute below has already been asked for on this house visit. */
@@ -374,6 +464,50 @@ public class GuideTracker
 	}
 
 	/**
+	 * What the run still wants withdrawn, with counts, for the infobox tooltip.
+	 *
+	 * <p>Built here rather than in {@code ReadyInfoBox} for the reason {@link #supplyLines()}
+	 * gives: that class recomputes on every store change from whichever thread fired it, and this
+	 * walks the loadout and the planner. On this thread, this tick, the loadout build has already
+	 * been paid for — {@code DoogleMapsPlugin.onGameTick} asks {@code anythingLeftToWithdraw}
+	 * first, and {@code forRun} is cached per tick — so sampling it into the status costs a walk
+	 * of a cached list.
+	 *
+	 * <p>Only while a run is on: this answers "what do I still take out for the trip", which is a
+	 * question nobody has asked until they have started one — the loadout answers from the ticked
+	 * types either way, so ungated it was a shopping list for a trip that did not exist. Reported
+	 * from play.
+	 *
+	 * <p>Teleports are not on it, because the list is read as a set of orders and they are not
+	 * one: {@code TELEPORT} is deliberately absent from {@code CANNOT_PROCEED_WITHOUT}, so a
+	 * missing teleport has never held the supply leg and the run has always been happy to walk.
+	 * The sidebar's bank list still carries them with their need, which is where the detail
+	 * belongs.
+	 */
+	private java.util.List<String> withdrawLines()
+	{
+		if (!planner.isActive())
+		{
+			return java.util.Collections.emptyList();
+		}
+
+		java.util.List<String> items = new ArrayList<>();
+		for (com.dooglemaps.bank.LoadoutItem item : loadout.forRun(planner.coveredTypes()))
+		{
+			if (item.getNeed() != com.dooglemaps.bank.LoadoutItem.Need.WITHDRAW
+				|| item.getCategory() == com.dooglemaps.bank.LoadoutItem.Category.TELEPORT)
+			{
+				continue;
+			}
+			// A count only where one is a decision. "Bronze axe x1" is worse than "Bronze axe".
+			items.add(item.getOutstanding() > 1
+				? item.getName() + " x" + item.getOutstanding()
+				: item.getName());
+		}
+		return items;
+	}
+
+	/**
 	 * Everything the on-screen panel draws, as one consistent snapshot.
 	 *
 	 * <p>Sampled on the tick rather than read per frame — see {@link GuideStatus}.
@@ -407,19 +541,77 @@ public class GuideTracker
 		return status.getSteps();
 	}
 
-	/** Forgets the current guidance, so a stopped run stops instructing immediately. */
+	/**
+	 * Forgets the current guidance, so a stopped run stops instructing immediately.
+	 *
+	 * <h2>Shutdown only — this is not the run boundary</h2>
+	 *
+	 * {@code DoogleMapsPlugin.shutDown} calls this alongside every capture's {@code reset()},
+	 * and nothing else does. The run boundary is {@link #runEnded()}, which this delegates the
+	 * run-scoped half of the job to rather than keeping its own copy of the list — the two
+	 * copies drifting is precisely what produced the bug that method's note describes.
+	 *
+	 * <p>What is left here is the two things that are about the <i>plugin</i> stopping rather
+	 * than a run ending: the published status, and the last-seen region.
+	 */
 	public void reset()
 	{
 		status = GuideStatus.idle();
+		lastRegion = -1;
+		runEnded();
+	}
+
+	/**
+	 * Clears everything scoped to one run, at the moment a run ends.
+	 *
+	 * <h2>This is the run boundary, and {@link #reset()} is not</h2>
+	 *
+	 * Called from {@link #reportIdlePatches()}'s idle branch, which runs every tick the planner
+	 * is inactive — so it is reached on the tick a run stops and on every tick after it, which
+	 * is what makes it the boundary rather than merely a place the clearing happens to sit.
+	 *
+	 * <p>The distinction has already cost a bug. These clears once lived in {@code reset()}
+	 * alone, which made them session-scoped in practice while their docs claimed run scope: a
+	 * skipped "pay the farmer" then silently planted that patch unprotected on every later run
+	 * of the session, and a skipped pick-up was never offered again. A skip is a statement about
+	 * this run; the next run starts with none.
+	 *
+	 * <p>It is a <b>named method</b> rather than the unlabelled branch it used to be so that
+	 * "what is cleared when a run ends" is a question this class answers by its method names.
+	 * While it was inline, reading the class for the run boundary led to {@code reset()} — the
+	 * wrong method, giving a confident-looking answer — which is a mistake that has now been
+	 * made twice, once in play and once in review.
+	 */
+	private void runEnded()
+	{
+		// Said once a run, not once a session. The next run's dead crops are new news, and a
+		// downgrade the player is living with is worth repeating — these are meant to nag, and
+		// someone who does not want the nagging has a setting for each.
+		announcedResurrect.clear();
+		announcedDowngrade = null;
+
+		// So the first leg of the next run settles from scratch rather than inheriting agreement
+		// with wherever the last one finished. See destinationSettled.
+		lastHintDestination = null;
+		hintDestinationKnown = false;
+
+		// The infobox line, and it is not the same field as the one above. announcedDowngrade
+		// stops the chat repeating within a run; this is what the infobox reads, and it was
+		// cleared only by noteCompostDowngrade being reached again with nothing to report. A
+		// run that ends while downgraded therefore left "Fallen back to compost / Worth a
+		// compost bin run" standing on the infobox for the rest of the session, with no setting
+		// that takes it off — turning downgrading off does not clear a line already up.
+		// Reported from play as compost always showing there and not being dismissable.
+		downgradedTo = null;
+
+		skippedSteps.clear();
+		announcedBlock = null;
+		announcedDud = null;
+		loggedErrandsAt = null;
+		lastNamedStop = null;
 		working = null;
 		interrupted = null;
 		workingRegion = -1;
-		lastRegion = -1;
-		loggedErrandsAt = null;
-		announcedBlock = null;
-		announcedDud = null;
-		lastNamedStop = null;
-		skippedSteps.clear();
 	}
 
 	/**
@@ -658,6 +850,7 @@ public class GuideTracker
 		// the list is re-derived every tick, so once that note is followed the next crop's note
 		// surfaces by itself if the pack is somehow still full.
 		collapseDuplicateNotes(steps);
+		collapseDuplicateWithdrawals(steps);
 
 		// Anything waved past, dropped before anyone sees the list. Done here rather than inside
 		// stepsFor so the skip cannot leak into patchesWanting or the allocation — those are
@@ -674,8 +867,48 @@ public class GuideTracker
 		appendLeprechaunErrands(steps, stop);
 		appendContractErrands(steps, stop);
 		insertPickUpDrops(steps, stop, player);
+		noteLeadsWhenThePackIsFull(steps, carried.getFreeSlots());
 		noteStopOrder(stop, steps);
 		return steps;
+	}
+
+	/**
+	 * Puts the note step in front of a harvest that cannot happen until it is followed.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"noting potato cactus step didn't highlight the potato cactus or the lep"</i> — and the
+	 * session log shows why: {@code 4922.7909=HARVEST; 4922.4775=NOTE_AT_LEPRECHAUN}, the note
+	 * listed but never <b>current</b>, and the overlays light the current step only.
+	 *
+	 * <p>The note is raised inside the plan of the patch whose produce fills the pack, so it
+	 * leads only when <i>that</i> patch is the working patch. Here the working patch was another
+	 * harvest entirely — one the pack, at zero free slots, could not receive a single item of.
+	 * The order said "harvest first, then note"; the game only permits the reverse. The player
+	 * followed the note by hand, unlit.
+	 *
+	 * <p>So when nothing fits and the list leads with a harvest, the one surviving note (the
+	 * collapse above keeps exactly one) moves to the front. Gated on the same
+	 * {@code freeSlots <= 0} that raises the note in {@code GuidePlan} — with any room at all
+	 * the harvest can genuinely proceed and the order stands. A leading step that is not a
+	 * harvest is left alone: paying, planting and bin work need no free slot, and the pick-up
+	 * and errand steps have orderings of their own.
+	 */
+	static void noteLeadsWhenThePackIsFull(List<GuideStep> steps, int freeSlots)
+	{
+		if (freeSlots > 0 || steps.isEmpty()
+			|| steps.get(0).getAction() != GuideAction.HARVEST)
+		{
+			return;
+		}
+		for (int i = 1; i < steps.size(); i++)
+		{
+			if (steps.get(i).getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
+			{
+				steps.add(0, steps.remove(i));
+				return;
+			}
+		}
 	}
 
 	/**
@@ -736,18 +969,46 @@ public class GuideTracker
 	}
 
 	/**
-	 * The plural of a patch type's name.
+	 * The patches to outline on the way in, or none when this leg is not a walk up to them.
 	 *
-	 * <p>Only the sibilant rule, because that is the only one the patch names need: "bush"
-	 * becomes "bushes" and "cactus" becomes "cactuses", where everything else takes a plain s.
-	 * "Cactuses" over "cacti" deliberately — it is the form the game's own interfaces use.
+	 * <h2>Why the supply leg is not a walk up to them</h2>
+	 *
+	 * A stop's patches are lit while travelling so the last stretch is not walked with the whole
+	 * farm dark — see {@code GuideOverlay.highlightPatchesAhead}. The supply leg is a leg with no
+	 * steps, so the overlay's "no step means travelling" branch draws it too, and there the
+	 * highlight is answering a question nobody asked: the one thing to click is the bank.
+	 *
+	 * <p>Mostly invisible, because a bank usually stands a region or more from the patches and
+	 * none of the stop is in the scene to outline — though not reliably so, since a scene spans
+	 * regions and {@code destinationStop} matches touching ones. <b>The Farming Guild's bank is
+	 * inside the patch region itself</b>, so standing at the chest with the first leg outstanding lit
+	 * all thirteen patches at once — reported from play as every patch in the guild highlighted at
+	 * the start of a run. {@code destinationStop} resolves the chest's region to the guild stop
+	 * (region ids match), which is right for the panel's destination line and wrong for this.
+	 *
+	 * <p>Gated here rather than in the overlay for the reason {@link GuideStatus#getSupplySources()}
+	 * records: the planner knows which leg it is on, and an overlay that re-decides that is an
+	 * overlay that can disagree with the route being drawn.
+	 */
+	static List<FarmPatch> patchesAhead(@Nullable RunStop heading, boolean atBankLeg,
+		boolean travelling)
+	{
+		if (heading == null || atBankLeg || !travelling)
+		{
+			return java.util.Collections.emptyList();
+		}
+		return new ArrayList<>(heading.getPatches());
+	}
+
+	/**
+	 * The plural of a patch type's name — moved to {@link GuidePlan#plural}, which needs it too
+	 * and is the direction the dependency already runs: this class calls that one for
+	 * {@code usableCompost} and {@code seedAtHand}. The rules (sibilants, the -y family) live
+	 * with the implementation.
 	 */
 	private static String plural(String name)
 	{
-		return name.endsWith("s") || name.endsWith("x") || name.endsWith("z")
-			|| name.endsWith("ch") || name.endsWith("sh")
-			? name + "es"
-			: name + "s";
+		return GuidePlan.plural(name);
 	}
 
 	/** The last stop ordering logged, so it is said once per distinct answer. */
@@ -1176,7 +1437,14 @@ public class GuideTracker
 		return config.downgradeCompost() ? downgradedTo : null;
 	}
 
-	/** The downgrade last announced, as {@code group#wanted#using}, so it is said once. */
+	/**
+	 * The downgrade last announced, as {@code group#wanted#using}, so it is said once a run.
+	 *
+	 * <p>Run-scoped rather than session-scoped, deliberately: a player running with the wrong
+	 * compost every run is being told every run, because that is the run it applies to and
+	 * {@code DoogleMapsConfig.downgradeCompost} is the switch for anyone who has heard enough.
+	 * Cleared in {@link #runEnded()}.
+	 */
 	@Nullable
 	private String announcedDowngrade;
 
@@ -1223,25 +1491,7 @@ public class GuideTracker
 		{
 			planner.setNothingToDo(java.util.Collections.emptySet());
 			planner.setWithdrawOutstanding(false);
-			// Cleared with the run, like the contract announcements: the next run's dead
-			// crops are new news.
-			announcedResurrect.clear();
-
-			// Everything else that is scoped to "this run" is cleared here too — this branch
-			// runs every tick the planner is inactive, which makes it the run boundary that
-			// reset() never was. reset() is wired to plugin shutdown only, so these used to be
-			// session-scoped in practice while their docs claimed run scope; a skipped
-			// "pay the farmer" then silently planted that patch unprotected on every later
-			// run of the session, and a skipped pick-up never offered again. A skip is a
-			// statement about this run; the next run starts with none.
-			skippedSteps.clear();
-			announcedBlock = null;
-			announcedDud = null;
-			loggedErrandsAt = null;
-			lastNamedStop = null;
-			working = null;
-			interrupted = null;
-			workingRegion = -1;
+			runEnded();
 			return;
 		}
 
@@ -1513,10 +1763,17 @@ public class GuideTracker
 			// It matters because the contract is a chain: hand in, take the next, plant it on this
 			// same trip. Every guild patch done before the hand-in is a step further from starting
 			// that chain, and the last link expires when you leave.
-			steps.add(0, GuideStep.atNpc(GuideAction.HAND_IN_CONTRACT, anchor, handIn.getItemID(),
+			// No item on this step, and that is the correction rather than an omission. It carried
+			// the produce's id, which outlined it in the pack — and an outlined crop beside "hand
+			// your X to Jane" says the crop is the price of the reward. It is not: the contract
+			// completed when it was harvested, the produce is yours to keep, and noting it at the
+			// leprechaun on the way past costs nothing. Corrected by the owner.
+			//
+			// owesYouSomething never required it either — it asks the patch whether it still owes
+			// a check or a pick — so nothing but the wording and the outline was ever wrong.
+			steps.add(0, GuideStep.atNpc(GuideAction.HAND_IN_CONTRACT, anchor, -1,
 				ContractState.GUILDMASTER_JANE,
-				"Hand your " + handIn.getName().toLowerCase()
-					+ " to Guildmaster Jane for the contract reward."));
+				"Talk to Guildmaster Jane to claim the contract reward."));
 			return;
 		}
 
@@ -1567,11 +1824,11 @@ public class GuideTracker
 	 * a footnote. Asked for from play.
 	 *
 	 * <p>Only when following it leads somewhere: the contract's patch must be part of this
-	 * stop and be ground a plant can actually reach this trip — empty, or a picked-clean
-	 * spade-cleared crop the replant machinery already knows how to take out. Anything else
-	 * standing there has its own answer (the blocked note, the dud note, or the patch's own
-	 * steps), and a withdraw step in front of those would be a shopping trip for a seed with
-	 * nowhere to go.
+	 * stop and be ground a plant can actually reach this trip — empty, a <b>dead</b> crop, or a
+	 * picked-clean spade-cleared crop, the last two being ground the replant machinery already
+	 * knows how to take out. Anything else standing there has its own answer (the blocked note,
+	 * the dud note, or the patch's own steps), and a withdraw step in front of those would be a
+	 * shopping trip for a seed with nowhere to go.
 	 *
 	 * <p>{@link #contractNote} asks this too, and goes quiet when it answers — the note and
 	 * the step saying the same thing at once is the duplicate this replaces.
@@ -1612,19 +1869,41 @@ public class GuideTracker
 			{
 				continue;
 			}
-			if (!outstandingFor(patch, stop).isEmpty())
+
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection == null)
 			{
-				// The trip already has clicks for this ground; the seed is not the blocker yet.
+				// Unknown ground gets no shopping trip.
 				return null;
 			}
 
-			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
-			if (projection == null || projection.getProduce() == contract)
+			// A dead crop is the one occupant that answers every test below the wrong way, and
+			// it is why this reads as three exemptions rather than one condition. Reported from
+			// play: the run walked to the guild, asked for the dead contract to be cleared, and
+			// only then — with the patch finally empty — offered the seed that was in the bank
+			// the player had walked past to get there. Two crossings of the guild for one patch.
+			//
+			// It is not a fourth state to reason about: dead ground is ground the run is
+			// already going to clear, which is exactly the argument the spade-cleared allowance
+			// below makes for a stripped bush. The seed is wanted on this trip either way, so
+			// the fetch belongs in front of the walk rather than behind the clear.
+			boolean dead = projection.getCropState() == com.dooglemaps.data.CropState.DEAD;
+
+			if (!dead && !outstandingFor(patch, stop).isEmpty())
 			{
-				// Unknown ground gets no shopping trip; the contract already planted needs none.
+				// The trip already has clicks for this ground; the seed is not the blocker yet.
+				// A dead patch has clicks too — the clear — and they are the very clicks the
+				// seed has to arrive before, so this cannot be the test that turns it away.
 				return null;
 			}
-			if (!projection.isEmpty()
+			if (!dead && projection.getProduce() == contract)
+			{
+				// The contract already planted needs none — but a dead one is not planted, it
+				// is a seed that has to be spent again. Same distinction contractIsInTheGround
+				// draws, for the same reason.
+				return null;
+			}
+			if (!dead && !projection.isEmpty()
 				&& !(projection.isReady()
 					&& SpadeClearedCrops.isSpadeCleared(patch.getImplementation())))
 			{
@@ -2171,7 +2450,13 @@ public class GuideTracker
 			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
 		{
 			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
-			if (projection != null && projection.getProduce() == contract)
+			if (projection != null && projection.getProduce() == contract
+				// A dead crop is not the contract in the ground; it is the contract's seed
+				// spent for nothing, and another one is needed. Reading it as planted made
+				// missingContractSeed go quiet exactly when the player owns no seed and is
+				// about to walk to a patch they cannot refill — the same "in the ground means
+				// spent" error contractDudPatch exists to correct one state over.
+				&& projection.getCropState() != com.dooglemaps.data.CropState.DEAD)
 			{
 				return true;
 			}
@@ -2511,6 +2796,49 @@ public class GuideTracker
 	 * patches listed it four times. The first occurrence is the working patch's, which names the
 	 * crop being harvested right now, so it is the copy worth keeping.
 	 */
+	/**
+	 * One trip to the leprechaun's compost, said once.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"in the infobox plan I have withdraw compost listed multiple times"</i>. A Falador stop
+	 * emitted it three times over, once per patch — from that run's own log:
+	 *
+	 * <pre>
+	 * 4773=WITHDRAW_COMPOST; 4773=APPLY_COMPOST;
+	 * 4771=WITHDRAW_COMPOST; 4771=APPLY_COMPOST;
+	 * 4772=WITHDRAW_COMPOST; 4772=APPLY_COMPOST;
+	 * </pre>
+	 *
+	 * <p>Each patch asks for its own compost, which is right — the treating is per patch. The
+	 * <b>withdrawal</b> is not: {@code GuidePlan.addCompostSteps} already takes
+	 * {@code patchesToTreat} and words the step as enough for all of them, so three copies each
+	 * asking for the full amount is one instruction printed three times.
+	 *
+	 * <h2>Keyed on the tier, not on the action</h2>
+	 *
+	 * Unlike {@link #collapseDuplicateNotes}, which keeps exactly one. A split herb type can want
+	 * ultracompost on the protected patches and supercompost on the rest — see
+	 * {@code CompostSelectionStore} — and those are two real trips for two different buckets.
+	 * Collapsing by action alone would drop one of them and send the run out short.
+	 *
+	 * <p>Same re-derived-every-tick property the note collapse relies on: once the withdrawal is
+	 * made the step stops being generated at all, so nothing has to remember that it was shown.
+	 */
+	private static void collapseDuplicateWithdrawals(List<GuideStep> steps)
+	{
+		java.util.Set<Integer> seen = new java.util.HashSet<>();
+		for (java.util.Iterator<GuideStep> it = steps.iterator(); it.hasNext(); )
+		{
+			GuideStep step = it.next();
+			if (step.getAction() == GuideAction.WITHDRAW_COMPOST
+				&& !seen.add(step.getItemId()))
+			{
+				it.remove();
+			}
+		}
+	}
+
 	private static void collapseDuplicateNotes(List<GuideStep> steps)
 	{
 		boolean seen = false;
@@ -3030,16 +3358,37 @@ public class GuideTracker
 			? chosen
 			: Seed.forProduce(projection.getProduce());
 		boolean alreadyPaid = snapshot != null && snapshot.isPatchProtected();
+
+		// Is or will be protected, which is not the same as "still owes a payment". The payment
+		// step stands down the moment the farmer takes it; the crop is at its most protected
+		// exactly then, so the compost question has to be asked of this rather than of the
+		// step's own flag. See GuidePlan's paidToProtect parameter.
+		boolean paidToProtect = alreadyPaid || protection.isProtecting(group, inGround);
+
 		// The tier the plan will actually use, asked here so the downgrade can be announced
 		// once rather than from inside a pure function called per patch per tick.
 		CompostTier wantedTier = compost.get(group);
-		noteCompostDowngrade(group, wantedTier,
-			GuidePlan.usableCompost(wantedTier, carried, leprechaun));
+
+		// Suppressed before the note, not after. A bucket withheld because the farmer is being
+		// paid is not a downgrade — nothing is missing and nothing needs fetching — and
+		// announcing "using compost instead of ultracompost" there would be the plugin
+		// apologising for a choice it made on purpose.
+		if (com.dooglemaps.timer.CropYieldModel.compostWastedOnProtected(
+			chosen != null ? chosen : inGround, paidToProtect))
+		{
+			wantedTier = CompostTier.NONE;
+		}
+		else
+		{
+			noteCompostDowngrade(group, wantedTier,
+				GuidePlan.usableCompost(wantedTier, carried, leprechaun));
+		}
 
 		return GuidePlan.forPatch(projection,
 			snapshot == null ? null : snapshot.getCompost(),
 			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
 			!alreadyPaid && protection.isProtecting(group, inGround),
+			paidToProtect,
 			harvestShapedOnly || !fullRun, patchesToTreat,
 			binHereWants(patch, projection.getProduce()),
 			itemNames);
@@ -3400,7 +3749,7 @@ public class GuideTracker
 		// while and read as noise to the person seeing it every stop. Removed by request.
 		steps.add(GuideStep.atLeprechaun(GuideAction.NOTE_AT_LEPRECHAUN,
 			stop.getPatches().get(0), noteItem, null,
-			"Note your " + noteName + " with the leprechaun before moving on."));
+			"Note your " + plural(noteName) + "."));
 	}
 
 	/**

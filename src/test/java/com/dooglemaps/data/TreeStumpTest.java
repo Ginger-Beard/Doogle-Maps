@@ -142,12 +142,16 @@ public class TreeStumpTest
 	 * walks every value of every excluded family and insists none of them is ever a stump.
 	 */
 	@Test
-	public void nothingButTreesHardwoodsAndTheCelastrusIsEverAStump()
+	public void nothingButTreesHardwoodsFruitTreesAndTheCelastrusIsEverAStump()
 	{
 		for (PatchImplementation implementation : PatchImplementation.values())
 		{
 			if (implementation == PatchImplementation.TREE
-				|| implementation == PatchImplementation.HARDWOOD_TREE)
+				|| implementation == PatchImplementation.HARDWOOD_TREE
+				// Added with the fruit tree chop. Its stumps are pinned by value in
+				// fruitTreeStumpsAreExactlyTheEightUpstreamNames below, which is the stronger
+				// statement — this loop only says no other family grew one by accident.
+				|| implementation == PatchImplementation.FRUIT_TREE)
 			{
 				continue;
 			}
@@ -198,5 +202,74 @@ public class TreeStumpTest
 		assertFalse(PatchImplementation.TREE.isStumpVarbitValue(0));
 		assertFalse(PatchImplementation.TREE.isStumpVarbitValue(-1));
 		assertFalse(PatchImplementation.TREE.isStumpVarbitValue(255));
+	}
+
+	/**
+	 * The eight fruit tree stumps, by value, exactly as the client sources name them.
+	 *
+	 * <h2>Why these are pinned and the tree ones are not</h2>
+	 *
+	 * A tree's stump is found by a shape in the decode table — a pair of stage-0 harvestable
+	 * values behind a growing one — and that shape is self-checking: if a renumber broke it the
+	 * rule would find nothing rather than find the wrong thing. A fruit tree's is separated from
+	 * a <i>picked-clean tree still standing</i> only by what sits immediately before it, and
+	 * those two states are one value apart. Getting it wrong does not go quiet: it makes the
+	 * guide say "dig up the palm stump" at a standing tree, forever, which is the stale
+	 * instruction class the stump rule exists to prevent.
+	 *
+	 * <p>So the values are written down. Taken from
+	 * {@code net.runelite.client.plugins.timetracking.farming.PatchImplementation} in the
+	 * client sources, each of which carries its own comment — value 225 is
+	 * {@code // Palm tree stump[Clear,Inspect,Guide] 8104}. If a RuneLite update renumbers the
+	 * fruit tree table this fails here, which is the point.
+	 */
+	@Test
+	public void fruitTreeStumpsAreExactlyTheEightUpstreamNames()
+	{
+		int[] stumps = {33, 60, 97, 124, 161, 188, 225, 252};
+		for (int value : stumps)
+		{
+			assertTrue(value + " is named as a fruit tree stump upstream",
+				PatchImplementation.FRUIT_TREE.isStumpVarbitValue(value));
+		}
+
+		java.util.Set<Integer> expected = new java.util.HashSet<>();
+		for (int value : stumps)
+		{
+			expected.add(value);
+		}
+		for (int value = 0; value < 256; value++)
+		{
+			if (!expected.contains(value))
+			{
+				assertFalse("no other fruit tree value is a stump, and " + value + " read as one",
+					PatchImplementation.FRUIT_TREE.isStumpVarbitValue(value));
+			}
+		}
+	}
+
+	/**
+	 * The value one below each stump is the <b>standing</b> picked-clean tree, and must not be.
+	 *
+	 * <p>Stated separately because it is the confusion the rule exists to resolve, and it would
+	 * survive a careless widening of the test above: both decode {@code HARVESTABLE} at stage 0,
+	 * and one is chopped while the other is dug.
+	 */
+	@Test
+	public void aPickedCleanFruitTreeStandingIsNotItsStump()
+	{
+		// The palm: 206 is "Palm tree[Chop-down,Inspect,Guide,Pick-coconut]" with no fruit left,
+		// 225 is the stump it becomes.
+		assertFalse("a standing palm with no coconuts is not a stump",
+			PatchImplementation.FRUIT_TREE.isStumpVarbitValue(206));
+		assertTrue(PatchImplementation.FRUIT_TREE.isStumpVarbitValue(225));
+
+		ProduceState standing = PatchImplementation.FRUIT_TREE.forVarbitValue(206);
+		ProduceState stump = PatchImplementation.FRUIT_TREE.forVarbitValue(225);
+		assertNotNull(standing);
+		assertNotNull(stump);
+		assertEquals("both read as the same crop in the same state, which is the whole problem",
+			standing.getCropState(), stump.getCropState());
+		assertEquals(standing.getProduce(), stump.getProduce());
 	}
 }

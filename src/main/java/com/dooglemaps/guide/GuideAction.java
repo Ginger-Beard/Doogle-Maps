@@ -179,7 +179,16 @@ public enum GuideAction
 	 */
 	POT_SEED("Pot the seed first"),
 
-	HAND_IN_CONTRACT("Hand in the contract"),
+	/**
+	 * Claiming the reward, which is a conversation and not a delivery.
+	 *
+	 * <p>Named "Hand in the contract" first, and both halves of that were wrong: nothing is handed
+	 * over. The contract completes when the crop is harvested — the game says so in the chat box,
+	 * which is the event {@code ContractCapture} watches — and Jane simply pays out afterwards. The
+	 * produce is yours: note it at the leprechaun and keep it, then go and talk to her. Corrected
+	 * by the owner.
+	 */
+	HAND_IN_CONTRACT("Claim the contract reward"),
 
 	/**
 	 * Ask her for the next one.

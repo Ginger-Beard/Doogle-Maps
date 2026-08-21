@@ -2477,3 +2477,850 @@ I'm standing at the falador patches with allotment and flower harvested and I'm 
 > Still open and now precisely stated: **the seed box model cannot be trusted until the box has
 > been opened once in a session.** The plugin has no way to read it before that. Worth deciding
 > whether the run should ask for that up front the way it asks for tools.
+
+if we know our farming contract is dead, don't have me walk all the way over to clear it, before getting the seed from the bank/vault
+> RESOLVED, in the half that was actually broken. Two halves were checked and only one was wrong.
+>
+> **The supply leg was already right, and this is worth recording so it is not "fixed" twice.**
+> A dead patch is actionable (`RunPlanner.isActionable`, `case DEAD`), so it reaches
+> `actionableByGroup`; `plantsNothing` is false for a contract group whose crop is not ripe; so
+> `selection.getSelectedFor(contractGroup)` hands the contract seed to `seedsWantedThisRun`, and
+> `getSupplySources` puts BANK or SEED_VAULT on the list. A dead contract with a banked seed has
+> always opened the run at a bank.
+>
+> **What went wrong was inside the guild stop.** `contractSeedFetch` — the step that says
+> "withdraw your seed from the bank here" — stood down for a dead crop, and did so three times
+> over: the patch has outstanding clicks (the clear), its produce is the contract's, and it is
+> not empty ground. All three tests read a dead crop as "not ready for a seed yet". So the run
+> sent the player across the guild to clear the patch, and only once the ground was bare did the
+> seed in the bank they had walked past become a step. Two crossings of the guild for one patch,
+> which is the complaint exactly.
+>
+> The fix is one exemption, not a fourth state: dead ground is ground the run is already going to
+> clear, which is the same argument the spade-cleared allowance already makes for a stripped
+> bush. The seed is wanted on this trip either way, so the fetch goes in front of the walk. It
+> is still front-of-queue, so the order is now: withdraw the seed, walk over, clear, plant.
+>
+> **A second bug fell out of the same reading.** `contractIsInTheGround` counted a dead crop as
+> the contract planted, so `missingContractSeed` treated the seed as already spent and said
+> nothing — silence at the one moment the player owns no seed and is about to walk to a patch
+> they cannot refill. Same "in the ground means spent" error `contractDudPatch` exists to correct
+> one state over. A dead crop is now not in the ground.
+>
+> Tests: `ContractSeedFetchStepTest.aDeadContractCropIsFetchedForBeforeTheWalkOver`,
+> `aDeadCropOfAnotherProduceIsAlsoClearedForThisTrip`, `aDeadContractWithNoSeedOwnedStillSaysSo`.
+> All three were confirmed to fail against the unfixed code before being kept.
+>
+> Unverified in the client: the whole path needs a dead guild contract with its seed banked.
+> Fail signature — if the fetch step still appears only after the clear, the exemption is not
+> reaching `contractSeedFetch`; if it appears but names the wrong container,
+> `contractSeedStorageHere` is the place to look, not this change.
+
+when paying for protection we shouldn't compost (on that specific seed/sapling). Also that section should collapse within the "Select seed" drop down.
+> RESOLVED, both halves.
+>
+> **Compost.** A protection payment is immunity outright — `DiseaseRisk.survivalChance` returns 1
+> for a protected patch, not a better number — so the disease half of what compost buys is already
+> paid for. On a seed with no lives mechanic there is no other half, and the bucket buys nothing.
+>
+> Scoped **per seed**, which is what "on that specific seed/sapling" asks for and is also the only
+> correct scope: compost still raises the yield on herbs, allotments, hops and giant seaweed
+> through the lives mechanic, so a protected ranarr wants its ultracompost as much as ever — there
+> the payment buys survival and the bucket buys herbs, and they are different purchases.
+> Suppressing on "is this protected" alone would have quietly cost a harvest on every protected
+> herb and allotment run. `CropYieldModel.respondsToCompost` is the existing single home for
+> "does compost move this seed's yield", so the new `compostWastedOnProtected` is built on it
+> rather than on a second answer that could drift from it.
+>
+> Three sites, one predicate: `GuidePlan`'s pre-plant branch (asked of the seed going in), its
+> just-planted stage-0 branch (asked of the crop standing there), and `RunLoadout.addCompost`
+> (per group, so it only drops the bucket when *every* seed picked for that group agrees — a tab
+> holding a protected sapling beside a ranarr still banks compost for the ranarr).
+>
+> Two things worth knowing about the edges. `GuidePlan` gained a `paidToProtect` parameter rather
+> than reusing `protecting`, because that one means "a payment is still owed" and goes false the
+> moment the farmer takes it — which is exactly when the crop is most protected, and would have
+> let the after-planting branch re-offer compost on a tree that had just been paid for. And the
+> suppression happens *before* `noteCompostDowngrade`, so a withheld bucket is not announced as
+> "using compost instead of ultracompost"; nothing is missing, so there is nothing to apologise
+> for.
+>
+> **The panel.** `protectPanel` moved inside `seedBody`, so it collapses with "Select seed". The
+> rows are one checkbox per seed — the same seeds as the grid directly above them — so a
+> collapsed seed section that still showed a column of seed names was putting away the one thing
+> it was meant to. The compost picker and its note stay outside deliberately: that is one choice
+> for the whole group rather than one per seed. Say so if it should collapse too — it is a
+> one-line move.
+>
+> Tests: `GuidePlanTest.aProtectedSaplingIsNotComposted` (and its counter-case
+> `aProtectedCropWithLivesIsStillComposted`, which is a guard rail rather than a regression —
+> it passes either way and exists so a later blanket rule fails here),
+> `RunLoadoutTest.aFullyProtectedTreeRunBanksNoCompost` and `anUnprotectedTreeRunStillBanksItsCompost`.
+> The two behaviour tests were confirmed to fail against the unfixed code.
+>
+> Unverified in the client: a tree or fruit tree run with protection ticked, checking that no
+> compost is asked for at the patch and none is banked for on the way out.
+
+I'm not being prompted to chop down my palm tree on a fruit tree run - after harvesting
+> RESOLVED. `PatchProjection.isChoppable` listed trees, hardwoods, the crystal tree and the
+> celastrus, and no fruit tree — so the chop step did not exist. `RunPlanner.wantsReplantClear`
+> was gated on `SpadeClearedCrops` ({BUSH, CACTUS}), so once the fruit was picked the patch also
+> stopped being *actionable* and the run walked away from it. Both halves had to move.
+>
+> **The order is the careful part.** A tree is check, chop, dig. A fruit tree is check,
+> **harvest**, chop, dig — the owner's correction, and the client sources agree: the grown palm's
+> menu is recorded as `Palm tree[Chop-down,Inspect,Guide,Pick-coconut]`, both options at once.
+> So the chop is gated on there being no fruit left, which lets the harvest branch run itself out
+> first. Regular trees are untouched.
+>
+> **And it will not fell a tree it cannot replace.** A farmed tree never comes back, so chopping
+> one is simply how the patch finishes. A fruit tree regrows fruit forever, so the chop is offered
+> only where the run has a sapling at hand for that patch — the same test the picked-clean bush
+> already makes.
+>
+> **The stump.** A fruit tree's harvestable stage IS its fruit count, so a stripped tree and its
+> stump both decode HARVESTABLE stage 0 and are one value apart. What separates them is what sits
+> before: every fruit's block runs growing, harvestable, diseased, dead, then the stump. Confirmed
+> against the client sources, which name each one — value 225 is
+> `// Palm tree stump[Clear,Inspect,Guide] 8104`. The eight values (33, 60, 97, 124, 161, 188,
+> 225, 252) are pinned by `TreeStumpTest.fruitTreeStumpsAreExactlyTheEightUpstreamNames`, because
+> getting this wrong does not go quiet — it makes the guide say "dig up the palm stump" at a
+> standing tree forever.
+>
+> Deliberately NOT added to `SpadeClearedCrops`: that set answers "does a spade take this straight
+> out", which `contractSeedFetch` relies on, and a fruit tree wants an axe first.
+>
+> Tests: `GuidePlanTest.aFruitTreeIsHarvestedBeforeItIsChopped`, `aStrippedFruitTreeIsChopped`,
+> `aStrippedFruitTreeIsLeftStandingWithNothingToReplant`, `aFruitTreeStumpIsDugUp`, plus the two
+> `TreeStumpTest` pins. Confirmed to fail against the unfixed code.
+>
+> Unverified in the client: a fruit tree run with a sapling banked, through harvest, chop, dig and
+> replant. Fail signature — if the chop appears while fruit is still on the tree, `hasProduceToPick`
+> is not reading the fruit count; if "dig up the stump" appears at a standing tree, the stump rule
+> has picked the wrong value and `TreeStumpTest` is where to look.
+
+compost always shows up as a notification I can't turn off in the infobox
+> RESOLVED, and it was not the bin grouping. `GuideTracker.downgradedTo` — the field
+> `ReadyInfoBox` reads for its "Fallen back to <tier> / Worth a compost bin run" line — was set
+> when a downgrade happened and cleared only by `noteCompostDowngrade` being reached again with
+> nothing to report. A run that ended while downgraded left the line standing for the rest of the
+> session, and turning "Fall back to weaker compost" off does not clear a line already up, which
+> is exactly "I can't turn it off".
+>
+> Now cleared in `runEnded()` alongside its siblings. Note it is a *different* field from
+> `announcedDowngrade`, which stops the chat line repeating within a run; the two had drifted
+> apart because only one of them was ever at the run boundary. Same shape as the bug that
+> boundary's own note describes.
+
+the whole compost tab should have one outer collapse for all compost items - supercompost, compost, compost these, and the two checkboxes
+> RESOLVED. The tab had three collapses and no outer one, so a player who had finished
+> configuring compost still gave up most of the sidebar to it and the run planner and patch
+> statuses were pushed off the bottom. The owner's reasoning, and it is the same one the seed
+> selector's "Select seed" collapse was built on: this is configured rarely and then folded away.
+>
+> Everything now sits inside one "Compost (N picked)" heading — both fill lists, the volcanic ash
+> checkbox, the fodder checkbox, its note and the whole "Compost these" group. The three inner
+> sections still fold on their own inside it, and the state persists through `PanelLayoutStore`
+> under `binAll` like every other section.
+>
+> The "Farming Guild bin" label stayed, but moved inside: it names the two fill lists, which are
+> the guild bin's alone, and the outer heading cannot carry that name now that it covers the seven
+> allotment bins too. The outer count sums fills and fodder crops, because folded away they are
+> one question — "is compost set up".
+>
+> One thing that shaped the layout rather than being a choice: `refreshFodder` does
+> `fodderHeading.setVisible(on)`, so the fodder section's own collapse toggle only exists while
+> its checkbox is ticked. That checkbox therefore cannot live inside the fodder section — it would
+> become unreachable once switched off — which is why it sits above that group rather than in it.
+>
+> Tests: `CompostBinPanelLayoutTest.thereAreFourOfThem` and `theOuterCollapseFoldsTheEntireTab`;
+> the two existing counts were updated rather than loosened.
+
+presets for the run checkboxes - a dropdown with save/delete that remembers the tickbox positions, nameable, so you can quickly do a herb run or tree run without reconfiguring each time
+> BUILT, 2026-08-18. Spec in `docs/run-presets-spec.md`, which was written first and is kept as
+> the record of the decisions.
+>
+> `RunPresetStore` (a `ProfileJsonStore` under key `runPresets`) holds name to `RunOption` **key**
+> list. Keys rather than resolved options for the reason `RunTypeStore` already stores them that
+> way: a line can be a planting group or a mode, not merely a patch type — and it means a preset
+> survives the offered list changing under it. A key for a line currently hidden stays in the
+> preset and simply is not ticked, so switching the type back on brings it back.
+>
+> The control is an editable dropdown plus Save and Delete, above the tickboxes. Selecting a name
+> applies it at once; typing a name and pressing Save stores the current ticks; pressing Save with
+> a saved name selected overwrites it. Delete forgets the preset and leaves the ticks alone —
+> deleting a bookmark should not change where you are standing. The box shows `(unsaved)` whenever
+> the ticks match no preset, so it never claims a name you have edited away from.
+>
+> Applying goes through `RunTypeStore.setSelected(ticked, offered)` rather than writing the blob,
+> because that method carries the offered-list rule and the contract retargeting.
+>
+> **Run types only**, deliberately, per the spec: not seeds (`RunTypeStore`'s own note — "seeds
+> change constantly as stock runs out", so a preset would be stale within a week), and never
+> availability, which is a global invariant with one home.
+>
+> Tests: `RunPresetStoreTest` — save, overwrite, order, order-insensitive matching, trimming,
+> deletion, the config round trip, and a malformed blob being dropped entry by entry.
+>
+> Unverified in the client: making a herb preset and a tree preset and switching between them.
+
+the run presets broke the checkbox highlighting - random items are highlighted unrelated to the saved profile
+> RESOLVED, and it was a regression from the presets rather than anything they revealed.
+>
+> The tick colour is the plugin's own (`RunPanel.dimIfUnticked` sets the foreground from the tick
+> state), so it only changes where something asks for it. The checkbox's own ActionListener asked.
+> **`refresh()` did not** — it synced `box.setSelected(...)` from the store and left the colour
+> alone. For as long as clicking was the only way to move a box that was invisible, because the
+> click path always recoloured.
+>
+> Applying a preset moves every box at once from inside `refresh()`, so each one kept the colour
+> of the selection before it: boxes lit with nothing ticked, ticked boxes reading as off. Which is
+> exactly "random items highlighted unrelated to the saved profile".
+>
+> `refresh()` now recolours unconditionally — not only when it changed the tick, because the
+> colour can be stale while the tick is already right, and it is one field assignment either way.
+>
+> **This is the second bug of this exact shape**, which is worth recording. `setSelected` does not
+> fire an ActionListener, so every path that moves a box in code has to recolour it by hand: the
+> first was the paired full/harvest-only lines ("Bush and Cactus always stay bright when
+> unchecked"), fixed in `untick` and covered by
+> `RunListAppearanceTest.aCounterpartUntickedByThePanelDimsToo`. A third path will do it again.
+> If it recurs, the fix is to stop scattering the call — wrap the tick and the colour in one
+> method that is the only way this panel moves a box.
+>
+> Test: `RunListAppearanceTest.aTickChangedWithoutAClickIsRecoloured`, driven through the store
+> rather than through a click, because a test that clicked would have gone on passing. Confirmed
+> to fail against the unfixed code.
+
+in the infobox plan I have withdraw compost listed multiple times
+> RESOLVED. The step list emitted one WITHDRAW_COMPOST per patch. From the run's own log, one
+> Falador stop:
+>
+>     4773=WITHDRAW_COMPOST; 4773=APPLY_COMPOST;
+>     4771=WITHDRAW_COMPOST; 4771=APPLY_COMPOST;
+>     4772=WITHDRAW_COMPOST; 4772=APPLY_COMPOST;
+>
+> The treating is per patch and that is right. The withdrawal is not: `GuidePlan.addCompostSteps`
+> already takes `patchesToTreat` and words the step as enough for all of them, so those were three
+> copies of one instruction, each asking for the full amount.
+>
+> `collapseDuplicateWithdrawals` now keeps the first per tier, beside the existing
+> `collapseDuplicateNotes` and for the same reason ("one visit, said once"). **Keyed on the tier
+> rather than the action**, unlike the note collapse: a split herb type can want ultracompost on
+> the protected patches and supercompost on the rest, and collapsing by action alone would drop
+> one and send the run out short of a bucket it had been told to bring.
+>
+> Tests: `LeprechaunErrandOrderTest.oneWithdrawalCoversEveryPatchAtTheStop` and
+> `twoDifferentTiersAreTwoWithdrawals`.
+
+remove the "withdraw them at any patch later" note, and shorten the noting steps to just "Note your strawberries"
+> DONE, all three places.
+>
+> - `CompostBinPlan`: the deposit step drops "- withdraw them at any patch later".
+> - `GuidePlan`: the full-pack note was "Your inventory is full - note the strawberry with the
+>   tool leprechaun."; now "Note your strawberries."
+> - `GuideTracker`: the leaving errand was "Note your X with the leprechaun before moving on.";
+>   now "Note your Xs."
+>
+> One thing the shortening needed that the old wording hid: `plural` lived in `GuideTracker` and
+> every caller passed a **patch type** name — "herb", "allotment" — none of which ends in a
+> consonant and a y, so adding an s was always right. These steps pass **produce** names, and the
+> first one anyone reads it on is the strawberry. The rule moved to `GuidePlan` (the direction the
+> dependency already runs) and gained the -y case, so it is "strawberries" and not "strawberrys".
+> Pinned by `GuidePlanTest.cropNamesArePluralisedTheWayEnglishDoes`.
+
+weird timing bug - finished at Ardougne farm, prompted to teleport home via the home tab; by the time I clicked, it had swapped to my Ardougne cloak (Kandarin monastery). Now I'm in my POH and the nexus and jewellery box are highlighted with no sub-menu highlighting
+> RESOLVED, 2026-08-18.
+>
+> Two failures, and the second is a consequence of the first.
+>
+> **The highlight moved between the eye and the click.** The run re-decided its destination while
+> the player was reaching for the item the previous decision had named. `GuideTracker.onGameTick`
+> resolves `destinationStop` every tick and pushes it to `RunPlanner.commitDestination`; the
+> latch added for the mid-journey swing (`open-issues.txt`, "the destination is chosen once and
+> kept") holds a stop once it is named, but this happened at the moment a stop **completed** —
+> Ardougne finishing is exactly when it leaves `getRemaining()` and the next leg is chosen
+> greedily from wherever the player is. So the latch was not wrong, it simply had nothing to hold.
+>
+> **Then the POH highlight had no sub-target.** Arriving in the house with the destination now
+> Kandarin monastery, the nexus and the jewellery box both lit with nothing lit inside them. The
+> route item highlight and the sub-menu highlight are resolved separately — see
+> `GuideInventoryOverlay.highlightTravelItem` and the jewellery-box handling — so a destination
+> that changed after the item was chosen leaves the outer highlight pointing at furniture and the
+> inner one with no answer.
+>
+> **The owner's read, and it is the right shape:** do not highlight a travel item until the
+> destination is known *and latched*. An item highlighted against a destination that can still
+> move is an instruction that can be wrong by the time it is followed — and the POH case shows
+> the failure is not merely cosmetic, because the sub-menu highlight cannot be derived at all
+> once the two disagree.
+>
+> **The fix, as asked for: one tick of agreement before anything is pointed at.**
+> `GuideTracker.destinationSettled` compares this tick's destination with the last, and the
+> `TravelHint` is only built when they match. Every travel highlight hangs off that hint — the
+> teleport rows, the spell, the nexus, the jewellery sub-menu — so one gate covers all of them,
+> including the POH case that could not be derived at all.
+>
+> A destination that has just changed therefore shows **nothing** for a tick rather than showing
+> the old answer or a half-resolved new one. Nothing is lost while it settles: the run still says
+> where it is going in words, and the words never went wrong. Cleared in `runEnded()` so the first
+> leg of the next run settles from scratch. Nameless legs are unaffected — null agrees with null,
+> so the vehicle-from-the-hops case settles immediately as before.
+>
+> Tests: `NamelessLegStillHintsTest.aDestinationIsNotPointedAtUntilItHasHeldForATick` and
+> `aNamelessLegSettlesToo`.
+>
+> Unverified in the client: finishing a stop and watching the teleport highlight hold blank for a
+> beat rather than swapping under the cursor.
+>
+> Worth checking together with the Gnome Stronghold ordering item: both are the run re-deciding
+> something the player is already acting on.
+
+theres a bit of a game stutter every time I fill/empty my seedbox
+> RESOLVED. The box states its movement in the chat box **once per seed kind** — "Stored 6 x
+> Ranarr seed in your seed box." — so a box holding six kinds arrives as six messages inside one
+> tick. `SeedCapture.onChatMessage` turned each into a `moveInSeedBox`, and each of those wrote
+> config and fired every change listener. Six config writes and six full sidebar rebuilds, per
+> fill.
+>
+> Both halves were already known to be expensive here, and both have caused a reported stutter
+> before. A config write posts `ConfigChanged` **synchronously** into every subscriber in the
+> client, so six writes are six passes through every other installed plugin — the same shape as
+> the per-patch write burst on region entry that `PatchStateStore.asOneWrite` exists to stop. And
+> `store()`'s own note already recorded the other half: *"writing config on each one is what made
+> banking feel like it stuttered."*
+>
+> **Coalesced to the tick rather than batched round a block.** `asOneWrite` takes a `Runnable`
+> because the patch scan is one loop with a beginning and an end; a chat burst has neither — the
+> messages are separate events and nothing knows how many are coming. So `moveInSeedBox` now holds
+> the write, and `SeedCapture.onGameTick` calls `flushSeedBoxWrites()` first, before it relearns
+> the pack. One write and one rebuild per tick however many kinds moved. The counts still change
+> in memory immediately; only the write and the announcement wait, so nothing that reads the store
+> sees a delay.
+>
+> **A second write path was found and deliberately left alone.** `rememberSeen` writes its own
+> `seedsEverSeen` key, once per seed kind the account has never held before. Not batched, because
+> it fires once in an account's life per crop and never again — it is not what anybody feels. The
+> test names the `seeds` key so it stays about the burst it was written for.
+>
+> Tests: `SeedBoxDriftTest.aFillOfManyKindsWritesOnce`, `everySeedInTheFillSurvivesTheFlush`,
+> `anIdleFlushIsFree`.
+>
+> Unverified in the client: filling and emptying a box of several kinds and watching for the
+> stutter. Fail signature — if it still stutters, the remaining cost is the rebuild rather than
+> the write, and `DoogleMapsPlugin.refresh` (a full panel refresh per change) is where to look.
+
+cross-group seed double-count in the bank list
+> RESOLVED. Found by reading, while chasing the herb-withdraw report that turned out not to be a
+> bug. `RunLoadout.allocate` runs once per planting group and each call seeded its stock map from
+> the **full** `seeds.getOwned(seed)`, with no ledger between them. So a seed picked in two groups
+> was planned into both: two ranarrs covering two protected patches *and* two ordinary ones, out
+> of a stock of two. The protected split makes it reachable in ordinary play, because protected
+> herbs and ordinary herbs are two groups over one stock.
+>
+> Both loops that allocate now spend a shared ledger down as they go — `addSeeds` and
+> `addPayments`, each with its own, walking the same groups in the same order over the same stock
+> so they cannot disagree about what is being planted. A group whose seed is used up simply
+> allocates its next choice, which is the spill a single group has always done.
+>
+> **Untested, deliberately and worth knowing.** A test needs two real groups over one stock, and
+> `RunLoadoutTest` mocks `PlantingGroups`, so the fixture produces exactly one group and the
+> obvious test passes against the broken code. One was written, checked against a neutralised
+> build, found to assert nothing, and removed rather than left as a false guarantee. Whoever next
+> needs to touch this should build the two-group fixture first — stubbing `groups.groupFor` per
+> patch is not enough on its own; the seed rows came out empty and the reason was not chased down.
+>
+> Open question the fix does not answer: **which group gets first claim**. It is currently
+> whichever `actionableByGroup` yields first. Arguably the contract group should, since its seed
+> is the one whose absence costs a reward.
+
+Harvest XP mismatch warnings for Strawberry
+> NOT A BUG in CropXp, and the warning is doing its job. Diagnosed from `harvests.csv`, which the
+> plugin writes for exactly this.
+>
+> Most strawberry rows agree within about one XP — 561.7/561.0, 740.1/739.0, 591.4/591.0,
+> 710.3/709.0, 532.0/531.0 — so the 29.0 harvest constant is right, and the sub-2.0 differences
+> are rounding that `xpMismatchTolerance` already absorbs without warning.
+>
+> Three rows do not, and they have a shape:
+>
+>     24 picks  predicted  740.1  actual  803.0   Falador North West   +62.9
+>     41 picks  predicted 1245.4  actual 1308.0   Ardougne North       +62.6
+>     42 picks  predicted 1248.4  actual 1274.0   Kourend South West   +25.6 (completed=false)
+>
+> **The cause, from the log rather than from arithmetic — the owner's read, and it is right.** A
+> first guess of "the twin allotment's picks leak in" was wrong. The free-slot trace across the
+> Falador harvest settles it:
+>
+>     10:28:31  16 free   picking starts
+>       ...     one slot per pick, steadily
+>     10:28:54   3 free   pack nearly full
+>     10:29:15  17 free   <- noted at the leprechaun and came back
+>     10:29:18  16 free   picking resumes
+>       ...
+>     10:29:34   7 free   record written, 24 picks
+>
+> A twenty-one second gap, and the slots jump 3 -> 17. **The harvest record stays open across the
+> leprechaun trip and collects whatever experience arrives in the meantime.** That also explains
+> why the excess is not a clean multiple of one pick's 29.725: it is whatever landed inside an
+> interrupted window, not a tidy number of strawberries.
+>
+> It fits the rest of the data. The rows that match — 17, 18, 19, 23 picks — all fit in one pack,
+> so no trip, no gap, no leak. The two big outliers are 24 and 41 picks, both more than a pack.
+>
+> One detail worth carrying into the fix: at 10:29:15 the step list had **three** Falador patches
+> queued for HARVEST at once (4771, 4774, 4773). So during the gap this patch's record was open
+> while the guide was pointing at others, which is likely how the foreign experience gets in
+> rather than the elapsed time by itself.
+>
+> Not a data bug, and `CropXp` is correct — see the matching rows. It costs the validation data and
+> the stats tab rather than anything said during a run, which is why it is logged rather than fixed
+> in the same pass: the attribution window is delicate.
+>
+> Where to start: `HarvestRecord.addXp` and whatever decides which record an XP drop belongs to.
+> The control group is already in the CSV — every one-pack harvest lands within a point.
+>
+> **Ruled out, so it is not re-suspected:** the Farmer's outfit. `FarmingOutfit` models it per
+> piece (0.4/0.8/0.6/0.2) with the +0.5% set bonus for 2.5%, explicitly *not* the flat 0.4% most
+> skilling outfits use, and the predicted figures carry it — 24 picks is
+> (24 x 29.0 + 26.0) x 1.025 = 740.05, the exact number in the CSV. The five rows that agree with
+> the game within one XP are the proof it is right, since a half-percent error would put every one
+> of them outside the tolerance.
+
+jewelery box highlighting not working for farmers guild in POH, sent there via teleport to house tablet
+> RESOLVED. Diagnosed from the log rather than by reading, and the log had both halves of the
+> match sitting there unmatched:
+>
+>     hops: [Home Portal, Teleport to House, Teleport Menu Fancy Jewellery Box - J: Farming Guild]
+>     furniture seen: [... Portal Nexus#33410 ... Ornate Jewellery Box#29156]
+>
+> The box was in the room, the hop named it, and `furnitureServesHop` agrees the two go together —
+> so the name matching was never the problem. The veto was the **spirit tree guard**.
+>
+> `HouseTeleports.spiritTreePatchFor` finds its place by looking for a known spirit-tree name
+> **anywhere in the hop string**, and a hop names its vehicle as well as its destination. So
+> "Fancy Jewellery Box - J: Farming Guild" contains "farming guild", resolved to the guild's
+> spirit tree patch, and — that patch being empty — answered "no tree grown". `GuideOverlay` ANDed
+> that answer onto **every** piece of furniture rather than only onto spirit trees, so the
+> jewellery box went dark with the route pointing straight at it.
+>
+> It bites at exactly the destinations that are also spirit-tree stops — Farming Guild, Hosidius,
+> Etceteria, Brimhaven, Port Sarim — and nowhere else, which is why it looked like a jewellery box
+> problem rather than a guard problem.
+>
+> Fixed by scoping the guard: `HouseTeleports.isSpiritTree(name)` gates it, in both places the
+> overlay applies it (the hop loop and the destination fallback). The guard itself is unchanged and
+> still does its original job — the guild's tree is not outlined for a hop through it while its
+> patch sits at weeds.
+>
+> Tests: `SpiritTreeDestinationTest.aJewelleryBoxIsNotSubjectToTheGrownTreeGuard`, which asserts
+> the hop *does* still resolve to a patch (that trap is unchanged) while the box is not a spirit
+> tree and does serve the hop; and `aSpiritTreeIsStillRecognisedAsOne`.
+>
+> Note this report predates the current build — it is from before the day's fixes, so nothing
+> landed today is implicated.
+>
+> The looser half is left alone and worth knowing about: matching a spirit-tree place name against
+> the whole hop string is what made a jewellery box row look like a spirit tree question in the
+> first place. Scoping the guard makes that harmless rather than correct.
+
+the run presets broke the profile selector, and it should remember the previously set profile
+> RESOLVED, both. The first was a regression in the presets themselves.
+>
+> **The selector was unusable because it was being rebuilt several times a second.**
+> `refreshPresets` is called from `RunPanel.refresh`, which runs on every tick and every state
+> change, and it unconditionally cleared the combo box, re-added every item and re-set the
+> selection. An editable `JComboBox` does not survive that: the text being typed into its editor
+> was wiped before Save could read it, and an open popup closed under the mouse before anything
+> could be picked from it. So neither making a preset nor choosing one worked, which is the whole
+> feature.
+>
+> Now nothing happens unless it has to. The item list is rebuilt only when the names actually
+> change, the selection is set only when it differs from what is shown, and **neither happens while
+> the popup is open or the editor has focus** — both are a decision in progress, and the ticks the
+> label would be re-derived from are the ones the player is in the middle of changing.
+>
+> **Remembering the preset** is `RunPresetStore.lastUsed`, set on apply and on save, stored in the
+> same blob under a reserved key so one write persists both and they cannot load out of step.
+> Forgotten when that preset is deleted, and refused when it names nothing stored.
+>
+> It is a **label, not an authority**, and that distinction is the whole design: the ticks already
+> persist through `RunTypeStore`, so a restart brings back the right run either way. What this
+> fixes is the control re-deriving its name from whichever saved preset happened to match first,
+> so two presets covering the same lines made the name flip between sessions for no reason the
+> player did. It is used only while it still matches the ticks; edit them and the box says
+> `(unsaved)` exactly as before.
+>
+> Tests: `RunPresetStoreTest.theLastUsedPresetIsRemembered`, `anUnknownNameIsNotRemembered`,
+> `deletingThePresetForgetsThatItWasTheLastUsed`.
+>
+> **Untested: the combo-thrashing fix itself.** It is Swing timing — typing into an editor while a
+> background refresh fires — and the existing panel tests construct the panel without driving
+> repeated refreshes against a focused editor. The guard is three conditions and each is readable,
+> but it is the sort of thing that only really answers to being used.
+
+navigated to the bank at the start of a run, and every single patch in the farming guild highlighted
+> RESOLVED for the highlight. **The bank leg was correct**, and the run's own diagnostic says so:
+>
+>     still to collect: [BANK, SEED_VAULT] ... -> starting at a bank
+>     Toadflax (bank 341), Snapdragon (bank 65), Snape grass (vault 7), Belladonna (vault 166)
+>
+> Four picked seeds sat in the bank or the vault and none in the pack, so the trip was earned.
+>
+> **The patch highlighting was pre-existing** — `highlightPatchesAhead` outlines every patch of the
+> stop being travelled to, by design, and nothing in this batch touched the status path that feeds
+> it. What made it look new was that it became the *only* thing lit.
+>
+> That part was mine, from the travel-hint gate added earlier the same day, and it was wrong twice:
+>
+> 1. **Short-circuited.** `destinationSettled` sat third in an `&&`, so on any tick with a step at
+>    the stop it never ran and never recorded. "The previous tick's destination" could be minutes
+>    old, and the comparison answered nonsense in both directions. It now records every tick,
+>    whatever else is true.
+> 2. **Applied on the supply leg**, where it cannot ever pass. There the destination is a bank,
+>    re-derived from the router's reply every tick because `commitDestination` deliberately ignores
+>    everything while `atBankLeg` — so it never agreed with itself two ticks running and the hint
+>    was held off for the whole leg. No teleport marked, no route object marked, and the
+>    patches-ahead outline left as the only thing on screen. The gate is now skipped on the bank
+>    leg, which is not where the bug it exists for happens: that one is a stop *completing*.
+>
+> Test: `NamelessLegStillHintsTest.theGateComparesAgainstTheTickBeforeAndNotWheneverItLastRan`.
+>
+> Still open, and worth deciding separately: whether the patches-ahead outline should show at all
+> while the leg is going to a **bank** rather than to those patches. It is honest — they are where
+> the run goes next — but "you are being sent to the bank" and "these ten patches are lit" is a
+> confusing pair, and it is what made this look like a bug.
+
+compost bins: inventory space is not reserved before a bin step
+> OPEN, watching. Raised 2026-08-18 from play at the Farming Guild — prompted to bring watermelons
+> for the big bin before applying ash and emptying it, which cannot be carried together.
+>
+> **What is actually wrong is the loadout, not the step order.** `CompostBinPlan` already emits
+> ash -> empty -> fill. `RunLoadout.addCompostBinSupplies` packs all three at once, because
+> `binWork` deliberately counts a ready bin as also fillable — "A ready bin is also a fillable one,
+> and missing that ended runs early". That decision predates `divertForSupplies` being able to make
+> a second trip, so it may simply be stale.
+>
+> **The arithmetic, against a 28 slot pack:**
+>
+>     Guild big bin   empty 30 + ash 1 + fill 30  = 61
+>     Normal bin      empty 15 + ash 1 + fill 15  = 31
+>
+> Neither fits. The big bin is worse but the small ones are over too — the owner's correction, and
+> it is right. They only look narrower because their fill is harvest-fed and never banked for, so
+> the squeeze happens at the bin instead of at the bank.
+>
+> **What rescues the small bins when they are rescued:** the leprechaun stands beside every one, and
+> `DEPOSIT_COMPOST` hands the buckets over, freeing the fifteen back. Empty -> deposit -> fill fits.
+> The failure mode is emptying being offered while the pack cannot hold what comes out.
+>
+> **A bottomless compost bucket changes everything and this account does not appear to have one** —
+> no mention in any log. It empties a whole bin into one slot, which takes the normal bin to 17 and
+> the big one to 32. Worth knowing before reading any test result: someone who owns one will not
+> reproduce this.
+>
+> **Watch for, while testing:** a partial empty (fewer buckets out than the bin held) followed by the
+> empty step re-offering itself; or a fill step naming more items than there are free slots. Either
+> is this. A clean empty -> deposit -> fill at a small bin is the case working.
+>
+> Options were sketched with the owner: (1) stop banking a fill for a bin that is still full, (2) a
+> "leave N slots free" line on the loadout, (3) the per-leg loadout that `docs/compost-redesign-spec.md`
+> already identifies as the core change. Nothing decided; (3) is the real answer and (1) is the cheap
+> one that makes the current behaviour possible rather than impossible.
+
+you don't "hand in" your harvest for a contract - you can note it at the lep and keep it, you just talk to Jane
+> RESOLVED, and it was presentation only — the logic never required the produce.
+>
+> `owesYouSomething` asks the **patch** whether it still owes a health check or a pick, not the pack
+> whether it holds the crop, so a noted harvest was never going to block the claim. What was wrong
+> was everything the player could see:
+>
+> - the action read "Hand in the contract";
+> - the step read "Hand your cactus to Guildmaster Jane for the contract reward";
+> - and the step carried the produce's **item id**, which outlined the crop in the pack.
+>
+> Together those say the crop is the price of the reward. It is not: the contract completes when
+> the crop is harvested — the chat line `ContractCapture` already watches — and Jane simply pays
+> out afterwards. Now "Claim the contract reward" and "Talk to Guildmaster Jane to claim the
+> contract reward.", with no item, so nothing of the player's is outlined for something they do
+> not give up. Jane and the dialogue rows are still highlighted; those are the clicks.
+>
+> Test: `ContractHandInOrderTest.theRewardIsClaimedWithoutGivingTheProduceUp`. The item assertion is
+> the load-bearing half — wording can be reworded by anyone, but an outlined crop beside a hand-in
+> step is the part that actively misleads.
+
+infobox says patches are ready that were just harvested - all fruit trees, Etceteria and Rimmington berry patches
+> RESOLVED. Reported on a harvest-only run, and every patch named is a fruit tree or a bush — both
+> regrowing families, which is the whole of it.
+>
+> `ReadyInfoBox` counted `PatchProjection.isReady()`, which answers **"has it finished growing"**.
+> For a crop that regrows that stays true forever once it has: picking a fruit tree does not
+> un-grow it. So a stripped bush and a bare fruit tree read as ready for the rest of their lives,
+> and a counter whose whole job is to say "a farm run is worth starting" was saying yes to a farm
+> of bare trees.
+>
+> `hasProduceToPick` is the question that was wanted and it already existed —
+> `RunPlanner.isActionable` has asked it of exactly this family since the picked-clean bushes were
+> fixed, and its **harvest-only branch is word for word** what the infobox now uses. So this was
+> the planner and the counter disagreeing about the same patch, with the planner right.
+>
+> Scoped to regrowing crops rather than replacing the readiness test: a crop that does not regrow
+> cannot be in this state, since picking a herb patch leaves it empty and empty is already skipped.
+> A tree waiting to be chopped and a stump waiting for a spade keep their place, and a health check
+> counts because it is the click the patch is waiting for.
+>
+> Pre-existing rather than introduced by the day's work — nothing in this batch touched `isReady`,
+> the infobox, or bushes. Worth noting it would have been reported sooner or later regardless; a
+> harvest-only run is just where it is most obviously wrong, because there picking is the only
+> reason to go at all.
+>
+> Tests: `ReadyCountTest`, four cases, confirmed to fail against the unfixed code.
+
+changing the run profile should update the ready count too, and the profile select box does not match the UI theme
+> RESOLVED, both, and the first was wider than the presets.
+>
+> **`RunTypeStore` had no change listeners at all.** Every other store the panel writes to
+> announces itself — the seed stores, the compost choice, the protection split — and the plugin
+> turns that into one refresh of the sidebar and the infobox. This one never did, so changing which
+> patch types a run covers updated the boxes and nothing else: the in-game ready count went on
+> filtering by the **previous** selection until the twenty-second idle refresh happened along.
+>
+> Not a preset bug. Ticking a box by hand had the same staleness and nobody noticed, because the
+> count moves by one patch type and a stale number looks merely slow. Applying a preset changes six
+> or eight lines at once, which is what made it visible. Listeners added, fired from `replace`
+> outside the monitor like every other store, registered and deregistered with the rest in the
+> plugin.
+>
+> Test: `RunChoicesTest.changingTheRunLinesTellsWhoeverIsListening`, which also pins that setting
+> the *same* lines says nothing — `replace` returns early on an equal set, and a listener firing on
+> no change is a refresh loop.
+>
+> **The styling** was simply not applied: `Controls.styleComboBox` already exists and the compost
+> picker uses it. Two things had to be undone afterwards, both because that helper assumes a fixed
+> list you can only choose from: it switches focus off, which an editable box cannot have, and it
+> styles the renderer rather than the editor — so the typed text arrived light-on-light from the
+> look and feel. The editor is now painted to match, caret included, which was otherwise very
+> nearly invisible against the sidebar.
+
+teleport crystal: told to withdraw the (5) and the (1) while carrying the (2), and the withdraw list shows outside a run
+> RESOLVED, both.
+>
+> **The charges.** A teleport with charges is several items and the game names each for its count,
+> so "Teleport crystal" on the list resolves to every one of them. `addListedTeleports` then made a
+> **row per id**, and `carried.has(itemId)` is a different id for every charge — so the (5) and the
+> (1) in the bank were each "withdraw", and the (2) in the pack satisfied neither.
+>
+> Rows are now grouped by the name with its charge stripped, and a group counts as HAVE if **any**
+> of its charges is carried, which is the question the player is actually asking. When one is
+> carried the row names *that* charge, so it reads as the item in front of them.
+>
+> **The id set is deliberately left alone** and this is the part worth not undoing later: it still
+> holds every charge, because `isOnTeleportList` answers from it and the bank has to light all of
+> them. The first attempt collapsed the ids and would have broken that — the existing test caught
+> it. Matching every charge is what a wildcard is *for*; showing eight rows was never the point,
+> and `RunLoadoutTest.aWildcardMatchesEveryChargeOfAnItem` now says so in as many words rather than
+> asserting the old row-per-charge behaviour.
+>
+> **The withdraw list outside a run.** `ReadyInfoBox.toWithdraw` asked the loadout, which answers
+> from the ticked types whether or not anything is under way — so it was a shopping list for a trip
+> that did not exist. Gated on `planner.isActive()`. The bank leg keeps it, which is the case it
+> was built for: `isActive()` is true from the moment Start run is pressed and the supply leg is
+> the first thing that happens.
+>
+> **And the list is a convenience, not a requirement** — the owner's framing, and the loadout
+> already agreed with it: `TELEPORT` is deliberately absent from `CANNOT_PROCEED_WITHOUT`, so a
+> missing teleport has never held the supply leg and the run has always been happy to walk. What
+> still said otherwise was the infobox, which prints its rows under "To withdraw:" — read as a set
+> of orders, on the one surface glanced at mid-game. Teleports no longer appear there. The
+> sidebar's bank list still carries them with their need, which is where the detail belongs.
+>
+> Tests: `aWildcardMatchesEveryChargeOfAnItem` (rewritten), `aCarriedChargeSatisfiesTheWholeTeleport`.
+
+at the start of my run in the farming guild, every single patch is highlighted
+> RESOLVED. The supply leg was being drawn as a travel leg.
+>
+> Patches ahead are outlined on the way in so the last stretch of a journey is not walked with the
+> whole farm dark. That highlight lives in the overlay's "no current step" branch — and the supply
+> leg has no steps either (`computeStepsHere` returns nothing while `isAtBankLeg`), so banking was
+> drawn as arriving. Invisible everywhere the bank sits a region away from the patches, which is
+> everywhere but one: **the Farming Guild's bank chest is inside region 4922**, the patch region
+> itself, so `destinationStop` matched the chest's region to the guild stop and every patch in the
+> guild lit up while the run had not started on them.
+>
+> `GuideStatus.patchesAhead` is now empty on the supply leg and empty once you have arrived —
+> which is what its own javadoc always claimed. Gated in `GuideTracker.patchesAhead` rather than in
+> the overlay, for the reason `getSupplySources` records: the planner knows which leg it is on, and
+> an overlay that re-decides that can disagree with the route being drawn.
+>
+> The travel-leg behaviour is deliberately untouched — walking into a farm still lights what is
+> waiting there. Tests: `GuildBankLegDoesNotLightPatchesTest`.
+
+are we checking this literally every tick? [the "Ready bin ..." debug line, twice a second]
+> RESOLVED — the check is per tick by design; the log line was not.
+>
+> The chain: `DoogleMapsPlugin.onGameTick` asks `anythingLeftToWithdraw` every tick while a run is
+> active, which builds the loadout, which asks `RunPlanner.binWork`, which decodes every bin. That
+> rebuild is deliberate and already shared — `RunLoadout.forRun` caches one build per tick because
+> four callers wanted the list every tick at the bank — and the decode itself is arithmetic over a
+> snapshot, so the cost was never the check. It was the unconditional `log.debug` inside it: one
+> line per ready bin per tick, on the client thread, for the length of a run. In the live log
+> **14,980 of ~15,020 plugin lines were this one sentence**, which is the whole session's forensics
+> buried under it.
+>
+> It now prints only when a bin's decode changes (`RunPlanner.logBinDecode`, keyed on
+> varbit/state/stage/buckets/ash), and the entry is dropped when the bin stops being ready so
+> coming back to ready prints again. A repeat carried nothing the first line did not — what the
+> line was added to catch is the decode being *wrong*, and a decode that changes still prints.
+> Guarded on `isDebugEnabled`, and the map is only ever touched under `binWork`'s monitor.
+
+getting prompted to take watermelons out for the big bin before emptying it first; can't carry
+them when the emptying needs the pack for buckets, so I have to bank them again at the guild
+> RESOLVED (the sequencing bug), and folded into the compost redesign spec as review §9.
+> RunPlanner.count() counted a ready bin's fill "at the same stop, on the same visit", so the
+> supply leg withdrew fill for a bin that cannot take a single item until its compost is out —
+> and the fill occupied the very slots the emptying batches against. A ready bank-fed bin now
+> counts as fillable (pick-a-fill warning and routing unchanged) but contributes no fill items
+> until its varbit reads EMPTY; then the row goes WITHDRAW and divertForSupplies makes the
+> collection the run's next leg — at the guild that is a walk to the in-region chest.
+> The old dead end the up-front fill was fixing (all-ready run packs no produce, run ends with
+> the bin open) stays fixed by divertForSupplies, which postdates it. The one coarseness left:
+> on a multi-stop run the divert fires at run end, so the guild fill is a return trip rather
+> than immediately post-empty — spec §9.2 records the in-region mid-stop re-entry (the contract
+> path's canBankHere shape) as the redesign's answer. Tests:
+> aReadyBigBinsFillWaitsForTheEmptying, anEmptiedBigBinAsksForItsFill, and
+> aReadyBinBanksNoFillUntilItIsEmptied (rewritten — it pinned the old behaviour, and now
+> carries both dead ends' stories).
+
+the swapping at the lep never worked for this anyways [withdraw-amount swap]
+> RESOLVED, second attempt. The first fix taught itemIdOf to ask the widget when the entry
+> answered nothing — and pinned it with a mocked widget that knew the id, which is how it held
+> in the suite and never in play: at his store NEITHER the entry nor the widget carries an item
+> id, so identification failed and the swap stood down silently at the one interface the
+> feature was built for. What every item op does carry is the item's printed NAME in the entry
+> target ("<col=ff9040>Empty bucket</col>") — the text the menu shows — and the loadout's rows
+> carry the same names. The swap now sizes by name when there is no id to size by
+> (GuideMenuSwap.itemNameOf -> RunLoadout.stillWantedNow(String)), ids still preferred where
+> they exist. And the silence is fixed alongside the failure: logStandDown writes one debug
+> line naming the guard that stood the swap down, once per distinct reason, so the next "it
+> doesn't work at X" is answerable from client.log instead of by guessing.
+>
+> Fixed in the same pass, from review round d (docs/code-review-2026-08d.md):
+> - Deposit menus are never sized: the scan matched by amount alone, and the bank's inventory
+>   side offers Deposit-1/-5/-10 on every hovered item — so the swap promoted Deposit-10 on the
+>   very buckets the run wanted withdrawn. Verb whitelist (Withdraw/Remove) closes it.
+> - An unidentifiable entry stands the whole swap down instead of being absorbed.
+> - The infobox withdraw list rides GuideStatus.toWithdraw now, built once a tick on the client
+>   thread, instead of ReadyInfoBox walking the loadout and planner from the EDT on every store
+>   change; ReadyInfoBox no longer depends on RunLoadout at all.
+> Tests: aDepositMenuIsNeverSized, anUnidentifiableEntryStandsTheWholeSwapDown,
+> hisStoreIsSizedByNameWhenNothingCarriesTheItemId, bucketsFromHisStoreAreSizedByNameToo.
+
+leprechaun empty buckets menu swapping logic still not working, its "Remove-1", "Remove-5", "Remove-All"
+> RESOLVED (third attempt), and this time the failure mode is cornered from the log rather than
+> guessed at. The live session WAS running the fixed build (the change-only bin logging proves
+> it) with debug on — and client.log carried not one stand-down line. The only silent paths were
+> "no candidates" and "wanted came back zero", and the way wanted comes back zero with a bucket
+> row plainly outstanding is an item id that is POSITIVE BUT WRONG: an interface handing back
+> junk instead of -1 sails past the "no id" test, sizes a row that does not exist, and stands
+> the swap down with nothing logged — indistinguishable from working as intended.
+> Two changes:
+> - The id is only trusted as far as it finds a row: when it sizes to nothing and the entry
+>   carries a printed name, the name is asked too. Safe by construction — a genuine id and the
+>   name find the SAME row, so a real "nothing wanted" stays zero by either path; only a junk id
+>   leaves the name to find the right row. Test: aJunkItemIdFallsBackToTheName.
+> - The decision now logs at debug, once per distinct answer (GuideMenuSwap.logDecision): which
+>   item was seen (id and name), what the run said it wanted, what was offered and what was
+>   chosen. Two play sessions have been spent guessing at this feature's silence; if there is a
+>   fourth failure mode, client.log will name it.
+
+somewhere the math on the number of free spaces got off by 1, being asked to withdraw 1 more bucket than I can fit
+> RESOLVED. The maths was right and the bucket fetch's floor was wrong.
+> CompostBinPlan.addBucketFetch asked for max(1, min(remaining - held, freeSlots)) — and the
+> min already answers "1 bucket" for one free slot, so the floor only ever changed the answer
+> at ZERO free slots, where it asked for a bucket with nowhere to put it. The session log shows
+> exactly that state ("0 free slots" at 19:55:20). Reachable because the zero-slot deposit
+> escape only fires when the pack holds compost to hand over; full of harvest instead, the
+> fetch fell through to its floor. Now: at zero free slots with nothing to deposit, the fetch
+> raises no step at all — the stop's other steps (the note step for a full harvest, the fill
+> step for an open bin) are what make room, and the fetch comes back the tick a slot does.
+> Test: aFullPackOfSomethingElseIsNotAskedForABucket; roomForOneBucketFetchesOne still pins the
+> one-slot case the floor claimed to serve.
+
+remove menu still not swapping [round four - and the decision log caught it]
+> RESOLVED. The 20:09 session log answered on the first grep, which is what the logging was for:
+>   Withdraw-amount swap: item id=-1 name='Bucket' wanted=0 offered=[1, 5] -> nothing to promote
+> The name fallback was working; the name COMPARISON was wrong. A menu prints the GAME's name
+> for an item, and the game calls item 1925 plain "Bucket" - while the loadout row is labelled
+> "Empty bucket" so the bank list reads unambiguously. Matching menu names against row labels
+> compared the plugin's wording with the game's, and they part company at exactly this row.
+> RunLoadout.rowIsNamed now answers for both: the row's label, and the game's own name for the
+> row's item id (ItemNames where recorded, the client's definition otherwise - the name path's
+> one caller is PostMenuSort, which is the client thread). The store's Compost/Supercompost/
+> Ultracompost slots also showed in the log sizing to 0 - that is correct and unchanged, the
+> compost tier rows are deliberately unsized.
+> Test: theGamesOwnNameForTheItemSizesTheRowToo.
+
+noting potato cactus step didn't highlight the potato cactus or the lep
+> RESOLVED. The session log shows why nothing lit: "4922.7909=HARVEST; 4922.4775=NOTE_AT_LEPRECHAUN"
+> - the note LISTED but never CURRENT, and the overlays light the current step only. The note is
+> raised inside the plan of the patch whose produce fills the pack, so it led only when THAT patch
+> was the working patch; here the working patch was another harvest entirely - one the pack, at
+> zero free slots, could not receive a single item of. The order said "harvest first, then note";
+> the game only permits the reverse, and the player followed the note by hand, unlit.
+> GuideTracker.noteLeadsWhenThePackIsFull: when nothing fits and the final list leads with a
+> HARVEST, the one surviving note (the collapse keeps exactly one) moves to the front - same
+> freeSlots <= 0 gate that raises the note in GuidePlan. A leading non-harvest step is left
+> alone: paying, planting and bin work need no free slot. Tests: FullPackNoteOrderTest.
+
+never got routed back to the bank for watermelons to the big bin / just filled it and now it's
+sending me to ardougne instead of to get the rest of my melons
+> RESOLVED - the coarseness compost-redesign-spec §9.2 recorded as "a scope call" got called, by
+> two reports in one session. Mid-run supplies (the emptied bin's fill is the case that exists)
+> had exactly one collector: divertForSupplies, which by design fires only when the run would
+> otherwise END. So the run walked away from the guild's own chest twice - after the emptying,
+> and again between fill loads - with the melons fourteen tiles from the bin. The log shows it
+> plainly: "Stop complete at Farming Guild" at 20:21:36, FILL_BIN only at 20:21:55 after the
+> player collected unprompted, then Ardougne at 20:24 with the remainder still banked.
+> New RunPlanner.reviewNearbySupplies, once a tick from the plugin: a stop that is COMPLETE, with
+> supplies outstanding and a supply point IN ITS OWN REGION, re-enters the bank leg before the
+> run commits to the next stop - the contract path's canBankHere shape, generalised. The gates
+> are the point: complete-here is the anti-yank rule (the fill row opens mid-stop, stood at the
+> bin, with harvests left - nothing may be interrupted), in-region is start()'s own "standing on
+> work beats going shopping is about TRAVEL" line, and a waived leg still wins. Per tick rather
+> than on the completion edge because at the edge the pack is often still full and the fill row
+> asks for nothing until the noting and depositing free the slots.
+> Everywhere else, the end-of-run divert keeps the job unchanged. Tests:
+> aFinishedStopWithASupplyPointHereCollectsBeforeMovingOn (walks the whole lifecycle),
+> aFinishedStopWithNothingOutstandingIsNotSentToTheBank.
+
+when withdraw count is equal or more than free inv space, just use the "all" option
+> DONE. For an UNSTACKABLE item, Withdraw-All takes what fits and stops - the pack is the cap -
+> so once the run wants at least a whole pack, All is min(freeSlots, bank) <= wanted and the
+> no-overshoot property survives intact: thirty melons becomes one click instead of three that
+> all meant "fill the pack". RunLoadout.fillsThePack owns the guard rails, and they are the
+> point:
+> - Fills and buckets only. A payment is counted NOTED (that is how anyone carries thirty), and
+>   a bank in noted-withdrawal mode hands All of a noted item over as one stack - the overshoot
+>   again by another door.
+> - Never volcanic ash: it stacks, so All takes the bank's whole pile into one slot and
+>   "wanted vs free slots" measures nothing. It is the one stackable these categories hold, so
+>   it is excluded by id - deterministic, and honest about being a list of one.
+> The ladder is untouched everywhere else, including everything below a packful. Works at the
+> lep by name like the rest of the swap ("Remove-All"). Tests: aPackFillingWithdrawalTakesAll,
+> hisStoreTakesAllByName, wantingAWholePackAnswersAll, wantingLessThanAPackKeepsTheLadder,
+> ashNeverAnswersAllHoweverMuchIsWanted.
+
+and swap to examine when we're done withdrawing
+> DONE. With the count satisfied, the game's own default - Withdraw-1, or whatever the quantity
+> toggle says - is the one remaining way to overshoot, sitting under the very click the player
+> has been spamming; Examine is the option that does nothing, which is exactly what is wanted of
+> the next stray click. The safety line is RunLoadout.doneWithdrawing: "done" means TRACKED AND
+> NOW COVERED, never merely "answers zero" - stillWantedNow answers zero for a satisfied row,
+> for a seed the swap must never size, and for an item that was never the run's business, and
+> Examine-swapping either of the last two would break ordinary banking. Covered either way it
+> shows: the cached row reads WITHDRAW with a live carried count for the rest of the tick after
+> the last withdrawal, and HAVE from the next build - both are done. Works at the lep by name
+> ("Examine" on his store slots), logs "fully collected -> promote Examine" at debug, and the
+> deposit side can never see it (no Withdraw/Remove candidates there means the scan exits first).
+> Tests: aCollectedCountSwapsToExamine, hisStoreSwapsToExamineByName, doneMeansTrackedAndCovered,
+> aSeedIsNeverDoneWithdrawing.

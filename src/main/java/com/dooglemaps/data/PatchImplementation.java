@@ -142,6 +142,35 @@ public enum PatchImplementation
 			return value == 28;
 		}
 
+		// A fruit tree's stump is shaped differently from a tree's and needs its own test.
+		//
+		// Its harvestable states run 0..6 because the stage IS the fruit count — "no fruit on
+		// the tree" is a real standing state — so the tree-shaped rule below, which keys on a
+		// pair of stage-0 harvestable values, cannot separate the stump from a picked-clean
+		// tree still standing. Both decode HARVESTABLE stage 0 and both are worth a step, but
+		// different ones: one is chopped and the other is dug.
+		//
+		// What does separate them is what sits immediately before. Every fruit's block runs
+		// growing, harvestable, diseased, dead, THEN the stump, so the stump is the one
+		// harvestable stage-0 value whose predecessor is a dead crop. Verified against the
+		// client sources, which name each one outright — for the palm,
+		// {@code // Palm tree stump[Clear,Inspect,Guide] 8104} at value 225. The eight values
+		// this picks out are pinned by FruitTreeStumpTest so a renumbering fails a test rather
+		// than silently making the guide dig at a standing tree.
+		if (this == FRUIT_TREE)
+		{
+			ProduceState stump = forVarbitValue(value);
+			if (stump == null || stump.getProduce() == null
+				|| stump.getCropState() != CropState.HARVESTABLE || stump.getStage() != 0)
+			{
+				return false;
+			}
+			ProduceState before = forVarbitValue(value - 1);
+			return before != null
+				&& before.getProduce() == stump.getProduce()
+				&& before.getCropState() == CropState.DEAD;
+		}
+
 		if (this != TREE && this != HARDWOOD_TREE)
 		{
 			return false;

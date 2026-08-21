@@ -79,7 +79,8 @@ public class SwapRunsAfterCoreTest
 		});
 
 		EventBus bus = new EventBus();
-		bus.register(new GuideMenuSwap(client, tracker, config, seeds));
+		bus.register(new GuideMenuSwap(client, tracker, config, seeds,
+			Mockito.mock(com.dooglemaps.bank.RunLoadout.class)));
 		bus.register(new StandInForCore(order));
 
 		bus.post(new PostMenuSort());

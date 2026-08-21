@@ -113,6 +113,47 @@ public class ContractHandInOrderTest
 	 * <p>"We should at least harvest and finish that patch while we're at it" — the hand-in defers
 	 * itself so the harvest step {@code GuidePlan} is already producing stays in front of it.
 	 */
+	/**
+	 * Claiming the reward is a conversation, not a delivery, and the step must not imply otherwise.
+	 *
+	 * <h2>The correction</h2>
+	 *
+	 * <i>"you don't 'hand in' your harvest for a contract, you can still note it on the lep and
+	 * keep it, you just go talk to jane"</i>.
+	 *
+	 * <p>The step said "Hand your cactus to Guildmaster Jane for the contract reward" and carried
+	 * the produce's item id, which outlined it in the pack — together they read as the crop being
+	 * the price. It is not: the contract completes when the crop is harvested, and the produce is
+	 * the player's to note and keep.
+	 *
+	 * <p>The item assertion is the load-bearing one. The wording could be reworded again by anyone;
+	 * an outlined crop beside a hand-in step is the part that actively misleads.
+	 */
+	@Test
+	public void theRewardIsClaimedWithoutGivingTheProduceUp() throws Exception
+	{
+		when(contracts.getAwaitingHandIn()).thenReturn(Produce.POTATO_CACTUS);
+		when(contracts.getContract()).thenReturn(null);
+		when(contracts.hasContract()).thenReturn(false);
+		project(cactus, Produce.POTATO_CACTUS, CropState.HARVESTABLE, 0);
+
+		GuideStep handIn = null;
+		for (GuideStep step : errands())
+		{
+			if (step.getAction() == GuideAction.HAND_IN_CONTRACT)
+			{
+				handIn = step;
+				break;
+			}
+		}
+		assertNotNull("the finished contract should be claimable", handIn);
+
+		assertFalse("nothing of the player's is outlined for a reward they do not pay for",
+			handIn.hasItem());
+		assertFalse("and the wording must not say the crop changes hands: " + handIn.getText(),
+			handIn.getText().toLowerCase().contains("hand your"));
+	}
+
 	@Test
 	public void theHandInWaitsWhileThereIsStillSomethingToPick() throws Exception
 	{

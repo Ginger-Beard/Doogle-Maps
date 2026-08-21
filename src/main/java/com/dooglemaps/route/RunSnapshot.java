@@ -46,4 +46,20 @@ public class RunSnapshot
 
 	/** Survival odds per group, which the split exists to keep separate. */
 	Map<PlantingGroup, RunEstimate.Survival> survival;
+
+	/**
+	 * Bins the run could put produce into, for the panel's "no fill picked" warning.
+	 *
+	 * <p>The sixth answer, and the one that arrived late: the panel asked
+	 * {@code RunPlanner.binWork} for it straight from the EDT long after the other five had
+	 * moved here, because the compost-bin line was built after this snapshot's field list was
+	 * fixed and there was nowhere for it to go. It walks every bin of every ticked type under
+	 * the planner's monitor, on every refresh, which is exactly the cross-thread lock traffic
+	 * the rest of this class exists to remove.
+	 *
+	 * <p>Counted over the bin types in {@link #types} only — see
+	 * {@code RunPlanner.fillableBinsIn}, which owns the fold — so it is zero for any selection
+	 * with no bin in it.
+	 */
+	int fillableBins;
 }

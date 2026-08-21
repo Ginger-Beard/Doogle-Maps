@@ -166,6 +166,67 @@ public class ContractSeedFetchStepTest
 	}
 
 	/**
+	 * A dead contract crop is fetched for <b>before</b> the walk over, not after the clear.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"if we know our farming contract is dead, don't have me walk all the way over to clear
+	 * it, before getting the seed from the bank/vault"</i>
+	 *
+	 * <p>A dead crop answered all three of this step's tests the wrong way at once: it has
+	 * outstanding clicks (the clear), its produce is the contract's, and it is not empty ground.
+	 * So the fetch stood down, the run sent the player across the guild to clear the patch, and
+	 * only once the ground was bare did the seed in the bank behind them become a step. Two
+	 * crossings of the guild to plant one seed.
+	 *
+	 * <p>Dead ground is ground the run is already going to clear — the same argument the
+	 * spade-cleared allowance makes for a stripped bush — so the seed is wanted on this trip
+	 * either way and the fetch belongs in front.
+	 */
+	@Test
+	public void aDeadContractCropIsFetchedForBeforeTheWalkOver() throws Exception
+	{
+		dead(herb, Produce.CADANTINE);
+
+		List<GuideStep> steps = errands();
+		assertFalse("a dead contract still needs its seed this trip", steps.isEmpty());
+		assertEquals("and needs it before the walk, so it leads", 
+			GuideAction.FETCH_SEED, steps.get(0).getAction());
+		assertEquals("Withdraw your cadantine seed from the bank here.", steps.get(0).getText());
+	}
+
+	/**
+	 * A dead crop of some <i>other</i> produce is fetched for too — it is the ground that
+	 * decides this, not what died in it.
+	 */
+	@Test
+	public void aDeadCropOfAnotherProduceIsAlsoClearedForThisTrip() throws Exception
+	{
+		dead(herb, Produce.RANARR);
+
+		assertTrue(has(errands(), GuideAction.FETCH_SEED));
+	}
+
+	/**
+	 * And with no seed owned anywhere, the note speaks rather than going quiet.
+	 *
+	 * <p>{@code contractIsInTheGround} counted a dead crop as the contract planted, so
+	 * {@code missingContractSeed} treated the seed as already spent and said nothing at all —
+	 * silence at the one moment the player is about to walk to a patch they cannot refill.
+	 */
+	@Test
+	public void aDeadContractWithNoSeedOwnedStillSaysSo() throws Exception
+	{
+		dead(herb, Produce.CADANTINE);
+		when(seeds.getOwned(Seed.CADANTINE)).thenReturn(0);
+		when(seeds.getPlantable(Seed.CADANTINE, SeedSource.BANK)).thenReturn(0);
+
+		String note = note();
+		assertNotNull("a dead contract with no seed left is exactly what the note is for", note);
+		assertTrue(note, note.toLowerCase().contains("cadantine"));
+	}
+
+	/**
 	 * The fetch step also lights the container it is pointing at.
 	 *
 	 * <h2>The reported dead end</h2>
@@ -323,6 +384,13 @@ public class ContractSeedFetchStepTest
 	{
 		when(growthTimer.project(Mockito.eq(patch), any()))
 			.thenReturn(projection(patch, null, CropState.EMPTY, 0, 0, false));
+	}
+
+	private void dead(FarmPatch patch, Produce produce) throws Exception
+	{
+		when(growthTimer.project(Mockito.eq(patch), any()))
+			.thenReturn(projection(patch, produce, CropState.DEAD, 1,
+				produce.getStages(), false));
 	}
 
 	private void growing(FarmPatch patch, Produce produce) throws Exception

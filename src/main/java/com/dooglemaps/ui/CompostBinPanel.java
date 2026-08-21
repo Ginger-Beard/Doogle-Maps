@@ -113,6 +113,20 @@ class CompostBinPanel extends JPanel
 	private static final String ORDINARY_KEY = "binFillOrdinary";
 	private static final String FODDER_KEY = "binFodder";
 
+	/**
+	 * The outer collapse, over everything on this tab.
+	 *
+	 * <h2>Why the whole tab folds rather than each list separately</h2>
+	 *
+	 * The three inner sections fold on their own, and that was all there was — so a player who
+	 * had finished configuring compost still gave up most of the sidebar to it, and the run
+	 * planner and patch statuses underneath were pushed off the bottom. Which fills to use and
+	 * which crops to spare are settled once and then left alone for weeks, which is exactly the
+	 * shape the seed selector's own "Select seed" collapse exists for. Same idiom, same store,
+	 * same persistence across tabs. Asked for from play.
+	 */
+	private static final String ALL_KEY = "binAll";
+
 	private final CompostRunStore store;
 	private final BankContents bank;
 	private final CarriedItems carried;
@@ -133,6 +147,14 @@ class CompostBinPanel extends JPanel
 	private final JCheckBox fodderBox = new JCheckBox();
 	private final WrappedText fodderNote = new WrappedText();
 
+	/** The outer collapse's toggle, doubling as the tab's heading. See {@link #ALL_KEY}. */
+	private final JButton heading = new JButton();
+
+	/** Everything the outer collapse hides: both lists, both checkboxes and the fodder group. */
+	private final JPanel allBody = new JPanel(new BorderLayout(0, 0));
+
+	private boolean allVisible;
+
 	CompostBinPanel(PanelLayoutStore layout, CompostRunStore store, BankContents bank,
 		CarriedItems carried, ItemManager itemManager,
 		com.dooglemaps.data.ItemNames itemNames)
@@ -148,10 +170,25 @@ class CompostBinPanel extends JPanel
 		setBackground(ColorScheme.DARK_GRAY_COLOR);
 		setBorder(BorderFactory.createEmptyBorder(6, 0, 0, 0));
 
-		JLabel heading = new JLabel("Farming Guild bin");
+		// Kept, and now inside the outer collapse: it labels the two lists above the fodder
+		// group, which are the guild bin's alone. The outer heading cannot carry that name
+		// because it now covers the allotment bins too.
+		JLabel guildHeading = new JLabel("Farming Guild bin");
+		guildHeading.setFont(FontManager.getRunescapeSmallFont());
+		guildHeading.setForeground(TEXT);
+		guildHeading.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
+
+		allVisible = layout.isOpen(ALL_KEY, true);
 		heading.setFont(FontManager.getRunescapeSmallFont());
-		heading.setForeground(TEXT);
-		heading.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
+		Controls.styleButton(heading);
+		heading.addActionListener(e ->
+		{
+			allVisible = !allVisible;
+			allBody.setVisible(allVisible);
+			layout.setOpen(ALL_KEY, allVisible);
+			updateHeading();
+			revalidate();
+		});
 
 		superGrid.setBackground(getBackground());
 		ordinaryGrid.setBackground(getBackground());
@@ -224,13 +261,34 @@ class CompostBinPanel extends JPanel
 		fodder.add(fodderTop, BorderLayout.NORTH);
 		fodder.add(section(fodderHeading, fodderGrid), BorderLayout.CENTER);
 
-		JPanel all = new JPanel(new BorderLayout(0, 0));
-		all.setBackground(getBackground());
-		all.add(body, BorderLayout.NORTH);
-		all.add(fodder, BorderLayout.CENTER);
+		// The guild's own label rides inside the collapse with the lists it names.
+		JPanel guild = new JPanel(new BorderLayout(0, 4));
+		guild.setBackground(getBackground());
+		guild.add(guildHeading, BorderLayout.NORTH);
+		guild.add(body, BorderLayout.CENTER);
+
+		allBody.setBackground(getBackground());
+		allBody.add(guild, BorderLayout.NORTH);
+		allBody.add(fodder, BorderLayout.CENTER);
+		allBody.setVisible(allVisible);
 
 		add(heading, BorderLayout.NORTH);
-		add(all, BorderLayout.CENTER);
+		add(allBody, BorderLayout.CENTER);
+		updateHeading();
+	}
+
+	/**
+	 * The outer heading, which says what is picked so a folded section is not a blank statement.
+	 *
+	 * <p>Counts the fills chosen for the guild bin and the crops chosen for the allotment bins
+	 * together, because folded away they are one decision — "is compost set up" — and that is the
+	 * question the label has to answer without being opened.
+	 */
+	private void updateHeading()
+	{
+		int picked = store.getFills().size() + store.getFodderCrops().size();
+		heading.setText(Controls.collapseLabel(
+			picked > 0 ? "Compost (" + picked + " picked)" : "Compost", allVisible));
 	}
 
 	/** Wires one heading button to fold its grid, remembering the choice like every section. */
@@ -259,6 +317,12 @@ class CompostBinPanel extends JPanel
 	/** Rebuilt on the sidebar's ordinary refresh, like every other section that reads stores. */
 	void refresh()
 	{
+		// Re-read rather than trust the field: the store is shared with the layout of every other
+		// tab, and the count in the heading moves whenever a fill or a fodder crop is picked.
+		allVisible = layout.isOpen(ALL_KEY, true);
+		allBody.setVisible(allVisible);
+		updateHeading();
+
 		int superShown = fill(superGrid, Compostables.superCompostables(),
 			layout.isOpen(SUPER_KEY, true), false);
 		int ordinaryShown = fill(ordinaryGrid, Compostables.ordinaryCompostables(),

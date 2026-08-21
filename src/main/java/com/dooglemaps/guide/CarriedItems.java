@@ -124,7 +124,14 @@ public class CarriedItems
 	 * does far more per tick elsewhere in this plugin.
 	 *
 	 * <p>Runs before {@code GuideTracker}'s tick handler — the event bus orders same-priority
-	 * subscribers by class name — so the steps computed this tick see this tick's pack.
+	 * subscribers by <b>fully-qualified</b> class name, so {@code guide.CarriedItems} precedes
+	 * {@code guide.GuideTracker} — so the steps computed this tick see this tick's pack.
+	 *
+	 * <p>That it is the <i>qualified</i> name is the load-bearing part, and worth stating because
+	 * "by class name" reads as though only the class matters: moving this class to another
+	 * package would move it in the tick order too, and into {@code state} specifically would put
+	 * it <b>after</b> {@code GuideTracker} and break the sentence above. Such a move needs an
+	 * explicit {@code @Subscribe(priority = 1f)} to come with it.
 	 */
 	@Subscribe
 	public void onGameTick(net.runelite.api.events.GameTick event)

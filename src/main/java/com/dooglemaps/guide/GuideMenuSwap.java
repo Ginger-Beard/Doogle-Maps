@@ -37,6 +37,7 @@ import net.runelite.client.eventbus.Subscribe;
  * silently break the seed accounting — which now decides the swap itself, so it would break
  * this class along with everything else that reads the box.
  */
+@lombok.extern.slf4j.Slf4j
 @Singleton
 public class GuideMenuSwap
 {
@@ -45,14 +46,18 @@ public class GuideMenuSwap
 	private final DoogleMapsConfig config;
 	private final SeedInventoryStore seeds;
 
+	/** What the run still wants of a hovered item, for the withdraw-amount swap. */
+	private final com.dooglemaps.bank.RunLoadout loadout;
+
 	@Inject
 	GuideMenuSwap(Client client, GuideTracker tracker, DoogleMapsConfig config,
-		SeedInventoryStore seeds)
+		SeedInventoryStore seeds, com.dooglemaps.bank.RunLoadout loadout)
 	{
 		this.client = client;
 		this.tracker = tracker;
 		this.config = config;
 		this.seeds = seeds;
+		this.loadout = loadout;
 	}
 
 	/**
@@ -100,6 +105,16 @@ public class GuideMenuSwap
 		if (config.dropEmptyBuckets() && running && !status.wantsEmptyBuckets())
 		{
 			promote("Drop", entry -> entry.getItemId() == ItemID.BUCKET_EMPTY);
+		}
+
+		// The withdraw amount closest to what is still wanted, at a bank or his store.
+		//
+		// Standing rather than step-driven, and a run-long arrangement like the seed box below:
+		// there is no single moment to choose, because the answer is simply "however many of this
+		// are still missing" and that is true of every withdrawal the trip makes.
+		if (config.withdrawAmountSwap() && running)
+		{
+			swapWithdrawAmount();
 		}
 
 		// The box's own standing swap, for the whole run and answered by the box's contents.
@@ -227,6 +242,318 @@ public class GuideMenuSwap
 	}
 
 	/** Moves the named option on the matched entry to the left-click, at full priority. */
+	/**
+	 * Puts the withdraw amount nearest what the run still wants under the left click.
+	 *
+	 * <p>See {@code docs/withdraw-quantity-swap-spec.md}. The arithmetic is
+	 * {@code WithdrawQuantity}; this half is only about finding the item and the offered amounts.
+	 *
+	 * <h2>Collection verbs only</h2>
+	 *
+	 * "Withdraw" and "Remove" — the bank's word and the leprechaun's, the two confirmed in play —
+	 * and nothing else. This scanned by amount alone at first, on the reasoning that the verb was
+	 * cosmetic, and the bank's <b>inventory side</b> proved otherwise: hovering an item there
+	 * offers {@code Deposit-1/-5/-10}, those parse as amounts, and {@code stillWantedNow} is
+	 * non-zero for exactly the items the run is mid-collecting — so the swap promoted
+	 * {@code Deposit-10} on the very buckets it had just told the player to withdraw. A click
+	 * re-aimed to put the supplies back, by the feature that exists to make clicks safe. Found in
+	 * review; the spec's §7 had already settled deposits as not this feature's business.
+	 *
+	 * <h2>One item, or nothing</h2>
+	 *
+	 * A menu is built for the thing under the cursor, so every withdraw entry on it should name
+	 * the same item. If two ever do not — a shape this has not seen but cannot rule out — the menu
+	 * is left exactly as the game built it rather than guessed at. A swap that picks the wrong
+	 * item's amount is worse than no swap. An entry that cannot be identified <b>at all</b>
+	 * stands the whole swap down for the same reason: it used to be quietly absorbed as "matches
+	 * anything", which made the guard weaker than its own promise.
+	 *
+	 * <h2>Matched by the amount, not by the wording</h2>
+	 *
+	 * The entry to promote is found by asking {@code WithdrawQuantity.amountNamed} again rather
+	 * than by rebuilding the option string. {@code Withdraw-X} answers 0 to that question whatever
+	 * number it is wearing, so it can never be found and never be moved — see
+	 * {@code WithdrawQuantity.LADDER}.
+	 *
+	 * <h2>All, when the run wants at least a whole pack</h2>
+	 *
+	 * The one case the ladder was the wrong tool for: thirty melons into twenty-odd free slots
+	 * is three ladder clicks that all mean "fill the pack", and Withdraw-All says exactly that
+	 * in one — for an unstackable it takes what fits and stops, so with wanted at or past the
+	 * pack it cannot overshoot. {@code RunLoadout.fillsThePack} owns the guard rails (fills and
+	 * buckets only, never the stackable ash, never noted-friendly payments). Asked for by the
+	 * owner: "when withdraw count is equal or more than free inv space, just use the All
+	 * option."
+	 */
+	private void swapWithdrawAmount()
+	{
+		MenuEntry[] entries = client.getMenu().getMenuEntries();
+
+		int itemId = -1;
+		String itemName = null;
+		boolean seenAny = false;
+		boolean allOffered = false;
+		java.util.Set<Integer> offered = new java.util.HashSet<>();
+		for (MenuEntry entry : entries)
+		{
+			if (!isCollectionOption(entry.getOption()))
+			{
+				continue;
+			}
+			int amount = com.dooglemaps.bank.WithdrawQuantity.amountNamed(entry.getOption());
+			boolean all = amount <= 0
+				&& com.dooglemaps.bank.WithdrawQuantity.namesAll(entry.getOption());
+			if (amount <= 0 && !all)
+			{
+				continue;
+			}
+
+			int on = itemIdOf(entry);
+			String named = itemNameOf(entry);
+			if (on <= 0 && named == null)
+			{
+				// A candidate nobody can identify. Guessing that it is about the same item as
+				// its neighbours is exactly the guess the one-item rule exists to refuse.
+				logStandDown("unidentifiable entry '" + entry.getOption() + "'");
+				return;
+			}
+			if (!seenAny)
+			{
+				itemId = on;
+				itemName = named;
+				seenAny = true;
+			}
+			else
+			{
+				// By id where both entries have one — the stronger identity — and by the
+				// printed name otherwise.
+				boolean same = (on > 0 && itemId > 0)
+					? on == itemId
+					: java.util.Objects.equals(named, itemName);
+				if (!same)
+				{
+					logStandDown("two items on one menu");
+					return;
+				}
+			}
+			if (all)
+			{
+				allOffered = true;
+			}
+			else
+			{
+				offered.add(amount);
+			}
+		}
+
+		if (offered.isEmpty() && !allOffered)
+		{
+			return;
+		}
+
+		// All, when the run wants at least a whole pack of an unstackable — one click that takes
+		// exactly what fits and cannot overshoot. RunLoadout.fillsThePack carries the argument
+		// and the exclusions; the id-then-name order is the same junk-id fallback the sizing
+		// below uses, for the same reason.
+		if (allOffered
+			&& ((itemId > 0 && loadout.fillsThePack(itemId))
+				|| (itemName != null && loadout.fillsThePack(itemName))))
+		{
+			logDecision("item id=" + itemId + " name='" + itemName
+				+ "' wants a packful -> promote All");
+			final int item = itemId;
+			final String name = itemName;
+			promoteMatching(entry ->
+				com.dooglemaps.bank.WithdrawQuantity.namesAll(entry.getOption())
+					&& isCollectionOption(entry.getOption())
+					&& (item > 0 ? itemIdOf(entry) == item
+						: java.util.Objects.equals(itemNameOf(entry), name)));
+			return;
+		}
+
+		// Live, and that is the whole of why this is not read off the row's own count. A player
+		// clicking ten and then five does both inside one tick, and a tick-old answer would offer
+		// ten again and take twenty-five. See RunLoadout.stillWantedNow.
+		int wanted = itemId > 0 ? loadout.stillWantedNow(itemId) : 0;
+
+		// The name whenever the id answers nothing — not only when there is no id at all.
+		//
+		// An id is only trusted as far as it finds a row. Interfaces that do not populate the
+		// item op properly can hand back a POSITIVE id that is not the item — and a junk id
+		// sizes a row that does not exist, answers zero, and stands the swap down with nothing
+		// logged, which is indistinguishable from working-as-intended. The fallback is safe by
+		// construction: a genuine id and the printed name find the SAME row, so falling back can
+		// never turn a real "nothing wanted" into a number — the seed row says 0 by either path.
+		// Only an id that matches no row leaves the name to find the right one.
+		if (wanted <= 0 && itemName != null)
+		{
+			wanted = loadout.stillWantedNow(itemName);
+		}
+
+		// Done withdrawing means the left click goes INERT, not merely unhelped. With the count
+		// satisfied, the game's own default — Withdraw-1, or whatever the quantity toggle says —
+		// is the one remaining way to take more than the list asked, and it is sitting under
+		// the very click the player has been spamming. Examine is the option that does nothing,
+		// which is exactly what is wanted of the next stray click.
+		//
+		// Only for a row the run TRACKED and has now covered — RunLoadout.doneWithdrawing draws
+		// that line, and it is the whole safety of the feature: wanted comes back zero for
+		// seeds (deliberately unsized) and for items that were never the run's business, and
+		// swapping those to Examine would break ordinary banking.
+		if (wanted <= 0
+			&& ((itemId > 0 && loadout.doneWithdrawing(itemId))
+				|| (itemName != null && loadout.doneWithdrawing(itemName))))
+		{
+			logDecision("item id=" + itemId + " name='" + itemName
+				+ "' fully collected -> promote Examine");
+			final int item = itemId;
+			final String name = itemName;
+			promoteMatching(entry -> "Examine".equalsIgnoreCase(entry.getOption())
+				&& (item > 0 ? itemIdOf(entry) == item
+					: java.util.Objects.equals(itemNameOf(entry), name)));
+			return;
+		}
+
+		int amount = com.dooglemaps.bank.WithdrawQuantity.choose(offered, wanted);
+
+		// The whole decision, at debug, once per distinct answer. The swap's guards are
+		// deliberately silent in game, and that silence has now cost two play sessions of
+		// guessing at the leprechaun — this line is what makes the third report answerable from
+		// client.log: which item was seen, what the run said it wanted, and what was chosen.
+		logDecision("item id=" + itemId + " name='" + itemName + "' wanted=" + wanted
+			+ " offered=" + offered + " -> "
+			+ (amount > 0 ? "promote " + amount : "nothing to promote"));
+
+		if (amount <= 0)
+		{
+			return;
+		}
+
+		final int chosen = amount;
+		final int item = itemId;
+		final String name = itemName;
+		promoteMatching(entry ->
+			com.dooglemaps.bank.WithdrawQuantity.amountNamed(entry.getOption()) == chosen
+				&& isCollectionOption(entry.getOption())
+				&& (item > 0 ? itemIdOf(entry) == item
+					: java.util.Objects.equals(itemNameOf(entry), name)));
+	}
+
+	/**
+	 * Whether an option is one of the two collection verbs, ahead of its dash.
+	 *
+	 * <p>A whitelist like {@code WithdrawQuantity.LADDER} and for the same reason: everything off
+	 * it is left exactly where the game put it. {@code Deposit} is the one that bites (see
+	 * {@code swapWithdrawAmount}); a shop's {@code Buy 5} never parsed anyway — spaces, not
+	 * dashes — but an accident is not a guarantee, and this makes it one.
+	 */
+	private static boolean isCollectionOption(@javax.annotation.Nullable String option)
+	{
+		if (option == null)
+		{
+			return false;
+		}
+		int dash = option.indexOf('-');
+		if (dash <= 0)
+		{
+			return false;
+		}
+		String verb = option.substring(0, dash);
+		return "Withdraw".equalsIgnoreCase(verb) || "Remove".equalsIgnoreCase(verb);
+	}
+
+	/** The last line logged, so hovering the same menu does not repeat it every frame. */
+	private String loggedSwapLine;
+
+	/**
+	 * Says at debug why a ladder-shaped menu was left alone.
+	 *
+	 * <p>The swap's failures are deliberately silent in game — a menu quietly not rearranged is
+	 * the correct behaviour, not an error — but "it never worked at the leprechaun" cost a
+	 * play-session of guessing precisely because nothing recorded which guard stood it down.
+	 * One line, once per distinct reason, is the difference between reading the answer out of
+	 * {@code client.log} and theorising from in front of the client.
+	 */
+	private void logStandDown(String reason)
+	{
+		logSwapLine("Withdraw-amount swap standing down: " + reason);
+	}
+
+	/** As {@link #logStandDown}, for the decision a ladder-shaped menu produced. */
+	private void logDecision(String decision)
+	{
+		logSwapLine("Withdraw-amount swap: " + decision);
+	}
+
+	private void logSwapLine(String line)
+	{
+		if (!log.isDebugEnabled() || line.equals(loggedSwapLine))
+		{
+			return;
+		}
+		loggedSwapLine = line;
+		log.debug("{}", line);
+	}
+
+	/**
+	 * The item a menu entry is about, asked of the entry and then of the widget behind it.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The swap worked nowhere at the leprechaun. The wording was not the problem — his options are
+	 * <i>"Remove-1"</i>, <i>"Remove-5"</i> and so on rather than <i>"Withdraw-N"</i>, and
+	 * {@code WithdrawQuantity.amountNamed} reads the number after the first dash without caring
+	 * which verb precedes it, so those parse exactly as a bank's do.
+	 *
+	 * <p>What failed is that {@code MenuEntry.getItemId} is not populated for every interface's
+	 * item ops. His store is a widget of its own rather than the bank, so the entry answered
+	 * nothing, the swap could not tell which item was hovered, and it stood down — silently, which
+	 * is the right failure but an invisible one.
+	 *
+	 * <p>The widget knows regardless, which is the ordinary way to ask this of an interface. The
+	 * entry is still asked first: it is the cheaper answer and it is the one the bank gives.
+	 */
+	private static int itemIdOf(MenuEntry entry)
+	{
+		int onEntry = entry.getItemId();
+		if (onEntry > 0)
+		{
+			return onEntry;
+		}
+
+		net.runelite.api.widgets.Widget widget = entry.getWidget();
+		return widget == null ? -1 : widget.getItemId();
+	}
+
+	/**
+	 * The item a menu entry is about, by the name printed on the entry itself.
+	 *
+	 * <h2>The second leprechaun fix, because the first one held only in the test</h2>
+	 *
+	 * {@code itemIdOf} was taught to ask the widget when the entry answered nothing, and the test
+	 * pinned exactly that — a mocked widget carrying the id. In play the swap still never worked
+	 * at his store: neither the entry nor the resolved widget carries an item id there, so
+	 * identification failed and the swap stood down on the one interface the feature was built
+	 * for. Reported from play, twice.
+	 *
+	 * <p>What every item op does carry, on every interface, is the item's <b>name in the
+	 * target</b> — <i>"&lt;col=ff9040&gt;Empty bucket&lt;/col&gt;"</i> — because that is the text
+	 * the menu shows the player. The loadout's rows carry the same names, so
+	 * {@code RunLoadout.stillWantedNow(String)} can size from one. Ids are still preferred where
+	 * they exist: a name is the menu's rendering and an id is the item.
+	 */
+	@javax.annotation.Nullable
+	private static String itemNameOf(MenuEntry entry)
+	{
+		String target = entry.getTarget();
+		if (target == null)
+		{
+			return null;
+		}
+		String name = target.replaceAll("<[^>]*>", "").trim();
+		return name.isEmpty() ? null : name;
+	}
+
 	private void promote(String wanted, java.util.function.Predicate<MenuEntry> matches)
 	{
 		// The option compare ignores case because the exact capitalisation of NPC options is

@@ -5,6 +5,8 @@ import com.dooglemaps.data.PatchImplementation;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
@@ -66,6 +68,54 @@ public class SpiritTreeDestinationTest
 			assertNull(destination + " is on the network and needs no growing",
 				HouseTeleports.spiritTreePatchFor(destination));
 		}
+	}
+
+	/**
+	 * The grown-tree guard belongs to spirit trees, and nothing else in the room.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"jewelery box highlighting not working for farmers guild in POH, sent there via teleport
+	 * to house tablet"</i>.
+	 *
+	 * <p>{@link HouseTeleports#spiritTreePatchFor} finds its place by looking for a spirit-tree
+	 * name <b>anywhere in the hop string</b>, and a hop names its vehicle as well as its
+	 * destination. So {@code "Teleport Menu Fancy Jewellery Box - J: Farming Guild"} contains
+	 * "farming guild", resolves to the guild's spirit tree patch, and — with that patch empty —
+	 * answered "no tree grown". The overlay ANDed that answer onto <i>every</i> piece of
+	 * furniture, so the jewellery box went dark with the route pointing straight at it.
+	 *
+	 * <p>The log had both halves and still no match, which is what ruled out the name matching:
+	 * {@code Ornate Jewellery Box#29156} in the furniture, {@code Fancy Jewellery Box - J: Farming
+	 * Guild} in the hops.
+	 *
+	 * <p>Two assertions, and the second is the one that would have caught it: the hop still
+	 * resolves to a patch — that behaviour is unchanged and correct for a real spirit tree hop —
+	 * but a jewellery box is not a spirit tree, so the guard must never be asked about it.
+	 */
+	@Test
+	public void aJewelleryBoxIsNotSubjectToTheGrownTreeGuard()
+	{
+		String hop = "Teleport Menu Fancy Jewellery Box - J: Farming Guild";
+
+		assertNotNull("the hop does still name a spirit tree place, which is the trap",
+			HouseTeleports.spiritTreePatchFor(hop));
+
+		assertFalse("a jewellery box is not a spirit tree",
+			HouseTeleports.isSpiritTree("Ornate Jewellery Box"));
+		assertTrue("the box does serve that hop, and nothing should veto it",
+			HouseTeleports.furnitureServesHop("Ornate Jewellery Box", hop));
+	}
+
+	/** ...and a spirit tree still is one, by any of the names the scene gives it. */
+	@Test
+	public void aSpiritTreeIsStillRecognisedAsOne()
+	{
+		assertTrue(HouseTeleports.isSpiritTree("Spirit tree"));
+		assertTrue("the ungrown patch reads as one too", HouseTeleports.isSpiritTree("Spirit Tree Patch"));
+		assertTrue("and the dead one", HouseTeleports.isSpiritTree("Dead Spirit Tree"));
+		assertFalse(HouseTeleports.isSpiritTree("Portal Nexus"));
+		assertFalse(HouseTeleports.isSpiritTree(null));
 	}
 
 	/** And a hop about something else entirely is not a spirit tree question at all. */

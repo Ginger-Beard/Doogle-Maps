@@ -101,6 +101,43 @@ public class RunChoicesTest
 		assertEquals(EnumSet.of(Seed.RANARR, Seed.SNAPDRAGON), EnumSet.copyOf(reloaded.getSelected()));
 	}
 
+	/**
+	 * Changing which lines a run covers announces itself, so what reads them can catch up.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"when I change my profile that should match it too"</i> — the in-game ready count went on
+	 * filtering by the previous selection after a run preset was applied.
+	 *
+	 * <p>Every other store the panel writes to has listeners and the plugin turns them into one
+	 * refresh of the sidebar and the infobox. This one had none, so the count only caught up on the
+	 * twenty-second idle refresh. Never noticed while ticking boxes one at a time — the number
+	 * moves by one patch type and a stale one looks merely slow — and obvious the moment a preset
+	 * changed six lines at once.
+	 */
+	@Test
+	public void changingTheRunLinesTellsWhoeverIsListening()
+	{
+		RunTypeStore store = newTypes();
+		java.util.concurrent.atomic.AtomicInteger told =
+			new java.util.concurrent.atomic.AtomicInteger();
+		store.addChangeListener(told::incrementAndGet);
+
+		store.setSelected(new java.util.LinkedHashSet<>(java.util.Collections.singletonList(
+			com.dooglemaps.data.RunOption.full(
+				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.HERB)))));
+
+		assertEquals("the change is announced once", 1, told.get());
+
+		// Setting the same lines again changes nothing, so it says nothing — replace() returns
+		// early on an equal set, and a listener that fires on no change is a refresh loop.
+		store.setSelected(new java.util.LinkedHashSet<>(java.util.Collections.singletonList(
+			com.dooglemaps.data.RunOption.full(
+				com.dooglemaps.data.PlantingGroup.of(PatchImplementation.HERB)))));
+
+		assertEquals("and not again for the same selection", 1, told.get());
+	}
+
 	@Test
 	public void runTypeChoicesSurviveAReload()
 	{

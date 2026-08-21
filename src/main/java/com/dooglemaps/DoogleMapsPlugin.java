@@ -241,6 +241,10 @@ public class DoogleMapsPlugin extends Plugin
 	@Inject
 	private RunTypeStore runTypes;
 
+	/** Named tickbox sets, loaded beside runTypes because it is the same choice, saved. */
+	@Inject
+	private com.dooglemaps.state.RunPresetStore runPresets;
+
 	@Inject
 	private CompostSelectionStore compostSelection;
 
@@ -369,6 +373,10 @@ public class DoogleMapsPlugin extends Plugin
 		availability.addChangeListener(onStateChanged);
 		seedStore.addChangeListener(onStateChanged);
 		seedSelection.addChangeListener(onStateChanged);
+		// Which patch types the run covers decides what the ready count filters to, so it has to
+		// be told as well. Without this, applying a run preset left the in-game number counting
+		// the previous selection until the idle refresh. See RunTypeStore.addChangeListener.
+		runTypes.addChangeListener(onStateChanged);
 
 		navigationButton = NavigationButton.builder()
 			.tooltip("Doogle Maps")
@@ -378,7 +386,7 @@ public class DoogleMapsPlugin extends Plugin
 			.build();
 		clientToolbar.addNavigation(navigationButton);
 
-		readyInfoBox = new ReadyInfoBox(PluginIcon.create(), this, panel, config, runLoadout,
+		readyInfoBox = new ReadyInfoBox(PluginIcon.create(), this, panel, config,
 			runPlanner, guideTracker);
 		infoBoxManager.addInfoBox(readyInfoBox);
 
@@ -429,6 +437,7 @@ public class DoogleMapsPlugin extends Plugin
 		availability.removeChangeListener(onStateChanged);
 		seedStore.removeChangeListener(onStateChanged);
 		seedSelection.removeChangeListener(onStateChanged);
+		runTypes.removeChangeListener(onStateChanged);
 
 		overlayManager.remove(guideOverlay);
 		overlayManager.remove(guideInventoryOverlay);
@@ -784,6 +793,12 @@ public class DoogleMapsPlugin extends Plugin
 		// cheaper trip and the guide's own tool step already offers it at the patch.
 		runPlanner.reviewSupplies();
 
+		// And supplies that became outstanding mid-run are collected where they are cheap:
+		// a finished stop with a supply point in its own region goes to the chest before the
+		// next teleport, instead of leaving the errand for the end of the run. The guild's
+		// emptied big bin is the case - its fill is in the bank fourteen tiles from the bin.
+		runPlanner.reviewNearbySupplies();
+
 		// Which herb patches cannot be diseased, re-read rather than sampled once at login.
 		// The load fires the instant LOGGED_IN does, and the quest and diary varbits are not
 		// all synced by then — a sample taken a second early reads nothing and used to latch,
@@ -927,6 +942,7 @@ public class DoogleMapsPlugin extends Plugin
 		});
 		seedSelection.load();
 		runTypes.load();
+		runPresets.load();
 		compostSelection.load();
 		protectionSelection.load();
 		patchLocations.load();

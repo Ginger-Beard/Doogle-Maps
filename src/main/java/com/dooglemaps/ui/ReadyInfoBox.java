@@ -1,8 +1,6 @@
 package com.dooglemaps.ui;
 
 import com.dooglemaps.DoogleMapsConfig;
-import com.dooglemaps.bank.LoadoutItem;
-import com.dooglemaps.bank.RunLoadout;
 import com.dooglemaps.route.RunPlanner;
 import com.dooglemaps.timer.Confidence;
 import com.dooglemaps.timer.PatchProjection;
@@ -26,7 +24,6 @@ public class ReadyInfoBox extends InfoBox
 
 	private final DoogleMapsPanel panel;
 	private final DoogleMapsConfig config;
-	private final RunLoadout loadout;
 	private final RunPlanner planner;
 
 	/** Told when the run has fallen back to weaker compost than was picked. */
@@ -37,14 +34,13 @@ public class ReadyInfoBox extends InfoBox
 	private int withdrawCount;
 
 	public ReadyInfoBox(BufferedImage image, Plugin plugin, DoogleMapsPanel panel,
-		DoogleMapsConfig config, RunLoadout loadout, RunPlanner planner,
+		DoogleMapsConfig config, RunPlanner planner,
 		com.dooglemaps.guide.GuideTracker guideTracker)
 	{
 		super(image, plugin);
 		this.guideTracker = guideTracker;
 		this.panel = panel;
 		this.config = config;
-		this.loadout = loadout;
 		this.planner = planner;
 		setPriority(net.runelite.client.ui.overlay.infobox.InfoBoxPriority.LOW);
 	}
@@ -90,7 +86,7 @@ public class ReadyInfoBox extends InfoBox
 			{
 				problems.add(label + " (" + projection.getCropState().name().toLowerCase() + ")");
 			}
-			else if (projection.isReady())
+			else if (projection.isReady() && stillWorthAVisit(projection))
 			{
 				ready.add(label);
 			}
@@ -102,6 +98,46 @@ public class ReadyInfoBox extends InfoBox
 		problemCount = problems.size();
 		withdrawCount = withdraw.size();
 		setTooltip(buildTooltip(ready, problems, withdraw));
+	}
+
+	/**
+	 * Whether a grown patch still has anything on it, which is not the same as being grown.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"I'm all out of patches to do in this run and the infobox is saying I have the following
+	 * ready (I don't, I just did them), all fruit tree patches, etceteria and rimmington berry
+	 * patches"</i> — every one of them a fruit tree or a bush.
+	 *
+	 * <p>{@link PatchProjection#isReady()} answers "has it finished growing", and for a crop that
+	 * <b>regrows</b> that stays true forever once it has: picking a fruit tree does not un-grow it.
+	 * So a stripped bush and a bare fruit tree read as ready for the rest of their lives, and the
+	 * count said a farm run was worth starting when there was nothing on any of them.
+	 *
+	 * <p>{@code hasProduceToPick} is the question that was wanted and it already existed —
+	 * {@code RunPlanner.isActionable} has asked it of exactly this family since the picked-clean
+	 * bushes were fixed. The infobox never got it.
+	 *
+	 * <p>Reported on a <b>harvest-only</b> run, which is where it is least defensible: there,
+	 * picking is the only reason to go at all, so a patch with nothing on it is not merely
+	 * mislabelled but the whole of the wrong answer. {@code isActionable} already says as much for
+	 * that case — {@code hasProduceToPick() || needsHealthCheck()} is its harvest-only branch, word
+	 * for word what this returns.
+	 *
+	 * <p>Scoped to the regrowing families rather than replacing the readiness test outright,
+	 * because a crop that does not regrow cannot be in this state: pick a herb patch and it is
+	 * empty, and empty is already skipped above. Anything else grown and un-picked — a tree
+	 * waiting to be chopped, a stump waiting for a spade — keeps its place in a count that exists
+	 * to say whether the trip is worth making. A health check counts for the same reason: it is
+	 * the click the patch is waiting for.
+	 */
+	private static boolean stillWorthAVisit(PatchProjection projection)
+	{
+		if (!projection.regrows())
+		{
+			return true;
+		}
+		return projection.hasProduceToPick() || projection.needsHealthCheck();
 	}
 
 	/**
@@ -130,25 +166,18 @@ public class ReadyInfoBox extends InfoBox
 	 * of what do I take</i>. The counts are {@code outstanding} rather than the run's total, so
 	 * the list shortens as you withdraw and comes back if you put something down.
 	 *
-	 * <p>Safe from any thread, which is this class's whole constraint: {@code forRun} reads the
-	 * stores through their own locks and touches the client only for the tick count it caches
-	 * on. Nothing here asserts a thread.
+	 * <p>Read off the published status rather than built here, which is the change review round
+	 * d asked for: this used to call {@code loadout.forRun} itself, and {@code update()} runs on
+	 * every store change from whichever thread fired it — so the one class built for a glance was
+	 * taking the loadout's monitor and walking the planner from the EDT, the exact traffic
+	 * {@code RunSnapshot} exists to remove one surface over. The status is sampled once a tick on
+	 * the client thread, where the loadout build has already been paid for; the gating (active
+	 * runs only, no teleports) moved with the building. See
+	 * {@code GuideTracker.withdrawLines}.
 	 */
 	private List<String> toWithdraw()
 	{
-		List<String> items = new ArrayList<>();
-		for (LoadoutItem item : loadout.forRun(planner.coveredTypes()))
-		{
-			if (item.getNeed() != LoadoutItem.Need.WITHDRAW)
-			{
-				continue;
-			}
-			// A count only where one is a decision. "Bronze axe x1" is worse than "Bronze axe".
-			items.add(item.getOutstanding() > 1
-				? item.getName() + " x" + item.getOutstanding()
-				: item.getName());
-		}
-		return items;
+		return guideTracker.getStatus().getToWithdraw();
 	}
 
 	private String buildTooltip(List<String> ready, List<String> problems, List<String> withdraw)

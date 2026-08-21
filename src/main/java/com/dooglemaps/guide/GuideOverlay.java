@@ -1345,7 +1345,14 @@ public class GuideOverlay extends Overlay
 				// ...and, for a spirit tree, only to somewhere a tree has actually been grown.
 				// Reported from play: the guild's tree was outlined for a hop through it while
 				// its patch sat at weeds. See GuideTracker.spiritTreeUsableFor.
-				&& tracker.spiritTreeUsableFor(hop)));
+				//
+				// Asked only OF a spirit tree, which it was not. The guard finds its place by
+				// looking for a spirit-tree name anywhere in the hop, and a hop names its vehicle
+				// as well as its destination — so it read "Fancy Jewellery Box - J: Farming
+				// Guild" as a spirit tree question and answered no, because that patch is empty.
+				// The jewellery box went dark with the route pointing straight at it. Reported
+				// from play. See HouseTeleports.isSpiritTree.
+				&& (!HouseTeleports.isSpiritTree(name) || tracker.spiritTreeUsableFor(hop))));
 
 		// The destination gets a say before the way out does. The route's hops are Shortest
 		// Path's plan, and its model has no nexus — so a destination the player's own
@@ -1359,7 +1366,11 @@ public class GuideOverlay extends Overlay
 			String destination = hint.getDestination();
 			furniture = house.matchingFurniture(name ->
 				HouseTeleports.furnitureServesHop(name, destination)
-					&& tracker.spiritTreeUsableFor(destination));
+					// Scoped to spirit trees for the same reason as above, and it matters more
+					// here: this fallback is asked with the destination alone, which is the very
+					// string the guard keys on.
+					&& (!HouseTeleports.isSpiritTree(name)
+						|| tracker.spiritTreeUsableFor(destination)));
 		}
 
 		// justEntered guards the arrival tick, where this overlay's live isInside() is a tick

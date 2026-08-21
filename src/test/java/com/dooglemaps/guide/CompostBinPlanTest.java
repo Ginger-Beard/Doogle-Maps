@@ -114,12 +114,41 @@ public class CompostBinPlanTest
 	 * ...and no trip is invented where the leprechaun was never needed.
 	 *
 	 * <p>The three cases where he is not part of a bin's work: a bottomless bucket takes the
-	 * whole bin into one slot, rotten tomatoes come out by hand, and buckets already in the pack
-	 * need no fetching. Those are precisely where ash-first is right, and they cost nothing
-	 * because the fetch declines rather than because anything special-cases them.
+	 * whole bin into one slot, rotten tomatoes come out by hand, and <b>enough</b> buckets already
+	 * in the pack. Those are precisely where ash-first is right, and they cost nothing because the
+	 * fetch declines rather than because anything special-cases them.
+	 *
+	 * <h2>Enough, and it used to say any</h2>
+	 *
+	 * This asserted that <b>four</b> buckets was reason enough not to go, against a full bin that
+	 * wants fifteen — so it was pinning the bug rather than the rule. Reported from play: withdraw
+	 * one bucket at the guild's big bin and the step vanished, taking the highlight with it and
+	 * leaving the player at a full bin being asked for nothing. A bucket takes one compost, so a
+	 * bin holding thirty wants thirty.
 	 */
 	@Test
-	public void bucketsAlreadyHeldDoNotSendYouToTheLeprechaunAtAll()
+	public void enoughBucketsAlreadyHeldDoNotSendYouToTheLeprechaunAtAll()
+	{
+		when(store.isAshing()).thenReturn(true);
+		when(carried.getInventoryCount(CompostBin.VOLCANIC_ASH)).thenReturn(25);
+		when(leprechaun.has(FarmingTool.EMPTY_BUCKET)).thenReturn(true);
+		when(carried.getInventoryCount(ItemID.BUCKET_EMPTY)).thenReturn(15);
+
+		List<GuideStep> steps = steps(SUPER_READY_FULL);
+
+		assertEquals("a bin's worth in hand, so the ash is the whole answer", 1, steps.size());
+		assertEquals(GuideAction.APPLY_ASH, steps.get(0).getAction());
+	}
+
+	/**
+	 * ...but a few of them is not enough, and the trip asks for the rest a pack can hold.
+	 *
+	 * <p>Eleven are missing and the fixture has ten slots free, so ten is the honest answer — the
+	 * fetch is capped by the room to put them in, not only by the bin. Asserted at ten rather than
+	 * eleven because that cap is the half a later change is most likely to drop.
+	 */
+	@Test
+	public void someBucketsHeldStillFetchesTheRest()
 	{
 		when(store.isAshing()).thenReturn(true);
 		when(carried.getInventoryCount(CompostBin.VOLCANIC_ASH)).thenReturn(25);
@@ -128,8 +157,10 @@ public class CompostBinPlanTest
 
 		List<GuideStep> steps = steps(SUPER_READY_FULL);
 
-		assertEquals("nothing to fetch, so the ash is the whole answer", 1, steps.size());
-		assertEquals(GuideAction.APPLY_ASH, steps.get(0).getAction());
+		assertEquals(GuideAction.WITHDRAW_TOOL, steps.get(0).getAction());
+		assertEquals(ItemID.BUCKET_EMPTY, steps.get(0).getItemId());
+		assertTrue("eleven are missing, ten slots are free, so ten: " + steps.get(0).getText(),
+			steps.get(0).getText().contains("10"));
 	}
 
 	/** Without the ash in the pack there is no ash instruction - just the emptying. */
@@ -488,6 +519,38 @@ public class CompostBinPlanTest
 		assertEquals("the deposit is the whole answer - emptying waits for the re-derive",
 			1, steps.size());
 		assertEquals(GuideAction.DEPOSIT_COMPOST, steps.get(0).getAction());
+	}
+
+	/**
+	 * A pack with no room and no compost to hand over is asked for <b>no</b> buckets at all.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"somewhere the math on the number of free spaces got off by 1, being asked to withdraw
+	 * 1 more bucket than I can fit in my inv."</i> The maths was right and the fetch's floor was
+	 * wrong: {@code max(1, min(remaining - held, freeSlots))} only ever changed the answer at
+	 * zero free slots — {@code min} already yields one bucket for one slot — and at zero it asked
+	 * for a bucket with nowhere to put it. The pack was full of harvest rather than compost, so
+	 * the deposit above had nothing to offer and the fetch fell through to its floor.
+	 *
+	 * <p>The right answer at zero is silence from the fetch: the stop's other steps are what
+	 * make room, and the fetch comes back the tick a slot does.
+	 */
+	@Test
+	public void aFullPackOfSomethingElseIsNotAskedForABucket()
+	{
+		when(leprechaun.has(FarmingTool.EMPTY_BUCKET)).thenReturn(true);
+		when(carried.getFreeSlots()).thenReturn(0);
+		// No compost buckets in the pack - it is full of harvest, which is not this bin's to
+		// deposit.
+
+		for (GuideStep step : steps(SUPER_READY_FULL))
+		{
+			assertFalse("no bucket instruction can be followed from a full pack: "
+					+ step.getText(),
+				step.getAction() == GuideAction.WITHDRAW_TOOL
+					&& step.getItemId() == ItemID.BUCKET_EMPTY);
+		}
 	}
 
 	/**
