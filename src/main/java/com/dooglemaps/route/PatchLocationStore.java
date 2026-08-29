@@ -43,6 +43,20 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 	private static final int REGION_SIZE = 64;
 
 	/**
+	 * The tile outside the hespori cave's entrance, in the Farming Guild's west wing.
+	 *
+	 * <p>The one patch whose position cannot be learned or measured: its cave is
+	 * <b>instanced</b>, so a coordinate read while standing at the patch is instance-space
+	 * and means nothing on the world map — which is exactly what the measured table's
+	 * hespori row is, and why that row is never served (see {@link #getLocation}) and never
+	 * overwritten by a fresh sighting (see {@link #record}). Routing therefore ends where
+	 * the overworld does: the "Cave" entrance (object 34499, option Enter) at (1231, 3728),
+	 * wiki-pinned, with this tile a step outside it confirmed walkable by Shortest Path's
+	 * own transport data. The player enters; the varbits do the rest.
+	 */
+	private static final WorldPoint HESPORI_CAVE_ENTRANCE = new WorldPoint(1230, 3730, 0);
+
+	/**
 	 * The footprint assumed when only a point is known — a wiki seed, a region centre, or a
 	 * position learned before footprints were recorded. Three tiles square covers the small
 	 * patch families (herb, flower, bush); a bigger real footprint only means the ring lands
@@ -81,6 +95,13 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 	 */
 	public synchronized WorldPoint getLocation(FarmPatch patch)
 	{
+		// Before the learned and measured tiers, both of which can only hold instance-space
+		// garbage for this one patch. See the constant's doc.
+		if (patch.getType() == com.dooglemaps.data.PatchImplementation.HESPORI)
+		{
+			return HESPORI_CAVE_ENTRANCE;
+		}
+
 		int[] exact = exactFor(patch);
 		if (exact != null)
 		{
@@ -191,6 +212,13 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 	 */
 	public synchronized java.util.List<WorldPoint> getRouteTargets(FarmPatch patch)
 	{
+		// The hespori's extent row is cave-space, so ringing it would hand the router tiles
+		// in a region no path reaches. Its whole overworld footprint is the entrance tile;
+		// see getLocation and HESPORI_CAVE_ENTRANCE.
+		if (patch.getType() == com.dooglemaps.data.PatchImplementation.HESPORI)
+		{
+			return java.util.Collections.singletonList(HESPORI_CAVE_ENTRANCE);
+		}
 
 		int[] exact = exactFor(patch);
 		WorldPoint centre = getLocation(patch);
@@ -301,6 +329,14 @@ public class PatchLocationStore extends com.dooglemaps.state.ProfileJsonStore
 	public void record(FarmPatch patch, WorldPoint location, int sizeX, int sizeY)
 	{
 		if (location == null)
+		{
+			return;
+		}
+
+		// Never learned: standing at the hespori is standing in an instance, so the sighting
+		// is instance-space and would poison the profile's store with a coordinate that means
+		// nothing outside the cave. See HESPORI_CAVE_ENTRANCE.
+		if (patch.getType() == com.dooglemaps.data.PatchImplementation.HESPORI)
 		{
 			return;
 		}

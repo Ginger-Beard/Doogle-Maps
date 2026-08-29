@@ -117,6 +117,18 @@ public class RunStop
 		serviced.add(patch.getKey());
 	}
 
+	/**
+	 * Whether this patch has been watched changing at this stop.
+	 *
+	 * <p>What splits the cluster hold's two mid-run cases — a serviced patch ripening again
+	 * waits for its plot, an unserviced one is work the plan still owes. See
+	 * {@code RunPlanner.stillWanted}.
+	 */
+	boolean wasServiced(FarmPatch patch)
+	{
+		return serviced.contains(patch.getKey());
+	}
+
 	boolean contains(FarmPatch patch)
 	{
 		return patches.contains(patch);

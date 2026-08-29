@@ -187,6 +187,58 @@ public class RunPresetStore extends ProfileJsonStore
 		}
 	}
 
+	/**
+	 * Points any stored contract tick, in every preset, at the type the contract now wants.
+	 *
+	 * <p>The other half of {@code RunTypeStore.retargetContract}, and it was missing: the live
+	 * selection's {@code CACTUS#contract} key was renamed the moment Jane assigned a herb, but a
+	 * preset saved during the cactus contract kept the cactus key forever. Applying it then
+	 * ticked nothing — the only contract line on offer was the herb one — so the contract
+	 * quietly left the run every time a profile was applied after a hand-in, and the dropdown
+	 * flipped to {@code (unsaved)} because the renamed live keys no longer matched the stored
+	 * ones exactly. Reported from play as "the farming contract unchecks itself after doing it,
+	 * messing with my profiles".
+	 *
+	 * <p>Renamed in lockstep with the live store, by the same rule and for the same reason that
+	 * store's note gives: the tick means "do the contract", not "do cactus contracts", and
+	 * renaming at write time keeps {@code matches} an exact comparison with no fuzzy family
+	 * matching at read time. Merges duplicates the same way — two stale contract keys in one
+	 * preset collapse into the one that is live.
+	 */
+	public void retargetContract(@Nullable com.dooglemaps.data.PatchImplementation type)
+	{
+		if (type == null)
+		{
+			return;
+		}
+
+		boolean changed = false;
+		synchronized (this)
+		{
+			for (Map.Entry<String, List<String>> preset : presets.entrySet())
+			{
+				Set<String> renamed = new LinkedHashSet<>();
+				for (String key : preset.getValue())
+				{
+					int marker = key.indexOf("#contract");
+					renamed.add(marker < 0 ? key : type.name() + key.substring(marker));
+				}
+				if (!renamed.equals(new LinkedHashSet<>(preset.getValue())))
+				{
+					preset.setValue(new ArrayList<>(renamed));
+					changed = true;
+				}
+			}
+		}
+		if (changed)
+		{
+			// Outside the monitor: the save fires ConfigChanged into arbitrary subscribers.
+			// See ProfileJsonStore.save.
+			save();
+			log.debug("Retargeted preset contract ticks to {}", type);
+		}
+	}
+
 	/** The preset last applied or saved, or null. Only a preference; see the field note. */
 	@Nullable
 	public synchronized String lastUsed()

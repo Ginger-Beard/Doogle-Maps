@@ -744,6 +744,27 @@ public class RunLoadout
 		PatchImplementation.CRYSTAL_TREE);
 
 	/**
+	 * Whether a run over these types chops at all — the type-level half of the guide's
+	 * "pack is full on a run that chops" push, which arms the mid-run deposit trip.
+	 *
+	 * <p>Deliberately blunter than {@link #axeNeeded}: that method asks what is actionable
+	 * <i>right now</i>, which goes false the moment the last tree is cleared — exactly when
+	 * the logs are at their fullest and the trip is most wanted. Whether the pack actually
+	 * filled is the other half, and {@code CarriedItems} answers that.
+	 */
+	public static boolean chopsLogs(Set<PatchImplementation> types)
+	{
+		for (PatchImplementation type : types)
+		{
+			if (NEEDS_AN_AXE.contains(type))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * The best axe you own and can actually swing.
 	 *
 	 * <p>Level as well as tier: a dragon axe from a drop is dead weight at 30 Woodcutting, and

@@ -61,7 +61,7 @@ public class ChetPaySwapTest
 
 		swap = construct(GuideMenuSwap.class, client, tracker, config,
 			Mockito.mock(SeedInventoryStore.class),
-			Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
+			Mockito.mock(com.dooglemaps.bank.RunLoadout.class), Mockito.mock(CarriedItems.class));
 	}
 
 	/** Chet's own menu, in his own order, with the West patch wanted. */

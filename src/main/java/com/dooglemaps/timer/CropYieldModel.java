@@ -188,10 +188,31 @@ public final class CropYieldModel
 	private static final java.util.Set<PatchImplementation> TAKES_NO_COMPOST =
 		java.util.EnumSet.of(PatchImplementation.CORAL);
 
+	/**
+	 * Lives-mechanic crops whose chance-to-save constants Jagex has never published.
+	 *
+	 * <p>The wiki is explicit that compost's yield half — <i>"the minimum yield and maximum
+	 * number of harvests"</i> — applies to Celastrus bark and Crystal shards exactly as it
+	 * does to allotments, hops, herbs and giant seaweed. Constants or not, the bucket buys
+	 * bark and shards, so the <b>decision</b> functions treat these as yield-responsive
+	 * while the <b>projection</b> stays honest about what it cannot compute — celastrus
+	 * keeps its empirical average, which was measured with ultracompost and so already
+	 * assumes the bucket.
+	 *
+	 * <p>Without this, both went wrong in the quiet direction: a protected celastrus was
+	 * refused its compost step as "wasted", and the crystal tree — disease-free, so the
+	 * other half of {@link #compostMatters} never applied either — was refused a compost
+	 * dropdown at all: no banked buckets, no step, shards forgone every cycle. Reported
+	 * from play, wiki in hand.
+	 */
+	private static final java.util.Set<Seed> UNPUBLISHED_LIVES =
+		java.util.EnumSet.of(Seed.CELASTRUS, Seed.CRYSTAL_TREE);
+
 	/** Whether compost changes this crop's yield at all. Only the lives mechanic cares. */
 	public static boolean respondsToCompost(Seed seed)
 	{
-		return seed != null && CropYield.forSeed(seed) != null;
+		return seed != null
+			&& (CropYield.forSeed(seed) != null || UNPUBLISHED_LIVES.contains(seed));
 	}
 
 	/**
@@ -200,7 +221,7 @@ public final class CropYieldModel
 	 * <h2>Paying and composting are the same purchase, on the crops with no lives</h2>
 	 *
 	 * Compost does two things: it cuts the disease chance, and on the lives family — herbs,
-	 * allotments, hops, giant seaweed — it raises the yield. A protection payment makes the crop
+	 * allotments, hops, giant seaweed, celastrus and the crystal tree — it raises the yield. A protection payment makes the crop
 	 * <b>immune</b>, not merely safer ({@code DiseaseRisk.survivalChance} returns 1 outright for a
 	 * protected patch), so the first of those is already bought and paid for. On a seed with no
 	 * lives mechanic the second does not exist, and there is nothing left for the bucket to do.
@@ -224,8 +245,8 @@ public final class CropYieldModel
 	/**
 	 * Whether treating this patch type changes anything the plugin can actually tell you.
 	 *
-	 * <p>Two separate ways it can: the <b>yield</b>, through the lives mechanic, which only herbs,
-	 * allotments, hops and giant seaweed have; and the <b>disease</b> chance, which compost cuts
+	 * <p>Two separate ways it can: the <b>yield</b>, through the lives mechanic, which herbs,
+	 * allotments, hops, giant seaweed, celastrus and the crystal tree have; and the <b>disease</b> chance, which compost cuts
 	 * on every patch that can catch one. The second is why the dropdown belongs on trees despite a
 	 * tree giving one log however it was treated.
 	 *

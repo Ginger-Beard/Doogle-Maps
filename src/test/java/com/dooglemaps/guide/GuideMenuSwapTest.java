@@ -404,7 +404,7 @@ public class GuideMenuSwapTest
 			.thenReturn(hops("Teleport to House", "Configure Fairy ring - A I S"));
 
 		GuideMenuSwap swap = construct(GuideMenuSwap.class, client, tracker, config, seeds,
-			Mockito.mock(com.dooglemaps.bank.RunLoadout.class));
+			Mockito.mock(com.dooglemaps.bank.RunLoadout.class), Mockito.mock(CarriedItems.class));
 		swap.onPostMenuSort(new net.runelite.api.events.PostMenuSort());
 
 		assertEquals("Configure belongs under the left click, which is the last entry",

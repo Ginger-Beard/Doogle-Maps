@@ -26,6 +26,9 @@ public class ReadyInfoBox extends InfoBox
 	private final DoogleMapsConfig config;
 	private final RunPlanner planner;
 
+	/** Whether the run is in its hespori gear phase, sampled by {@link #update()}. */
+	private volatile boolean gearPhase;
+
 	/** Told when the run has fallen back to weaker compost than was picked. */
 	private final com.dooglemaps.guide.GuideTracker guideTracker;
 
@@ -97,6 +100,10 @@ public class ReadyInfoBox extends InfoBox
 		readyCount = ready.size();
 		problemCount = problems.size();
 		withdrawCount = withdraw.size();
+		// Sampled here rather than asked in render(), like everything else this box shows:
+		// render() runs per frame on the paint thread, and isGearPhase walks the planner and
+		// the growth stores. Volatile field, same as the counts.
+		gearPhase = planner.isGearPhase();
 		setTooltip(buildTooltip(ready, problems, withdraw));
 	}
 
@@ -249,6 +256,16 @@ public class ReadyInfoBox extends InfoBox
 	public boolean render()
 	{
 		if (!config.showReadyInfobox())
+		{
+			return false;
+		}
+		// Hidden for the whole of the hespori engagement — gearing up, walking in, the fight
+		// itself. The box is a farming glance ("what is ready, what to withdraw"), and every
+		// word of it is about the run the player has deliberately set aside until the boss is
+		// dead; a ready-count over a fight is noise at best and a misclick at worst. Requested
+		// from play. The kill ends the phase, and the box comes back exactly when its withdraw
+		// list becomes the swap-back leg's orders.
+		if (gearPhase)
 		{
 			return false;
 		}

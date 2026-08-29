@@ -146,8 +146,42 @@ public class CropYieldModelTest
 		}
 	}
 
+	/**
+	 * Celastrus bark and crystal shards respond to compost, published constants or not.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The wiki: ultracompost <i>"increases the minimum yield and maximum number of harvests
+	 * ... This also applies to ... Celastrus bark from a fully grown Celastrus seed, and
+	 * Crystal shards from a fully grown Crystal tree."</i> The decision functions keyed on a
+	 * CropYield row existing, and neither crop has one — Jagex never published their
+	 * constants — so a protected celastrus was refused its compost step as "wasted", and the
+	 * crystal tree, disease-free on top, was refused a compost dropdown at all.
+	 */
+	@Test
+	public void celastrusAndCrystalShardsEarnTheirCompost()
+	{
+		assertTrue("the crystal tree earns a compost dropdown",
+			CropYieldModel.compostMatters(PatchImplementation.CRYSTAL_TREE));
+		assertFalse("celastrus compost buys bark, not merely survival",
+			CropYieldModel.compostOnlyHelpsDisease(PatchImplementation.CELASTRUS));
+		assertFalse("a protected celastrus still wants its bucket",
+			CropYieldModel.compostWastedOnProtected(Seed.CELASTRUS, true));
+		assertFalse("and so does a protected crystal tree",
+			CropYieldModel.compostWastedOnProtected(Seed.CRYSTAL_TREE, true));
+
+		// The boundary the fix must not cross: a tree gives one log however it was treated,
+		// so a protected magic sapling's bucket is still the wasted one.
+		assertTrue(CropYieldModel.compostWastedOnProtected(Seed.MAGIC, true));
+	}
+
 	private static void assertFalse(boolean condition)
 	{
 		assertTrue(!condition);
+	}
+
+	private static void assertFalse(String message, boolean condition)
+	{
+		assertTrue(message, !condition);
 	}
 }

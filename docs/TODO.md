@@ -421,36 +421,29 @@ you are going anyway.
   ~15 tiles from the patch. The non-rotting fix is to learn leprechaun positions the way patch
   positions are already learned, then compute the rule. Low priority: one patch, one walk.
 - **Crowdsourced yield data**, post-Hub and opt-in. See `docs/NOTES.md`.
-- **The hespori, and the gear problem it brings with it.** Currently out of the run entirely: not
-  in `PlantingGroups.RUNNABLE`, no pin in `WikiPatchLocations` (its wiki coordinate is on
-  `mapID=33`, an instanced cave under the guild, so it fails the region check for a reason that
-  has nothing to do with being wrong), and no learned position worth having — the patch is
-  instanced, so `getWorldLocation` there returns instance-space coordinates that mean nothing
-  outside. A stored one is harmless while nothing routes to it, and would want clearing before
-  anything did.
+- ~~**The hespori, and the gear problem it brings with it.**~~ **Built, exactly as the idea
+  from play framed it** — the hespori is in `PlantingGroups.RUNNABLE` and its bank leg hands
+  the loadout to the player's own Inventory Setups profile named "hespori" (matched
+  case-insensitively). `InventorySetupsHandoff` is the whole integration; the withdraw
+  apparatus — filter, highlights, summary — stands down for the leg, the deposit-inventory and
+  deposit-worn buttons are the marks instead, and the leg ends when the bank has been opened
+  and closed. The setup stays selected until the run stops, so re-banking the gear afterwards
+  happens under its own filtering. Both open questions settled:
 
-  **Why it is not just another patch.** It is a boss. The run's whole loadout doctrine is
-  farming supplies — seeds, compost, a spade — and walking in with that is walking in unarmed.
-  So supporting it means the bank leg has to produce a *different* loadout for one stop, and
-  then put the farming one back afterwards.
+  1. *Is there an API at all?* Yes, and purpose-built: Inventory Setups (July 2026) speaks
+     `PluginMessage` under the `inventory-setups` namespace — `get-setups` fills a collection
+     with names synchronously, `view` selects a setup exactly as clicking it would, `clear`
+     puts the overview back only if the named setup is still selected, and it broadcasts
+     `setups-changed` when the list moves.
+  2. *Is triggering it inside the compliance line?* Yes, because the premise was wrong:
+     `view` performs no withdrawals or equips. It changes what the sidebar and bank *display*
+     — the same category as the bank tag `BankFilter` already opens uninvited — and every
+     withdrawal and equip stays one player click for one action. Inventory Setups' own bank
+     filtering is display too, the same Bank Tags mechanism ours is.
 
-  **The idea, from play:** trigger the player's own Inventory Setups loadout named "hespori" on
-  that bank step, and re-bank the farming setup after. It reuses something the player has
-  already configured rather than the plugin inventing a combat loadout it has no business
-  opinions about.
-
-  **Two things to settle before building, in this order.**
-
-  1. *Is there an API at all?* Cross-plugin messaging is precedent here — `ShortestPathIntegration`
-     drives Shortest Path entirely through `PluginMessage` — but whether Inventory Setups exposes
-     anything equivalent is unknown, and if it does not the idea stops there.
-  2. *Is triggering it inside the compliance line?* This is the sharper one and wants answering
-     before any code. Loading an inventory setup is not one action — it is a sequence of bank
-     withdrawals and equips. If Inventory Setups performs them, then Doogle Maps triggering it is
-     chaining into that sequence rather than reordering a menu, which is a different category
-     from every swap in `docs/design-principles.md`. Highlighting *which* setup to load, and
-     leaving the click to the player, is the version that is obviously fine — and is probably the
-     one to build even if the other turns out to be permitted.
+  Routing ends at the cave's overworld entrance — the patch itself is instanced, so
+  `PatchLocationStore` serves the entrance for the hespori before its learned/measured tiers
+  and refuses to learn instance-space sightings of it.
 
 ## Open data questions, blocked on observations
 

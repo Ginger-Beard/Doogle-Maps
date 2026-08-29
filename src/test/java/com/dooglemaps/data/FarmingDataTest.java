@@ -20,6 +20,24 @@ import static org.junit.Assert.assertTrue;
  */
 public class FarmingDataTest
 {
+	/**
+	 * The hespori's varbits are live from the guild's west wing — a <b>hand-written</b>
+	 * extra, not generator output. The sprout beside the cave entrance (multiloc 34707,
+	 * "Blooming Hespori sprout") is driven by the patch's own varbit 7908, so the server
+	 * transmits it above ground and the boss-up state refreshes at the guild bank instead of
+	 * only inside the cave. If this fails after regenerating the tables, the extra was
+	 * clobbered — re-add {@code 4922} to the hespori region's extras and its comment.
+	 */
+	@Test
+	public void theHesporiReadsFromTheGuildsWestWing()
+	{
+		net.runelite.api.coords.WorldPoint bySprout =
+			new net.runelite.api.coords.WorldPoint(1234, 3729, 0);
+		assertTrue("the guild must carry the hespori's transmit - see the hespori entry",
+			FarmingWorldData.getRegionsForLocation(bySprout).stream()
+				.anyMatch(region -> region.getRegionId() == 5021));
+	}
+
 	@Test
 	public void everyPatchHasAUniqueKey()
 	{

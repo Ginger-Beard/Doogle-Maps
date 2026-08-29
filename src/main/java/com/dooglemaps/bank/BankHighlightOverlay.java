@@ -99,12 +99,16 @@ public class BankHighlightOverlay extends Overlay
 	/** The contract's crop, which is the one noted stack that must never be deposited. */
 	private final com.dooglemaps.state.ContractState contracts;
 
+	/** The hespori run's bank leg, whose marks are the deposit buttons rather than items. */
+	private final InventorySetupsHandoff handoff;
+
 	@Inject
 	BankHighlightOverlay(Client client, DoogleMapsConfig config, RunLoadout loadout,
 		ItemManager itemManager, TooltipManager tooltips,
 		com.dooglemaps.route.RunPlanner planner, BankFilter bankFilter, RouteItem routeItem,
-		com.dooglemaps.state.ContractState contracts)
+		com.dooglemaps.state.ContractState contracts, InventorySetupsHandoff handoff)
 	{
+		this.handoff = handoff;
 		this.contracts = contracts;
 		this.routeItem = routeItem;
 		this.bankFilter = bankFilter;
@@ -137,6 +141,22 @@ public class BankHighlightOverlay extends Overlay
 		}
 
 		net.runelite.api.Point mouse = client.getMouseCanvasPosition();
+
+		// The gear phase draws nothing at all. The wanted marks and the counts below are the
+		// farming loadout's and the vault holds no armour — and the deposit-button marks this
+		// branch used to draw are gone on purpose: they could not tell "arrived full of the
+		// wrong things" from "just put the loadout on", and every attempt to police the
+		// difference nagged the player about gear they had chosen to carry. What goes to the
+		// bank and what comes out is the player's own business on this leg; the guide's one
+		// instruction line says the errand, Inventory Setups shows the setup, and the leg
+		// ends the moment the bank has been opened and closed. Reported from play, three
+		// times, each stricter version worse than the last.
+		if (handoff.applies())
+		{
+			return null;
+		}
+
+		com.dooglemaps.route.RunPlanner.BankLegReason legReason = planner.getBankLegReason();
 
 		// The bank's outlines only when it is showing everything.
 		//
@@ -174,7 +194,8 @@ public class BankHighlightOverlay extends Overlay
 		highlightVault(graphics, mouse);
 
 		// And the other direction: what should go *into* the bank while it is open anyway.
-		highlightDeposits(graphics, mouse);
+		highlightDeposits(graphics, mouse,
+			legReason == com.dooglemaps.route.RunPlanner.BankLegReason.DEPOSIT);
 		return null;
 	}
 
@@ -203,7 +224,8 @@ public class BankHighlightOverlay extends Overlay
 	 * contract's crop in either direction (assigned or awaiting hand-in), because depositing
 	 * that is how a finished contract gets left unclaimed for a growth cycle.
 	 */
-	private void highlightDeposits(Graphics2D graphics, net.runelite.api.Point mouse)
+	private void highlightDeposits(Graphics2D graphics, net.runelite.api.Point mouse,
+		boolean depositLeg)
 	{
 		Widget inventory = client.getWidget(InterfaceID.Bankside.ITEMS);
 		if (inventory == null || inventory.isHidden() || inventory.getDynamicChildren() == null)
@@ -221,12 +243,18 @@ public class BankHighlightOverlay extends Overlay
 
 			net.runelite.api.ItemComposition composition =
 				itemManager.getItemComposition(item.getItemId());
-			if (composition.getNote() == -1)
+			if (composition.getNote() == -1 && !depositLeg)
 			{
+				// Ordinarily noted stacks only - a loose item might be lunch. On the deposit
+				// trip the pack is full and the errand is shedding it, and the bulk is logs,
+				// which never note: loose produce counts there, with the payment and contract
+				// protections below still standing.
 				continue;
 			}
 
-			int crop = composition.getLinkedNoteId();
+			int crop = composition.getNote() == -1
+				? item.getItemId()
+				: composition.getLinkedNoteId();
 			com.dooglemaps.data.Produce produce = com.dooglemaps.data.Produce.getByItemID(crop);
 			boolean notable = produce != null && produce.isNotable()
 				|| com.dooglemaps.data.NotableHarvests.isNotable(crop);
@@ -243,6 +271,19 @@ public class BankHighlightOverlay extends Overlay
 		}
 	}
 
+	/**
+	 * Marks the two deposit buttons while the hespori's gear stop still owns something.
+	 *
+	 * <p>Buttons rather than items, because the errand is "everything": the farming supplies,
+	 * the harvests, whatever is worn. Each button stops being marked the moment its container
+	 * is empty, so the marks also read as progress — two, one, done. Withdraw-side marking is
+	 * deliberately absent: which items make a hespori fight is the player's own setup's
+	 * business, and Inventory Setups highlights its setup's rows itself.
+	 *
+	 * <p>Only at the supply leg, like the summary lines: a bank opened after the leg is done
+	 * is the player's own errand, likely re-banking the gear, and marking Deposit-worn at
+	 * someone standing in full combat kit mid-run would be advice to disarm.
+	 */
 	/**
 	 * The crops a bank visit must leave in the pack, unnoted ids.
 	 *

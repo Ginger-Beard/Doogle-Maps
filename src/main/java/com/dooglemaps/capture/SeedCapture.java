@@ -114,6 +114,19 @@ public class SeedCapture
 	@Subscribe
 	public void onMenuOptionClicked(MenuOptionClicked event)
 	{
+		// The bank's empty-containers button, which tips the box straight into the bank with
+		// no click on the box itself — the one emptying route the pending-action model never
+		// saw. "All of your seeds and saplings were deposited." landed in the bank's counts
+		// with no debit against the box, and a day later the run double-counted two snape
+		// grass seeds into an allotment it could not plant. Reported from play. The click
+		// arms the same EMPTY the box's own option arms; the container deltas do the rest,
+		// including the partial and no-op cases, exactly as they do for an ordinary Empty.
+		if (event.getParam1() == net.runelite.api.gameval.InterfaceID.Bankmain.DEPOSITCONTAINERS)
+		{
+			seeds.noteSeedBoxAction(SeedBoxAction.EMPTY);
+			return;
+		}
+
 		if (!isSeedBox(event.getItemId()))
 		{
 			return;

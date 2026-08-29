@@ -67,6 +67,9 @@ public class BankFilterTest
 	private RouteItem routeItem;
 	private com.dooglemaps.guide.CarriedItems carried;
 
+	/** Mocked inert: applies() answers false, so the filter behaves as on any ordinary run. */
+	private InventorySetupsHandoff handoff;
+
 	private RecordingBankTags bankTags;
 	private BankFilter filter;
 
@@ -83,13 +86,14 @@ public class BankFilterTest
 		routeItem = Mockito.mock(RouteItem.class);
 		carried = Mockito.mock(com.dooglemaps.guide.CarriedItems.class);
 		when(carried.getItemIds()).thenReturn(Collections.emptySet());
+		handoff = Mockito.mock(InventorySetupsHandoff.class);
 
 		bankTags = new RecordingBankTags();
 		when(pluginManager.getPlugins())
 			.thenReturn(Collections.<Plugin>singletonList(bankTags));
 
 		filter = new BankFilter(client, planner, pluginManager, loadout, config,
-			clientThread, bank, routeItem, carried);
+			clientThread, bank, routeItem, carried, handoff);
 	}
 
 	@Test

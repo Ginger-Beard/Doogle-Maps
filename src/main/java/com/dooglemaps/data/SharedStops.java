@@ -56,6 +56,13 @@ public final class SharedStops
 		// between them; the patches are about fifty tiles apart on foot, which is well inside
 		// what a stop already asks of the player at Ardougne.
 		joins.put(12851, 12596);
+		// Catherby fruit tree (11317) -> the Catherby plot (11062). One Catherby arrival serves
+		// the whole town: the fruit tree stands a short walk west of the allotments, closer than
+		// the hops are to the bush above. The plot hosts because it is where the teleports land
+		// and where most of the visit's work is — the fruit tree is the detour, not the
+		// destination. Requested from play, in the hops pair's own words: Catherby's herb, bin,
+		// allotments, flower and fruit tree are one trip.
+		joins.put(11317, 11062);
 		return Collections.unmodifiableMap(joins);
 	}
 

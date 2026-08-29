@@ -160,6 +160,9 @@ public class DoogleMapsPlugin extends Plugin
 	private BankFilter bankFilter;
 
 	@Inject
+	private com.dooglemaps.bank.InventorySetupsHandoff inventorySetupsHandoff;
+
+	@Inject
 	private com.dooglemaps.guide.GuideTracker guideTracker;
 
 	@Inject
@@ -299,6 +302,10 @@ public class DoogleMapsPlugin extends Plugin
 		{
 			runTypes.retargetContract(contract.getPatchImplementation());
 
+			// And the saved profiles, in lockstep, or applying one after a hand-in unticks
+			// the contract — the stored key still names the previous assignment's type.
+			runPresets.retargetContract(contract.getPatchImplementation());
+
 			// The protection store gets the opposite treatment — stale contract choices are
 			// dropped, not renamed — see its retargetContract for why the two differ.
 			com.dooglemaps.data.Seed seed = contracts.getContractSeed();
@@ -353,6 +360,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.register(seaweedSpores);
 		eventBus.register(guideMenuSwap);
 		eventBus.register(bankFilter);
+		eventBus.register(inventorySetupsHandoff);
 		// For its cache invalidation alone - registered before the capture classes run
 		// (the bus orders same-priority subscribers by class name, and bank.* precedes
 		// capture.*), so a withdrawal's same-tick readers see a fresh loadout.
@@ -427,6 +435,7 @@ public class DoogleMapsPlugin extends Plugin
 		eventBus.unregister(seaweedSpores);
 		eventBus.unregister(guideMenuSwap);
 		eventBus.unregister(bankFilter);
+		eventBus.unregister(inventorySetupsHandoff);
 		eventBus.unregister(runLoadout);
 
 		bankContents.removeChangeListener(onStateChanged);
@@ -456,6 +465,10 @@ public class DoogleMapsPlugin extends Plugin
 		// took the infobox and overlay removals below it down too. Last, so whatever it does,
 		// nothing of ours is left on screen.
 		bankFilter.shutDown();
+
+		// The other talker, kept beside the first for the same reason — and safe on the EDT,
+		// because its goodbye is handed to the client thread rather than posted here.
+		inventorySetupsHandoff.shutDown();
 
 		interactionTracker.reset();
 		compostCapture.reset();
@@ -762,11 +775,12 @@ public class DoogleMapsPlugin extends Plugin
 		// The supply leg ends when there is nothing left to collect, and that can become true
 		// without a bank event: withdrawing the last seed from the *vault* fires nothing the bank
 		// capture listens for. The flag is refreshed first so the answer is this tick's, not the
-		// guide's last push; cheap either way — the loadout build is cached per tick.
+		// guide's last push; cheap either way — the loadout build is cached per tick. The guide
+		// owns the answer because it is not always the loadout's: a hespori run's leg is a gear
+		// stop. See GuideTracker.supplyLegOutstanding.
 		if (runPlanner.isActive())
 		{
-			runPlanner.setWithdrawOutstanding(
-				runLoadout.anythingLeftToWithdraw(runPlanner.coveredTypes()));
+			runPlanner.setWithdrawOutstanding(guideTracker.supplyLegOutstanding());
 		}
 		runPlanner.leaveBank();
 

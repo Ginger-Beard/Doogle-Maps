@@ -166,12 +166,17 @@ public class BankFilter
 	/** What is on the player, so the layout can reserve slots for gear already carried. */
 	private final com.dooglemaps.guide.CarriedItems carried;
 
+	/** The hespori run's bank leg, which this filter stands aside for entirely. */
+	private final InventorySetupsHandoff handoff;
+
 	@Inject
 	BankFilter(Client client, com.dooglemaps.route.RunPlanner planner,
 		PluginManager pluginManager, RunLoadout loadout,
 		DoogleMapsConfig config, ClientThread clientThread, BankContents bank,
-		RouteItem routeItem, com.dooglemaps.guide.CarriedItems carried)
+		RouteItem routeItem, com.dooglemaps.guide.CarriedItems carried,
+		InventorySetupsHandoff handoff)
 	{
+		this.handoff = handoff;
 		this.routeItem = routeItem;
 		this.bank = bank;
 		this.clientThread = clientThread;
@@ -463,6 +468,14 @@ public class BankFilter
 			return;
 		}
 
+		if (handoff.applies())
+		{
+			// A hespori run started while our tag was up: the bank leg is Inventory Setups'
+			// now, and its filtering cannot show through ours. Same shape as the off switch.
+			close();
+			return;
+		}
+
 		// The player clicking another tab or their own tag deactivates ours — Bank Tags'
 		// answer, not an inference. Their view is already where they put it, so there is
 		// nothing to close; the filter just stands down for the rest of this bank instead of
@@ -590,6 +603,14 @@ public class BankFilter
 			// Same rule as the highlighting: a filter for "this run" means nothing without one.
 			logOnce("No run is under way, so there is nothing to filter the bank to - press "
 				+ "Start run first");
+			return;
+		}
+		if (handoff.applies())
+		{
+			// Not a failure, which is why it is said: the hespori's gear comes from the
+			// player's own Inventory Setups loadout, whose filtering owns this bank leg.
+			logOnce("A hespori run's bank leg belongs to Inventory Setups, so the run filter "
+				+ "is staying out of its way");
 			return;
 		}
 		if (!registered && client.getTickCount() - lastBankTagsProbe > 100)

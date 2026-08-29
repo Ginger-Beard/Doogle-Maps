@@ -1269,6 +1269,40 @@ public class RunPlannerTest
 			planner.getRemaining().stream().noneMatch(this::isFalador));
 	}
 
+	/**
+	 * A held bin is refused at the adoption door, not merely re-held after walking through it.
+	 *
+	 * <p>{@code reviewBins} adopted on raw actionability and cleared the stop's completion
+	 * announcement; only {@code stillWanted} re-holding the bin a tick later kept the run from
+	 * travelling — a redundant completion edge and a spare retarget, safe by coincidence. Now
+	 * it asks {@code clusterHeld} the same way {@code planStops} does, so a held bin never
+	 * joins the stop at all.
+	 */
+	@Test
+	public void aHeldBinIsNotAdoptedIntoItsPlotsStop()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.COMPOST));
+		planner.leaveBank();
+
+		// The herb is replanted and watched; the bin only now finishes composting.
+		service(FALADOR_HERB);
+		record(FALADOR_BIN, readyBinValue());
+		availability.setAvailable(patch(FALADOR_BIN), true);
+		planner.reviewBins();
+
+		RunStop falador = planner.getStops().stream().filter(this::isFalador)
+			.findFirst().orElseThrow(AssertionError::new);
+		assertTrue("the growing herb holds the bin, so it never enters the stop",
+			falador.getPatches().stream()
+				.noneMatch(p -> p.getKey().equals(FALADOR_BIN)));
+	}
+
 	private boolean isFalador(RunStop stop)
 	{
 		return stop.getRegion().getRegionId()
@@ -1320,14 +1354,19 @@ public class RunPlannerTest
 		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER));
 		planner.leaveBank();
 
-		// Both replanted: nothing to do, so the stop completes.
+		// Both replanted, through the watched path — replanting happens with the player at the
+		// stop, so the interaction tracker sees it, and being seen is now load-bearing: the
+		// hold re-applies only to patches the stop has serviced once, so that it can never
+		// complete a stop over ripe work the player has not finished. See stillWanted.
 		record(FALADOR_HERB, 4);
+		planner.onPatchChanged(patch(FALADOR_HERB));
 		record(FALADOR_FLOWER, 8);
+		planner.onPatchChanged(patch(FALADOR_FLOWER));
 		assertTrue("fixture: a freshly replanted plot wants nothing",
 			planner.getRemaining().isEmpty());
 
-		// The flower ripens first. The herb beside it is still growing, so the trip is exactly
-		// the one the setting exists to skip.
+		// The flower ripens first — while the player is away, so no event fires. The herb
+		// beside it is still growing, so the trip is exactly the one the setting exists to skip.
 		record(FALADOR_FLOWER, 12);
 
 		assertTrue("one ripe flower must not fetch you back to a plot that is not ready",
@@ -1349,7 +1388,9 @@ public class RunPlannerTest
 		planner.leaveBank();
 
 		record(FALADOR_HERB, 4);
+		planner.onPatchChanged(patch(FALADOR_HERB));
 		record(FALADOR_FLOWER, 8);
+		planner.onPatchChanged(patch(FALADOR_FLOWER));
 		assertTrue(planner.getRemaining().isEmpty());
 
 		record(FALADOR_FLOWER, 12);
@@ -1357,6 +1398,439 @@ public class RunPlannerTest
 
 		assertEquals("with the whole plot ready the trip is worth making",
 			1, planner.getRemaining().size());
+	}
+
+	/**
+	 * Ripe work the player has not touched keeps its stop, whatever its siblings do.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The hold leaked into the completion test unqualified, so a part-serviced plot — flower
+	 * replanted, herb still ripe and never touched — completed the moment the player crossed
+	 * the region boundary: the freshly growing flower held the herb, {@code isComplete} went
+	 * true, and the ripe herb was silently dropped for the rest of the run. The hold may only
+	 * speak for work the stop has already seen done once; unfinished promises are kept.
+	 */
+	@Test
+	public void aPartServicedPlotKeepsItsUnfinishedRipeWork()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		record(FALADOR_HERB, 43);
+		record(FALADOR_FLOWER, 12);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		availability.setAvailable(patch(FALADOR_FLOWER), true);
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER));
+		planner.leaveBank();
+
+		// The flower is replanted and watched being replanted; the herb is never touched.
+		record(FALADOR_FLOWER, 8);
+		planner.onPatchChanged(patch(FALADOR_FLOWER));
+
+		assertTrue("a growing sibling must not drop ripe work the player has not finished",
+			planner.getRemaining().stream().anyMatch(this::isFalador));
+	}
+
+	/**
+	 * A held plot rides along into a stop the run is making anyway.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The hold saves a teleport, and only a teleport. The Farming Guild's tree made the guild
+	 * a stop whatever the plot beside it was doing — so holding the plot out of that stop
+	 * saved nothing and hid the ripe herb from a trip already being paid for: the guide stood
+	 * the player at the guild and never mentioned it, and nothing could adopt it mid-run.
+	 */
+	@Test
+	public void aHeldPlotRidesAlongWhenTheStopIsMadeAnyway()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		FarmPatch flower = guildPatch(PatchImplementation.FLOWER);
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		record(herb.getKey(), 43);
+		record(flower.getKey(), 8);
+		// The tree is left unobserved: never seen is worth a look, which is all the stop needs.
+		availability.setAvailable(herb, true);
+		availability.setAvailable(flower, true);
+		availability.setAvailable(tree, true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER,
+			PatchImplementation.TREE));
+		planner.leaveBank();
+
+		RunStop guild = planner.getRemaining().stream()
+			.filter(stop -> stop.getRegion().getRegionId() == FARMING_GUILD_REGION)
+			.findFirst().orElseThrow(AssertionError::new);
+		assertTrue("the ripe herb rides along - there is no teleport left to save",
+			guild.getPatches().contains(herb));
+	}
+
+	/**
+	 * And without other work there, the hold still holds — riding along never creates a stop.
+	 */
+	@Test
+	public void aHeldPlotAloneStillHoldsTheTrip()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		FarmPatch herb = guildPatch(PatchImplementation.HERB);
+		FarmPatch flower = guildPatch(PatchImplementation.FLOWER);
+		record(herb.getKey(), 43);
+		record(flower.getKey(), 8);
+		availability.setAvailable(herb, true);
+		availability.setAvailable(flower, true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER));
+		planner.leaveBank();
+
+		assertTrue("nothing else wants the guild, so the plot's hold stands",
+			planner.getRemaining().stream()
+				.noneMatch(stop -> stop.getRegion().getRegionId() == FARMING_GUILD_REGION));
+	}
+
+	/**
+	 * Standing on any of the plot's own ground escapes the hold, not just its canonical id.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * Catherby's plot answers to four map regions (11061/11062/11317/11318), and the exemption
+	 * compared only the canonical one — so a player one tile over the boundary, exactly where
+	 * finishing the previous run leaves them, was read as elsewhere and the plot beside them
+	 * was held even though the teleport the hold saves was already spent.
+	 */
+	@Test
+	public void standingOnThePlotsExtraGroundEscapesTheHold()
+	{
+		when(pluginConfig.holdClustersUntilReady()).thenReturn(true);
+		// 11061 is Catherby plot ground, but not the plot's canonical region id.
+		standingIn(11061);
+
+		record(CATHERBY_HERB, 43);
+		record(CATHERBY_FLOWER, 8);
+		availability.setAvailable(patch(CATHERBY_HERB), true);
+		availability.setAvailable(patch(CATHERBY_FLOWER), true);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FLOWER));
+		planner.leaveBank();
+
+		assertTrue("you are standing at the plot, so nothing there is held",
+			planner.getRemaining().stream()
+				.anyMatch(stop -> stop.getRegion().getRegionId() == 11062));
+	}
+
+	private static final int FARMING_GUILD_REGION = 4922;
+
+	private static final String CATHERBY_FLOWER = "11062.4773";
+
+	/** The hespori patch's key: its cave's region, and FARMING_TRANSMIT_J. */
+	private static final String HESPORI = "5021.7908";
+
+	/**
+	 * The whole mixed-run gear cycle, driven end to end: gear leg, hespori first, swap-back
+	 * bank trip, farm circuit.
+	 *
+	 * <p>One test for the sequence rather than four for the parts, deliberately — hespori
+	 * seeds are rare and the patch takes a day to regrow, so this lifecycle gets almost no
+	 * live rehearsals; what a real run will meet is the <i>chain</i>, and the joints between
+	 * the phases are where the design has the most room to be wrong.
+	 */
+	@Test
+	public void aMixedHesporiRunSwapsGearThenContinuesFarming()
+	{
+		standingIn(VARROCK_REGION);
+		FarmPatch hespori = patch(HESPORI);
+		record(HESPORI, 7);   // the boss is up
+		availability.setAvailable(hespori, true);
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+
+		// The guide's pre-start answer for a gear run is "outstanding", so the run opens at
+		// a bank — see GuideTracker.withdrawListOutstanding.
+		planner.start(EnumSet.of(PatchImplementation.HESPORI, PatchImplementation.HERB), true);
+		assertTrue("a gear run opens at a bank", planner.isAtBankLeg());
+		assertTrue("and the gear phase is on", planner.isGearPhase());
+
+		// The handoff calls the gear collected: bank opened and closed. The guide pushes that
+		// verdict; the leg ends on it. The tick review runs while the phase is on, as it does
+		// every tick in production — the swap trip arms on the phase's falling edge, and an
+		// edge needs the rising side to have been seen.
+		planner.setWithdrawOutstanding(false);
+		planner.leaveBank();
+		planner.reviewProgress();
+		assertFalse(planner.isAtBankLeg());
+
+		// The hespori comes first, whatever is cheaper to reach: the route goes to the cave
+		// entrance in the guild, and nowhere near the herb stop.
+		assertEquals("only the cave entrance is routed during the gear phase",
+			Collections.singleton(FARMING_GUILD_REGION), regionsTargeted());
+
+		// Killed and replanted: the patch turns into a growing seedling.
+		record(HESPORI, 4);
+		planner.onPatchChanged(patch(HESPORI));
+		planner.reviewProgress();
+
+		assertFalse("the fight is over, so the gear phase is too", planner.isGearPhase());
+		assertTrue("and the swap-back bank trip armed", planner.isAtBankLeg());
+		assertEquals(RunPlanner.BankLegReason.GEAR_SWAP, planner.getBankLegReason());
+
+		// Farming supplies collected; the circuit continues where an hespori-only run would
+		// have ended.
+		planner.setWithdrawOutstanding(false);
+		planner.leaveBank();
+		assertFalse(planner.isAtBankLeg());
+		assertTrue("the herb stop is still the run's to make",
+			planner.getRemaining().stream().anyMatch(this::isFalador));
+	}
+
+	/** An hespori-only run ends after the fight; there is no swap-back trip to nowhere. */
+	@Test
+	public void anHesporiOnlyRunEndsWithoutASwapBackTrip()
+	{
+		standingIn(VARROCK_REGION);
+		record(HESPORI, 7);
+		availability.setAvailable(patch(HESPORI), true);
+
+		planner.start(EnumSet.of(PatchImplementation.HESPORI), true);
+		planner.setWithdrawOutstanding(false);
+		planner.leaveBank();
+		planner.reviewProgress();
+
+		record(HESPORI, 4);
+		planner.onPatchChanged(patch(HESPORI));
+		planner.reviewProgress();
+
+		assertFalse("nothing left to farm, so no bank trip", planner.isAtBankLeg());
+	}
+
+	/** A growing hespori under an everything-tick is an ordinary farm run, not a gear run. */
+	@Test
+	public void aGrowingHesporiLeavesTheRunAnOrdinaryFarmRun()
+	{
+		standingIn(VARROCK_REGION);
+		record(HESPORI, 4);   // growing - contributes no stop
+		availability.setAvailable(patch(HESPORI), true);
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+
+		planner.start(EnumSet.of(PatchImplementation.HESPORI, PatchImplementation.HERB), false);
+		planner.leaveBank();
+
+		assertFalse("no hespori stop, so no gear phase", planner.isGearPhase());
+		assertTrue("the herbs are the run",
+			planner.getRemaining().stream().anyMatch(this::isFalador));
+	}
+
+	/**
+	 * A weedy hespori is an ordinary patch on an ordinary run: raking wants a farm kit, not
+	 * a fight one. The gear phase is keyed on the boss being <b>up</b>, nothing less — a
+	 * stop existing is not enough, because a stop exists for weeds too, and it also cannot
+	 * be the phase's end key, because the kill leaves exactly this weedy stop behind.
+	 */
+	@Test
+	public void aWeedyHesporiIsAnOrdinaryStopNotAGearRun()
+	{
+		standingIn(VARROCK_REGION);
+		record(HESPORI, 1);   // weeds - rake work, not a fight
+		availability.setAvailable(patch(HESPORI), true);
+
+		planner.start(EnumSet.of(PatchImplementation.HESPORI), false);
+		planner.leaveBank();
+
+		assertFalse("weeds are not a boss", planner.isGearPhase());
+		assertTrue("but the patch is still the run's to rake",
+			planner.getRemaining().stream()
+				.anyMatch(stop -> stop.getRegion().getRegionId() == 5021));
+		planner.reviewProgress();
+		assertFalse("and a run that never geared up owes no swap-back trip",
+			planner.isAtBankLeg());
+	}
+
+	/**
+	 * A pack that fills mid-run on a chopping run earns a deposit trip, which ends when the
+	 * pack has space again.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"we'll fill up with logs"</i> — tree clearing fills the pack with logs, which never
+	 * note, and every later stop then has no room to harvest into. The withdraw list cannot
+	 * see it coming, because nothing on it is missing.
+	 */
+	@Test
+	public void aFullPackOnAChoppingRunEarnsADepositTrip()
+	{
+		standingIn(VARROCK_REGION);
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		availability.setAvailable(tree, true);
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+
+		planner.start(EnumSet.of(PatchImplementation.TREE, PatchImplementation.HERB), false);
+		planner.leaveBank();
+		assertFalse("fixture: the opening leg is done", planner.isAtBankLeg());
+
+		// The guide pushes "full, on a run that chops"; the planner arms on the edge.
+		planner.setPackFull(true);
+		planner.reviewProgress();
+		assertTrue("a full pack is a bank trip", planner.isAtBankLeg());
+		assertEquals(RunPlanner.BankLegReason.DEPOSIT, planner.getBankLegReason());
+
+		// Still full: the leg holds even with nothing on the withdraw list.
+		planner.leaveBank();
+		assertTrue("the trip is not over while the pack is", planner.isAtBankLeg());
+
+		// Deposited: space again, and the run moves on.
+		planner.setPackFull(false);
+		planner.leaveBank();
+		assertFalse(planner.isAtBankLeg());
+		assertNull(planner.getBankLegReason());
+	}
+
+	/**
+	 * A deposit trip ends with the pack, whatever else the run still wants from a bank.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The leg's exit used to fall through to the ordinary supply clauses, and the run's
+	 * standing wants — vault seeds the player had deliberately waived among them — chained a
+	 * trip that existed to shed logs open forever: <i>"the plugin really doesn't like when I
+	 * drop things, it thinks my pack is full"</i>. Dropping IS dealing with the pack.
+	 */
+	@Test
+	public void aDepositTripEndsWithThePackWhateverElseIsWanted()
+	{
+		standingIn(VARROCK_REGION);
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		availability.setAvailable(tree, true);
+
+		planner.start(EnumSet.of(PatchImplementation.TREE), false);
+		planner.leaveBank();
+
+		planner.setPackFull(true);
+		planner.reviewProgress();
+		assertTrue(planner.isAtBankLeg());
+
+		// The run still wants plenty from a bank — and the player sheds the pack on the
+		// ground instead of visiting one.
+		planner.setWithdrawOutstanding(true);
+		planner.setPackFull(false);
+		planner.leaveBank();
+
+		assertFalse("the trip was about the pack, and the pack is dealt with",
+			planner.isAtBankLeg());
+	}
+
+	/** Waving the deposit trip past is honoured until the pack has emptied and filled again. */
+	@Test
+	public void aWaivedDepositTripDoesNotReArmOnTheSameFill()
+	{
+		standingIn(VARROCK_REGION);
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		availability.setAvailable(tree, true);
+
+		planner.start(EnumSet.of(PatchImplementation.TREE), false);
+		planner.leaveBank();
+
+		planner.setPackFull(true);
+		planner.reviewProgress();
+		assertTrue(planner.isAtBankLeg());
+		planner.waiveBankLeg();
+		assertFalse(planner.isAtBankLeg());
+
+		planner.reviewProgress();
+		assertFalse("the level must not re-arm what the player waved past",
+			planner.isAtBankLeg());
+
+		planner.setPackFull(false);
+		planner.reviewProgress();
+		planner.setPackFull(true);
+		planner.reviewProgress();
+		assertTrue("a fresh fill is a fresh edge", planner.isAtBankLeg());
+	}
+
+	/**
+	 * The slowest crop outranks the nearest stop when the run chooses its next leg.
+	 *
+	 * <p>Requested from play: growth happens in the background, so a run cut short should
+	 * have started its longest clocks first — the magic tree's hours count while the herbs
+	 * are still being walked between. Travel still breaks ties among equally slow stops.
+	 */
+	@Test
+	public void theSlowestCropOutranksTheNearestStop()
+	{
+		when(pluginConfig.slowestCropsFirst()).thenReturn(true);
+		standingIn(VARROCK_REGION);
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		availability.setAvailable(tree, true);
+		selection.toggle(com.dooglemaps.data.Seed.MAGIC);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.TREE), false);
+		planner.leaveBank();
+
+		assertEquals("the magic tree's clock starts first",
+			Collections.singleton(FARMING_GUILD_REGION), regionsTargeted());
+	}
+
+	/** The off switch keeps the old order: everything on offer, the router picks by travel. */
+	@Test
+	public void withSlowestFirstOffEveryStopStaysOnOffer()
+	{
+		when(pluginConfig.slowestCropsFirst()).thenReturn(false);
+		standingIn(VARROCK_REGION);
+
+		record(FALADOR_HERB, 43);
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		selection.toggle(com.dooglemaps.data.Seed.RANARR);
+
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		availability.setAvailable(tree, true);
+		selection.toggle(com.dooglemaps.data.Seed.MAGIC);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.TREE), false);
+		planner.leaveBank();
+
+		assertTrue("both stops are the router's to choose between",
+			regionsTargeted().contains(FARMING_GUILD_REGION)
+				&& regionsTargeted().contains(
+					patch(FALADOR_HERB).getRegion().getRegionId()));
+	}
+
+	/**
+	 * Gearing up inside the guild, the cave is the run's only route.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The cave entrance shares the guild's region with a dozen patches, so a player gearing
+	 * up at the guild bank counted as "standing on work", the route was cleared, and the run
+	 * offered the big bin to someone in combat kit — <i>"taking me to the big bin after
+	 * gearing up. When we gear up for hespori it should be our only target until its
+	 * done"</i>. Work you cannot do in the gear you are wearing is not work you are
+	 * standing on.
+	 */
+	@Test
+	public void theGearPhaseTargetsOnlyTheCaveEvenAmidGuildWork()
+	{
+		standingIn(FARMING_GUILD_REGION);
+		record(HESPORI, 7);
+		availability.setAvailable(patch(HESPORI), true);
+		FarmPatch tree = guildPatch(PatchImplementation.TREE);
+		availability.setAvailable(tree, true);
+
+		planner.start(EnumSet.of(PatchImplementation.HESPORI, PatchImplementation.TREE), true);
+		planner.setWithdrawOutstanding(false);
+		planner.leaveBank();
+
+		assertEquals("one target: the cave entrance, not the guild's own patches",
+			Collections.singleton(new WorldPoint(1230, 3730, 0)), lastTargets());
 	}
 
 	/**
@@ -1396,6 +1870,40 @@ public class RunPlannerTest
 		stateStore.recordVarbit(cactus, 16, cactus.getImplementation().forVarbitValue(16));
 
 		assertTrue("one spine of four is not a trip", planner.getRemaining().isEmpty());
+	}
+
+	/**
+	 * A full run waits for the regrowth too — the spade is why, not the exemption.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The hold used to exempt full runs on the argument that holding a replant trip hostage
+	 * to berries the spade is about to destroy would be backwards. Play refuted it on its own
+	 * terms: a potato cactus visited at one potato of seven harvests one and digs the other
+	 * six out of existence. <i>"we did go back to the potato cactus too soon... I want it
+	 * full."</i>
+	 */
+	@Test
+	public void aFullRunWaitsForTheRegrowthToo()
+	{
+		FarmPatch cactus = FarmingWorldData.getPatches(PatchImplementation.CACTUS).get(0);
+		availability.setAvailable(cactus, true);
+		standingIn(VARROCK_REGION);
+
+		// One spine back of four, on the FULL cactus line - no harvest-only tick anywhere.
+		stateStore.recordVarbit(cactus, 15, cactus.getImplementation().forVarbitValue(15));
+		planner.start(EnumSet.of(PatchImplementation.CACTUS));
+		planner.leaveBank();
+
+		assertTrue("a part-regrown plant is not worth the trip on any line",
+			planner.getRemaining().isEmpty());
+
+		// Fully regrown: now the trip harvests everything the spade would have destroyed.
+		stateStore.recordVarbit(cactus, 18, cactus.getImplementation().forVarbitValue(18));
+		planner.start(EnumSet.of(PatchImplementation.CACTUS));
+		planner.leaveBank();
+
+		assertEquals("full is worth the trip", 1, planner.getRemaining().size());
 	}
 
 	/**
@@ -1568,6 +2076,78 @@ public class RunPlannerTest
 		assertEquals(1, stops.size());
 		assertEquals("nothing to share with, so it stands alone", LUMBRIDGE_HOPS_REGION,
 			stops.get(0).getRegion().getRegionId());
+	}
+
+	/**
+	 * Entrana comes after the Ardougne monastery, because the monks confiscate the teleport.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * The Ardougne cloak serves the monastery bush stop, and the Entrana boat bans it as
+	 * combat gear — so Entrana first meant a second bank trip on the mainland just to fetch
+	 * the cloak back. <i>"we should always do the entrana run after the ardougne farm run...
+	 * which means re-banking after."</i> While both stops remain, Entrana is simply not
+	 * offered; with the monastery done, it is offered exactly as before.
+	 */
+	@Test
+	public void entranaWaitsForTheArdougneMonastery()
+	{
+		FarmPatch monasteryBush = FarmingWorldData.getPatches(PatchImplementation.BUSH).stream()
+			.filter(p -> p.getRegion().getRegionId() == 10290)
+			.findFirst().orElseThrow(AssertionError::new);
+		FarmPatch entranaHops = FarmingWorldData.getPatches(PatchImplementation.HOPS).stream()
+			.filter(p -> p.getRegion().getRegionId() == 11060)
+			.findFirst().orElseThrow(AssertionError::new);
+		availability.setAvailable(monasteryBush, true);
+		availability.setAvailable(entranaHops, true);
+		standingIn(VARROCK_REGION);
+
+		planner.start(EnumSet.of(PatchImplementation.BUSH, PatchImplementation.HOPS));
+		planner.leaveBank();
+
+		assertTrue("the monastery is on offer", regionsTargeted().contains(10290));
+		assertFalse("Entrana is withheld while the cloak's stop remains",
+			regionsTargeted().contains(11060));
+
+		// The monastery done with, Entrana is an ordinary stop again.
+		availability.setAvailable(monasteryBush, false);
+		planner.start(EnumSet.of(PatchImplementation.HOPS));
+		planner.leaveBank();
+		assertTrue("with the monastery gone, Entrana is offered",
+			regionsTargeted().contains(11060));
+	}
+
+	/**
+	 * Catherby's fruit tree and the plot are one Catherby arrival.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * Two regions, both named "Catherby", each its own stop — so the run committed to one while
+	 * the other stayed a separate leg, re-teleported to Catherby twice, and the nexus row
+	 * highlight churned between two destinations it could not tell apart by name. Requested in
+	 * the hops pair's own words: Catherby's herb, bin, allotments, flower and fruit tree are
+	 * one trip.
+	 */
+	@Test
+	public void catherbysFruitTreeJoinsThePlotsStop()
+	{
+		FarmPatch herb = patch(CATHERBY_HERB);
+		FarmPatch fruit = patch(CATHERBY_FRUIT);
+		availability.setAvailable(herb, true);
+		availability.setAvailable(fruit, true);
+		// Both left unobserved: never seen is worth a look, which is all this test needs.
+		standingIn(VARROCK_REGION);
+
+		planner.start(EnumSet.of(PatchImplementation.HERB, PatchImplementation.FRUIT_TREE));
+		planner.leaveBank();
+
+		java.util.List<RunStop> stops = planner.getRemaining();
+		assertEquals("one arrival serves the whole town", 1, stops.size());
+		RunStop only = stops.get(0);
+		assertEquals("hosted by the plot, where the teleports land", 11062,
+			only.getRegion().getRegionId());
+		assertTrue("standing at the fruit tree is standing at this stop",
+			only.claimsRegion(11317));
 	}
 
 	/**

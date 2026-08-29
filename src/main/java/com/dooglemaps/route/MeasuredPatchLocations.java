@@ -42,10 +42,11 @@ import javax.annotation.Nullable;
  *
  * <p>The hespori is included and is <b>known to be wrong</b>. Its patch is in an instanced cave, so
  * the coordinate read there is instance-space and means nothing on the world map. It is harmless
- * while nothing routes to it — it is not in {@code PlantingGroups.RUNNABLE} and has no run step —
- * and it is here so the table is the complete measured set rather than the set minus one
- * unexplained gap. Anything that ever routes to the hespori has to replace it first; see the
- * hespori entry in {@code docs/TODO.md}.
+ * because it is never served: {@code PatchLocationStore.getLocation} answers the hespori with the
+ * cave's overworld <i>entrance</i> before consulting any tier, and {@code record} refuses to learn
+ * it, for the same reason this row cannot be trusted. The row stays so the table is the complete
+ * measured set rather than the set minus one unexplained gap — and so a regeneration, which walks
+ * every patch and dumps what it saw, does not look like it lost one.
  *
  * <h2>Regenerating</h2>
  *

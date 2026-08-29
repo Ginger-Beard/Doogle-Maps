@@ -105,6 +105,9 @@ public class GuideTracker
 
 	private final com.dooglemaps.data.ItemNames itemNames;
 
+	/** The hespori run's bank leg, which replaces the withdraw list with the player's own gear. */
+	private final com.dooglemaps.bank.InventorySetupsHandoff handoff;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -118,8 +121,10 @@ public class GuideTracker
 		DroppedProduce droppedProduce, com.dooglemaps.route.BankLocationStore bankLocations,
 		com.dooglemaps.state.DailyTeleports dailyTeleports,
 		com.dooglemaps.state.CompostRunStore compostRun,
-		com.dooglemaps.data.ItemNames itemNames)
+		com.dooglemaps.data.ItemNames itemNames,
+		com.dooglemaps.bank.InventorySetupsHandoff handoff)
 	{
+		this.handoff = handoff;
 		this.itemNames = itemNames;
 		this.compostRun = compostRun;
 		this.dailyTeleports = dailyTeleports;
@@ -460,7 +465,31 @@ public class GuideTracker
 		{
 			return java.util.Collections.emptyList();
 		}
-		return com.dooglemaps.bank.LoadoutSummary.forItems(loadout.forRun(planner.coveredTypes()));
+
+		// The gear phase's bank leg is a gear stop, not a shopping list: deposit everything,
+		// load the player's own setup, go. The farming summary is deliberately absent even
+		// on a mixed run — those withdrawals belong to the swap-back leg after the hespori,
+		// and listing them here read as orders for a pack that has no room for them.
+		java.util.Set<com.dooglemaps.data.PatchImplementation> covered = planner.coveredTypes();
+		if (handoff.applies())
+		{
+			return handoff.supplyLines();
+		}
+
+		// The two mid-run trips lead with the reason they exist — the summary below reads as
+		// a fetch list, and on these legs fetching is the second errand, not the first.
+		java.util.List<String> lines = new ArrayList<>();
+		com.dooglemaps.route.RunPlanner.BankLegReason reason = planner.getBankLegReason();
+		if (reason == com.dooglemaps.route.RunPlanner.BankLegReason.GEAR_SWAP)
+		{
+			lines.add("Deposit the combat kit - the farming loadout comes back out");
+		}
+		else if (reason == com.dooglemaps.route.RunPlanner.BankLegReason.DEPOSIT)
+		{
+			lines.add("Deposit your logs and produce - the pack is full");
+		}
+		lines.addAll(com.dooglemaps.bank.LoadoutSummary.forItems(loadout.forRun(covered)));
+		return lines;
 	}
 
 	/**
@@ -487,6 +516,14 @@ public class GuideTracker
 	private java.util.List<String> withdrawLines()
 	{
 		if (!planner.isActive())
+		{
+			return java.util.Collections.emptyList();
+		}
+
+		// Nothing during the gear phase, for the reason the supply lines give: the farming
+		// withdrawals are the swap-back leg's orders, and listing them under a combat loadout
+		// reads as orders for a pack with no room for them.
+		if (handoff.applies())
 		{
 			return java.util.Collections.emptyList();
 		}
@@ -750,6 +787,19 @@ public class GuideTracker
 		return step.getPatch().getKey() + "#" + step.getAction().name();
 	}
 
+	/** Whether this stop is the hespori's — the one voice the gear phase leaves speaking. */
+	private static boolean coversTheHespori(RunStop stop)
+	{
+		for (FarmPatch patch : stop.getPatches())
+		{
+			if (patch.getImplementation() == PatchImplementation.HESPORI)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private List<GuideStep> computeStepsHere()
 	{
 		// Cleared first, and every tick, because it is a statement about the stop you are
@@ -774,6 +824,20 @@ public class GuideTracker
 		}
 
 		RunStop stop = stopAt(player);
+
+		// During the gear phase, every stop but the hespori's is silent. Gearing up happens
+		// at the guild bank, in the middle of the guild's own stop — and the step engine,
+		// which speaks for wherever you stand, offered the big bin to a player in combat
+		// kit. Reported from play: "when we gear up for hespori it should be our only target
+		// until it's done". The route overlay is already pointing at the cave; the fight is
+		// the only work these clothes are for.
+		if (stop != null && handoff.applies() && !coversTheHespori(stop))
+		{
+			working = null;
+			interrupted = null;
+			return steps;
+		}
+
 		if (stop == null)
 		{
 			// Between stops. The route overlay is already saying where to go, and repeating it
@@ -1510,10 +1574,21 @@ public class GuideTracker
 		// The other half of the scope: the withdraw list's answer, pushed beside the blocked
 		// set so the planner never has to ask the loadout — which is what removed the
 		// construction cycle between the two.
-		planner.setWithdrawOutstanding(loadout.anythingLeftToWithdraw(planner.coveredTypes()));
+		planner.setWithdrawOutstanding(supplyLegOutstanding());
 		// And the narrower half of it, for the one thing worth diverting mid-run over. See
-		// RunLoadout.toolsLeftToWithdraw and RunPlanner.reviewSupplies.
-		planner.setToolOutstanding(loadout.toolsLeftToWithdraw(planner.coveredTypes()));
+		// RunLoadout.toolsLeftToWithdraw and RunPlanner.reviewSupplies. Silent during the
+		// gear phase for the reason that method's own gate gives: the farming tools the
+		// combat loadout lacks are the swap-back leg's business, not a diversion's.
+		planner.setToolOutstanding(!handoff.applies()
+			&& loadout.toolsLeftToWithdraw(planner.coveredTypes()));
+		// And the pack, for the mid-run deposit trip: full, on a run that chops, of things
+		// only a bank can absorb. All three halves of that judgment live on this side of the
+		// pushed-flag line — the free-slot count in CarriedItems, the axe question in the
+		// loadout, and what the slots actually hold — which is why the planner is told
+		// rather than asking. See RunPlanner.reviewDepositTrip and packFullOfLogs.
+		planner.setPackFull(carried.getFreeSlots() == 0
+			&& com.dooglemaps.bank.RunLoadout.chopsLogs(planner.coveredTypes())
+			&& packFullOfLogs());
 	}
 
 	/**
@@ -1544,7 +1619,80 @@ public class GuideTracker
 		}
 		log.info("Loadout for {}: {}", types, verdicts);
 
+		if (com.dooglemaps.bank.InventorySetupsHandoff.appliesTo(types)
+			&& planner.wouldOpenWithGearPhase(types))
+		{
+			// A run opening with a gear phase always starts at a bank, whatever the loadout
+			// concluded: depositing everything and loading the setup is the trip, not a fetch
+			// list to be found already satisfied. Only when the hespori would actually be a
+			// stop, though — ticked but still growing is an ordinary farm run.
+			return true;
+		}
 		return loadout.anythingLeftToWithdraw(types);
+	}
+
+	/** Fewer than this many slots of logs is not worth a bank trip to free. */
+	private static final int DEPOSIT_TRIP_LOGS = 5;
+
+	/**
+	 * Whether the pack's fullness is actually logs, rather than the run's own supplies.
+	 *
+	 * <p>"Full, on a chopping run" was the whole gate, and it fired on a pack deliberately
+	 * full of empty buckets for the guild's big bin — a fullness the run's own withdraw list
+	 * had ordered. Reported from play: <i>"but I'm full of empty buckets for the big compost
+	 * bin step"</i>. The deposit trip exists for the one cargo nothing else absorbs — the
+	 * leprechaun refuses logs and the bins cannot eat them — so it is that cargo the gate
+	 * counts, and only when shedding it frees enough space to be worth the travel. Compost
+	 * rows are skipped by name: buckets of compost are Produce to the data, but they are
+	 * supplies here, not harvest.
+	 */
+	private boolean packFullOfLogs()
+	{
+		int refused = 0;
+		for (int itemId : carried.getItemIds())
+		{
+			com.dooglemaps.data.Produce produce =
+				com.dooglemaps.data.Produce.getByItemID(itemId);
+			if (produce == null
+				|| produce.getPatchImplementation() == PatchImplementation.COMPOST
+				|| produce.getPatchImplementation() == PatchImplementation.BIG_COMPOST
+				|| produce.isLeprechaunNotable())
+			{
+				continue;
+			}
+			refused += carried.getInventoryCount(itemId);
+			if (refused >= DEPOSIT_TRIP_LOGS)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The supply leg's live answer, pushed to the planner once a tick and re-asked beside
+	 * {@code leaveBank}.
+	 *
+	 * <p>One method rather than two call sites asking the loadout, because the hespori run
+	 * answers a different question: its leg is over when the gear stop is
+	 * ({@code InventorySetupsHandoff}), with the withdraw list joining back in only when the
+	 * run also covers ordinary patches — that half of the trip still has to collect what it
+	 * always did. A hespori-only run deliberately never asks the loadout, whose seed and tool
+	 * rows would hold the leg open for things the player's own setup is about to cover.
+	 */
+	public boolean supplyLegOutstanding()
+	{
+		if (handoff.applies())
+		{
+			// The gear phase's leg is over when the gear stop is — and nothing else. The
+			// farming half of a mixed run is deliberately not collected here: seeds and a
+			// combat loadout cannot share a pack, and the swap-back leg after the hespori
+			// exists precisely to collect them. Asking the withdraw list too parked an
+			// everything-ticked run at the bank, fully geared, with the leg demanding six
+			// yew saplings it had nowhere to put. Reported from play.
+			return handoff.gearOutstanding();
+		}
+		return loadout.anythingLeftToWithdraw(planner.coveredTypes());
 	}
 
 	/** Resurrect Crops wants 78 Magic; the varbit value that means the Arceuus book is 3. */

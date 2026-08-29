@@ -179,6 +179,56 @@ public class RunPlanner
 	@Getter
 	private volatile boolean atBankLeg;
 
+	/**
+	 * Why the current supply leg exists, for the two flavours whose banks read differently.
+	 *
+	 * <p>{@code OPENING} is the ordinary collect-before-you-go leg and nothing special-cases
+	 * it. {@code GEAR_SWAP} is the trip back after the hespori to put the farming loadout on
+	 * again ({@link #reviewGearSwap}); {@code DEPOSIT} is the mid-run trip to shed a full pack
+	 * ({@link #reviewDepositTrip}). The guide's supply lines and the bank overlay read this to
+	 * say and mark the right thing; the leg's lifecycle is otherwise identical.
+	 */
+	public enum BankLegReason
+	{
+		OPENING,
+		GEAR_SWAP,
+		DEPOSIT
+	}
+
+	/** Null while no supply leg is on. Guarded by the monitor beside {@link #atBankLeg}. */
+	@Nullable
+	private BankLegReason bankLegReason;
+
+	/**
+	 * Whether the pack is full <i>of logs, on a run that chops</i>, pushed once a tick by the
+	 * guide the same way the withdraw list's answer is — the judgment (free slots, whether
+	 * these types swing an axe, and whether the slots hold logs rather than the run's own
+	 * supplies) belongs to the carried-items and loadout side, which the planner never asks
+	 * directly. See {@code GuideTracker.packFullOfLogs}.
+	 */
+	private volatile boolean packFull;
+
+	/** The last pushed value, so {@link #reviewDepositTrip} arms on the edge, not the level. */
+	private boolean lastPackFull;
+
+	/** One gear-swap trip per run; armed by {@link #reviewGearSwap}, reset by {@code start}. */
+	private boolean gearSwapDone;
+
+	/** Whether this run has been in its gear phase at all — the swap trip's precondition. */
+	private boolean gearPhaseSeen;
+
+	public void setPackFull(boolean full)
+	{
+		packFull = full;
+	}
+
+	/** The current supply leg's flavour, or null when no leg is on. */
+	@Nullable
+	public synchronized BankLegReason getBankLegReason()
+	{
+		return atBankLeg ? bankLegReason : null;
+	}
+
 	/** Patch types this run covers, for scoping which seeds it actually needs. */
 	private final Set<PatchImplementation> runTypes = EnumSet.noneOf(PatchImplementation.class);
 
@@ -284,6 +334,10 @@ public class RunPlanner
 			active = !stops.isEmpty();
 		}
 
+		// Published before needsSupplyTrip asks it — the fresh run's phase, not the last
+		// run's leftovers. See gearPhaseNow.
+		gearPhaseNow = computeGearPhase();
+
 		// Worked out with the lock released, because both walk the availability and patch
 		// stores and the order has to stay RunPlanner -> Availability -> PatchStateStore.
 		boolean wantsSupplies = active && needsSupplyTrip();
@@ -307,6 +361,10 @@ public class RunPlanner
 			// told to go and clear the patch. The seed was twenty steps away and the run would
 			// have reached the patch unable to do anything there.
 			atBankLeg = wantsSupplies && (!here || canBankHere);
+			bankLegReason = atBankLeg ? BankLegReason.OPENING : null;
+			gearSwapDone = false;
+			gearPhaseSeen = false;
+			lastPackFull = false;
 		}
 
 		// At INFO, and deliberately verbose, because "why did it send me to a bank" has cost
@@ -326,6 +384,19 @@ public class RunPlanner
 		if (config.holdClustersUntilReady())
 		{
 			log.info("Shared plots: {}", describeClusterHolds(types));
+		}
+
+		// Said at the same moment and level as the Run-planned line, because the gear phase's
+		// verdict once rested on a state nothing refreshed: a stale "weedy" read had a grown
+		// boss treated as an ordinary planting errand for half a day, and the decision was
+		// invisible after the fact. Reported from play: "I think the state got into a weird
+		// position there". The state now refreshes from the guild itself — the sprout by the
+		// cave shares the patch's varbit, see FarmingWorldData — but the verdict stays logged,
+		// because the fix and the line answer the same question from opposite ends.
+		if (types.contains(PatchImplementation.HESPORI))
+		{
+			log.info("Hespori check: {} - so the gear phase is {}", describeHesporiState(),
+				isGearPhase() ? "ON (fight first, farm after)" : "off (ordinary patch)");
 		}
 
 		// Outside the lock, deliberately, and for the same reason markServiced and leaveBank
@@ -362,6 +433,7 @@ public class RunPlanner
 	private Map<Integer, RunStop> planStops(Set<PatchImplementation> types)
 	{
 		Map<Integer, List<FarmPatch>> byRegion = new LinkedHashMap<>();
+		Map<Integer, List<FarmPatch>> heldClusters = new LinkedHashMap<>();
 		for (PatchImplementation type : types)
 		{
 			// The seven beside the allotments arrive by one road only - addOpportunisticBins,
@@ -375,14 +447,35 @@ public class RunPlanner
 			}
 			for (FarmPatch patch : availability.getAvailablePatches(type))
 			{
-				if (!inTheRun(patch) || !isActionable(patch) || clusterHeld(patch, types)
-					|| heldForRegrowth(patch))
+				if (!inTheRun(patch) || !isActionable(patch) || heldForRegrowth(patch))
 				{
+					continue;
+				}
+				if (clusterHeld(patch, types))
+				{
+					heldClusters.computeIfAbsent(patch.getRegion().getRegionId(),
+						k -> new ArrayList<>()).add(patch);
 					continue;
 				}
 				byRegion.computeIfAbsent(patch.getRegion().getRegionId(), k -> new ArrayList<>()).add(patch);
 			}
 		}
+
+		// The hold saves a teleport, and only a teleport. A region the run is stopping at
+		// anyway — the Farming Guild for its trees, Kourend for its spirit tree — has no
+		// teleport left to save, so holding its plot out of the stop merely hid ripe work
+		// from a trip already being paid for: the guide stood the player at the guild and
+		// never mentioned the ripe herb beside them, and nothing could adopt it mid-run.
+		// Held patches therefore ride along wherever a stop exists, and still never create
+		// one — the same shape as addOpportunisticBins below.
+		heldClusters.forEach((regionId, held) ->
+		{
+			List<FarmPatch> here = byRegion.get(regionId);
+			if (here != null)
+			{
+				here.addAll(held);
+			}
+		});
 
 		addOpportunisticBins(byRegion);
 		mergeSharedStops(byRegion);
@@ -415,9 +508,13 @@ public class RunPlanner
 	 * {@code RunStop.getLocation} still routes to the Champions' Guild rather than to the hops
 	 * fifty tiles down the road.
 	 */
-	/** The last fold logged, so a per-tick replan does not repeat it. See {@link #mergeSharedStops}. */
-	@Nullable
-	private String loggedMerge;
+	/**
+	 * Every fold already logged, so a per-tick replan does not repeat them. A set rather than
+	 * the single latched string it used to be, because two live folds (the hops, and now
+	 * Catherby's fruit tree) alternated through one latch and re-logged each other every
+	 * tick — the exact spam the latch existed to stop. See {@link #mergeSharedStops}.
+	 */
+	private final Set<String> loggedMerges = new LinkedHashSet<>();
 
 	private void mergeSharedStops(Map<Integer, List<FarmPatch>> byRegion)
 	{
@@ -443,10 +540,8 @@ public class RunPlanner
 			// one every 0.6s for the whole run. Reported from play at the Farming Guild, as a
 			// wall of identical DEBUG. Same latch noteStopOrder uses, and for the same reason:
 			// the interesting event is the decision changing.
-			String said = joining + "->" + host;
-			if (!said.equals(loggedMerge))
+			if (loggedMerges.add(joining + "->" + host))
 			{
-				loggedMerge = said;
 				log.debug("Region {} folded into the {} stop - one arrival serves both", joining,
 					hostPatches.get(0).getRegion().getName());
 			}
@@ -527,9 +622,15 @@ public class RunPlanner
 
 		// Outside the lock, like every store walk here: RunPlanner -> Availability -> patches.
 		List<FarmPatch> joining = new ArrayList<>();
+		Set<PatchImplementation> types = runTypesSnapshot();
 		for (FarmPatch patch : availability.getAvailablePatches(PatchImplementation.COMPOST))
 		{
-			if (isActionable(patch))
+			// The same question planStops asks before a bin may enter the plan, asked at the
+			// same door. Without it this was a side entrance: a held bin was adopted on raw
+			// actionability and the completion announcement cleared, and only stillWanted
+			// re-holding it a tick later kept the run from travelling — a redundant completion
+			// edge and a spare retarget, held safe by coincidence rather than decision.
+			if (isActionable(patch) && !clusterHeld(patch, types))
 			{
 				joining.add(patch);
 			}
@@ -951,7 +1052,7 @@ public class RunPlanner
 			//   "we're going back to cactuses too soon - harvested it twenty minutes prior, only
 			//    receiving 1 cactus spine". A harvest-only cactus regrows a spine every twenty
 			//    minutes and holds four; one spine made the stop actionable again.
-			if (stillWanted(patch, blocked, types))
+			if (stillWanted(stop, patch, blocked, types))
 			{
 				return false;
 			}
@@ -970,12 +1071,38 @@ public class RunPlanner
 	 *
 	 * <p>Callers pass {@code blocked} and {@code types} in rather than each reading them, so a
 	 * walk over a stop's patches takes one snapshot of the run's types instead of one per patch.
+	 *
+	 * <h2>The cluster hold applies here only to patches already dealt with once</h2>
+	 *
+	 * Two mid-run cases look identical to {@link #clusterHeld} — an actionable cluster patch
+	 * beside a growing sibling — and they deserve opposite answers, split by {@code serviced}:
+	 *
+	 * <ul>
+	 *   <li><b>Serviced, then ripened again</b> — the flower replanted at this stop coming back
+	 *       in twenty minutes while the herb takes eighty. The trip's promise was kept; new
+	 *       work waits for the plot. Held, which is the Ardougne report this test pins.</li>
+	 *   <li><b>Never serviced</b> — a patch the plan promised and the player has not finished:
+	 *       out of seed, ran for the bank, part-way through the plot. Holding it because its
+	 *       serviced neighbour started growing completed the stop <i>under</i> the player the
+	 *       moment they crossed the region boundary, silently dropping ripe work the run had
+	 *       already paid the travel for. Not held.</li>
+	 * </ul>
+	 *
+	 * <p>The plot's compost bin is the exception, held with its plot whether or not it was
+	 * touched: a bin left composting is not unfinished work the run owes, it is the thing the
+	 * plot's own test says is the best possible thing to make wait — nothing in it spoils, and
+	 * skipping it was a choice the player already made standing next to it.
+	 *
+	 * <p>This is the reconciliation of {@code clusterHeld}'s old "planning-time only" rule with
+	 * the two reports that forced it into completion: the hold does gate completion, but only
+	 * for work the run has already done once.
 	 */
-	private boolean stillWanted(FarmPatch patch, Set<String> blocked,
+	private boolean stillWanted(RunStop stop, FarmPatch patch, Set<String> blocked,
 		Set<PatchImplementation> types)
 	{
 		return isActionable(patch) && !blocked.contains(patch.getKey())
-			&& !clusterHeld(patch, types) && !heldForRegrowth(patch);
+			&& !(clusterHeld(patch, types) && (stop.wasServiced(patch) || isClusterBin(patch)))
+			&& !heldForRegrowth(patch);
 	}
 
 	/**
@@ -1685,8 +1812,17 @@ public class RunPlanner
 	 * before it has regrown all berries"). Reported from play as being routed back to
 	 * half-full bushes.
 	 *
-	 * <p>Harvest-only runs only: a full run is coming to dig the plant out and replant, and
-	 * holding that trip hostage to berries the spade is about to destroy would be backwards.
+	 * <p>Every run line, not only harvest-only. The first cut exempted full runs — "a full
+	 * run is coming to dig the plant out and replant, and holding that trip hostage to
+	 * berries the spade is about to destroy would be backwards" — and play refuted the
+	 * argument on its own terms: the spade destroying whatever is unpicked is exactly why
+	 * arriving early is the waste. A potato cactus visited at one potato of seven harvests
+	 * one and digs the other six out of existence; twenty minutes' patience harvests seven.
+	 * Reported from play: "we did go back to the potato cactus too soon... I want it full."
+	 *
+	 * <p>The contract's patch is the one exemption, exactly as it is for the shared-plot
+	 * hold: its clock is Guildmaster Jane's, and stock on the old plant is nothing beside a
+	 * reward that costs a whole growth cycle when it slips.
 	 *
 	 * <p>Planning-time only, like {@link #clusterHeld} and for the same reason: once the
 	 * player is standing there picking, the stock falls and more starts regrowing — a
@@ -1699,7 +1835,8 @@ public class RunPlanner
 	 */
 	private boolean heldForRegrowth(FarmPatch patch)
 	{
-		if (!runOptions.isHarvestOnly(groups.groupFor(patch)))
+		PlantingGroup group = groups.groupFor(patch);
+		if (group != null && group.isContract())
 		{
 			return false;
 		}
@@ -1721,7 +1858,11 @@ public class RunPlanner
 		// same reasoning clusterHeld's guard is built on, and both are really one question —
 		// "is the player here" — asked in two places. See docs/code-review-2026-08c.md §1-2 for
 		// why they should become one predicate rather than two copies.
-		if (patch.getRegion().getRegionId() == playerLocation.getRegionId())
+		//
+		// Every id the plot answers to, like clusterHeld's guard after the Catherby lesson:
+		// the bare compare read a player one region over the boundary as elsewhere.
+		if (com.dooglemaps.data.FarmingWorldData.claimsRegionId(patch.getRegion(),
+			playerLocation.getRegionId()))
 		{
 			return false;
 		}
@@ -1798,10 +1939,13 @@ public class RunPlanner
 	 * patch actionable at all. Nor is the plot the player is standing on ever held: the whole
 	 * point is saving the teleport, and that one is already spent.
 	 *
-	 * <p>Planning-time only, deliberately: this filter runs in {@link #planStops} and the
-	 * counts that price it, never in {@link #isComplete}. Mid-run, a freshly replanted flower
-	 * starts growing while the herb beside it is still being picked — a completion filter
-	 * would read the herb as "not worth visiting" and finish the stop under the player.
+	 * <p>Two places ask, with different scope. {@link #planStops} asks it raw — but a held
+	 * plot still rides along into a region the run is stopping at anyway, because there is no
+	 * teleport left to save there; see the note in that method. {@link #stillWanted} asks it
+	 * only for patches the stop has already serviced once, which is what keeps a replanted
+	 * flower from fetching the run back alone without letting a growing sibling complete the
+	 * stop over ripe work the player has not finished — the reconciliation is written out at
+	 * that method.
 	 */
 	private boolean clusterHeld(FarmPatch patch, Set<PatchImplementation> types)
 	{
@@ -1814,7 +1958,14 @@ public class RunPlanner
 		// Never for the plot being stood on. The hold exists to save the teleport, and
 		// standing there means it is already spent — starting a run at Falador should pick
 		// Falador's ready flower whatever the herb beside it is doing.
-		if (patch.getRegion().getRegionId() == playerLocation.getRegionId())
+		//
+		// Asked of every region id that belongs to the plot, not the canonical one alone.
+		// Catherby's plot spans four (11061/11062/11317/11318, see FarmingWorldData), so the
+		// bare compare read a player one tile over the boundary — exactly where a rollover
+		// leaves them — as elsewhere, and held the plot they were standing beside. The same
+		// bug class RunStop.claimsRegion exists to prevent, caught here too.
+		if (com.dooglemaps.data.FarmingWorldData.claimsRegionId(patch.getRegion(),
+			playerLocation.getRegionId()))
 		{
 			return false;
 		}
@@ -1908,8 +2059,20 @@ public class RunPlanner
 			boolean held = region.getPatches().stream()
 				.filter(patch -> CLUSTER_TYPES.contains(patch.getImplementation()))
 				.anyMatch(patch -> clusterHeld(patch, types));
-			plots.add(region.getName() + " [" + (held ? "HELD" : "free to visit") + "] "
-				+ patches);
+
+			// A held plot in a region the run stops at anyway is not skipped, it rides along —
+			// see planStops. Said here because "HELD" over a stop the route visibly makes reads
+			// as the hold being broken, which is this line's whole reason to exist.
+			boolean riding;
+			synchronized (this)
+			{
+				riding = held && stops.containsKey(region.getRegionId());
+			}
+			plots.add(region.getName() + " ["
+				+ (held
+					? (riding ? "held, but the stop is made anyway - riding along" : "HELD")
+					: "free to visit")
+				+ "] " + patches);
 		});
 		return String.join("; ", plots);
 	}
@@ -1921,7 +2084,8 @@ public class RunPlanner
 		{
 			return "not ticked for this run, so it holds nothing";
 		}
-		if (patch.getRegion().getRegionId() == playerLocation.getRegionId())
+		if (com.dooglemaps.data.FarmingWorldData.claimsRegionId(patch.getRegion(),
+			playerLocation.getRegionId()))
 		{
 			return "you are standing here, so nothing is held";
 		}
@@ -1978,6 +2142,30 @@ public class RunPlanner
 	 */
 	private boolean needsSupplyTrip()
 	{
+		// The gear phase's supplies are a setup rather than a withdraw list, so every
+		// farming-shaped clause below is the wrong question for it - the seed-source clause in
+		// particular would park the leg on a hespori seed sitting in the bank that the player's
+		// own loadout is about to cover. The pushed flag is the whole answer at both ends of
+		// the leg: the guide pushes the handoff's verdict during the phase instead of the
+		// loadout's. See InventorySetupsHandoff and isGearPhase.
+		if (isGearPhase())
+		{
+			return withdrawOutstanding;
+		}
+
+		// A deposit trip is about the pack and nothing else, so the pack is its whole answer.
+		// It used to fall through here — "the same visit collects anything wanted" — and the
+		// ordinary clauses chained the leg open on the run's standing wants: vault seeds the
+		// player had deliberately waived held a trip that existed to shed logs, so however
+		// much they dropped, the run kept pointing at a bank. Reported from play: "the plugin
+		// really doesn't like when I drop things, it thinks my pack is full." Dropping IS
+		// dealing with the pack; the leg ends the moment there is room again, and anything
+		// genuinely collectable re-arms its own trip through the ordinary reviews.
+		if (currentLegIs(BankLegReason.DEPOSIT))
+		{
+			return packFull;
+		}
+
 		// A tool that exists only in the bank is as much a reason to open at one as a seed is:
 		// arriving at a weedy patch without a rake means nothing at that stop can be done. Asked
 		// first because it holds whether or not any seed was picked.
@@ -2046,6 +2234,19 @@ public class RunPlanner
 	 */
 	private boolean suppliesOutstanding()
 	{
+		// Same early answers as needsSupplyTrip, and they must be: the two ends of the leg
+		// have to agree, and neither the tool store nor the seed sources describe a gear stop
+		// or a full pack.
+		if (isGearPhase())
+		{
+			return withdrawOutstanding;
+		}
+		if (currentLegIs(BankLegReason.DEPOSIT))
+		{
+			// The pack is the whole answer, as in needsSupplyTrip — see the note there.
+			return packFull;
+		}
+
 		if (tools.anyOnlyInBank(runTypesSnapshot()))
 		{
 			return true;
@@ -2057,6 +2258,131 @@ public class RunPlanner
 		// The pushed answer - see withdrawOutstanding. Refreshed every tick by the guide and
 		// at the call sites that need it mid-tick, so reading it here is reading the list.
 		return withdrawOutstanding;
+	}
+
+	/** The hespori's one region, derived from the data rather than repeated as a number. */
+	private static final int HESPORI_REGION = com.dooglemaps.data.FarmingWorldData
+		.getPatches(PatchImplementation.HESPORI).get(0).getRegion().getRegionId();
+
+	/**
+	 * Whether the run is in its gear phase: the hespori stop is planned and not yet done.
+	 *
+	 * <h2>A phase, not a property of the run</h2>
+	 *
+	 * "The run covers the hespori" was the first cut, and it painted the whole run with the
+	 * gear doctrine — a mixed run's farming half then had no withdraw list, no bank filter and
+	 * no highlights, forever. The doctrine is only right <b>up to</b> the hespori: gear up,
+	 * fight, and then the run is a farm run again, with a bank trip in between that
+	 * {@link #reviewGearSwap} owes it. So the phase ends the moment the hespori stop stops
+	 * wanting work — killed and replanted, or waved past with the region skip.
+	 *
+	 * <p>And it never starts if the hespori was not planned at all: a growing hespori ticked
+	 * in an everything-run contributes no stop, and the run stays an ordinary farm run — which
+	 * is what lets the tick stay on permanently the way every other line does.
+	 *
+	 * <p>Asked of the run's own state rather than of the handoff class, deliberately: the
+	 * planner's relationship with the loadout side is a pushed flag precisely so it never
+	 * depends back on it. The handoff asks <i>this</i> — see {@code InventorySetupsHandoff}.
+	 */
+	/**
+	 * The gear phase's answer as of the last tick, published for the hot paths.
+	 *
+	 * <p>{@link #computeGearPhase()} takes this planner's monitor and the growth stores'
+	 * locks, and two of its callers turned out to be per-frame — the bank overlay's render
+	 * and the infobox's any-thread update. A paint thread queueing on the planner's monitor
+	 * is exactly the traffic {@code RunSnapshot}'s doctrine exists to remove, and it was
+	 * reported from play as lock stalls the moment the resource monitor could see them. So
+	 * the phase is computed where the tick already computes it — {@link #reviewGearSwap},
+	 * {@code start} — and everyone else reads this volatile for free. A one-tick lag is
+	 * already the phase's own tolerance everywhere it matters; the falling-edge arming reads
+	 * the live computation, not this.
+	 */
+	private volatile boolean gearPhaseNow;
+
+	public boolean isGearPhase()
+	{
+		return active && gearPhaseNow;
+	}
+
+	/** The live computation behind {@link #isGearPhase()}; tick-side callers only. */
+	private boolean computeGearPhase()
+	{
+		synchronized (this)
+		{
+			if (!active || !runTypes.contains(PatchImplementation.HESPORI)
+				|| skippedRegions.contains(HESPORI_REGION)
+				|| !stops.containsKey(HESPORI_REGION))
+			{
+				return false;
+			}
+		}
+		// The projection asks the stores, so it is asked with the monitor released - the
+		// ordering rule at the top of the file.
+		return hesporiAwaitsTheFight();
+	}
+
+	/**
+	 * Whether the hespori is grown and waiting to be fought — the fact the gear phase is for.
+	 *
+	 * <h2>Grown, not merely actionable</h2>
+	 *
+	 * The phase first keyed on the hespori's stop existing and not being complete, and a stop
+	 * exists for a weedy or empty hespori too — so the run demanded combat gear to rake
+	 * weeds. And after the kill the patch reads as weeds or a fresh seedling, so a completion
+	 * key made the swap-back wait for a replant the cave gear cannot perform: no seed, no
+	 * farming tools, no way for the stop to finish. The boss being up is the whole reason the
+	 * gear exists, so it is the whole test. The kill takes the state out of HARVESTABLE the
+	 * moment the cave's varbit is read — the cave transmits as region {@code 5021} — which is
+	 * the same moment the phase should end. A weedy, empty or freshly killed hespori is an
+	 * ordinary patch on an ordinary run, raked and planted in farm gear like everything else.
+	 *
+	 * <p>A never-observed hespori answers no: a first-ever visit travels in farm clothes and
+	 * discovers the state, and the phase engages on the next run — or mid-run the moment the
+	 * varbit is read, which narrows routing and steps to the cave even though no gear leg was
+	 * armed for it; the player banks by hand in that rare case.
+	 */
+	private boolean hesporiAwaitsTheFight()
+	{
+		FarmPatch hespori = com.dooglemaps.data.FarmingWorldData
+			.getPatches(PatchImplementation.HESPORI).get(0);
+		PatchProjection projection = growthTimer.project(hespori, stateStore.get(hespori));
+		return projection != null && !projection.isEmpty()
+			&& projection.getCropState() == CropState.HARVESTABLE;
+	}
+
+	/** The hespori's stored state in words, for the run-planned Hespori check line. */
+	private String describeHesporiState()
+	{
+		FarmPatch hespori = com.dooglemaps.data.FarmingWorldData
+			.getPatches(PatchImplementation.HESPORI).get(0);
+		PatchProjection projection = growthTimer.project(hespori, stateStore.get(hespori));
+		if (projection == null)
+		{
+			return "never observed (it reads from the guild's west wing, by the cave)";
+		}
+		if (projection.isEmpty())
+		{
+			return "reads as empty";
+		}
+		return "reads as " + projection.getProduce().getName() + " " + projection.getCropState()
+			+ (projection.getCropState() == CropState.HARVESTABLE ? " - the boss is up" : "");
+	}
+
+	/**
+	 * Whether a run over these types would open with a gear phase — the pre-start form of
+	 * {@link #isGearPhase}, for the button's "does this run start at a bank" question.
+	 */
+	public boolean wouldOpenWithGearPhase(Set<PatchImplementation> types)
+	{
+		return types.contains(PatchImplementation.HESPORI)
+			&& hesporiAwaitsTheFight()
+			&& planStops(types).containsKey(HESPORI_REGION);
+	}
+
+	/** The current supply leg's reason, under the monitor like the flag it rides with. */
+	private synchronized boolean currentLegIs(BankLegReason reason)
+	{
+		return atBankLeg && bankLegReason == reason;
 	}
 
 	/** Each tool the run wants and where it is, for the {@code Run planned:} line. */
@@ -2588,6 +2914,7 @@ public class RunPlanner
 			}
 			bankLegWaived = true;
 			atBankLeg = false;
+			bankLegReason = null;
 			supplyOwed = false;
 			postedSources = null;
 		}
@@ -2625,6 +2952,7 @@ public class RunPlanner
 				return;
 			}
 			atBankLeg = false;
+			bankLegReason = null;
 			supplyOwed = false;
 			postedSources = null;
 			// Chosen afresh from the bank. The leg picked before the trip was cheapest from
@@ -2675,10 +3003,15 @@ public class RunPlanner
 			runTypes.clear();
 			active = false;
 			atBankLeg = false;
+			bankLegReason = null;
 			supplyOwed = false;
 			bankLegWaived = false;
 			runCompletePending = false;
 			postedSources = null;
+			gearSwapDone = false;
+			gearPhaseSeen = false;
+			lastPackFull = false;
+			gearPhaseNow = false;
 		}
 		// Same rule as start: the router is another plugin, reached over an event bus that
 		// delivers synchronously, so it is never called with this lock held.
@@ -2930,9 +3263,139 @@ public class RunPlanner
 		}
 	}
 
+	/**
+	 * Arms the trip back to a bank once the hespori is done, so the farming gear comes back.
+	 *
+	 * <p>The other half of the gear phase. The hespori is fought in the loadout
+	 * {@code InventorySetupsHandoff} had the player put on, so when the phase ends — the
+	 * kill takes the patch out of HARVESTABLE, or the region is skipped — a mixed run's
+	 * remaining stops cannot be serviced: the body is combat kit and the farming supplies
+	 * are in the bank, the hespori's own replanting seed among them. Same shape as
+	 * {@link #collectForTheContract}: supply owed, leg armed, route re-posted. The freshly
+	 * killed patch is an ordinary weedy stop now, so the run comes back to rake and replant
+	 * it in the right clothes. The phase itself has ended by now, so the leg runs under the ordinary
+	 * farming doctrine — withdraw list, bank filter, highlights — plus the deposit-your-gear
+	 * marks the overlay adds for this reason.
+	 *
+	 * <p>No standing-on-work deferral, deliberately: the ripe patches beside the cave
+	 * entrance cannot be serviced in combat gear, so the bank genuinely comes first here.
+	 *
+	 * <p>Once per run, by the latch. A hespori-only run never arms it — {@code getRemaining}
+	 * is empty and the ordinary completion path owns the ending; re-banking the gear is the
+	 * player's own wind-down.
+	 */
+	private void reviewGearSwap()
+	{
+		// The falling edge of the phase itself, not the stop's completion. The kill leaves
+		// the patch weedy or freshly seeded — a stop that cannot complete in cave gear, so a
+		// completion key waited forever on a replant the swap-back trip exists to make
+		// possible. The phase ends the moment the boss is no longer up (or the region is
+		// skipped), and that is exactly when the farming gear is wanted back.
+		boolean phaseNow = computeGearPhase();
+		gearPhaseNow = phaseNow;
+		synchronized (this)
+		{
+			if (phaseNow)
+			{
+				// Seen, so the edge below means "was fought this run" — a run whose hespori
+				// was never grown must not earn a swap trip it never swapped for.
+				gearPhaseSeen = true;
+				return;
+			}
+			if (!gearPhaseSeen || gearSwapDone)
+			{
+				return;
+			}
+			gearSwapDone = true;
+		}
+		if (getRemaining().isEmpty())
+		{
+			return;
+		}
+
+		log.info("The hespori is done; routing to a bank to swap the farming gear back in");
+		synchronized (this)
+		{
+			supplyOwed = true;
+			atBankLeg = true;
+			bankLegReason = BankLegReason.GEAR_SWAP;
+			postedSources = null;
+			committedRegion = -1;
+		}
+		retarget();
+	}
+
+	/**
+	 * Arms a mid-run bank trip to shed a full pack, on runs that chop.
+	 *
+	 * <p>Requested from play for exactly the runs the withdraw list cannot see coming: a tree
+	 * run's clearing fills the pack with logs — unnoted, unlike harvests, so no leprechaun
+	 * makes them small — and every later stop then has no room to harvest into. The guide
+	 * pushes "the pack is full on a run that chops" once a tick, because both halves of that
+	 * judgment (the free-slot count, and whether these types swing an axe) belong to the
+	 * carried-items and loadout side the planner never asks directly.
+	 *
+	 * <p>Armed on the false→true <b>edge</b> of that push, not the level — so a player who
+	 * waves the trip past is honoured until the pack has had space and filled again, rather
+	 * than being re-sent to the bank on the very next tick.
+	 *
+	 * <p>The leg ends when the pack does — the deposit clause in
+	 * {@link #suppliesOutstanding()} — and only then. Emptied at a bank or shed on the ground,
+	 * dealing with the pack is dealing with the trip; the run's other wants re-arm their own
+	 * trips through the ordinary reviews rather than chaining this one open.
+	 */
+	private void reviewDepositTrip()
+	{
+		boolean fullNow = packFull;
+		synchronized (this)
+		{
+			boolean edge = fullNow && !lastPackFull;
+			lastPackFull = fullNow;
+			if (!edge || atBankLeg)
+			{
+				return;
+			}
+		}
+		if (isGearPhase())
+		{
+			// The combat pack is the setup's business, full or not.
+			return;
+		}
+		if (getRemaining().isEmpty())
+		{
+			return;
+		}
+
+		log.info("The pack is full mid-run; routing to a bank to shed it");
+		synchronized (this)
+		{
+			if (atBankLeg)
+			{
+				return;
+			}
+			supplyOwed = true;
+			atBankLeg = true;
+			bankLegReason = BankLegReason.DEPOSIT;
+			postedSources = null;
+			committedRegion = -1;
+		}
+		retarget();
+	}
+
 	public void reviewProgress()
 	{
-		if (!active || atBankLeg)
+		if (!active)
+		{
+			return;
+		}
+
+		// The two mid-run bank trips, reviewed before the bank-leg early return below because
+		// arming one IS entering a leg. Both are edges with their own latches, so a tick loop
+		// cannot turn either into a stream of retargets.
+		reviewGearSwap();
+		reviewDepositTrip();
+
+		if (atBankLeg)
 		{
 			return;
 		}
@@ -3126,6 +3589,17 @@ public class RunPlanner
 		// Being a poll rather than a one-shot is what makes this reliable where
 		// collectForTheContract is not: the pushed flag is a tick stale, and a tick later this
 		// asks again.
+		// Never during the gear phase. The withdraw list still names every farming tool the
+		// combat loadout is not carrying - the axe, loudest of all - and this poll armed a
+		// bank leg for it every tick while leaveBank, whose gear-phase answer is "the leg is
+		// done", closed it again every tick: the run thrashed "Supplies collected" once a
+		// tick and never left the bank. Reported from play. Those tools are the swap-back
+		// leg's whole business; see reviewGearSwap.
+		if (isGearPhase())
+		{
+			return;
+		}
+
 		if (!tools.anyOnlyInBank(runTypesSnapshot()) && !toolOutstanding)
 		{
 			return;
@@ -3421,7 +3895,7 @@ public class RunPlanner
 				return true;
 			}
 
-			if (!stillWanted(patch, blocked, types))
+			if (!stillWanted(stop, patch, blocked, types))
 			{
 				continue;
 			}
@@ -3461,7 +3935,7 @@ public class RunPlanner
 		Set<PatchImplementation> types = runTypesSnapshot();
 		for (FarmPatch patch : stop.getPatches())
 		{
-			if (locations.isKnown(patch) && stillWanted(patch, blocked, types))
+			if (locations.isKnown(patch) && stillWanted(stop, patch, blocked, types))
 			{
 				return patch;
 			}
@@ -3602,6 +4076,69 @@ public class RunPlanner
 	}
 
 	/**
+	 * Entrana's stop, and the stop that must come first while both remain.
+	 *
+	 * <h2>The monks decide this ordering, not travel cost</h2>
+	 *
+	 * The boat to Entrana confiscates combat gear, and the Ardougne cloak — the teleport
+	 * that serves the monastery bush stop at {@code 10290} — counts. So the two stops in
+	 * either order are not symmetric: monastery first spends the cloak's teleport and banks
+	 * it at the one banking moment the Entrana boat forces anyway; Entrana first means
+	 * arriving back on the mainland with the cloak still banked and a <b>second</b> bank
+	 * trip just to fetch the teleport. Requested from play: "we should always do the entrana
+	 * run after the ardougne farm run... the cape is a combat item that you can't take to
+	 * entrana, which means re-banking after."
+	 *
+	 * <p>A hand-curated pair, like {@code SharedStops}' — the fact lives with the monks and
+	 * the cloak, not in any table this plugin could derive it from. Applied only to the
+	 * fresh choice of leg: a committed Entrana leg, the standing-on-work rule and the skip
+	 * all stand above it, and with the monastery done or skipped Entrana is offered exactly
+	 * as before.
+	 */
+	private static final int ENTRANA_REGION = 11060;
+	private static final int ARDOUGNE_MONASTERY_REGION = 10290;
+
+	/** Withholds Entrana from a fresh choice while the monastery stop is still to make. */
+	private static List<RunStop> entranaAfterTheCloak(List<RunStop> remaining)
+	{
+		boolean monasteryRemains = false;
+		boolean entranaRemains = false;
+		for (RunStop stop : remaining)
+		{
+			monasteryRemains |= stop.getRegion().getRegionId() == ARDOUGNE_MONASTERY_REGION;
+			entranaRemains |= stop.getRegion().getRegionId() == ENTRANA_REGION;
+		}
+		if (!monasteryRemains || !entranaRemains)
+		{
+			return remaining;
+		}
+
+		List<RunStop> ordered = new ArrayList<>();
+		for (RunStop stop : remaining)
+		{
+			if (stop.getRegion().getRegionId() != ENTRANA_REGION)
+			{
+				ordered.add(stop);
+			}
+		}
+		return ordered;
+	}
+
+	/** The hespori's stop among these, or null — the gear phase's one destination. */
+	@Nullable
+	private static RunStop hesporiStopIn(List<RunStop> remaining)
+	{
+		for (RunStop stop : remaining)
+		{
+			if (stop.getRegion().getRegionId() == HESPORI_REGION)
+			{
+				return stop;
+			}
+		}
+		return null;
+	}
+
+	/**
 	 * The stops to hand the router: the committed one alone, or all of them while undecided.
 	 *
 	 * <p>The commitment is dropped here rather than watched for elsewhere, because this is the
@@ -3610,6 +4147,19 @@ public class RunPlanner
 	 */
 	private List<RunStop> committedLeg(List<RunStop> remaining)
 	{
+		// The gear phase's one stop comes first, whatever is cheaper to reach: the player is
+		// wearing the fight, and a farm patch serviced in combat gear with no farming supplies
+		// is a patch stood next to. Overrides any committed leg for the same reason; the phase
+		// ending releases it and the run chooses greedily again.
+		if (isGearPhase())
+		{
+			RunStop cave = hesporiStopIn(remaining);
+			if (cave != null)
+			{
+				return Collections.singletonList(cave);
+			}
+		}
+
 		int committed;
 		synchronized (this)
 		{
@@ -3617,7 +4167,7 @@ public class RunPlanner
 		}
 		if (committed < 0)
 		{
-			return remaining;
+			return slowestFirst(entranaAfterTheCloak(remaining));
 		}
 
 		for (RunStop stop : remaining)
@@ -3630,7 +4180,96 @@ public class RunPlanner
 
 		log.debug("The committed stop is done or skipped; choosing the next leg afresh");
 		releaseCommitment();
-		return remaining;
+		return slowestFirst(entranaAfterTheCloak(remaining));
+	}
+
+	/**
+	 * Narrows a fresh choice of leg to the stops planting the slowest crop.
+	 *
+	 * <h2>Growth happens in the background, travel does not</h2>
+	 *
+	 * The router picks the cheapest reachable member of whatever it is handed, so handing it
+	 * everything made the visiting order pure travel greed. Requested from play: the crop
+	 * planted first starts growing first, so on a run that might be cut short, planting the
+	 * longest clocks first banks the most experience per stop actually made — a magic tree's
+	 * eight hours starts counting while the herbs are still being walked between.
+	 *
+	 * <p>Travel still decides <b>ties</b>: every stop planting the same slowest crop is handed
+	 * over together and the router keeps its greedy pick among them, so a herb circuit is
+	 * still walked nearest-first. And this is only the fresh choice — the committed leg, the
+	 * standing-on-work rule, the gear phase's hespori-first and the shared-plot holds all
+	 * stand above it, untouched.
+	 *
+	 * <p>A stop that plants nothing — harvest-only lines, cleared-but-unseeded patches, the
+	 * bins — counts zero, so a run of only those keeps the old ordering entirely.
+	 */
+	private List<RunStop> slowestFirst(List<RunStop> remaining)
+	{
+		if (!config.slowestCropsFirst() || remaining.size() < 2)
+		{
+			return remaining;
+		}
+
+		int longest = 0;
+		Map<RunStop, Integer> minutes = new LinkedHashMap<>();
+		for (RunStop stop : remaining)
+		{
+			int stopMinutes = growthMinutes(stop);
+			minutes.put(stop, stopMinutes);
+			longest = Math.max(longest, stopMinutes);
+		}
+		if (longest == 0)
+		{
+			return remaining;
+		}
+
+		List<RunStop> slowest = new ArrayList<>();
+		int cutoff = longest;
+		minutes.forEach((stop, stopMinutes) ->
+		{
+			if (stopMinutes == cutoff)
+			{
+				slowest.add(stop);
+			}
+		});
+		return slowest;
+	}
+
+	/**
+	 * Minutes of the slowest crop this stop would plant, or zero when it plants nothing.
+	 *
+	 * <p>From the seed <i>selection</i> rather than the patch, because the crop that decides
+	 * the priority is the one about to go in, not the one coming out. Harvest-only groups
+	 * plant nothing by definition, and the bins are skipped before {@code groupFor} is even
+	 * asked — see the note on that method about what it honestly reports for the big bin.
+	 */
+	private int growthMinutes(RunStop stop)
+	{
+		int longest = 0;
+		for (FarmPatch patch : stop.getPatches())
+		{
+			if (patch.getImplementation() == PatchImplementation.COMPOST
+				|| patch.getImplementation() == PatchImplementation.BIG_COMPOST)
+			{
+				continue;
+			}
+			PlantingGroup group = groups.groupFor(patch);
+			if (group != null && runOptions.isHarvestOnly(group))
+			{
+				continue;
+			}
+			// The group's selection where there is one - it carries the protected split and
+			// the contract's seed - and the type's otherwise, the same null-tolerance the
+			// rest of this class extends to groupFor.
+			Set<Seed> seeds = group != null
+				? selection.getSelectedFor(group)
+				: selection.getSelectedFor(patch.getImplementation());
+			for (Seed seed : seeds)
+			{
+				longest = Math.max(longest, seed.getProduce().getMinutesToGrow());
+			}
+		}
+		return longest;
 	}
 
 	/**
@@ -3729,6 +4368,22 @@ public class RunPlanner
 		synchronized (this)
 		{
 			runCompletePending = false;
+		}
+
+		// The gear phase's one destination, for the arrived test below as well as the
+		// targets: the cave entrance shares the guild's region with a dozen patches, so a
+		// player gearing up at the guild bank was "standing on work" by the ordinary rule,
+		// the route was cleared, and the guide's step engine offered the big bin to someone
+		// in combat kit. Reported from play: "when we gear up for hespori it should be our
+		// only target until it's done". Work you cannot do in the gear you are wearing is
+		// not work you are standing on.
+		if (isGearPhase())
+		{
+			RunStop cave = hesporiStopIn(remaining);
+			if (cave != null)
+			{
+				remaining = Collections.singletonList(cave);
+			}
 		}
 
 		// Nothing is routed while there is work where you stand. Finishing a location before

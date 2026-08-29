@@ -49,15 +49,19 @@ public class GuideMenuSwap
 	/** What the run still wants of a hovered item, for the withdraw-amount swap. */
 	private final com.dooglemaps.bank.RunLoadout loadout;
 
+	/** The pack as last echoed by the server, for retiring {@link #pendingTakes} entries. */
+	private final CarriedItems carried;
+
 	@Inject
 	GuideMenuSwap(Client client, GuideTracker tracker, DoogleMapsConfig config,
-		SeedInventoryStore seeds, com.dooglemaps.bank.RunLoadout loadout)
+		SeedInventoryStore seeds, com.dooglemaps.bank.RunLoadout loadout, CarriedItems carried)
 	{
 		this.client = client;
 		this.tracker = tracker;
 		this.config = config;
 		this.seeds = seeds;
 		this.loadout = loadout;
+		this.carried = carried;
 	}
 
 	/**
@@ -285,6 +289,144 @@ public class GuideMenuSwap
 	 * owner: "when withdraw count is equal or more than free inv space, just use the All
 	 * option."
 	 */
+	/**
+	 * Collection clicks the server has not echoed yet, keyed {@code "#id"} or {@code "n:name"}.
+	 *
+	 * <h2>The click is the freshest fact there is</h2>
+	 *
+	 * {@code stillWantedNow} subtracts the pack, and the pack only updates on the server's
+	 * echo — up to a game tick after the click. So a player banking at full speed outran the
+	 * swap: the item just taken still read as wanted, the same left click stood armed for a
+	 * second stack, and the inert flip arrived a beat late. Reported from play: <i>"our menu
+	 * swapping for withdraw can't keep up with the player unless they deliberately slow
+	 * down"</i> — and then, asked exactly right: <i>"can we count clicks outside of the games
+	 * timekeeping?"</i> We can: {@code MenuOptionClicked} fires client-side the instant the
+	 * click happens, so this ledger is written at click speed and the tick appears only as a
+	 * safety horizon. An entry retires the moment the echo lands (the carried count rising
+	 * past its baseline) or after {@link #PENDING_CLICK_TICKS} for a click that never landed —
+	 * a full pack, an empty bank slot — so a wrong guess can only under-promote, briefly.
+	 */
+	private final java.util.Map<String, PendingTake> pendingTakes = new java.util.HashMap<>();
+
+	/** The horizon for a click whose echo never comes; the echo itself usually retires it. */
+	private static final int PENDING_CLICK_TICKS = 2;
+
+	private static final class PendingTake
+	{
+		int amount;
+		int clickedAtTick;
+		int itemId;
+		int heldAtClick;
+
+		/**
+		 * The printed name from the clicked entry, because the same item's menu does not
+		 * build the same way every frame: a session log showed one palm sapling alternating
+		 * between {@code id=5502} and {@code id=-1, name='Palm sapling'} within a second. A
+		 * click counted under the id key was invisible to a name-only frame, and that frame's
+		 * stale promotion was the residue of the very overshoot this ledger removes —
+		 * "we're still going over when the timing is wrong". The name is the bridge.
+		 */
+		@javax.annotation.Nullable
+		String itemName;
+	}
+
+	@Subscribe
+	public void onMenuOptionClicked(net.runelite.api.events.MenuOptionClicked event)
+	{
+		if (config.withdrawAmountSwap())
+		{
+			countCollectionClick(event.getMenuEntry());
+		}
+	}
+
+	/**
+	 * Writes one collection click into {@link #pendingTakes}, at click time.
+	 *
+	 * <p>Counts only rows the run is actually sizing — the same {@code stillWantedNow} gate
+	 * the swap itself uses, so ordinary banking is never ledgered — and never more than the
+	 * row still wants: a right-clicked Withdraw-10 against a want of four counts four, which
+	 * is what lets the inert flip fire on the very next menu.
+	 */
+	void countCollectionClick(@javax.annotation.Nullable MenuEntry entry)
+	{
+		if (entry == null || !isCollectionOption(entry.getOption()))
+		{
+			return;
+		}
+		int amount = com.dooglemaps.bank.WithdrawQuantity.amountNamed(entry.getOption());
+		boolean all = amount <= 0
+			&& com.dooglemaps.bank.WithdrawQuantity.namesAll(entry.getOption());
+		if (amount <= 0 && !all)
+		{
+			return;
+		}
+		int itemId = itemIdOf(entry);
+		String itemName = itemNameOf(entry);
+		if (itemId <= 0 && itemName == null)
+		{
+			return;
+		}
+
+		int listed = itemId > 0 ? loadout.stillWantedNow(itemId) : 0;
+		if (listed <= 0 && itemName != null)
+		{
+			listed = loadout.stillWantedNow(itemName);
+		}
+		if (listed <= 0)
+		{
+			return;
+		}
+
+		int taken = all ? listed : Math.min(amount, listed);
+		String key = itemId > 0 ? "#" + itemId : "n:" + itemName;
+		PendingTake pending = pendingTakes.computeIfAbsent(key, k -> new PendingTake());
+		if (pending.amount == 0)
+		{
+			// The baseline belongs to the first un-echoed click; a second click before the
+			// echo accumulates against the same one.
+			pending.itemId = itemId;
+			pending.heldAtClick = itemId > 0 ? carried.getCountIncludingNoted(itemId) : -1;
+		}
+		if (pending.itemName == null)
+		{
+			pending.itemName = itemName;
+		}
+		pending.amount += taken;
+		pending.clickedAtTick = client.getTickCount();
+		log.debug("Counted a collection click before its echo: {} x{} pending", key, taken);
+	}
+
+	/** What the un-echoed clicks have already taken of this item; expired entries drop here. */
+	private int pendingTaken(int itemId, @javax.annotation.Nullable String itemName)
+	{
+		int now = client.getTickCount();
+		pendingTakes.values().removeIf(pending ->
+			now - pending.clickedAtTick > PENDING_CLICK_TICKS
+				|| (pending.itemId > 0
+					&& carried.getCountIncludingNoted(pending.itemId) > pending.heldAtClick));
+
+		PendingTake pending = itemId > 0 ? pendingTakes.get("#" + itemId) : null;
+		if (pending == null && itemName != null)
+		{
+			pending = pendingTakes.get("n:" + itemName);
+		}
+		if (pending == null && itemName != null)
+		{
+			// The bridge for a frame that names the item without its id, against a click
+			// counted under the id — see PendingTake.itemName. A handful of entries at most,
+			// scanned only on a double miss.
+			for (PendingTake candidate : pendingTakes.values())
+			{
+				if (itemName.equals(candidate.itemName))
+				{
+					pending = candidate;
+					break;
+				}
+			}
+		}
+		return pending == null ? 0 : pending.amount;
+	}
+
 	private void swapWithdrawAmount()
 	{
 		MenuEntry[] entries = client.getMenu().getMenuEntries();
@@ -390,6 +532,13 @@ public class GuideMenuSwap
 			wanted = loadout.stillWantedNow(itemName);
 		}
 
+		// Then the clicks the server has not confirmed yet, counted at click speed rather
+		// than tick speed — see pendingTakes. `listed` keeps the pre-ledger answer, because a
+		// sized row covered by pending clicks earns the inert flip below without waiting for
+		// doneWithdrawing's container-based agreement.
+		int listed = wanted;
+		wanted = Math.max(0, wanted - pendingTaken(itemId, itemName));
+
 		// Done withdrawing means the left click goes INERT, not merely unhelped. With the count
 		// satisfied, the game's own default — Withdraw-1, or whatever the quantity toggle says —
 		// is the one remaining way to take more than the list asked, and it is sitting under
@@ -401,7 +550,8 @@ public class GuideMenuSwap
 		// seeds (deliberately unsized) and for items that were never the run's business, and
 		// swapping those to Examine would break ordinary banking.
 		if (wanted <= 0
-			&& ((itemId > 0 && loadout.doneWithdrawing(itemId))
+			&& (listed > 0
+				|| (itemId > 0 && loadout.doneWithdrawing(itemId))
 				|| (itemName != null && loadout.doneWithdrawing(itemName))))
 		{
 			logDecision("item id=" + itemId + " name='" + itemName

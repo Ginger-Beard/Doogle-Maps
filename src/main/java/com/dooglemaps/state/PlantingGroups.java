@@ -235,7 +235,6 @@ public class PlantingGroups
 	 *       redwood <i>regrows</i> after every chop, so the patch is never replanted, and a
 	 *       grown spirit tree is a permanent teleport that is never harvested at all. The only
 	 *       revisit either wants is a clearing after disease kills it, which is not a run.</li>
-	 *   <li><b>Hespori</b> — grows a demi-boss to fight rather than a crop to service.</li>
 	 *   <li><b>The compost bins</b> — buckets and produce rather than a seed, so they get
 	 *       their own line instead of a place here. See {@link #addBinRun}.</li>
 	 * </ul>
@@ -244,6 +243,16 @@ public class PlantingGroups
 	 * are here anyway: both want replanting on a timer, both sit where a run already goes
 	 * (Prifddinas, the Farming Guild), and the anima's whole value is that it buffs every
 	 * <i>other</i> run — so a dead one is a quiet loss on every patch you own.
+	 *
+	 * <p>The <b>hespori</b> stayed out for years on the grounds that it grows a demi-boss to
+	 * fight rather than a crop to service, which was always a statement about the loadout
+	 * rather than the trip: the run's whole withdraw doctrine is farming supplies, and
+	 * walking into that cave with a spade and seeds is walking in unarmed. That problem is
+	 * now solved where it belongs — its bank leg hands the loadout to the player's own
+	 * Inventory Setups profile instead of the withdraw list; see
+	 * {@code InventorySetupsHandoff} — so the trip itself can finally be offered. Routing
+	 * ends at the cave entrance, not the patch, because the cave is instanced; see
+	 * {@code PatchLocationStore}.
 	 */
 	private static final java.util.Set<PatchImplementation> RUNNABLE = java.util.EnumSet.of(
 		PatchImplementation.HERB,
@@ -263,7 +272,8 @@ public class PlantingGroups
 		PatchImplementation.BELLADONNA,
 		PatchImplementation.CALQUAT,
 		PatchImplementation.CELASTRUS,
-		PatchImplementation.CORAL);
+		PatchImplementation.CORAL,
+		PatchImplementation.HESPORI);
 
 	/**
 	 * Types whose crops regrow, so picking them clean is a run in its own right.

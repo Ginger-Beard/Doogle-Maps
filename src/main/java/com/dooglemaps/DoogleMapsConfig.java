@@ -224,6 +224,27 @@ public interface DoogleMapsConfig extends Config
 	}
 
 	/**
+	 * Which stop the run travels to next, when it is free to choose: the one planting the
+	 * slowest crop, rather than the nearest. Growth happens in the background, so starting
+	 * the longest clock first is worth more than saving a minute of travel — a run cut short
+	 * has banked its biggest timers. Travel still breaks ties, and every other ordering rule
+	 * (the place you stand, shared plots, the hespori's gear phase) stands above this one.
+	 */
+	@ConfigItem(
+		keyName = "slowestCropsFirst",
+		name = "Plant the slowest crops first",
+		description = "Visit the stop planting the slowest-growing crop first instead of the "
+			+ "nearest one, so a run you cut short has already started its longest growth "
+			+ "timers. Travel cost still decides between stops planting equally slow crops.",
+		position = 47,
+		section = guideSection
+	)
+	default boolean slowestCropsFirst()
+	{
+		return true;
+	}
+
+	/**
 	 * Buckets are the one errand with two right answers — the leprechaun stores them, the
 	 * floor is closer — so which one the guide asks for is the player's call. When this is
 	 * on, the drop step highlights the bucket and makes Drop its left-click; see

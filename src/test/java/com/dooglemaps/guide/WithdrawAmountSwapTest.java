@@ -33,6 +33,7 @@ public class WithdrawAmountSwapTest
 	private Client client;
 	private Menu menu;
 	private RunLoadout loadout;
+	private CarriedItems carried;
 	private GuideMenuSwap swap;
 	private MenuEntry[] entries;
 
@@ -42,6 +43,7 @@ public class WithdrawAmountSwapTest
 		client = Mockito.mock(Client.class);
 		menu = Mockito.mock(Menu.class);
 		loadout = Mockito.mock(RunLoadout.class);
+		carried = Mockito.mock(CarriedItems.class);
 
 		GuideTracker tracker = Mockito.mock(GuideTracker.class);
 		GuideStatus status = Mockito.mock(GuideStatus.class);
@@ -56,7 +58,7 @@ public class WithdrawAmountSwapTest
 		when(client.isMenuOpen()).thenReturn(false);
 
 		swap = construct(GuideMenuSwap.class, client, tracker, config,
-			Mockito.mock(SeedInventoryStore.class), loadout);
+			Mockito.mock(SeedInventoryStore.class), loadout, carried);
 	}
 
 	/** Fifteen wanted takes the ten, which is the spec's own worked example. */
@@ -401,7 +403,7 @@ public class WithdrawAmountSwapTest
 		when(tracker.getStatus()).thenReturn(status);
 
 		GuideMenuSwap disabled = construct(GuideMenuSwap.class, client, tracker, off,
-			Mockito.mock(SeedInventoryStore.class), loadout);
+			Mockito.mock(SeedInventoryStore.class), loadout, carried);
 
 		bankMenu();
 		when(loadout.stillWantedNow(WATERMELON)).thenReturn(15);
@@ -424,6 +426,126 @@ public class WithdrawAmountSwapTest
 		entries = new MenuEntry[]{
 			entry("Withdraw-1"), entry("Withdraw-5"), entry("Withdraw-10"), entry("Withdraw-All")};
 		wireMenu();
+	}
+
+	/** The entry currently carrying the given option, wherever the swap has moved it. */
+	private MenuEntry entryNamed(String option)
+	{
+		for (MenuEntry entry : entries)
+		{
+			if (option.equals(entry.getOption()))
+			{
+				return entry;
+			}
+		}
+		throw new AssertionError("no entry named " + option);
+	}
+
+	/**
+	 * A click is counted the instant it happens, outside the game's timekeeping.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"our menu swapping for withdraw can't keep up with the player unless they
+	 * deliberately slow down"</i> — the pack {@code stillWantedNow} subtracts only updates on
+	 * the server's echo, up to a tick after the click, so the item just taken still read as
+	 * wanted and the same left click stood armed for a second stack. Here the loadout keeps
+	 * giving the stale answer throughout, and the ledger alone must move the promotion.
+	 */
+	@Test
+	public void aClickCountsAgainstTheNextMenuBeforeTheEcho()
+	{
+		bankMenu();
+		when(loadout.stillWantedNow(WATERMELON)).thenReturn(15);
+		swap.onPostMenuSort(new PostMenuSort());
+		assertEquals("Withdraw-10", leftClick());
+
+		swap.countCollectionClick(entryNamed("Withdraw-10"));
+
+		bankMenu();
+		swap.onPostMenuSort(new PostMenuSort());
+		assertEquals("five is what is left, before any echo", "Withdraw-5", leftClick());
+	}
+
+	/** Covering the whole want flips the left click inert on the very next menu. */
+	@Test
+	public void aCoveredWantGoesInertBeforeTheEcho()
+	{
+		entries = new MenuEntry[]{entry("Examine"),
+			entry("Withdraw-1"), entry("Withdraw-5"), entry("Withdraw-10")};
+		wireMenu();
+		when(loadout.stillWantedNow(WATERMELON)).thenReturn(10);
+		swap.onPostMenuSort(new PostMenuSort());
+		assertEquals("Withdraw-10", leftClick());
+
+		swap.countCollectionClick(entryNamed("Withdraw-10"));
+
+		entries = new MenuEntry[]{entry("Examine"),
+			entry("Withdraw-1"), entry("Withdraw-5"), entry("Withdraw-10")};
+		wireMenu();
+		swap.onPostMenuSort(new PostMenuSort());
+		assertEquals("the stray second click must do nothing", "Examine", leftClick());
+	}
+
+	/**
+	 * The ledger bridges an id-keyed click to a name-only frame of the same item.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"the menu swap takes a tick to apply, so we're still going over when the timing is
+	 * wrong"</i> — and the session log showed why: the same palm sapling's menu alternated
+	 * between {@code id=5502} and {@code id=-1, name='Palm sapling'} within one second. The
+	 * clicks were counted under the id key, the name-only frames could not see them, and
+	 * those frames' stale promotions were the leftover overshoot. The clicked entry's name
+	 * rides on the ledger entry as the bridge.
+	 */
+	@Test
+	public void theLedgerBridgesAnIdClickToANameOnlyFrame()
+	{
+		MenuEntry ten = namedEntry("Withdraw-10", "<col=ff9040>Watermelon</col>");
+		when(ten.getItemId()).thenReturn(WATERMELON);
+		entries = new MenuEntry[]{entry("Withdraw-1"), entry("Withdraw-5"), ten};
+		wireMenu();
+		when(loadout.stillWantedNow(WATERMELON)).thenReturn(15);
+		when(loadout.stillWantedNow("Watermelon")).thenReturn(15);
+		swap.onPostMenuSort(new PostMenuSort());
+		swap.countCollectionClick(entryNamed("Withdraw-10"));
+
+		// The next frame builds the same item's menu without its id.
+		entries = new MenuEntry[]{
+			namedEntry("Withdraw-1", "<col=ff9040>Watermelon</col>"),
+			namedEntry("Withdraw-5", "<col=ff9040>Watermelon</col>"),
+			namedEntry("Withdraw-10", "<col=ff9040>Watermelon</col>")};
+		wireMenu();
+		swap.onPostMenuSort(new PostMenuSort());
+
+		assertEquals("the id-keyed click must reach the name-only frame",
+			"Withdraw-5", leftClick());
+	}
+
+	/**
+	 * The echo landing retires the pending count — the two must not both be subtracted.
+	 *
+	 * <p>Once the carried count rises past its click-time baseline, {@code stillWantedNow}
+	 * already reflects the take; keeping the ledger entry too would under-promote for a tick,
+	 * which is the same lag this feature exists to remove, pointing the other way.
+	 */
+	@Test
+	public void theEchoRetiresThePendingCount()
+	{
+		bankMenu();
+		when(loadout.stillWantedNow(WATERMELON)).thenReturn(15);
+		when(carried.getCountIncludingNoted(WATERMELON)).thenReturn(0);
+		swap.onPostMenuSort(new PostMenuSort());
+		swap.countCollectionClick(entryNamed("Withdraw-10"));
+
+		// The server catches up: the pack holds the ten, and the row wants five.
+		when(carried.getCountIncludingNoted(WATERMELON)).thenReturn(10);
+		when(loadout.stillWantedNow(WATERMELON)).thenReturn(5);
+
+		bankMenu();
+		swap.onPostMenuSort(new PostMenuSort());
+		assertEquals("the ledger stood down when the echo landed", "Withdraw-5", leftClick());
 	}
 
 	private void wireMenu()

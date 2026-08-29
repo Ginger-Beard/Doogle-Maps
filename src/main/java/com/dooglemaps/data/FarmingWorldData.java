@@ -243,9 +243,18 @@ public final class FarmingWorldData
 			new FarmPatch("", VarbitID.FARMING_TRANSMIT_A, PatchImplementation.HERB, -1, -1)
 		));
 
+		// The cave transmits as 5021 — and so does the guild's west wing, because Jagex put
+		// the answer above ground: the sprout beside the cave entrance (multiloc 34707 at
+		// (1234, 3729), "Blooming Hespori sprout" at values 7-8, "Shrivelled plant"
+		// otherwise) is driven by the patch's own varbit 7908, and an impostor resolves
+		// client-side, so the server necessarily sends that varbit to anyone standing in the
+		// guild. Registering 4922 is what lets the hespori's state refresh at the guild bank
+		// instead of only inside the cave — the one farming spot no route ever walks past.
+		// Without it a grown boss sat recorded as weedy for half a day and the gear phase
+		// never engaged; reported from play, confirmed against the cache's object definition.
 		add(new FarmRegion("Farming Guild", 5021, true, RegionBounds.ALWAYS,
 			new FarmPatch("Hespori", VarbitID.FARMING_TRANSMIT_J, PatchImplementation.HESPORI, -1, -1)
-		));
+		), 4922);
 
 		add(new FarmRegion("Farming Guild", 4922, true, RegionBounds.ALWAYS,
 			new FarmPatch("", VarbitID.FARMING_TRANSMIT_G, PatchImplementation.TREE, NpcID.FARMING_GARDENER_FARMGUILD_T2, -1),
@@ -299,6 +308,26 @@ public final class FarmingWorldData
 	public static List<FarmRegion> getRegions()
 	{
 		return Collections.unmodifiableList(REGIONS);
+	}
+
+	/**
+	 * Whether a player in the given map region is standing at this farm region.
+	 *
+	 * <p>The canonical id plus every extra the region was registered with — Catherby's plot
+	 * answers to four ids, and comparing only the canonical one is how "you are standing here"
+	 * tests miss a player one tile over a boundary. The extras table already knows the answer
+	 * because it is the same question varbit trust asks: which regions does this map square
+	 * belong to. Bounds are deliberately not consulted — they narrow where varbits may be
+	 * <i>read</i>, which is a stricter question than where the player <i>is</i>.
+	 */
+	public static boolean claimsRegionId(FarmRegion region, int regionId)
+	{
+		if (region.getRegionId() == regionId)
+		{
+			return true;
+		}
+		List<FarmRegion> candidates = BY_REGION_ID.get(regionId);
+		return candidates != null && candidates.contains(region);
 	}
 
 	/** Regions whose varbits are live at the given location. */

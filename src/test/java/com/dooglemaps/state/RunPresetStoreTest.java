@@ -235,4 +235,69 @@ public class RunPresetStoreTest
 		assertEquals("and its blank key is dropped with it",
 			keys("HERB"), reloaded.keysOf("Good"));
 	}
+
+	/**
+	 * The contract tick follows Jane's assignment inside presets exactly as it does in the
+	 * live selection: a profile saved during a cactus contract must still tick the contract
+	 * when the next assignment is a herb. Reported from play as "the farming contract
+	 * unchecks itself after doing it, messing with my profiles".
+	 */
+	@Test
+	public void retargetingRenamesStoredContractKeysToTheLiveType()
+	{
+		store.save("Everything", keys("HERB", "CACTUS#contract"));
+		store.save("Trees", keys("TREE", "FRUIT_TREE"));
+
+		store.retargetContract(com.dooglemaps.data.PatchImplementation.HERB);
+
+		assertEquals("the contract key now names the live assignment",
+			keys("HERB", "HERB#contract"), store.keysOf("Everything"));
+		assertEquals("a preset with no contract line is untouched",
+			keys("TREE", "FRUIT_TREE"), store.keysOf("Trees"));
+	}
+
+	/** The rename is what keeps the dropdown's exact match — and its label — standing. */
+	@Test
+	public void aRetargetedPresetStillMatchesTheRetargetedLiveKeys()
+	{
+		store.save("Everything", keys("HERB", "CACTUS#contract"));
+
+		store.retargetContract(com.dooglemaps.data.PatchImplementation.HERB);
+
+		assertTrue("live keys renamed by RunTypeStore must still match the preset exactly",
+			store.matches("Everything", keys("HERB", "HERB#contract")));
+	}
+
+	/** Same suffix rule as the live store: everything after {@code #contract} survives. */
+	@Test
+	public void retargetingKeepsTheKeySuffixBeyondTheContractMarker()
+	{
+		store.save("Everything", keys("CACTUS#contract#harvest"));
+
+		store.retargetContract(com.dooglemaps.data.PatchImplementation.HERB);
+
+		assertEquals(keys("HERB#contract#harvest"), store.keysOf("Everything"));
+	}
+
+	/** Two stale contract keys from older builds collapse into the one that is live. */
+	@Test
+	public void retargetingMergesDuplicateContractKeys()
+	{
+		store.save("Everything", keys("HERB", "CACTUS#contract", "BUSH#contract"));
+
+		store.retargetContract(com.dooglemaps.data.PatchImplementation.TREE);
+
+		assertEquals(keys("HERB", "TREE#contract"), store.keysOf("Everything"));
+	}
+
+	/** No assignment means nothing to point at, exactly as the live store treats it. */
+	@Test
+	public void retargetingToNoContractChangesNothing()
+	{
+		store.save("Everything", keys("HERB", "CACTUS#contract"));
+
+		store.retargetContract(null);
+
+		assertEquals(keys("HERB", "CACTUS#contract"), store.keysOf("Everything"));
+	}
 }
