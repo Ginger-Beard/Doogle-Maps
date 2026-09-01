@@ -2846,6 +2846,30 @@ public class RunPlanner
 	 */
 	private Set<WorldPoint> supplyTargetsFor(Set<SeedSource> sources)
 	{
+		// The gear leg is a bank trip and nothing else: deposit everything, load the setup,
+		// close the bank — and InventorySetupsHandoff ends the leg on the bank interface
+		// opening and closing, which is the only event it watches. Asking the seed sources
+		// where to send it answered "the seed vault", because the hespori's own seed lives in
+		// one, so the run was routed and highlighted to the single container that can never
+		// satisfy the instruction it was showing: a leg with no exit but the skip button.
+		// Reported from play.
+		//
+		// The phase's supplies are a setup rather than a withdraw list, which is the same
+		// reason needsSupplyTrip refuses the seed-source clause — that one decides WHETHER
+		// there is a leg, this one decides WHERE it goes, and both have to know. The hespori's
+		// seed is not this leg's errand at all: the swap-back trip after the kill collects it,
+		// in farm gear, with somewhere to put it.
+		//
+		// Here rather than in getSupplyTargets, deliberately: the route is posted straight
+		// through this method (see the isAtBankLeg branch of the retarget), while
+		// supplyPointIsHere goes through getSupplyTargets, and those two must not disagree
+		// about where the leg ends — "am I already there" has to be asked of the same place
+		// the path was drawn to.
+		if (isGearPhase())
+		{
+			return banks.getUsableBanks();
+		}
+
 		Set<WorldPoint> targets = new LinkedHashSet<>();
 
 		if (sources.contains(SeedSource.SEED_VAULT))

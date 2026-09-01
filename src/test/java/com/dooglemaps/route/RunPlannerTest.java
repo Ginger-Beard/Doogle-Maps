@@ -1699,6 +1699,44 @@ public class RunPlannerTest
 	}
 
 	/**
+	 * The gear leg goes to a bank, whatever the seed sources say — because the vault cannot
+	 * end it.
+	 *
+	 * <p>The hespori's own seed lives in the seed vault, so the seed-source clause answered
+	 * "the vault" and the leg was routed and highlighted there while the guidance read "close
+	 * the bank when you are ready". {@code InventorySetupsHandoff} ends the leg on the bank
+	 * interface opening and closing and watches nothing else, so the one container it was sent
+	 * to could never satisfy the one instruction it was showing: a leg with no exit but the
+	 * skip button. Reported from play.
+	 *
+	 * <p>The sources are deliberately still asserted to name the vault: they are correct — the
+	 * seed really is there and the swap-back leg really will want it — and the fix belongs in
+	 * the targets, which is what this pins.
+	 */
+	@Test
+	public void aHesporiGearLegRoutesToABankNotTheSeedVault()
+	{
+		standingIn(VARROCK_REGION);
+		stockVault(com.dooglemaps.data.Seed.HESPORI, 1);
+		selection.toggle(com.dooglemaps.data.Seed.HESPORI);
+
+		long threeDaysAgo = java.time.Instant.now().getEpochSecond() - 3 * 24 * 60 * 60;
+		stored.put("timetracking." + HESPORI, "4:" + threeDaysAgo);
+		stateStore.load();
+		availability.setAvailable(patch(HESPORI), true);
+
+		planner.start(EnumSet.of(PatchImplementation.HESPORI), true);
+
+		assertTrue("fixture: the gear phase owns this leg", planner.isGearPhase());
+		assertTrue("fixture: and the seed really does live in the vault",
+			planner.getSupplySources().contains(SeedSource.SEED_VAULT));
+
+		assertFalse("but the vault can never satisfy \"close the bank\"",
+			lastTargets().contains(banks.getSeedVault()));
+		assertFalse("and the leg still has somewhere to go", lastTargets().isEmpty());
+	}
+
+	/**
 	 * A pack that fills mid-run on a chopping run earns a deposit trip, which ends when the
 	 * pack has space again.
 	 *
