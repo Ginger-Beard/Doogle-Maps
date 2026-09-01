@@ -1219,6 +1219,28 @@ public class RunPlanner
 	}
 
 	/**
+	 * Whether the gear stop itself is still owed — the bank not yet opened and closed.
+	 *
+	 * <p>Narrower than {@link #withdrawOutstanding}, which during the gear phase also covers
+	 * the hespori's replanting kit. This one is only the setup half, and it exists so
+	 * {@link #getSupplySources()} can stop naming a bank the moment the setup is on.
+	 *
+	 * <p>Without it the leg's two errands could never be told apart as they finished. The
+	 * phase added {@code BANK} for its whole duration, so the sources never narrowed to the
+	 * vault, {@link #followSupplyProgress()} — which exists precisely because "emptying the
+	 * vault leaves the bank outstanding and vice versa" — had nothing to follow, and the route
+	 * stayed pointed at the chest the player was already standing on while the seed they still
+	 * needed sat ten tiles away. Reported from play.
+	 */
+	private volatile boolean gearStopOutstanding;
+
+	/** Told whether the gear stop is still owed; pushed once a tick like the rest. */
+	public void setGearStopOutstanding(boolean outstanding)
+	{
+		gearStopOutstanding = outstanding;
+	}
+
+	/**
 	 * Told which patches, across every stop, the guide currently has no step for.
 	 *
 	 * <p>Replaced wholesale each tick rather than added to, so a patch that becomes doable again —
@@ -2560,8 +2582,23 @@ public class RunPlanner
 	 */
 	private Set<Seed> seedsWantedThisRun()
 	{
-		Set<PatchImplementation> types = runTypesSnapshot();
+		return seedsWantedFor(runTypesSnapshot());
+	}
 
+	/**
+	 * The hespori's own seed alone, which is the gear leg's whole seed errand.
+	 *
+	 * <p>A mixed run's saplings are the swap-back leg's, and asking for them here would light
+	 * and route to containers this leg does not wait for — the words and the leg were both
+	 * narrowed to the hespori, and the sources have to agree or the surfaces disagree again.
+	 */
+	private Set<Seed> hesporiSeedsWanted()
+	{
+		return seedsWantedFor(EnumSet.of(PatchImplementation.HESPORI));
+	}
+
+	private Set<Seed> seedsWantedFor(Set<PatchImplementation> types)
+	{
 		if (types.isEmpty())
 		{
 			return selection.getSelected();
@@ -2797,13 +2834,20 @@ public class RunPlanner
 	public Set<SeedSource> getSupplySources()
 	{
 		Set<SeedSource> needed = EnumSet.noneOf(SeedSource.class);
+		boolean gearPhase = isGearPhase();
 
-		if (isGearPhase())
+		// A bank while the setup is still owed, and not one moment longer. Naming it for the
+		// whole phase meant the two errands could never be told apart as they were finished —
+		// see gearStopOutstanding.
+		if (gearPhase && gearStopOutstanding)
 		{
 			needed.add(SeedSource.BANK);
 		}
 
-		for (Seed seed : seedsWantedThisRun())
+		// The hespori's own seed during the phase, never the run's other saplings: the words
+		// and the leg were both narrowed to it, and sources that were not would light and
+		// route to containers this leg will not wait for. See GuideTracker.supplyLegOutstanding.
+		for (Seed seed : gearPhase ? hesporiSeedsWanted() : seedsWantedThisRun())
 		{
 			int required = seed.getSeedsPerPatch();
 			int carried = seedInventory.getCount(seed, SeedSource.INVENTORY)

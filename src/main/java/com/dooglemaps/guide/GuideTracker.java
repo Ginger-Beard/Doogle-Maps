@@ -466,14 +466,24 @@ public class GuideTracker
 			return java.util.Collections.emptyList();
 		}
 
-		// The gear phase's bank leg is a gear stop, not a shopping list: deposit everything,
-		// load the player's own setup, go. The farming summary is deliberately absent even
-		// on a mixed run — those withdrawals belong to the swap-back leg after the hespori,
-		// and listing them here read as orders for a pack that has no room for them.
+		// The gear phase's bank leg is a gear stop plus one short list: deposit everything,
+		// load the player's own setup, and pick up what the cave cannot be replanted without.
+		// A mixed run's farming summary is still deliberately absent — those withdrawals
+		// belong to the swap-back leg after the hespori, and listing them here read as orders
+		// for a pack that has no room for them — which is why the summary is asked for the
+		// HESPORI alone rather than for the covered types.
+		//
+		// Composed here rather than inside the handoff: that class is deliberately blind to
+		// the loadout, and the seed rows are the summary's own work. The leg holds for exactly
+		// these rows (see supplyLegOutstanding), and a leg that holds for an item it never
+		// names is the plugin refusing to say what it wants. Reported from play.
 		java.util.Set<com.dooglemaps.data.PatchImplementation> covered = planner.coveredTypes();
 		if (handoff.applies())
 		{
-			return handoff.supplyLines();
+			java.util.List<String> gearLines = new ArrayList<>(handoff.supplyLines());
+			gearLines.addAll(com.dooglemaps.bank.LoadoutSummary.forItems(
+				loadout.forRun(java.util.EnumSet.of(PatchImplementation.HESPORI))));
+			return gearLines;
 		}
 
 		// The two mid-run trips lead with the reason they exist — the summary below reads as
@@ -1583,6 +1593,10 @@ public class GuideTracker
 		// combat loadout lacks are the swap-back leg's business, not a diversion's.
 		planner.setToolOutstanding(!handoff.applies()
 			&& loadout.toolsLeftToWithdraw(planner.coveredTypes()));
+		// And the setup half of the gear leg on its own, so the planner can stop naming a bank
+		// the moment it is done and let the route follow the seed to the vault. The whole leg's
+		// answer above is too broad for that: it stays true for the replanting kit as well.
+		planner.setGearStopOutstanding(handoff.applies() && handoff.gearOutstanding());
 		// And the pack, for the mid-run deposit trip: full, on a run that chops, of things
 		// only a bank can absorb. All three halves of that judgment live on this side of the
 		// pushed-flag line — the free-slot count in CarriedItems, the axe question in the

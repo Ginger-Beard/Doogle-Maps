@@ -85,7 +85,12 @@ public class BankHighlightOverlay extends Overlay
 		if (tick != loadoutTick)
 		{
 			loadoutTick = tick;
-			Set<PatchImplementation> types = planner.coveredTypes();
+			// The hespori's own rows during the gear phase, matching the leg, the words and
+			// the sources — a mixed run's saplings belong to the swap-back leg, and marking
+			// them in the vault now would point at seeds this leg will not wait for.
+			Set<PatchImplementation> types = handoff.applies()
+				? java.util.EnumSet.of(PatchImplementation.HESPORI)
+				: planner.coveredTypes();
 			loadoutItems = types.isEmpty()
 				? java.util.Collections.emptyList()
 				: loadout.forRun(types);
@@ -153,6 +158,14 @@ public class BankHighlightOverlay extends Overlay
 		// times, each stricter version worse than the last.
 		if (handoff.applies())
 		{
+			// The vault is the one exception, for the reason the vault call further down
+			// already gives: Inventory Setups owns this leg's BANK and its filtering cannot be
+			// drawn over, but it has no business in the seed vault — the game's own interface,
+			// which nothing filters, holding the seed the cave cannot be replanted without.
+			// The leg now holds for that seed (GuideTracker.supplyLegOutstanding), and marking
+			// nothing left the player at an unfiltered vault with nothing pointing at it.
+			// Reported from play. Scoped to the hespori's own rows by loadoutThisTick.
+			highlightVault(graphics, mouse);
 			return null;
 		}
 

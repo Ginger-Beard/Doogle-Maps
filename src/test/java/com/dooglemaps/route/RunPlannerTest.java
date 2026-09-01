@@ -1737,16 +1737,27 @@ public class RunPlannerTest
 
 		assertTrue("fixture: the gear phase owns this leg", planner.isGearPhase());
 
+		// While the setup is still owed, both errands stand.
+		planner.setGearStopOutstanding(true);
 		assertEquals("both errands: the setup from a bank, the seed from the vault",
 			EnumSet.of(SeedSource.BANK, SeedSource.SEED_VAULT),
 			EnumSet.copyOf(planner.getSupplySources()));
 
 		// The guild's chest is ten tiles from the vault, so one arrival serves both — and it
-		// is the bank interface that lets InventorySetupsHandoff end the leg at all.
+		// is the bank interface that lets InventorySetupsHandoff end the gear stop at all.
+		planner.leaveBank();
 		assertTrue("the seed is actually fetched",
 			lastTargets().contains(banks.getSeedVault()));
-		assertTrue("and there is a bank to end the leg at",
+		assertTrue("and there is a bank to end the gear stop at",
 			lastTargets().contains(banks.getFarmingGuildBank()));
+
+		// The setup goes on and the bank is done with. The two errands are separate, so the
+		// answer has to narrow rather than sit still — otherwise the route keeps pointing at
+		// the chest the player is standing on while the seed waits ten tiles away.
+		planner.setGearStopOutstanding(false);
+		assertEquals("only the vault is left once the setup is on",
+			java.util.Collections.singleton(SeedSource.SEED_VAULT),
+			planner.getSupplySources());
 	}
 
 	/**
