@@ -2757,15 +2757,41 @@ public class RunPlanner
 	}
 
 	/**
-	 * Where the run's seeds have to be collected from.
+	 * Where the current supply leg collects from.
 	 *
 	 * <p>The seed vault matters here because there is exactly one, in the Farming Guild.
 	 * Routing to "the nearest bank" for seeds that are sitting in the vault sends the player
 	 * to precisely the wrong side of the map. Seeds already in the inventory or seed box need
 	 * no trip at all.
+	 *
+	 * <h2>The gear leg collects from a bank, whatever the seeds say</h2>
+	 *
+	 * Everything downstream is derived from this one answer — the route targets
+	 * ({@link #supplyTargetsFor}), "am I already there" ({@code supplyPointIsHere}), and the
+	 * lit supply points in the world ({@code GuideOverlay.marks}, through {@code GuideStatus}).
+	 * That is deliberate, and {@code marks}' own note records what it costs when two of them
+	 * are worked out separately: the line was drawn to one container while another was
+	 * outlined.
+	 *
+	 * <p>So the gear phase is answered <b>here</b>, once, rather than at each of those. Its leg
+	 * is a bank trip and nothing else — deposit everything, load the setup, close the bank,
+	 * which is the only event {@code InventorySetupsHandoff} ends the leg on. Answering it with
+	 * the seeds instead said "the seed vault", because the hespori's own seed lives in one, and
+	 * the run was routed and outlined to the single container that could never satisfy the
+	 * instruction it was showing. Fixing only the route left the vault still lit — the same
+	 * disagreement from the other side. Reported from play, twice.
+	 *
+	 * <p>The hespori's seed is not this leg's errand at all: the swap-back trip after the kill
+	 * collects it, in farm gear, with somewhere to put it — and that leg runs with the phase
+	 * off, so it sees the ordinary answer below.
 	 */
 	public Set<SeedSource> getSupplySources()
 	{
+		if (isGearPhase())
+		{
+			return EnumSet.of(SeedSource.BANK);
+		}
+
 		Set<SeedSource> needed = EnumSet.noneOf(SeedSource.class);
 
 		for (Seed seed : seedsWantedThisRun())
@@ -2846,30 +2872,9 @@ public class RunPlanner
 	 */
 	private Set<WorldPoint> supplyTargetsFor(Set<SeedSource> sources)
 	{
-		// The gear leg is a bank trip and nothing else: deposit everything, load the setup,
-		// close the bank — and InventorySetupsHandoff ends the leg on the bank interface
-		// opening and closing, which is the only event it watches. Asking the seed sources
-		// where to send it answered "the seed vault", because the hespori's own seed lives in
-		// one, so the run was routed and highlighted to the single container that can never
-		// satisfy the instruction it was showing: a leg with no exit but the skip button.
-		// Reported from play.
-		//
-		// The phase's supplies are a setup rather than a withdraw list, which is the same
-		// reason needsSupplyTrip refuses the seed-source clause — that one decides WHETHER
-		// there is a leg, this one decides WHERE it goes, and both have to know. The hespori's
-		// seed is not this leg's errand at all: the swap-back trip after the kill collects it,
-		// in farm gear, with somewhere to put it.
-		//
-		// Here rather than in getSupplyTargets, deliberately: the route is posted straight
-		// through this method (see the isAtBankLeg branch of the retarget), while
-		// supplyPointIsHere goes through getSupplyTargets, and those two must not disagree
-		// about where the leg ends — "am I already there" has to be asked of the same place
-		// the path was drawn to.
-		if (isGearPhase())
-		{
-			return banks.getUsableBanks();
-		}
-
+		// The gear phase is not answered here: getSupplySources answers it once, for this and
+		// for every other reader of the leg's destination, so the route and the lit objects
+		// cannot disagree. See the note there.
 		Set<WorldPoint> targets = new LinkedHashSet<>();
 
 		if (sources.contains(SeedSource.SEED_VAULT))

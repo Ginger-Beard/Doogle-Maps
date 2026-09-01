@@ -1709,12 +1709,14 @@ public class RunPlannerTest
 	 * to could never satisfy the one instruction it was showing: a leg with no exit but the
 	 * skip button. Reported from play.
 	 *
-	 * <p>The sources are deliberately still asserted to name the vault: they are correct — the
-	 * seed really is there and the swap-back leg really will want it — and the fix belongs in
-	 * the targets, which is what this pins.
+	 * <p>Asserted at the sources rather than only at the targets, because the sources are what
+	 * every reader of the leg's destination is derived from — the route, "am I already there",
+	 * and the lit objects in the world. Fixing only the targets left the vault still outlined,
+	 * which is the same disagreement from the other side; {@code GuideOverlay.marks} already
+	 * refuses a vault for a BANK source, so pinning the source pins the highlight too.
 	 */
 	@Test
-	public void aHesporiGearLegRoutesToABankNotTheSeedVault()
+	public void aHesporiGearLegCollectsFromABankNotTheSeedVault()
 	{
 		standingIn(VARROCK_REGION);
 		stockVault(com.dooglemaps.data.Seed.HESPORI, 1);
@@ -1728,10 +1730,10 @@ public class RunPlannerTest
 		planner.start(EnumSet.of(PatchImplementation.HESPORI), true);
 
 		assertTrue("fixture: the gear phase owns this leg", planner.isGearPhase());
-		assertTrue("fixture: and the seed really does live in the vault",
-			planner.getSupplySources().contains(SeedSource.SEED_VAULT));
 
-		assertFalse("but the vault can never satisfy \"close the bank\"",
+		assertEquals("the leg collects from a bank, whatever the seed is sitting in",
+			java.util.Collections.singleton(SeedSource.BANK), planner.getSupplySources());
+		assertFalse("so the vault is neither routed to nor outlined",
 			lastTargets().contains(banks.getSeedVault()));
 		assertFalse("and the leg still has somewhere to go", lastTargets().isEmpty());
 	}
