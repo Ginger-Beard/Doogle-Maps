@@ -1651,6 +1651,54 @@ public class RunPlannerTest
 	}
 
 	/**
+	 * The state that sent a farmer's outfit to a boss fight: the hespori's timer has run out,
+	 * but nobody has stood in front of the patch since, so its varbit still reads GROWING.
+	 *
+	 * <p>The hespori is health-check-required, and {@code GrowthTimer} deliberately refuses to
+	 * promote such a crop to HARVESTABLE on the clock alone. So a hespori projection can
+	 * <b>never</b> read HARVESTABLE until the player is standing at the patch — the panel says
+	 * exactly that with its own {@code "ready?"}, where the question mark is "the clock says
+	 * done, I have not seen it". Keying the gear phase on HARVESTABLE therefore keyed it on
+	 * something unknowable before arrival: routing planned the hespori stop from
+	 * {@code isReady()} and packed a seed, the phase stayed off, and the bank leg fell through
+	 * to the ordinary withdraw list — farmer's outfit and seed box, into the cave. Reported
+	 * from play. Both tests are {@code isReady()} now, and this is the case that separates
+	 * them.
+	 *
+	 * <p>Seeded through core Time Tracking's own record, which is the one road that carries a
+	 * {@code lastSeen} of our choosing: the store hands out copies, so a backdated snapshot
+	 * cannot simply be written back.
+	 */
+	@Test
+	public void aRipeButUncheckedHesporiStillArmsTheGearPhase()
+	{
+		standingIn(VARROCK_REGION);
+
+		// Last seen three days ago at its first growing stage — long enough that the
+		// projection's done estimate is well past, which is the whole of "ready?".
+		long threeDaysAgo = java.time.Instant.now().getEpochSecond() - 3 * 24 * 60 * 60;
+		stored.put("timetracking." + HESPORI, "4:" + threeDaysAgo);
+		stateStore.load();
+
+		FarmPatch hespori = patch(HESPORI);
+		com.dooglemaps.timer.PatchProjection projection =
+			timer.project(hespori, stateStore.get(hespori));
+		assertEquals("fixture: the varbit still reads GROWING",
+			com.dooglemaps.data.CropState.GROWING, projection.getCropState());
+		assertTrue("fixture: but the clock says it is done - the panel's \"ready?\"",
+			projection.isReady());
+
+		availability.setAvailable(hespori, true);
+		planner.start(EnumSet.of(PatchImplementation.HESPORI), true);
+
+		assertTrue("the run routed to the hespori it cannot yet have checked",
+			planner.getRemaining().stream()
+				.anyMatch(stop -> stop.getRegion().getRegionId() == 5021));
+		assertTrue("so it must gear up for the fight it is walking into",
+			planner.isGearPhase());
+	}
+
+	/**
 	 * A pack that fills mid-run on a chopping run earns a deposit trip, which ends when the
 	 * pack has space again.
 	 *

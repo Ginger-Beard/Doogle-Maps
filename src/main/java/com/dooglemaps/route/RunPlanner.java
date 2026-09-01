@@ -2331,23 +2331,42 @@ public class RunPlanner
 	 * weeds. And after the kill the patch reads as weeds or a fresh seedling, so a completion
 	 * key made the swap-back wait for a replant the cave gear cannot perform: no seed, no
 	 * farming tools, no way for the stop to finish. The boss being up is the whole reason the
-	 * gear exists, so it is the whole test. The kill takes the state out of HARVESTABLE the
-	 * moment the cave's varbit is read — the cave transmits as region {@code 5021} — which is
-	 * the same moment the phase should end. A weedy, empty or freshly killed hespori is an
+	 * gear exists, so it is the whole test. A weedy, empty or freshly killed hespori is an
 	 * ordinary patch on an ordinary run, raked and planted in farm gear like everything else.
 	 *
-	 * <p>A never-observed hespori answers no: a first-ever visit travels in farm clothes and
-	 * discovers the state, and the phase engages on the next run — or mid-run the moment the
-	 * varbit is read, which narrows routing and steps to the cave even though no gear leg was
-	 * armed for it; the player banks by hand in that rare case.
+	 * <h2>Grown by the almanac's test, not by the varbit alone</h2>
+	 *
+	 * Keying that on {@code HARVESTABLE} was the wrong way to ask it, and it shipped the
+	 * failure this doc used to file under "rare". Only a <i>checked</i> patch reads
+	 * HARVESTABLE — a hespori whose timer has run out but which nobody has stood in front of
+	 * since still reads GROWING, which is the ordinary shape of an overnight hespori rather
+	 * than an edge case. The panel already says as much in its own words: {@code "ready?"},
+	 * where the question mark is exactly "the clock says done, I have not seen it".
+	 *
+	 * <p>Routing has always counted that state ({@link PatchProjection#isReady}, and see the
+	 * stop test's note on grown-but-unchecked trees), so the run planned the hespori stop and
+	 * packed a seed while the gear phase stayed off and handed the bank leg to the ordinary
+	 * withdraw list — farmer's outfit and seed box, into a boss. Reported from play. The two
+	 * tests now agree, which is the point: {@code isReady()} is what routes the stop and what
+	 * arms the gear.
+	 *
+	 * <p>The narrowing that mattered survives, because {@code isEmpty()} and {@code isReady()}
+	 * between them still refuse a weedy, empty or freshly killed hespori: none of those has
+	 * finished growing, so the phase neither starts on one nor survives the kill. And the cost
+	 * of the looser test falls the right way round — a projection that turns out wrong carries
+	 * combat gear that was not needed, where the strict one walked into the cave unarmed.
+	 *
+	 * <p>A never-observed hespori still answers no: a first-ever visit travels in farm clothes
+	 * and discovers the state, and the phase engages on the next run — or mid-run the moment
+	 * the varbit is read, which narrows routing and steps to the cave even though no gear leg
+	 * was armed for it; the player banks by hand in that genuinely rare case.
 	 */
 	private boolean hesporiAwaitsTheFight()
 	{
 		FarmPatch hespori = com.dooglemaps.data.FarmingWorldData
 			.getPatches(PatchImplementation.HESPORI).get(0);
 		PatchProjection projection = growthTimer.project(hespori, stateStore.get(hespori));
-		return projection != null && !projection.isEmpty()
-			&& projection.getCropState() == CropState.HARVESTABLE;
+		return projection != null && !projection.isEmpty() && projection.isReady();
 	}
 
 	/** The hespori's stored state in words, for the run-planned Hespori check line. */
@@ -2364,8 +2383,20 @@ public class RunPlanner
 		{
 			return "reads as empty";
 		}
-		return "reads as " + projection.getProduce().getName() + " " + projection.getCropState()
-			+ (projection.getCropState() == CropState.HARVESTABLE ? " - the boss is up" : "");
+		String reading = "reads as " + projection.getProduce().getName() + " "
+			+ projection.getCropState();
+		if (projection.getCropState() == CropState.HARVESTABLE)
+		{
+			return reading + " - the boss is up";
+		}
+		// The gear phase arms on isReady(), so this line has to as well, or the one state that
+		// caused the confusion — timer elapsed, patch unchecked, panel showing "ready?" —
+		// reports as a plain GROWING while the run gears up for a fight.
+		if (projection.isReady())
+		{
+			return reading + " - timer elapsed, so the boss is up unless the projection is wrong";
+		}
+		return reading;
 	}
 
 	/**
