@@ -73,13 +73,35 @@ public class GearLegOutstandingTest
 	}
 
 	@Test
-	public void theGearLegEndsOnTheGearStopAloneWhateverTheWithdrawListSays()
+	public void theGearLegIgnoresTheFarmingHalfOfAMixedRun()
 	{
 		when(handoff.applies()).thenReturn(true);
 		when(handoff.gearOutstanding()).thenReturn(false);
+		// The hespori's own kit is aboard. The withdraw list still has plenty on it — the
+		// fixture's everything-run saplings — and that is precisely what must not hold.
+		when(loadout.anythingLeftToWithdraw(EnumSet.of(PatchImplementation.HESPORI)))
+			.thenReturn(false);
 
-		assertFalse("a geared player is done with this leg; the saplings wait for the "
-			+ "swap-back trip", tracker.supplyLegOutstanding());
+		assertFalse("a geared player carrying the replant kit is done with this leg; the "
+			+ "saplings wait for the swap-back trip", tracker.supplyLegOutstanding());
+	}
+
+	/**
+	 * But the hespori's own spade, seed and dibber do hold it, because nothing else will.
+	 *
+	 * <p>A hespori-only run never arms the swap-back trip, so this leg is the run's one chance
+	 * to collect them. Ending on the gear stop alone sent the player to the boss with no seed
+	 * and no way to be routed for one. Reported from play.
+	 */
+	@Test
+	public void theGearLegHoldsForTheHesporisOwnReplantKit()
+	{
+		when(handoff.applies()).thenReturn(true);
+		when(handoff.gearOutstanding()).thenReturn(false);
+		when(loadout.anythingLeftToWithdraw(EnumSet.of(PatchImplementation.HESPORI)))
+			.thenReturn(true);
+
+		assertTrue("geared, but with nothing to replant with", tracker.supplyLegOutstanding());
 	}
 
 	@Test

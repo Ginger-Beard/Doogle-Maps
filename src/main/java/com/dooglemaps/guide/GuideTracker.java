@@ -520,16 +520,18 @@ public class GuideTracker
 			return java.util.Collections.emptyList();
 		}
 
-		// Nothing during the gear phase, for the reason the supply lines give: the farming
-		// withdrawals are the swap-back leg's orders, and listing them under a combat loadout
-		// reads as orders for a pack with no room for them.
-		if (handoff.applies())
-		{
-			return java.util.Collections.emptyList();
-		}
+		// The hespori's own kit during the gear phase, and only that. The farming half of a
+		// mixed run stays off the list for the reason the supply lines give — those are the
+		// swap-back leg's orders, and listing them under a combat loadout reads as orders for
+		// a pack with no room for them. The spade, the seed and the dibber are a different
+		// case: the leg now holds for them (see supplyLegOutstanding), and a leg that holds
+		// for an item it never names is the plugin refusing to say what it wants.
+		java.util.Set<PatchImplementation> types = handoff.applies()
+			? java.util.EnumSet.of(PatchImplementation.HESPORI)
+			: planner.coveredTypes();
 
 		java.util.List<String> items = new ArrayList<>();
-		for (com.dooglemaps.bank.LoadoutItem item : loadout.forRun(planner.coveredTypes()))
+		for (com.dooglemaps.bank.LoadoutItem item : loadout.forRun(types))
 		{
 			if (item.getNeed() != com.dooglemaps.bank.LoadoutItem.Need.WITHDRAW
 				|| item.getCategory() == com.dooglemaps.bank.LoadoutItem.Category.TELEPORT)
@@ -1684,13 +1686,31 @@ public class GuideTracker
 	{
 		if (handoff.applies())
 		{
-			// The gear phase's leg is over when the gear stop is — and nothing else. The
-			// farming half of a mixed run is deliberately not collected here: seeds and a
-			// combat loadout cannot share a pack, and the swap-back leg after the hespori
-			// exists precisely to collect them. Asking the withdraw list too parked an
-			// everything-ticked run at the bank, fully geared, with the leg demanding six
-			// yew saplings it had nowhere to put. Reported from play.
-			return handoff.gearOutstanding();
+			// The gear stop, plus the hespori's own kit — and nothing wider than that.
+			//
+			// The farming half of a mixed run is still deliberately not collected here: seeds
+			// and a combat loadout cannot share a pack, and the swap-back leg after the
+			// hespori exists precisely to collect them. Asking the whole withdraw list parked
+			// an everything-ticked run at the bank, fully geared, with the leg demanding six
+			// yew saplings it had nowhere to put. Reported from play, and asking it for the
+			// HESPORI alone is what keeps that fixed: a tree run's saplings are not in this
+			// list because TREE is not in these types.
+			//
+			// But "the gear stop and nothing else" was too little. The cave is a farming stop
+			// once the boss is dead — rake, dib, replant — and a hespori-only run never arms
+			// the swap-back trip that would fetch that kit (RunPlanner.reviewGearSwap returns
+			// on an empty getRemaining), so this leg is the run's only chance to collect it.
+			// The leg closed on the bank shutting and the player reached the patch with no
+			// seed and no way to be sent for one. Reported from play.
+			//
+			// What that comes to is the spade, the seed, and a dibber unless Barbarian Farming
+			// is unlocked — ToolNeeds already owns those three judgements, and
+			// anythingLeftToWithdraw already narrows to the categories a stop is pointless
+			// without. Neither rule is restated here. The player's own loadout is still not
+			// inspected: what they fight in is their business, and only the replanting kit is.
+			return handoff.gearOutstanding()
+				|| loadout.anythingLeftToWithdraw(
+					java.util.EnumSet.of(PatchImplementation.HESPORI));
 		}
 		return loadout.anythingLeftToWithdraw(planner.coveredTypes());
 	}
