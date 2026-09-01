@@ -2781,18 +2781,27 @@ public class RunPlanner
 	 * instruction it was showing. Fixing only the route left the vault still lit — the same
 	 * disagreement from the other side. Reported from play, twice.
 	 *
-	 * <p>The hespori's seed is not this leg's errand at all: the swap-back trip after the kill
-	 * collects it, in farm gear, with somewhere to put it — and that leg runs with the phase
-	 * off, so it sees the ordinary answer below.
+	 * <p>Added to the seed answer rather than replacing it, and that distinction is the whole
+	 * of a second report from play. Replacing it dropped the replanting seed: a hespori-only
+	 * run never arms the swap-back trip ({@link #reviewGearSwap} returns on an empty
+	 * {@code getRemaining}), so the opening leg is the run's <b>only</b> chance to collect,
+	 * and a seed sitting in the vault was then never fetched at all — geared up, boss killed,
+	 * nothing to replant with and nowhere the run would send you.
+	 *
+	 * <p>The union is also what undoes the deadlock properly. A bare {@code SEED_VAULT}
+	 * targeted the vault alone, which no bank interface could ever end the leg at; the union
+	 * targets the vault <i>and</i> the guild's own chest ten tiles from it — see
+	 * {@link #supplyTargetsFor} — so one arrival serves the setup and the seed both, and
+	 * {@code GuideOverlay.marks} lights the two containers the trip genuinely wants.
 	 */
 	public Set<SeedSource> getSupplySources()
 	{
+		Set<SeedSource> needed = EnumSet.noneOf(SeedSource.class);
+
 		if (isGearPhase())
 		{
-			return EnumSet.of(SeedSource.BANK);
+			needed.add(SeedSource.BANK);
 		}
-
-		Set<SeedSource> needed = EnumSet.noneOf(SeedSource.class);
 
 		for (Seed seed : seedsWantedThisRun())
 		{

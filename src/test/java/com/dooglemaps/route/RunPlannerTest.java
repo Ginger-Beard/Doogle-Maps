@@ -1712,11 +1712,17 @@ public class RunPlannerTest
 	 * <p>Asserted at the sources rather than only at the targets, because the sources are what
 	 * every reader of the leg's destination is derived from — the route, "am I already there",
 	 * and the lit objects in the world. Fixing only the targets left the vault still outlined,
-	 * which is the same disagreement from the other side; {@code GuideOverlay.marks} already
-	 * refuses a vault for a BANK source, so pinning the source pins the highlight too.
+	 * which is the same disagreement from the other side.
+	 *
+	 * <p>And the bank is <b>added</b> to the seed answer, never substituted for it. Replacing
+	 * it read as "the gear leg collects from a bank and nothing else", which dropped the
+	 * replanting seed on the floor: a hespori-only run never arms the swap-back trip, so this
+	 * leg is the only chance the run has to collect, and the player reached the boss with
+	 * nothing to replant with. Both halves are pinned here because each was shipped broken on
+	 * its own.
 	 */
 	@Test
-	public void aHesporiGearLegCollectsFromABankNotTheSeedVault()
+	public void aHesporiGearLegCollectsTheVaultSeedAndStillEndsAtABank()
 	{
 		standingIn(VARROCK_REGION);
 		stockVault(com.dooglemaps.data.Seed.HESPORI, 1);
@@ -1731,11 +1737,16 @@ public class RunPlannerTest
 
 		assertTrue("fixture: the gear phase owns this leg", planner.isGearPhase());
 
-		assertEquals("the leg collects from a bank, whatever the seed is sitting in",
-			java.util.Collections.singleton(SeedSource.BANK), planner.getSupplySources());
-		assertFalse("so the vault is neither routed to nor outlined",
+		assertEquals("both errands: the setup from a bank, the seed from the vault",
+			EnumSet.of(SeedSource.BANK, SeedSource.SEED_VAULT),
+			EnumSet.copyOf(planner.getSupplySources()));
+
+		// The guild's chest is ten tiles from the vault, so one arrival serves both — and it
+		// is the bank interface that lets InventorySetupsHandoff end the leg at all.
+		assertTrue("the seed is actually fetched",
 			lastTargets().contains(banks.getSeedVault()));
-		assertFalse("and the leg still has somewhere to go", lastTargets().isEmpty());
+		assertTrue("and there is a bank to end the leg at",
+			lastTargets().contains(banks.getFarmingGuildBank()));
 	}
 
 	/**
