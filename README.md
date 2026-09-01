@@ -8,9 +8,7 @@ through it patch by patch.
 
 ## The overview
 
-<img src="docs/images/sidebar-almanac.png" alt="The Almanac tab: patch-type tabs across the top and
-one row per location, each with what is growing, a staged progress bar and a shield where the patch
-is safe from disease" width="260">
+![The Almanac tab: patch-type tabs across the top and one row per location, each with what is growing, a staged progress bar and a shield where the patch is safe from disease](docs/images/sidebar-almanac.png)
 
 Every patch you use on one page, grouped the way the Geomancy interface groups them: what is
 growing, how long is left, and a shield where the patch cannot be diseased. Hover a bar for the
@@ -35,9 +33,7 @@ Multiple accounts need no setup: RuneLite scopes the cache per profile.
 
 ## Planning a run
 
-<img src="docs/images/sidebar-run.png" alt="The run section: a grid of owned seeds with several
-picked, a compost dropdown, tickboxes for each patch type, and a table of projected yield and
-experience per crop" width="260">
+![The run section: a grid of owned seeds with several picked, a compost dropdown, tickboxes for each patch type, and a table of projected yield and experience per crop](docs/images/sidebar-run.png)
 
 Pick the patch types and the seeds, and the panel prices the trip before you set off — expected
 yield and experience per crop, inventory slots needed against the 28 you have, and every
