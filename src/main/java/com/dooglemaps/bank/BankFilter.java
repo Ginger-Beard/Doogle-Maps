@@ -684,7 +684,7 @@ public class BankFilter
 			for (LoadoutItem item : loadout.forRun(planner.coveredTypes()))
 			{
 				boolean found = false;
-				for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+				for (int form : RunLoadout.formsToFetch(item))
 				{
 					found |= banked.contains(form);
 				}
@@ -763,8 +763,10 @@ public class BankFilter
 			//
 			// Every form of it, too. A loadout item names the *planted* form, so a tree crop came
 			// through as its sapling — and the filter then hid the magic seeds it was there to
-			// show you, because what is in the bank is the seed. See RunLoadout.bankFormsOf.
-			items.addAll(RunLoadout.bankFormsOf(item.getItemId()));
+			// show you, because what is in the bank is the seed. See RunLoadout.formsToFetch,
+			// which adds the seed form only when the row still has some left to pot — the
+			// saplings you already own do not need a second, seed-shaped slot in the filter.
+			items.addAll(RunLoadout.formsToFetch(item));
 		}
 
 		// Plus whatever item the route itself uses - not a loadout need, but the one thing

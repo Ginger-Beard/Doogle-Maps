@@ -389,6 +389,56 @@ public class WithdrawAmountSwapTest
 		assertEquals("Examine", leftClick());
 	}
 
+	/**
+	 * A vault menu is sized from the vault row, not whichever half of a bank+vault split a bare
+	 * item id happens to reach first.
+	 *
+	 * <h2>The second half of the withdraw-5-for-4 report</h2>
+	 *
+	 * A split bank+vault pair puts two rows under one item id, and {@code stillWantedNow(int)}
+	 * answers from the first it finds — the bank row, ordinarily, since {@code addSeeds} lists it
+	 * first. A menu open on the <b>vault</b>'s widget group has to be sized from the vault's own
+	 * row instead: see {@code RunLoadout.stillWantedNow(int, java.util.Set,
+	 * com.dooglemaps.bank.LoadoutItem.From)}. Wiring the plain, bank-preferring overload to answer
+	 * fifteen here and the vault overload to answer four pins that the swap actually asks the
+	 * vault-aware one for a vault menu, rather than merely happening to agree with it.
+	 */
+	@Test
+	public void aVaultMenuSizesFromTheVaultRow()
+	{
+		net.runelite.api.widgets.Widget widget =
+			Mockito.mock(net.runelite.api.widgets.Widget.class);
+		when(widget.getItemId()).thenReturn(WATERMELON);
+		when(widget.getId()).thenReturn(net.runelite.api.widgets.WidgetUtil.packComponentId(
+			net.runelite.api.gameval.InterfaceID.SEED_VAULT, 5));
+
+		entries = new MenuEntry[]{
+			vaultEntry("Withdraw-1", widget), vaultEntry("Withdraw-5", widget),
+			vaultEntry("Withdraw-10", widget)};
+		wireMenu();
+		when(loadout.stillWantedNow(WATERMELON, com.dooglemaps.bank.LoadoutItem.From.SEED_VAULT))
+			.thenReturn(4);
+		// Wired to a different, wrong answer - if the swap ever fell back to this overload for
+		// a vault menu, the ten would win instead of the one and the test would say so.
+		when(loadout.stillWantedNow(WATERMELON)).thenReturn(15);
+
+		swap.onPostMenuSort(new PostMenuSort());
+
+		assertEquals("four wanted, per the vault row, takes the one - not the ten the bank "
+				+ "row's fifteen would pick",
+			"Withdraw-1", leftClick());
+	}
+
+	/** An entry naming no id of its own, on a widget belonging to the seed vault's interface. */
+	private static MenuEntry vaultEntry(String option, net.runelite.api.widgets.Widget widget)
+	{
+		MenuEntry menuEntry = Mockito.mock(MenuEntry.class);
+		when(menuEntry.getOption()).thenReturn(option);
+		when(menuEntry.getItemId()).thenReturn(-1);
+		when(menuEntry.getWidget()).thenReturn(widget);
+		return menuEntry;
+	}
+
 	/** With the setting off, the game's own order stands. */
 	@Test
 	public void theSettingTurnsItOff()

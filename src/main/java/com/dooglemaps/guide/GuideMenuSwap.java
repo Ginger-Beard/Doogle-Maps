@@ -433,6 +433,10 @@ public class GuideMenuSwap
 
 		int itemId = -1;
 		String itemName = null;
+		// Which container the menu belongs to, for sizing a split bank/vault pair from its own
+		// row rather than whichever half a plain id lookup happens to reach first. Every entry on
+		// one menu is the same interface, so the first one seen settles it for the whole call.
+		com.dooglemaps.bank.LoadoutItem.From from = com.dooglemaps.bank.LoadoutItem.From.BANK;
 		boolean seenAny = false;
 		boolean allOffered = false;
 		java.util.Set<Integer> offered = new java.util.HashSet<>();
@@ -463,6 +467,7 @@ public class GuideMenuSwap
 			{
 				itemId = on;
 				itemName = named;
+				from = fromOf(entry);
 				seenAny = true;
 			}
 			else
@@ -516,7 +521,15 @@ public class GuideMenuSwap
 		// Live, and that is the whole of why this is not read off the row's own count. A player
 		// clicking ten and then five does both inside one tick, and a tick-old answer would offer
 		// ten again and take twenty-five. See RunLoadout.stillWantedNow.
-		int wanted = itemId > 0 ? loadout.stillWantedNow(itemId) : 0;
+		//
+		// The vault-widget overload only, and only when this menu IS the vault's: a bank menu
+		// keeps calling the plain overload it always has, so a split bank/vault pair is sized
+		// from the row whose own container matches this menu's, without touching the ordinary,
+		// unsplit case at all.
+		boolean vaultMenu = from == com.dooglemaps.bank.LoadoutItem.From.SEED_VAULT;
+		int wanted = itemId > 0
+			? (vaultMenu ? loadout.stillWantedNow(itemId, from) : loadout.stillWantedNow(itemId))
+			: 0;
 
 		// The name whenever the id answers nothing — not only when there is no id at all.
 		//
@@ -529,7 +542,8 @@ public class GuideMenuSwap
 		// Only an id that matches no row leaves the name to find the right one.
 		if (wanted <= 0 && itemName != null)
 		{
-			wanted = loadout.stillWantedNow(itemName);
+			wanted = vaultMenu ? loadout.stillWantedNow(itemName, from)
+				: loadout.stillWantedNow(itemName);
 		}
 
 		// Then the clicks the server has not confirmed yet, counted at click speed rather
@@ -551,8 +565,10 @@ public class GuideMenuSwap
 		// swapping those to Examine would break ordinary banking.
 		if (wanted <= 0
 			&& (listed > 0
-				|| (itemId > 0 && loadout.doneWithdrawing(itemId))
-				|| (itemName != null && loadout.doneWithdrawing(itemName))))
+				|| (itemId > 0 && (vaultMenu ? loadout.doneWithdrawing(itemId, from)
+					: loadout.doneWithdrawing(itemId)))
+				|| (itemName != null && (vaultMenu ? loadout.doneWithdrawing(itemName, from)
+					: loadout.doneWithdrawing(itemName)))))
 		{
 			logDecision("item id=" + itemId + " name='" + itemName
 				+ "' fully collected -> promote Examine");
@@ -673,6 +689,28 @@ public class GuideMenuSwap
 
 		net.runelite.api.widgets.Widget widget = entry.getWidget();
 		return widget == null ? -1 : widget.getItemId();
+	}
+
+	/**
+	 * Which container a collection menu's entry belongs to, for sizing a split bank/vault pair
+	 * from its own row rather than whichever half a bare item id reaches first.
+	 *
+	 * <p>The entry carries no such flag of its own; its widget does, by which interface laid it
+	 * out — {@code InterfaceID.SEED_VAULT}, the same group id {@code BankHighlightOverlay} reads
+	 * the vault's widgets under. Defaults to {@link com.dooglemaps.bank.LoadoutItem.From#BANK}
+	 * whenever there is no widget to ask, which is the safe default: everything the loadout
+	 * tracks except a seed comes out of the bank.
+	 */
+	private static com.dooglemaps.bank.LoadoutItem.From fromOf(MenuEntry entry)
+	{
+		net.runelite.api.widgets.Widget widget = entry.getWidget();
+		if (widget != null
+			&& net.runelite.api.widgets.WidgetUtil.componentToInterface(widget.getId())
+				== net.runelite.api.gameval.InterfaceID.SEED_VAULT)
+		{
+			return com.dooglemaps.bank.LoadoutItem.From.SEED_VAULT;
+		}
+		return com.dooglemaps.bank.LoadoutItem.From.BANK;
 	}
 
 	/**

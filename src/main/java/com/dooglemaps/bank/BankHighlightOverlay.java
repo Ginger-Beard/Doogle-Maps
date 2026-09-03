@@ -871,7 +871,28 @@ public class BankHighlightOverlay extends Overlay
 			}
 			Map<Integer, Integer> target =
 				item.getFrom() == LoadoutItem.From.SEED_VAULT ? vault : bank;
-			for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+
+			// A row fetching both forms wants both slots numbered, but between them rather than
+			// twice over: the row's seedsToPot is the seed half of its own count, so the
+			// sapling half is the remainder. Putting the same number on both slots is what had
+			// a want of six printed on the sapling AND on the seed, which is twelve items.
+			com.dooglemaps.data.Seed seed = com.dooglemaps.data.Seed.forItemId(item.getItemId());
+			if (seed != null && seed.isSapling() && item.getSeedsToPot() > 0)
+			{
+				int seedShare = item.getSeedsToPot();
+				int saplingShare = count - seedShare;
+				if (saplingShare > 0)
+				{
+					target.merge(item.getItemId(), saplingShare, Integer::sum);
+				}
+				if (seedShare > 0)
+				{
+					target.merge(seed.getItemID(), seedShare, Integer::sum);
+				}
+				continue;
+			}
+
+			for (int form : RunLoadout.formsToFetch(item))
 			{
 				// Summed rather than replaced. Two picked seeds can share a bank form only in
 				// contrived cases, but a payment shared by two crops is ordinary — protecting
@@ -976,9 +997,10 @@ public class BankHighlightOverlay extends Overlay
 
 			Map<Integer, LoadoutItem.Need> target =
 				item.getFrom() == LoadoutItem.From.SEED_VAULT ? vault : bank;
-			// Every form it could be sitting as. A loadout item names the planted form, and a tree
-			// crop is a seed in storage — the same expansion the filter does.
-			for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+			// Every form worth fetching. A loadout item names the planted form, and a tree crop
+			// is a seed in storage — but only while the row still has some left to pot; see
+			// RunLoadout.formsToFetch and the same expansion the filter does.
+			for (int form : RunLoadout.formsToFetch(item))
 			{
 				target.put(form, item.getNeed());
 			}

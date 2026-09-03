@@ -253,7 +253,10 @@ public class RunLoadout
 	 *
 	 * <p>What the withdraw-quantity swap sizes its click from. See
 	 * {@code docs/withdraw-quantity-swap-spec.md} §8, which is the reason this exists at all
-	 * rather than the swap simply reading {@code getWithdrawCount} off the row.
+	 * rather than the swap simply reading {@code getWithdrawCount} off the row — for most
+	 * categories. A seed row is the one exception: see {@link #sizeRow}, where its own
+	 * {@code outstanding} already accounts for both forms of the crop and the seed box, and is
+	 * read directly rather than re-derived here against one container and one form.
 	 *
 	 * <h2>Half cached and half live, because the two halves move at different speeds</h2>
 	 *
@@ -268,7 +271,9 @@ public class RunLoadout
 	 * whole run, thirty cactus spines is thirty whatever you are holding — and what is
 	 * <b>carried</b> is read live from {@code CarriedItems}, which updates on
 	 * {@code ItemContainerChanged} and therefore on the withdrawal itself rather than on the tick.
-	 * Only the fast-moving half is read fast.
+	 * Only the fast-moving half is read fast. The seed row's own {@code outstanding} stays just as
+	 * live: {@link #forRun}'s cache is dropped on the very same {@code ItemContainerChanged}, so a
+	 * row rebuilt this tick is exactly as current as {@code CarriedItems} is.
 	 *
 	 * <h2>What is eligible, and what is deliberately not</h2>
 	 *
@@ -288,6 +293,23 @@ public class RunLoadout
 	 */
 	public int stillWantedNow(int itemId, Set<PatchImplementation> types)
 	{
+		return stillWantedNow(itemId, types, null);
+	}
+
+	/**
+	 * As above, preferring the row whose {@link LoadoutItem.From} matches.
+	 *
+	 * <p>A bank+vault split pair puts two rows under one item id — one {@code from} the bank, one
+	 * from the vault — and a menu open on the vault has to be sized from the vault's own row, not
+	 * whichever of the two the plain lookup happens to reach first. That was the second half of
+	 * the withdraw-5-for-4 report: the bank row's outstanding sized a click a vault menu was
+	 * offering. Falls back to the first match regardless of {@code from} when no row carries the
+	 * requested one, so an ordinary item — nothing ever splits it — behaves exactly as before.
+	 */
+	public int stillWantedNow(int itemId, Set<PatchImplementation> types,
+		@javax.annotation.Nullable LoadoutItem.From from)
+	{
+		LoadoutItem fallback = null;
 		for (LoadoutItem item : forRun(types))
 		{
 			// Skipped rather than answered: an item can appear on the list more than once — a
@@ -297,9 +319,16 @@ public class RunLoadout
 			{
 				continue;
 			}
-			return sizeRow(item);
+			if (from == null || item.getFrom() == from)
+			{
+				return sizeRow(item);
+			}
+			if (fallback == null)
+			{
+				fallback = item;
+			}
 		}
-		return 0;
+		return fallback == null ? 0 : sizeRow(fallback);
 	}
 
 	/**
@@ -311,6 +340,12 @@ public class RunLoadout
 	public int stillWantedNow(int itemId)
 	{
 		return stillWantedNow(itemId, planner.coveredTypes());
+	}
+
+	/** As above, preferring the row whose {@link LoadoutItem.From} matches. */
+	public int stillWantedNow(int itemId, @javax.annotation.Nullable LoadoutItem.From from)
+	{
+		return stillWantedNow(itemId, planner.coveredTypes(), from);
 	}
 
 	/**
@@ -330,22 +365,44 @@ public class RunLoadout
 		return stillWantedNow(name, planner.coveredTypes());
 	}
 
+	/** As above, preferring the row whose {@link LoadoutItem.From} matches. */
+	public int stillWantedNow(@javax.annotation.Nullable String name,
+		@javax.annotation.Nullable LoadoutItem.From from)
+	{
+		return stillWantedNow(name, planner.coveredTypes(), from);
+	}
+
 	public int stillWantedNow(@javax.annotation.Nullable String name,
 		Set<PatchImplementation> types)
+	{
+		return stillWantedNow(name, types, null);
+	}
+
+	/** As above, preferring the row whose {@link LoadoutItem.From} matches. See the id overload. */
+	public int stillWantedNow(@javax.annotation.Nullable String name,
+		Set<PatchImplementation> types, @javax.annotation.Nullable LoadoutItem.From from)
 	{
 		if (name == null || name.isEmpty())
 		{
 			return 0;
 		}
+		LoadoutItem fallback = null;
 		for (LoadoutItem item : forRun(types))
 		{
 			if (!rowIsNamed(item, name) || !stillToCollect(item.getNeed()))
 			{
 				continue;
 			}
-			return sizeRow(item);
+			if (from == null || item.getFrom() == from)
+			{
+				return sizeRow(item);
+			}
+			if (fallback == null)
+			{
+				fallback = item;
+			}
 		}
-		return 0;
+		return fallback == null ? 0 : sizeRow(fallback);
 	}
 
 	/**
@@ -456,6 +513,41 @@ public class RunLoadout
 	 */
 	public boolean doneWithdrawing(int itemId, Set<PatchImplementation> types)
 	{
+		return doneWithdrawing(itemId, types, null);
+	}
+
+	/**
+	 * As above, preferring the row(s) whose {@link LoadoutItem.From} matches.
+	 *
+	 * <p>Same split-row reasoning as {@link #stillWantedNow(int, Set, LoadoutItem.From)}: a
+	 * bank+vault pair is two rows under one item id, and a menu open on the vault must not read
+	 * done off the bank row's share the moment the bank's own, smaller share is taken. Falls back
+	 * to asking every row regardless of {@code from} when none carries the requested one, which
+	 * is the old behaviour and correct for anything that never splits.
+	 */
+	public boolean doneWithdrawing(int itemId, Set<PatchImplementation> types,
+		@javax.annotation.Nullable LoadoutItem.From from)
+	{
+		if (from != null)
+		{
+			boolean sawMatchingRow = false;
+			for (LoadoutItem item : forRun(types))
+			{
+				if (item.getItemId() != itemId || item.getFrom() != from)
+				{
+					continue;
+				}
+				sawMatchingRow = true;
+				if (rowIsDone(item))
+				{
+					return true;
+				}
+			}
+			if (sawMatchingRow)
+			{
+				return false;
+			}
+		}
 		for (LoadoutItem item : forRun(types))
 		{
 			if (item.getItemId() == itemId && rowIsDone(item))
@@ -471,14 +563,54 @@ public class RunLoadout
 		return doneWithdrawing(itemId, planner.coveredTypes());
 	}
 
+	/** As above, preferring the row(s) whose {@link LoadoutItem.From} matches. */
+	public boolean doneWithdrawing(int itemId, @javax.annotation.Nullable LoadoutItem.From from)
+	{
+		return doneWithdrawing(itemId, planner.coveredTypes(), from);
+	}
+
 	/** As above by the item's printed name, for the interface that names it and nothing else. */
 	public boolean doneWithdrawing(@javax.annotation.Nullable String name)
+	{
+		return doneWithdrawing(name, planner.coveredTypes(), null);
+	}
+
+	/** As above, preferring the row(s) whose {@link LoadoutItem.From} matches. */
+	public boolean doneWithdrawing(@javax.annotation.Nullable String name,
+		@javax.annotation.Nullable LoadoutItem.From from)
+	{
+		return doneWithdrawing(name, planner.coveredTypes(), from);
+	}
+
+	/** As above, preferring the row(s) whose {@link LoadoutItem.From} matches. */
+	public boolean doneWithdrawing(@javax.annotation.Nullable String name,
+		Set<PatchImplementation> types, @javax.annotation.Nullable LoadoutItem.From from)
 	{
 		if (name == null || name.isEmpty())
 		{
 			return false;
 		}
-		for (LoadoutItem item : forRun(planner.coveredTypes()))
+		if (from != null)
+		{
+			boolean sawMatchingRow = false;
+			for (LoadoutItem item : forRun(types))
+			{
+				if (!rowIsNamed(item, name) || item.getFrom() != from)
+				{
+					continue;
+				}
+				sawMatchingRow = true;
+				if (rowIsDone(item))
+				{
+					return true;
+				}
+			}
+			if (sawMatchingRow)
+			{
+				return false;
+			}
+		}
+		for (LoadoutItem item : forRun(types))
 		{
 			if (rowIsNamed(item, name) && rowIsDone(item))
 			{
@@ -524,6 +656,22 @@ public class RunLoadout
 		if (!sizeable(item))
 		{
 			return 0;
+		}
+
+		// The seed row already did this arithmetic against BOTH forms of the crop and against
+		// the seed box as well as the pack - see addSeeds' outstanding and
+		// SeedInventoryStore.getCount, which folds the sapling and the seed together. It is also
+		// the number the panel prints and the cyan bank slot shows. Re-deriving it here, against
+		// the sapling id and the inventory alone, is what let a player carry two un-potted seeds
+		// past the count: they reduced the row's own outstanding to four but not this arithmetic's
+		// six, and WithdrawQuantity.choose offered five. Scoped to SEED deliberately (a seed
+		// row reaching here is a sapling, sizeable() having already answered for the rest):
+		// the empty bucket row carries outstanding 0 through the 6-arg constructor, so
+		// answering getWithdrawCount() for every category would size that click at zero and
+		// kill the bucket swap outright.
+		if (item.getCategory() == LoadoutItem.Category.SEED)
+		{
+			return item.getWithdrawCount();
 		}
 
 		int wanted = item.getQuantity();
@@ -993,18 +1141,41 @@ public class RunLoadout
 				// buy some, and was wrong in the most alarming direction available. It was also
 				// inconsistent on its own terms: inPack below has always counted both.
 				int owned = seeds.getOwned(seed);
-				int inPack = seeds.getCount(seed, SeedSource.INVENTORY)
-					+ seeds.getCount(seed, SeedSource.SEED_BOX);
 				// Owned, but not in a form that can go in the ground yet. Worth saying at the
 				// bank, because a plant pot is the one thing you cannot fix at the patch.
 				boolean needsPotting = seed.isSapling() && seeds.getOwnedPlantable(seed) < wanted;
+				// How many of this crop still want a pot - the same shortfall potsNeeded below
+				// totals, hoisted because the whole of the arithmetic under it turns on the
+				// number. Not quite needsPotting: that is true whenever plantable falls short of
+				// wanted, even where owned already equals plantable and there is nothing left to
+				// pot. This is the number, zero in that case.
+				int toPot = seed.isSapling()
+					? Math.max(0, Math.min(wanted, owned) - seeds.getOwnedPlantable(seed)) : 0;
+
+				// What is already on you, counted as what will actually go in the ground.
+				//
+				// This used to be getCount, which folds a tree's seed and its sapling together -
+				// and that is right for "do I own this crop" but wrong for "is this errand
+				// smaller now". A seed in the pack only spares you a trip if it is going to be
+				// potted anyway, so it counts only up to toPot: six papayas wanted with the
+				// saplings in the vault covering all six is a want of six however many loose
+				// seeds are rattling around the pack, because none of them will be planted.
+				//
+				// An ordinary seed falls out of this unchanged rather than by a branch:
+				// getPlantable is getCount for everything but a tree, and toPot is zero, so the
+				// whole expression is the getCount sum it always was.
+				int inPack = seeds.getPlantable(seed, SeedSource.INVENTORY)
+					+ seeds.getPlantable(seed, SeedSource.SEED_BOX)
+					+ (seed.isSapling()
+						? Math.min(seeds.getSeedCount(seed, SeedSource.INVENTORY)
+							+ seeds.getSeedCount(seed, SeedSource.SEED_BOX), toPot)
+						: 0);
 				if (needsPotting)
 				{
 					// One pot per seed still to pot, totalled across the run's tree types and
 					// added once after the loop - two tree crops short of saplings want one
 					// row of pots, not two.
-					potsNeeded += Math.max(0, Math.min(wanted, owned)
-						- seeds.getOwnedPlantable(seed));
+					potsNeeded += toPot;
 				}
 
 				// The contract says *why* rather than only how many, because it is the one
@@ -1029,21 +1200,47 @@ public class RunLoadout
 				// while ONE of the two wanted sat in the bank being read at that moment — the
 				// bank's count then said "take 2" over a slot holding 1, which reads as the
 				// arithmetic being wrong rather than as a second container being involved.
-				// Reported from play. outstanding never exceeds bank+vault (owned is the cap),
-				// so the two takes always sum to exactly what is left to fetch.
-				int fromBank = Math.min(outstanding,
-					seeds.getCount(seed, SeedSource.BANK));
-				int fromVault = Math.min(outstanding - fromBank,
-					seeds.getCount(seed, SeedSource.SEED_VAULT));
+				// Reported from play.
+				//
+				// The form outranks the container, though, and that ordering is the whole of the
+				// papaya fix. A sapling is the thing that goes in the ground; a seed is a sapling
+				// plus an errand at a plant pot. So every sapling is taken before any seed is,
+				// wherever each is kept — and only then does the bank-first tie-break apply,
+				// within a form. Taking the containers in order instead sent a player to the bank
+				// for two papaya SEEDS while 64 saplings sat in the vault: two un-pottable seeds
+				// in the pack, a vault row reading 4 against a true need of 6.
+				//
+				// outstanding never exceeds what the two containers hold across both forms (see
+				// inPack above: a carried seed beyond toPot is not subtracted, precisely so it
+				// cannot make this promise false), so the four takes always sum to exactly what
+				// is left to fetch.
+				int bankSaplings = Math.min(outstanding, seeds.getPlantable(seed, SeedSource.BANK));
+				int vaultSaplings = Math.min(outstanding - bankSaplings,
+					seeds.getPlantable(seed, SeedSource.SEED_VAULT));
+				int stillSeeds = outstanding - bankSaplings - vaultSaplings;
+				// Guarded rather than left to fall out at zero: for an ordinary seed getSeedCount
+				// and getPlantable are the same container read, and counting it twice is the one
+				// way this arithmetic could ask for more than exists.
+				int bankSeeds = seed.isSapling()
+					? Math.min(stillSeeds, seeds.getSeedCount(seed, SeedSource.BANK)) : 0;
+				int vaultSeeds = seed.isSapling()
+					? Math.min(stillSeeds - bankSeeds,
+						seeds.getSeedCount(seed, SeedSource.SEED_VAULT)) : 0;
+				int fromBank = bankSaplings + bankSeeds;
+				int fromVault = vaultSaplings + vaultSeeds;
 
 				if (fromBank > 0 && fromVault > 0)
 				{
+					// Each row carries its OWN seed share rather than the crop's toPot total.
+					// The two are the same only when one row does all the fetching; on a split
+					// pair the total is what made the bank slot and the vault slot each claim
+					// the whole potting shortfall. See BankHighlightOverlay.refreshCounts.
 					items.add(new LoadoutItem(seed.getPlantedItemID(), displayName(seed),
 						LoadoutItem.Category.SEED, LoadoutItem.Need.WITHDRAW,
-						fromBank, fromBank, reason, LoadoutItem.From.BANK));
+						fromBank, fromBank, reason, LoadoutItem.From.BANK, bankSeeds));
 					items.add(new LoadoutItem(seed.getPlantedItemID(), displayName(seed),
 						LoadoutItem.Category.SEED, LoadoutItem.Need.WITHDRAW,
-						fromVault, fromVault, reason, LoadoutItem.From.SEED_VAULT));
+						fromVault, fromVault, reason, LoadoutItem.From.SEED_VAULT, vaultSeeds));
 					continue;
 				}
 
@@ -1053,7 +1250,15 @@ public class RunLoadout
 					Math.min(wanted, Math.max(owned, 1)),
 					outstanding,
 					reason,
-					fetchFrom(seed, wanted)));
+					// Where the take actually came from, which fetchFrom cannot answer once the
+					// form outranks the container: it asks getCount, so a bank holding two seeds
+					// beat a vault holding sixty-four saplings. Only one row is emitted here, so
+					// whichever take is non-zero is the row's container; fetchFrom still answers
+					// for the rows that fetch nothing at all, where there is no take to read and
+					// its "where would you start" reasoning is the right one.
+					fromBank > 0 ? LoadoutItem.From.BANK
+						: fromVault > 0 ? LoadoutItem.From.SEED_VAULT : fetchFrom(seed, wanted),
+					bankSeeds + vaultSeeds));
 			}
 		}
 
@@ -2041,63 +2246,66 @@ public class RunLoadout
 	}
 
 	/**
-	 * The Farmer's outfit, as one line rather than four.
+	 * The Farmer's outfit, one row per piece.
 	 *
 	 * <p>Worth up to 2.5% Farming experience — jacket 0.8%, legs 0.6%, hat 0.4%, boots 0.2%,
 	 * plus 0.5% for wearing all four — and was missing from the loadout entirely, so anyone who
 	 * left a piece in the bank was never told.
 	 *
-	 * <p>One row because four would swamp a list whose other entries are one item each, and
-	 * because the useful fact is "you are missing a piece", not which. The tooltip names them.
+	 * <p>The bank tag tab draws one slot per row, so folding all four pieces into a single row
+	 * gave one slot with a "1" on it that was supposed to stand for up to four items — not how
+	 * a bank slot ever behaves. Every other gear item in this loadout gets its own row and its
+	 * own slot; the outfit is no different, it just has four pieces instead of one.
 	 *
-	 * <p>Reuses {@link FarmingOutfit}, which already holds the male and female id for each
-	 * piece — this needed no new table, only asking the one that existed.
+	 * <p>Reuses {@link FarmingOutfit}, which already holds the male and female id and the
+	 * per-piece bonus — this needed no new table, only asking the one that existed.
 	 */
 	private void addFarmingOutfit(List<LoadoutItem> items)
 	{
-		int worn = 0;
-		List<String> toFetch = new ArrayList<>();
-		int firstMissingId = -1;
-
 		for (FarmingOutfit piece : FarmingOutfit.values())
 		{
-			if (carried.hasAny(piece.getMaleItemId(), piece.getFemaleItemId()))
+			int male = piece.getMaleItemId();
+			int female = piece.getFemaleItemId();
+			String name = outfitPieceName(piece);
+			String reason = String.format(
+				"+%.1f%% Farming experience, and +%.1f%% more for wearing all four",
+				piece.getBonus() * 100, FarmingOutfit.SET_BONUS * 100);
+
+			if (carried.hasAny(male, female))
 			{
-				worn++;
+				items.add(new LoadoutItem(carried.has(male) ? male : female, name,
+					LoadoutItem.Category.GEAR, LoadoutItem.Need.HAVE, 0, reason));
 				continue;
 			}
 
-			int inBank = bank.has(piece.getMaleItemId()) ? piece.getMaleItemId()
-				: bank.has(piece.getFemaleItemId()) ? piece.getFemaleItemId() : -1;
-			if (inBank != -1)
+			if (bank.has(male) || bank.has(female))
 			{
-				toFetch.add(piece.name().toLowerCase());
-				if (firstMissingId == -1)
-				{
-					firstMissingId = inBank;
-				}
+				items.add(new LoadoutItem(bank.has(male) ? male : female, name,
+					LoadoutItem.Category.GEAR, LoadoutItem.Need.WITHDRAW, 0, reason));
+				continue;
 			}
-		}
 
-		if (worn == FarmingOutfit.values().length)
+			// Neither worn nor banked. Saying "missing" would be noise for an account that
+			// simply does not have this piece, which is most of them.
+		}
+	}
+
+	/** The in-game name of one Farmer's outfit piece. */
+	private static String outfitPieceName(FarmingOutfit piece)
+	{
+		switch (piece)
 		{
-			items.add(new LoadoutItem(FarmingOutfit.HAT.getMaleItemId(), "Farmer's outfit",
-				LoadoutItem.Category.GEAR, LoadoutItem.Need.HAVE, 0,
-				"All four pieces, so you have the full +2.5% experience"));
-			return;
+			case HAT:
+				return "Farmer's strawhat";
+			case TORSO:
+				return "Farmer's jacket";
+			case LEGS:
+				return "Farmer's boro trousers";
+			case BOOTS:
+				return "Farmer's boots";
+			default:
+				throw new IllegalArgumentException("Unknown Farmer's outfit piece: " + piece);
 		}
-
-		if (toFetch.isEmpty())
-		{
-			// Nothing worn and nothing banked. Saying "missing" would be noise for an account
-			// that simply does not have the outfit, which is most of them.
-			return;
-		}
-
-		items.add(new LoadoutItem(firstMissingId, "Farmer's outfit", LoadoutItem.Category.GEAR,
-			LoadoutItem.Need.WITHDRAW, 0,
-			"In the bank: " + String.join(", ", toFetch)
-				+ ". The full set is +2.5% Farming experience"));
 	}
 
 	/**
@@ -2491,7 +2699,7 @@ public class RunLoadout
 		{
 			if (item.getNeed() == LoadoutItem.Need.WITHDRAW)
 			{
-				for (int itemId : bankFormsOf(item.getItemId()))
+				for (int itemId : formsToFetch(item))
 				{
 					marked.put(itemId, item.getNeed());
 				}
@@ -2540,6 +2748,24 @@ public class RunLoadout
 	}
 
 	/**
+	 * Every charge and fill state of the same physical item, from the client's own variation
+	 * table alone — no seed forms.
+	 *
+	 * <p>A full Ectophial (4251) and an empty one (4252) are one item to the player, a skills
+	 * necklace is one necklace at any charge. Matching only the exact id was the root of the
+	 * bank's duplicate rows — the layout held one variant, the bank another, and every consumer
+	 * concluded they were unrelated.
+	 */
+	static Set<Integer> variationsOf(int itemId)
+	{
+		Set<Integer> forms = new LinkedHashSet<>();
+		forms.add(itemId);
+		forms.addAll(net.runelite.client.game.ItemVariationMapping.getVariations(
+			net.runelite.client.game.ItemVariationMapping.map(itemId)));
+		return forms;
+	}
+
+	/**
 	 * Every form of an item that could be the one in your bank.
 	 *
 	 * <p>One id for everything except a tree crop, which exists as two: the seed you buy and the
@@ -2552,26 +2778,46 @@ public class RunLoadout
 	 * exactly the runs where the seed is expensive enough to care about.
 	 *
 	 * <p>Both forms are returned rather than whichever you happen to hold, because both are
-	 * legitimately "the thing this run needs" — you may have potted some already.
+	 * legitimately "the thing this run needs" — you may have potted some already. That is the
+	 * right answer for a bare item id, where there is no row to ask whether potting is even
+	 * outstanding; see {@link #formsToFetch} for the row-aware version most consumers now want.
 	 */
 	static Set<Integer> bankFormsOf(int itemId)
 	{
-		Set<Integer> forms = new LinkedHashSet<>();
-		forms.add(itemId);
-
-		// Every charge and fill state of the same physical item, from the client's own
-		// variation table: a full Ectophial (4251) and an empty one (4252) are one item to
-		// the player, a skills necklace is one necklace at any charge. Matching only the
-		// exact id was the root of the bank's duplicate rows — the layout held one variant,
-		// the bank another, and every consumer of this method concluded they were unrelated.
-		forms.addAll(net.runelite.client.game.ItemVariationMapping.getVariations(
-			net.runelite.client.game.ItemVariationMapping.map(itemId)));
+		Set<Integer> forms = variationsOf(itemId);
 
 		Seed seed = Seed.forItemId(itemId);
 		if (seed != null && seed.isSapling())
 		{
 			forms.add(seed.getItemID());
 			forms.add(seed.getPlantedItemID());
+		}
+		return forms;
+	}
+
+	/**
+	 * Every form of a loadout row worth fetching, which for a tree crop is not always both.
+	 *
+	 * <p>{@link #bankFormsOf} always adds the seed form to a sapling row, on the reasoning that
+	 * you might have potted some already and both forms are legitimately "the thing this run
+	 * needs". But the row already knows how much of its own count is being fetched as seed —
+	 * {@link LoadoutItem#getSeedsToPot()} — and asking for the seed form when the saplings cover
+	 * it is not a second legitimate thing to fetch, it is noise: the reported case was papaya
+	 * seeds outlined, counted and their vault tab lit while 59 saplings sat in the vault
+	 * covering a want of four.
+	 *
+	 * <p>So the seed form is added only when the crop is a sapling <b>and</b> this row is
+	 * actually fetching some of it as seed. Everything else behaves exactly as
+	 * {@link #bankFormsOf}.
+	 */
+	static Set<Integer> formsToFetch(LoadoutItem item)
+	{
+		Set<Integer> forms = variationsOf(item.getItemId());
+
+		Seed seed = Seed.forItemId(item.getItemId());
+		if (seed != null && seed.isSapling() && item.getSeedsToPot() > 0)
+		{
+			forms.add(seed.getItemID());
 		}
 		return forms;
 	}

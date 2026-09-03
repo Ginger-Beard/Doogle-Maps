@@ -10,10 +10,11 @@ import lombok.Value;
  * cures, so telling you to withdraw those is worse than saying nothing. What is worth showing
  * is the difference between what the run needs and what you already have.
  */
-// AllArgsConstructor is explicit because @Value stops generating one the moment the class declares
-// a constructor of its own, and the shorter one below is exactly that.
+// No AllArgsConstructor: @Value stops generating one the moment the class declares a
+// constructor of its own, and this class declares four - the 9-arg one below, written by hand
+// so it can carry seedsToPot, and three narrower ones that delegate to it for callers with
+// nothing to say about a field added later.
 @Value
-@lombok.AllArgsConstructor
 public class LoadoutItem
 {
 	/** What, if anything, the player has to do about this item. */
@@ -179,6 +180,32 @@ public class LoadoutItem
 	From from;
 
 	/**
+	 * How many of <b>this row's</b> count are being fetched as seeds rather than as saplings,
+	 * and so still want a plant pot. Zero when the saplings cover it.
+	 *
+	 * <p>Per row, not per crop: a bank+vault split pair is two rows, and each says only what it
+	 * is itself asking you to pick up. The crop's total shortfall is the sum of the pair, which
+	 * is what {@code addSeeds} counts pots against. Carrying the total on both rows instead made
+	 * the bank slot and the vault slot each claim the whole of it.
+	 */
+	int seedsToPot;
+
+	/** The full constructor. Every narrower one below delegates here. */
+	LoadoutItem(int itemId, String name, Category category, Need need, int quantity,
+		int outstanding, String reason, From from, int seedsToPot)
+	{
+		this.itemId = itemId;
+		this.name = name;
+		this.category = category;
+		this.need = need;
+		this.quantity = quantity;
+		this.outstanding = outstanding;
+		this.reason = reason;
+		this.from = from;
+		this.seedsToPot = seedsToPot;
+	}
+
+	/**
 	 * Everything except a seed comes out of the bank, so most callers do not say so.
 	 *
 	 * <p>Last in the field order and defaulted here rather than threaded through every call site,
@@ -187,7 +214,7 @@ public class LoadoutItem
 	 */
 	LoadoutItem(int itemId, String name, Category category, Need need, int quantity, String reason)
 	{
-		this(itemId, name, category, need, quantity, 0, reason, From.BANK);
+		this(itemId, name, category, need, quantity, 0, reason, From.BANK, 0);
 	}
 
 	/**
@@ -199,6 +226,16 @@ public class LoadoutItem
 	LoadoutItem(int itemId, String name, Category category, Need need, int quantity, String reason,
 		From from)
 	{
-		this(itemId, name, category, need, quantity, 0, reason, from);
+		this(itemId, name, category, need, quantity, 0, reason, from, 0);
+	}
+
+	/**
+	 * The 8-arg shape every caller but {@code addSeeds} still uses, with {@link #seedsToPot} at
+	 * zero — a tool, a payment or a bin fill has no seed form to weigh potting against.
+	 */
+	LoadoutItem(int itemId, String name, Category category, Need need, int quantity,
+		int outstanding, String reason, From from)
+	{
+		this(itemId, name, category, need, quantity, outstanding, reason, from, 0);
 	}
 }

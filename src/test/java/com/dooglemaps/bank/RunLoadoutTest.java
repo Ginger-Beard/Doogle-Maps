@@ -950,6 +950,271 @@ public class RunLoadoutTest
 	}
 
 	/**
+	 * Saplings already in stock cover the want, so the seed form is not asked for too.
+	 *
+	 * <p>Reported from play: papaya seeds outlined, counted and their vault tab lit while 59
+	 * saplings sat in the vault covering a want of four. {@code bankFormsOf} always added both
+	 * forms of a sapling crop on the reasoning that you might have potted some already — but the
+	 * row already knows whether potting is still outstanding, and asking for the seed on top of
+	 * saplings that already cover the want is clutter rather than a second genuine item.
+	 */
+	@Test
+	public void saplingsInStockDoNotAskForTheSeed()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatch();
+		selection.toggle(Seed.MAGIC);
+		saplingsInBank(Seed.MAGIC, 1);
+		woodcuttingLevel(99);
+
+		LoadoutItem entry = itemNamed(trees, "Magic sapling");
+		assertNotNull("a sapling in the bank is owning the crop", entry);
+		assertEquals("the saplings already cover the want - nothing left to pot",
+			0, entry.getSeedsToPot());
+
+		Set<Integer> marked = withdrawals(trees);
+		assertTrue("the sapling is what is actually sitting in the bank",
+			marked.contains(Seed.MAGIC.getPlantedItemID()));
+		assertFalse("saplings cover the want, so the seed form is not asked for too",
+			marked.contains(Seed.MAGIC.getItemID()));
+	}
+
+	/**
+	 * Owning fewer saplings than the run wants still asks for both forms, and the row says by how
+	 * much.
+	 */
+	@Test
+	public void aSeedShortfallStillAsksForBothForms()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatch();
+		selection.toggle(Seed.MAGIC);
+		seedsInBank(Seed.MAGIC, 5);
+		woodcuttingLevel(99);
+
+		LoadoutItem entry = itemNamed(trees, "Magic sapling");
+		assertNotNull(entry);
+		assertEquals("plantable is zero against a want of one - the whole one still needs "
+				+ "a pot",
+			1, entry.getSeedsToPot());
+
+		Set<Integer> marked = withdrawals(trees);
+		assertTrue(marked.contains(Seed.MAGIC.getItemID()));
+		assertTrue(marked.contains(Seed.MAGIC.getPlantedItemID()));
+	}
+
+	/**
+	 * The reported case: a pair of un-potted seeds sitting in the pack must count against the
+	 * click, exactly as a sapling in the same slot would.
+	 *
+	 * <p>The withdraw-5-for-4 report. {@code sizeRow} used to recompute the count against the
+	 * sapling id and the inventory alone; the row's own {@code outstanding} already folds in the
+	 * seed form and the seed box, and is what the panel and the cyan slot print. The point of the
+	 * test is that the swap's answer is the row's own count, whatever that count is.
+	 *
+	 * <p>It used to be four here, on the reasoning that two un-potted seeds in the pack count the
+	 * same as two saplings. They do not: 59 saplings in the vault cover all six patches, so
+	 * nothing is going to be potted and those two seeds are not being planted. The want is six.
+	 */
+	@Test
+	public void anUnpottedSeedInThePackDoesNotInflateTheClick()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatches(6);
+		selection.toggle(Seed.MAGIC);
+		saplingsInVault(Seed.MAGIC, 59);
+		seedsInInventory(Seed.MAGIC, 2);
+		woodcuttingLevel(99);
+
+		LoadoutItem entry = itemNamed(trees, "Magic sapling");
+		assertNotNull(entry);
+		assertEquals("the saplings cover the want, so the carried seeds are not part of it",
+			6, entry.getWithdrawCount());
+		assertEquals("sized off the row's own outstanding, not re-derived against the "
+				+ "sapling id and the inventory alone",
+			6, loadout.stillWantedNow(Seed.MAGIC.getPlantedItemID(), trees));
+	}
+
+	/** As above, with the two un-potted seeds in the seed box rather than the pack. */
+	@Test
+	public void aSeedBoxOfSeedsCountsAgainstTheClick()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatches(6);
+		selection.toggle(Seed.MAGIC);
+		saplingsInVault(Seed.MAGIC, 59);
+		seedsInBox(Seed.MAGIC, 2);
+		woodcuttingLevel(99);
+
+		LoadoutItem entry = itemNamed(trees, "Magic sapling");
+		assertNotNull(entry);
+		assertEquals("the box is weighed exactly as the pack is, and by the same rule",
+			6, entry.getWithdrawCount());
+		assertEquals(6, loadout.stillWantedNow(Seed.MAGIC.getPlantedItemID(), trees));
+	}
+
+	/**
+	 * The reported bug: a bank holding two seeds must not beat a vault holding sixty-four
+	 * saplings.
+	 *
+	 * <p>Six papayas wanted. The split took the containers in order and folded both forms
+	 * together, so the bank's two seeds were spoken for first — the player withdrew two seeds
+	 * that cannot go in the ground, and the vault row then read four against a true need of six.
+	 * A sapling is the thing you plant; a seed is a sapling plus an errand at a plant pot, so
+	 * every sapling is taken before any seed, wherever each is kept.
+	 */
+	@Test
+	public void vaultSaplingsBeatBankSeeds()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatches(6);
+		selection.toggle(Seed.MAGIC);
+		seedsInBank(Seed.MAGIC, 2);
+		saplingsInVault(Seed.MAGIC, 64);
+		woodcuttingLevel(99);
+
+		List<LoadoutItem> rows = seedRows(Seed.MAGIC);
+		assertEquals("the vault alone covers it, so nothing is split off to the bank",
+			1, rows.size());
+		assertEquals("where the saplings are", LoadoutItem.From.SEED_VAULT, rows.get(0).getFrom());
+		assertEquals(6, rows.get(0).getQuantity());
+		assertEquals(6, rows.get(0).getWithdrawCount());
+		assertEquals("nothing is being fetched as a seed", 0, rows.get(0).getSeedsToPot());
+
+		assertFalse("the bank's two seeds are not part of this run",
+			withdrawals(trees).contains(Seed.MAGIC.getItemID()));
+		assertNull("and with nothing to pot there is no pot to bring",
+			itemNamed(trees, "Filled plant pot"));
+	}
+
+	/**
+	 * Seeds already in the pack count against the want only when they are going to be potted.
+	 *
+	 * <p>Otherwise the arithmetic quietly plants them: two loose papaya seeds took two off a want
+	 * of six while sixty-four saplings sat covering all six, and the errand came back one row
+	 * short.
+	 */
+	@Test
+	public void carriedSeedsDoNotCountWhenSaplingsCoverTheWant()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatches(6);
+		selection.toggle(Seed.MAGIC);
+		seedsInBank(Seed.MAGIC, 2);
+		saplingsInVault(Seed.MAGIC, 64);
+		seedsInInventory(Seed.MAGIC, 2);
+		woodcuttingLevel(99);
+
+		List<LoadoutItem> rows = seedRows(Seed.MAGIC);
+		assertEquals(1, rows.size());
+		assertEquals(LoadoutItem.From.SEED_VAULT, rows.get(0).getFrom());
+		assertEquals("the carried seeds are not going in the ground, so they are not the want",
+			6, rows.get(0).getWithdrawCount());
+		assertEquals(0, rows.get(0).getSeedsToPot());
+	}
+
+	/**
+	 * Seeds are fetched, but only for the part the saplings cannot cover, and the row that
+	 * fetches them is the row that says so.
+	 */
+	@Test
+	public void seedsFillOnlyTheSaplingShortfall()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatches(6);
+		selection.toggle(Seed.MAGIC);
+		seedsInBank(Seed.MAGIC, 2);
+		saplingsInVault(Seed.MAGIC, 3);
+		woodcuttingLevel(99);
+
+		List<LoadoutItem> rows = seedRows(Seed.MAGIC);
+		assertEquals("three saplings and two seeds is two containers", 2, rows.size());
+		assertEquals(LoadoutItem.From.BANK, rows.get(0).getFrom());
+		assertEquals("the seeds, and only as many as the saplings left short",
+			2, rows.get(0).getWithdrawCount());
+		assertEquals("the bank row is the one fetching them", 2, rows.get(0).getSeedsToPot());
+		assertEquals(LoadoutItem.From.SEED_VAULT, rows.get(1).getFrom());
+		assertEquals(3, rows.get(1).getWithdrawCount());
+		assertEquals("the vault's share is saplings, already potted",
+			0, rows.get(1).getSeedsToPot());
+
+		assertTrue("both forms are worth finding in this run",
+			withdrawals(trees).contains(Seed.MAGIC.getItemID()));
+		LoadoutItem pots = itemNamed(trees, "Filled plant pot");
+		assertNotNull("two seeds want two pots", pots);
+		assertEquals(2, pots.getQuantity());
+		assertTrue("and the seed row says why out loud",
+			rows.get(0).getReason().contains("needs potting into a sapling first"));
+	}
+
+	/**
+	 * Within one container the sapling still goes first: a bank holding both forms gives up its
+	 * sapling before it gives up a seed.
+	 */
+	@Test
+	public void aBankSaplingIsTakenBeforeItsSeeds()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyTreePatches(6);
+		selection.toggle(Seed.MAGIC);
+		// One combined record: seeds.record swaps the whole container in, so the two
+		// single-form helpers would leave only the second form owned.
+		bankHolds(Seed.MAGIC.getPlantedItemID(), 1);
+		bankHolds(Seed.MAGIC.getItemID(), 2);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(Seed.MAGIC.getPlantedItemID(), 1, Seed.MAGIC.getItemID(), 2));
+		saplingsInVault(Seed.MAGIC, 4);
+		woodcuttingLevel(99);
+
+		List<LoadoutItem> rows = seedRows(Seed.MAGIC);
+		assertEquals(2, rows.size());
+		assertEquals(LoadoutItem.From.BANK, rows.get(0).getFrom());
+		assertEquals("its own sapling plus the one seed the vault's four left short",
+			2, rows.get(0).getWithdrawCount());
+		assertEquals("of which one is a seed", 1, rows.get(0).getSeedsToPot());
+		assertEquals(LoadoutItem.From.SEED_VAULT, rows.get(1).getFrom());
+		assertEquals(4, rows.get(1).getWithdrawCount());
+		assertEquals(0, rows.get(1).getSeedsToPot());
+
+		LoadoutItem pots = itemNamed(trees, "Filled plant pot");
+		assertNotNull(pots);
+		assertEquals("one seed, one pot", 1, pots.getQuantity());
+	}
+
+	/**
+	 * A split bank/vault pair sizes and finishes from its own row, not whichever half a bare
+	 * item id happens to reach first.
+	 *
+	 * <p>The second half of the withdraw-5-for-4 report: a menu open on the vault has to be sized
+	 * from the vault's own row, and must not read as done the moment the bank's smaller share is
+	 * taken while the vault's share is still sitting there untouched.
+	 */
+	@Test
+	public void aSplitRowSizesItsOwnContainer()
+	{
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		readyAllTreePatches();
+		selection.toggle(Seed.MAGIC);
+		saplingsInBank(Seed.MAGIC, 1);
+		saplingsInVault(Seed.MAGIC, 4);
+		woodcuttingLevel(99);
+
+		int saplingId = Seed.MAGIC.getPlantedItemID();
+		assertEquals("the vault row sizes its own share, not the bank row's",
+			4, loadout.stillWantedNow(saplingId, trees, LoadoutItem.From.SEED_VAULT));
+		assertFalse("neither container's row is satisfied yet",
+			loadout.doneWithdrawing(saplingId, trees, LoadoutItem.From.SEED_VAULT));
+
+		// The bank's one sapling is taken: it leaves the bank and lands in the pack.
+		saplingsInBank(Seed.MAGIC, 0);
+		saplingsInInventory(Seed.MAGIC, 1);
+
+		assertFalse("the vault's four are still outstanding - the bank emptying out must "
+				+ "not read as the vault row being done",
+			loadout.doneWithdrawing(saplingId, trees, LoadoutItem.From.SEED_VAULT));
+	}
+
+	/**
 	 * A tree seed that is still a seed brings its potting supplies with it.
 	 *
 	 * <p>The seed row has said <i>needs potting</i> for a while; what it did not say is what the
@@ -1649,6 +1914,21 @@ public class RunLoadoutTest
 	}
 
 	/**
+	 * The row-aware version agrees with the bare-id one for a crop with no sapling form: there
+	 * is no potting shortfall to weigh, so there is only ever the one id to fetch.
+	 */
+	@Test
+	public void anOrdinarySeedStillMatchesOnlyItselfByRow()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		seedsInBank(Seed.RANARR, 5);
+
+		assertEquals(java.util.Collections.singleton(Seed.RANARR.getItemID()),
+			RunLoadout.formsToFetch(onlySeed()));
+	}
+
+	/**
 	 * An item on the teleport list is picked up out of the bank, by name.
 	 *
 	 * <p>What reaches a farming region is a fact about the map and lives in {@code TeleportItems}.
@@ -2135,11 +2415,16 @@ public class RunLoadoutTest
 		assertEquals("equipment is worn, not carried", before, carried.getFreeSlots());
 	}
 
+	private static final String[] OUTFIT_PIECE_NAMES = {
+		"Farmer's strawhat", "Farmer's jacket", "Farmer's boro trousers", "Farmer's boots"
+	};
+
 	/**
-	 * The Farmer's outfit is offered when a piece is missing, as one line.
+	 * The Farmer's outfit is offered piece by piece, not as one line.
 	 *
 	 * <p>It was absent from the loadout entirely, so anyone who left the legs in the bank was
-	 * never told — and it is worth up to 2.5% Farming experience.
+	 * never told. Each piece is its own row so each gets its own bank slot, the way every other
+	 * gear item here does.
 	 */
 	@Test
 	public void theFarmersOutfitIsOfferedWhenIncomplete()
@@ -2150,10 +2435,19 @@ public class RunLoadoutTest
 		wearing(FarmingOutfit.HAT.getMaleItemId(), 1);
 		bankHolds(FarmingOutfit.LEGS.getMaleItemId(), 1);
 
-		LoadoutItem outfit = find(LoadoutItem.Category.GEAR, "Farmer's outfit");
-		assertNotNull("a banked piece should be offered", outfit);
-		assertEquals(LoadoutItem.Need.WITHDRAW, outfit.getNeed());
-		assertTrue(outfit.getReason(), outfit.getReason().toLowerCase().contains("legs"));
+		LoadoutItem hat = find(LoadoutItem.Category.GEAR, "Farmer's strawhat");
+		assertNotNull("the worn hat should be offered", hat);
+		assertEquals(LoadoutItem.Need.HAVE, hat.getNeed());
+
+		LoadoutItem legs = find(LoadoutItem.Category.GEAR, "Farmer's boro trousers");
+		assertNotNull("the banked legs should be offered", legs);
+		assertEquals(LoadoutItem.Need.WITHDRAW, legs.getNeed());
+		assertEquals(FarmingOutfit.LEGS.getMaleItemId(), legs.getItemId());
+
+		assertNull("the jacket is owned by neither the player nor the bank",
+			find(LoadoutItem.Category.GEAR, "Farmer's jacket"));
+		assertNull("the boots are owned by neither the player nor the bank",
+			find(LoadoutItem.Category.GEAR, "Farmer's boots"));
 	}
 
 	/** Wearing all four says so, rather than nagging. */
@@ -2167,9 +2461,12 @@ public class RunLoadoutTest
 			wearing(piece.getMaleItemId(), 1);
 		}
 
-		LoadoutItem outfit = find(LoadoutItem.Category.GEAR, "Farmer's outfit");
-		assertNotNull(outfit);
-		assertEquals(LoadoutItem.Need.HAVE, outfit.getNeed());
+		for (String name : OUTFIT_PIECE_NAMES)
+		{
+			LoadoutItem piece = find(LoadoutItem.Category.GEAR, name);
+			assertNotNull(name, piece);
+			assertEquals(name, LoadoutItem.Need.HAVE, piece.getNeed());
+		}
 	}
 
 	/** An account with no outfit at all hears nothing, which is most accounts. */
@@ -2179,8 +2476,11 @@ public class RunLoadoutTest
 		readyHerbPatch();
 		selection.toggle(Seed.RANARR);
 
-		assertNull("silence beats noise for something you do not own",
-			find(LoadoutItem.Category.GEAR, "Farmer's outfit"));
+		for (String name : OUTFIT_PIECE_NAMES)
+		{
+			assertNull("silence beats noise for something you do not own",
+				find(LoadoutItem.Category.GEAR, name));
+		}
 	}
 
 	/**
@@ -2202,8 +2502,10 @@ public class RunLoadoutTest
 		// Anchored, or three absences would pass on an empty list and prove nothing.
 		assertFalse("the spade and the dibber are still asked for",
 			loadout.forRun(hespori).isEmpty());
-		assertNull("a boss fight is not dressed for experience",
-			itemNamed(hespori, "Farmer's outfit"));
+		for (String name : OUTFIT_PIECE_NAMES)
+		{
+			assertNull("a boss fight is not dressed for experience", itemNamed(hespori, name));
+		}
 		assertNull("one seed does not want a box", itemNamed(hespori, "Seed box"));
 		assertNull("nothing on that drop table is a yield roll",
 			itemNamed(hespori, "Magic secateurs"));
@@ -2221,8 +2523,12 @@ public class RunLoadoutTest
 
 		Set<PatchImplementation> mixed =
 			EnumSet.of(PatchImplementation.HESPORI, PatchImplementation.HERB);
-		assertNotNull("the swap-back leg is a farm run again",
-			itemNamed(mixed, "Farmer's outfit"));
+		for (String name : OUTFIT_PIECE_NAMES)
+		{
+			LoadoutItem piece = itemNamed(mixed, name);
+			assertNotNull("the swap-back leg is a farm run again", piece);
+			assertEquals(name, LoadoutItem.Need.WITHDRAW, piece.getNeed());
+		}
 		assertNotNull(itemNamed(mixed, "Seed box"));
 		assertNotNull(itemNamed(mixed, "Magic secateurs"));
 	}
@@ -2427,6 +2733,24 @@ public class RunLoadoutTest
 		}
 		assertTrue("this scenario wants several tree patches", count >= 2);
 		return count;
+	}
+
+	/** Readies a chosen number of tree patches, for a want that has to land on an exact figure. */
+	private void readyTreePatches(int count)
+	{
+		int ready = 0;
+		for (FarmPatch patch : FarmingWorldData.getPatches(PatchImplementation.TREE))
+		{
+			ProduceState decoded = patch.getImplementation().forVarbitValue(0);
+			assertNotNull(decoded);
+			patches.recordVarbit(patch, 0, decoded);
+			availability.setAvailable(patch, true);
+			if (++ready == count)
+			{
+				return;
+			}
+		}
+		throw new AssertionError("fewer than " + count + " tree patches in the world data");
 	}
 
 	// ------------------------------------------------------------------- helpers
@@ -2959,6 +3283,31 @@ public class RunLoadoutTest
 	{
 		seeds.record(com.dooglemaps.state.SeedSource.SEED_VAULT.getContainerId(),
 			containerOf(seed.getItemID(), quantity));
+	}
+
+	/**
+	 * The plantable form sitting in the bank: a sapling already potted, rather than the seed
+	 * {@link #seedsInBank} stocks.
+	 */
+	private void saplingsInBank(Seed seed, int quantity)
+	{
+		bankHolds(seed.getPlantedItemID(), quantity);
+		seeds.record(com.dooglemaps.state.SeedSource.BANK.getContainerId(),
+			containerOf(seed.getPlantedItemID(), quantity));
+	}
+
+	/** The plantable form in the vault. See {@link #seedsInVault} on why this skips BankContents. */
+	private void saplingsInVault(Seed seed, int quantity)
+	{
+		seeds.record(com.dooglemaps.state.SeedSource.SEED_VAULT.getContainerId(),
+			containerOf(seed.getPlantedItemID(), quantity));
+	}
+
+	/** Seeds sitting in the seed box, which count against the click the same as the pack does. */
+	private void seedsInBox(Seed seed, int quantity)
+	{
+		seeds.record(com.dooglemaps.state.SeedSource.SEED_BOX.getContainerId(),
+			quantity <= 0 ? containerOf() : containerOf(seed.getItemID(), quantity));
 	}
 
 	private void bankHolds(int itemId, int quantity)

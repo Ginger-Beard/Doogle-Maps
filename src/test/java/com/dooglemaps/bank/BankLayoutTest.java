@@ -109,12 +109,17 @@ public class BankLayoutTest
 	 * <p>A loadout item is the planted sapling; what sits in the bank is the seed. Laying out the
 	 * sapling id would reserve a slot for something you do not have and leave the seed you do have
 	 * to fall out of the grid entirely.
+	 *
+	 * <p>The row here still needs potting ({@code seedsToPot} > 0), which is what makes the seed
+	 * form worth fetching at all — see {@code RunLoadout.formsToFetch}. A row whose saplings
+	 * already cover the want asks for the sapling alone; that case is
+	 * {@code aSaplingRowAlreadyCoveredDoesNotAlsoLayOutTheSeed}, below.
 	 */
 	@Test
 	public void aTreeCropIsLaidOutAsWhicheverFormIsBanked()
 	{
 		List<LoadoutItem> run = new ArrayList<>();
-		run.add(item(Seed.MAGIC.getPlantedItemID(), LoadoutItem.Category.SEED));
+		run.add(seedStillNeedingPotting(Seed.MAGIC.getPlantedItemID(), 1));
 
 		int[] seedOnly = BankLayout.build(run, BankLayout.DEFAULT_MAP,
 			new LinkedHashSet<>(Arrays.asList(Seed.MAGIC.getItemID())));
@@ -127,6 +132,29 @@ public class BankLayoutTest
 		assertEquals("both, when you have potted some already - the form the loadout names first",
 			Seed.MAGIC.getPlantedItemID(), both[at('E', 1)]);
 		assertEquals(Seed.MAGIC.getItemID(), both[at('F', 1)]);
+	}
+
+	/**
+	 * A sapling row whose saplings already cover the want lays out the sapling alone - the seed
+	 * form is clutter once there is nothing left to pot, even when the bank has one too.
+	 *
+	 * <p>Reported from play: papaya seeds outlined, counted and their vault tab lit while 59
+	 * saplings sat in the vault covering a want of four. {@code seedsToPot} at zero is what a
+	 * fully-covered row looks like; see {@code RunLoadout.formsToFetch}.
+	 */
+	@Test
+	public void aSaplingRowAlreadyCoveredDoesNotAlsoLayOutTheSeed()
+	{
+		List<LoadoutItem> run = new ArrayList<>();
+		run.add(seedStillNeedingPotting(Seed.MAGIC.getPlantedItemID(), 0));
+
+		int[] both = BankLayout.build(run, BankLayout.DEFAULT_MAP,
+			new LinkedHashSet<>(Arrays.asList(Seed.MAGIC.getItemID(),
+				Seed.MAGIC.getPlantedItemID())));
+		assertEquals("the sapling still takes its slot", Seed.MAGIC.getPlantedItemID(),
+			both[at('E', 1)]);
+		assertEquals("nothing left to pot, so the seed is not laid out too",
+			-1, both[at('F', 1)]);
 	}
 
 	/** Editing the map moves things, which is the point of it being a setting. */
@@ -488,5 +516,12 @@ public class BankLayoutTest
 	{
 		return new LoadoutItem(itemId, "item " + itemId, category, LoadoutItem.Need.WITHDRAW, 1,
 			"because");
+	}
+
+	/** A seed row carrying an explicit potting shortfall, for the tree-crop fixtures above. */
+	private static LoadoutItem seedStillNeedingPotting(int itemId, int seedsToPot)
+	{
+		return new LoadoutItem(itemId, "item " + itemId, LoadoutItem.Category.SEED,
+			LoadoutItem.Need.WITHDRAW, 1, 1, "because", LoadoutItem.From.BANK, seedsToPot);
 	}
 }

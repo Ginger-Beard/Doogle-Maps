@@ -238,10 +238,12 @@ public final class BankLayout
 	 * the whole loadout showed a dulled item for every seed the run wanted and you did not own,
 	 * indistinguishable at a glance from one you did. See {@code BankFilter.saveLayout}.
 	 *
-	 * <p>Every {@link RunLoadout#bankFormsOf bank form} is considered, not just the id the loadout
-	 * names: a loadout item is the planted form, and for a tree crop what is sitting in the bank is
-	 * the seed. Both are placed when you hold both, because at that point you genuinely have two
-	 * items and hiding either would be the same lie in the other direction.
+	 * <p>Every {@link RunLoadout#formsToFetch fetchable form} is considered, not just the id the
+	 * loadout names: a loadout item is the planted form, and for a tree crop what is sitting in
+	 * the bank is the seed. Both are placed when you hold both AND the row is actually fetching
+	 * some of it as seed — a laid-out seed slot the filter and highlight now ignore, because the
+	 * saplings cover the want, would be clutter rather than a second genuine item. That reasoning
+	 * predates the row knowing what it fetches; it used to place both forms outright.
 	 *
 	 * @param banked every item id the bank holds, or null to place everything regardless
 	 */
@@ -452,7 +454,7 @@ public final class BankLayout
 				continue;
 			}
 
-			for (int form : RunLoadout.bankFormsOf(item.getItemId()))
+			for (int form : RunLoadout.formsToFetch(item))
 			{
 				if (banked.contains(form))
 				{

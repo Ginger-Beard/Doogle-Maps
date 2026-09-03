@@ -139,6 +139,36 @@ public class SeedVaultCategoryTest
 			BankHighlightOverlay.categoriesHolding(headers, items, setOf(5318)));
 	}
 
+	/**
+	 * A want covered by saplings derives the sapling id alone, and a seed of the same crop sitting
+	 * in the vault under its own header must not light that section just because it is there.
+	 *
+	 * <p>Reported from play: papaya seeds outlined, counted and their vault tab lit while 59
+	 * saplings sat in the vault covering a want of four. {@code RunLoadout.formsToFetch} is what
+	 * derives the marked set now, and it withholds the seed form once the row's own potting
+	 * shortfall is zero. This pins the other half: {@code categoriesHolding} honours whatever set
+	 * it is handed rather than re-deriving one of its own, so a seed sitting under "Fruit Trees"
+	 * stays unmarked exactly when it was never in the wanted set to begin with.
+	 */
+	@Test
+	public void aWantCoveredBySaplingsDoesNotLightTheSeedsOwnSection()
+	{
+		int saplingId = 22929;
+		int seedId = 5284;
+
+		Widget headers = list(text("Fruit Trees", 0));
+		// The seed itself, sitting under Fruit Trees - but the saplings already in stock mean
+		// the row never asked for this form, so it is not in the wanted set below.
+		Widget items = list(item(seedId, 10));
+
+		Set<String> wanted = BankHighlightOverlay.categoriesHolding(
+			headers, items, setOf(saplingId));
+
+		assertTrue("the seed sitting there is not the thing that is wanted, so the section "
+				+ "stays dark",
+			wanted.isEmpty());
+	}
+
 	// ------------------------------------------------------------------ helpers
 
 	private static Set<Integer> setOf(int... ids)

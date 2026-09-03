@@ -166,6 +166,17 @@ they are already separate numbers.
 entry order is recomputed as fast as the menu is opened. The staleness risk is entirely in the
 count, not in the hook.
 
+**A seed row is the one exception, and it is sized from the row's own `outstanding` rather than
+re-derived here.** Every other category sizes as above — the loadout's wanted total, less what
+`CarriedItems` reads live. A seed row's `outstanding` already accounts for both forms of the crop
+(the seed and, for a tree, the sapling it becomes) and the seed box as well as the pack — see
+`SeedInventoryStore.getCount` — which is arithmetic this class has no live equivalent for. Reading
+it straight off the row stayed just as live rather than going stale: `RunLoadout.forRun`'s cache is
+dropped on the very same `ItemContainerChanged` that updates `CarriedItems`, so a row rebuilt this
+tick is exactly as current as the pack is. Reported from play as a withdraw-5 offered for a want of
+four: the player carried two un-potted seeds, which lowered the row's own count to four but not
+this class's re-derivation against the sapling id and the inventory alone, which stayed at six.
+
 ## 9. Settled details
 
 All four decided with the owner, 2026-08-18. Kept as a section rather than folded away because
@@ -275,6 +286,8 @@ it is observable in a single run.
   rather than merely intended, which is the reason that rule is worth its extra clicks.
 - **The count must be live, not tick-cached** (§8). A stale count does not merely mis-swap, it
   over-withdraws — the failure this feature exists to prevent.
+- **A sapling row's click never exceeds the row's outstanding** — the pack may hold the crop as
+  an un-potted seed or in the seed box. §8.
 - **Runs last of every `PostMenuSort` subscriber.** `GuideMenuSwap` already takes
   `@Subscribe(priority = -1f)` for this reason: core's own swapper runs first, and anything
   reordering after it wins.
