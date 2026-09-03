@@ -498,8 +498,95 @@ public class GuideTracker
 		{
 			lines.add("Deposit your logs and produce - the pack is full");
 		}
-		lines.addAll(com.dooglemaps.bank.LoadoutSummary.forItems(loadout.forRun(covered)));
+		java.util.List<com.dooglemaps.bank.LoadoutItem> rows = loadout.forRun(covered);
+		lines.addAll(com.dooglemaps.bank.LoadoutSummary.forItems(rows));
+		if (lines.isEmpty())
+		{
+			String state = nothingToFetch(rows);
+			if (state != null)
+			{
+				lines.add(state);
+			}
+		}
 		return lines;
+	}
+
+	/**
+	 * Why a supply leg has nothing under its heading, when it has a list to be silent about.
+	 *
+	 * <h2>Three unlike states rendered as one sentence</h2>
+	 *
+	 * An empty summary used to fall through to the panel's own fallback, <i>"nothing is picked
+	 * for this run yet"</i>. That is one of the three things it can mean and the least common:
+	 *
+	 * <ul>
+	 *   <li><b>Nothing picked.</b> No types, so no list at all — the fallback's own case, left
+	 *       to the panel by returning null here.</li>
+	 *   <li><b>The bank has not been read.</b> Every row the pack cannot answer for is
+	 *       {@code UNKNOWN}, because a bank is only readable while it is open, and the summary
+	 *       deliberately says nothing rather than reporting a bank it has not seen as empty.
+	 *       The leg is right to hold — that is what the two clauses in {@code
+	 *       RunPlanner.suppliesOutstanding} in front of the loadout are for — but the reason is
+	 *       "open it and I will tell you", not "you have picked nothing".</li>
+	 *   <li><b>You already have it all.</b> Every row reads {@code HAVE} or {@code
+	 *       AT_LEPRECHAUN}, which is the ordinary end of a supply leg and the one state the old
+	 *       sentence was most insulting about. Reported from play, standing at the guild with a
+	 *       pack full of saplings, told nothing was picked.</li>
+	 * </ul>
+	 *
+	 * <h2>Nothing here tells the player to do something that will not work</h2>
+	 *
+	 * <b>Not</b> "open and close the bank to set off", tempting as it reads. {@code leaveBank} is
+	 * asked every tick by the plugin whether or not a bank is open, so a leg with nothing
+	 * outstanding has already ended by the time anyone reads a line about it. If the leg is still
+	 * being drawn with an empty list, something the loadout cannot see is holding it, and opening
+	 * the bank would not clear that — so the line names what is being waited on and points at the
+	 * way past it instead.
+	 *
+	 * <p>The case this was written for is fixed: {@code RunPlanner.seedsWantedFor} used to
+	 * allocate with {@code ProtectionBudget.NONE} where the loadout allocated with the real one,
+	 * so it could want a seed no row named and the leg could never end. The two share a budget
+	 * now. The line stays as the tripwire for the next such divergence, which is worth being told
+	 * about rather than left to look like a stall.
+	 *
+	 * @return the line to draw, or null to leave the panel's fallback to it
+	 */
+	@javax.annotation.Nullable
+	private String nothingToFetch(java.util.List<com.dooglemaps.bank.LoadoutItem> rows)
+	{
+		if (rows.isEmpty())
+		{
+			return null;
+		}
+
+		for (com.dooglemaps.bank.LoadoutItem row : rows)
+		{
+			if (row.getNeed() == com.dooglemaps.bank.LoadoutItem.Need.UNKNOWN)
+			{
+				return "Open the bank - the run cannot tell what you are missing "
+					+ "until it has read one.";
+			}
+		}
+
+		String waiting = waitingOn();
+		return waiting == null
+			? "You have everything for this run."
+			: "Nothing left on the list, but the run is still waiting on " + waiting
+				+ " - press Skip step if you are ready to go.";
+	}
+
+	/** The container the planner is still holding the leg for, named, or null if none is. */
+	@javax.annotation.Nullable
+	private String waitingOn()
+	{
+		java.util.Set<com.dooglemaps.state.SeedSource> sources = planner.getSupplySources();
+		boolean bank = sources.contains(com.dooglemaps.state.SeedSource.BANK);
+		boolean vault = sources.contains(com.dooglemaps.state.SeedSource.SEED_VAULT);
+		if (bank && vault)
+		{
+			return "the bank and the seed vault";
+		}
+		return bank ? "the bank" : vault ? "the seed vault" : null;
 	}
 
 	/**

@@ -207,7 +207,9 @@ public class ToolNeeds
 		// trowel in order to treat the soil before planting". The loadout already banks the
 		// saltpetre; without the trowel it is twelve patches' worth of fertiliser and no way
 		// to apply it. (The trowel's other use, potting saplings, happens at a bank rather
-		// than at a patch, so it is deliberately not asked for by the tree families.)
+		// than at a patch, so the tree families do not ask for it here — RunLoadout's
+		// addPottingTrowel does, on the different question of whether anything is being
+		// potted, and with the bank rather than the leprechaun as the place to get it.)
 		if (ground.contains(PatchImplementation.GRAPES))
 		{
 			tools.add(FarmingTool.GARDENING_TROWEL);

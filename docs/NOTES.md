@@ -501,6 +501,15 @@ is consequently one honest row per crop rather than a grid of possibilities.
 Not modelled: attas on the level-roll crops (limpwurt, belladonna), and the coral exception —
 the Farmer's outfit does not boost coral experience without a medallion of the deep.
 
+**The hespori is where a real bonus is deliberately not offered.** The outfit does reach its
+harvest — 12,600 experience becomes 12,915 with the full set — so the row the bank list used to
+show was defensible on the wiki's own numbers. It is gone anyway, along with the secateurs, the
+cape and the seed box, for a trip whose whole point is that the player loads their own combat
+setup and fights a boss: 315 experience is not a reason to spend four equipment slots on a straw
+hat. `RunLoadout.fightsRatherThanFarms` is the one place that decides it, and it means the
+hespori **alone** — a run that also farms gets every one of those rows back for the legs that
+farm.
+
 
 ---
 

@@ -78,6 +78,9 @@ public class RunLoadoutTest
 	/** Stubbed per test where the bin run's fill or ash choice matters. */
 	private com.dooglemaps.state.CompostRunStore compostRun;
 
+	/** The planner the loadout is built on, for the tests that ask where a run would go. */
+	private RunPlanner planner;
+
 	/** The planner's own run-options mock, so a test can tick the compost line for routing. */
 	private com.dooglemaps.state.RunTypeStore plannerRunOptions;
 
@@ -131,7 +134,15 @@ public class RunLoadoutTest
 		// Hoisted above the planner, which now reads the fodder toggle too - the loadout and
 		// the planner have to agree about the bins, so they share one mock rather than two.
 		compostRun = Mockito.mock(com.dooglemaps.state.CompostRunStore.class);
-		RunPlanner planner = construct(RunPlanner.class, availability,
+		// Hoisted above the planner for the same reason, and it matters more here: the planner
+		// caps a protected crop by the payments in these two exactly as the loadout does, and
+		// the whole point of that is that the two reach the same allocation. Two separate
+		// fixtures would let them disagree in the test and agree nowhere else.
+		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
+		bank = construct(BankContents.class, configManager, gson);
+		protection = construct(com.dooglemaps.state.ProtectionSelectionStore.class,
+			configManager, gson);
+		RunPlanner planner = this.planner = construct(RunPlanner.class, availability,
 			construct(PatchLocationStore.class, configManager, gson),
 			construct(BankLocationStore.class, configManager, gson),
 			selection, seeds, patches, construct(GrowthTimer.class, configManager),
@@ -140,13 +151,11 @@ public class RunLoadoutTest
 			playerLocation, Mockito.mock(ToolNeeds.class),
 			Mockito.mock(com.dooglemaps.state.ProtectedPatches.class),
 			groups = Mockito.mock(com.dooglemaps.state.PlantingGroups.class),
-			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
+			protection,
 			plannerRunOptions = Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
 			compostRun,
-			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class));
-
-		carried = construct(CarriedItems.class, Mockito.mock(net.runelite.api.Client.class));
-		bank = construct(BankContents.class, configManager, gson);
+			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class),
+			bank, carried);
 
 		net.runelite.api.Client leprechaunClient = Mockito.mock(net.runelite.api.Client.class);
 		when(leprechaunClient.getGameState()).thenReturn(net.runelite.api.GameState.LOGGED_IN);
@@ -163,8 +172,6 @@ public class RunLoadoutTest
 			construct(com.dooglemaps.state.BarbarianFarming.class, configManager,
 				Mockito.mock(com.dooglemaps.DoogleMapsConfig.class)),
 			availability, patches);
-		protection = construct(com.dooglemaps.state.ProtectionSelectionStore.class,
-			configManager, gson);
 		// A real teleport list would need item names, which only the client can supply, so the
 		// name cache is stubbed from a map the tests can write to. Empty by default: most of
 		// these are about the rest of the loadout, where the region table answers alone.
@@ -1405,14 +1412,184 @@ public class RunLoadoutTest
 		assertEquals(LoadoutItem.Need.WITHDRAW, trowel.getNeed());
 	}
 
-	/** ...and no other family asks for one: potting a sapling happens at a bank. */
+	/** ...and a tree run with its saplings already made asks for none: nothing is being potted. */
 	@Test
-	public void aTreeRunDoesNotAskForTheTrowel()
+	public void aTreeRunWithNothingToPotDoesNotAskForTheTrowel()
 	{
 		readyPatchOf(PatchImplementation.TREE);
+		selection.toggle(Seed.MAPLE);
+		saplingsInInventory(Seed.MAPLE, 10);
 		bankHolds(ItemID.GARDENING_TROWEL, 1);
 
-		assertNull(itemNamed(EnumSet.of(PatchImplementation.TREE), "Gardening trowel"));
+		assertNull("the saplings are made; there is nothing to sow into a pot",
+			itemNamed(EnumSet.of(PatchImplementation.TREE), "Gardening trowel"));
+	}
+
+	/**
+	 * A tree run that still has to make its saplings asks for the trowel.
+	 *
+	 * <p>Reported from play. The pot row's wording had the trowel as an aside about filling an
+	 * empty pot, which reads as nothing at all to anyone whose pots are already filled. It is
+	 * not an aside: the trowel has to be in the inventory to sow the seed into the pot at all —
+	 * "using it on a plant pot while a gardening trowel is in the inventory" is the wiki's
+	 * wording for every tree seed — so a player with filled pots, a watering can and no trowel
+	 * was told they had everything and could pot nothing.
+	 */
+	@Test
+	public void aTreeRunThatHasToPotAsksForTheTrowel()
+	{
+		readyPatchOf(PatchImplementation.TREE);
+		selection.toggle(Seed.MAPLE);
+		// Seeds, not saplings: this is the run that has potting to do.
+		seedsInBank(Seed.MAPLE, 10);
+		bankHolds(net.runelite.api.gameval.ItemID.PLANTPOT_COMPOST, 10);
+		bankHolds(ItemID.GARDENING_TROWEL, 1);
+
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		assertNotNull("the pot is asked for", itemNamed(trees, "Filled plant pot"));
+
+		LoadoutItem trowel = itemNamed(trees, "Gardening trowel");
+		assertNotNull("no trowel, no sapling", trowel);
+		assertEquals(LoadoutItem.Need.WITHDRAW, trowel.getNeed());
+	}
+
+	/** Carrying one is the end of it, and the row says so rather than nagging. */
+	@Test
+	public void aCarriedTrowelIsCheckedOffRatherThanWithdrawn()
+	{
+		readyPatchOf(PatchImplementation.TREE);
+		selection.toggle(Seed.MAPLE);
+		seedsInBank(Seed.MAPLE, 10);
+		carrying(ItemID.GARDENING_TROWEL, 1);
+
+		LoadoutItem trowel = itemNamed(EnumSet.of(PatchImplementation.TREE), "Gardening trowel");
+		assertNotNull(trowel);
+		assertEquals(LoadoutItem.Need.HAVE, trowel.getNeed());
+	}
+
+	/**
+	 * The leprechaun's is the fallback, not the answer, because the potting happens here.
+	 *
+	 * <p>His store is at the patch and the potting is at the bank — a potted seed wants five
+	 * minutes to become a sapling, and the travel is what pays for the wait. So a trowel only
+	 * he is holding still gets a row, saying what it costs: the potting waits for the first
+	 * patch.
+	 */
+	@Test
+	public void aTrowelOnlyTheLeprechaunHasSaysThePottingWaits()
+	{
+		readyPatchOf(PatchImplementation.TREE);
+		selection.toggle(Seed.MAPLE);
+		seedsInBank(Seed.MAPLE, 10);
+		leprechaunHolds(FarmingTool.GARDENING_TROWEL, 1);
+
+		LoadoutItem trowel = itemNamed(EnumSet.of(PatchImplementation.TREE), "Gardening trowel");
+		assertNotNull(trowel);
+		assertEquals(LoadoutItem.Need.AT_LEPRECHAUN, trowel.getNeed());
+		assertTrue(trowel.getReason(),
+			trowel.getReason().toLowerCase().contains("first patch"));
+	}
+
+	/**
+	 * A picked, protected crop's payment counts even on a trip that plants none of it.
+	 *
+	 * <p>Reported from play: twenty-five coconuts marked <i>finished crops - deposit them</i> at
+	 * the bank they had just been withdrawn from. The coconut is the magic tree's protection and
+	 * the palm's harvest at once, and the deposit marks keep only what the payment rows name — so
+	 * a trip whose allocation found no magic patch left the harvest half to speak for it.
+	 */
+	@Test
+	public void aPickedProtectedCropsPaymentIsNeverJustHarvest()
+	{
+		readyPatchOf(PatchImplementation.TREE);
+		selection.toggle(Seed.MAGIC);
+		protection.setProtecting(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE), Seed.MAGIC, true);
+
+		// Owned nowhere, so the allocation cannot give it a patch and no payment row is built.
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		assertNull("no magic to plant, so nothing on the shopping list",
+			itemNamed(trees, "Coconut"));
+
+		assertTrue("the coconuts are still the run's currency, not spare harvest",
+			loadout.paymentsForSelectedSeeds(trees).contains(ItemID.COCONUT));
+	}
+
+	/** A crop the player has turned protection off for keeps nothing back. */
+	@Test
+	public void anUnprotectedCropsPaymentIsNotKept()
+	{
+		readyPatchOf(PatchImplementation.TREE);
+		selection.toggle(Seed.MAGIC);
+		protection.setProtecting(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE), Seed.MAGIC, false);
+
+		assertFalse("protection off means the coconuts are just coconuts",
+			loadout.paymentsForSelectedSeeds(EnumSet.of(PatchImplementation.TREE))
+				.contains(ItemID.COCONUT));
+	}
+
+	/**
+	 * The planner and the loadout allocate the same run, so a leg cannot hold for a phantom.
+	 *
+	 * <h2>The reported run</h2>
+	 *
+	 * A tree and hardwood trip parked at the Farming Guild: every sapling already in the pack,
+	 * an empty withdraw list, and the route still pointed at the seed vault. The planner's copy
+	 * of the allocation ran with {@code ProtectionBudget.NONE}, so a protected crop the player
+	 * could not pay for drew patches there and none in the loadout's — and the leg's exit
+	 * condition is "nothing outstanding", which a seed that was never on the list can never
+	 * clear.
+	 *
+	 * <p>Magic is the unaffordable one here: picked, protected, and not a coconut anywhere. It
+	 * ranks above maple, so an unbudgeted allocation plants it and sends the run to the vault
+	 * holding it. Budgeted, maple takes every patch and they are all in the pack already.
+	 */
+	@Test
+	public void theSupplyLegDoesNotHoldForACropThePaymentsCannotAfford()
+	{
+		int patches = readyAllTreePatches();
+		selection.toggle(Seed.MAGIC);
+		selection.toggle(Seed.MAPLE);
+		protection.setProtecting(
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE), Seed.MAGIC, true);
+
+		// The magic is in the vault, which is where the run used to be sent for it.
+		seeds.record(com.dooglemaps.state.SeedSource.SEED_VAULT.getContainerId(),
+			containerOf(Seed.MAGIC.getPlantedItemID(), 5));
+		// The maple is already on the player, so a budgeted plan has nothing to collect.
+		saplingsInInventory(Seed.MAPLE, patches);
+
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		assertTrue("the loadout has nothing to fetch",
+			com.dooglemaps.bank.LoadoutSummary.forItems(loadout.forRun(trees)).isEmpty());
+
+		planner.start(trees);
+		assertTrue("so the planner must not be waiting on a container either",
+			planner.getSupplySources().isEmpty());
+	}
+
+	/** The vinery and the potting both want one, and one row is what a player can act on. */
+	@Test
+	public void aVineryAndTreeRunListsTheTrowelOnce()
+	{
+		readyPatchOf(PatchImplementation.GRAPES);
+		readyPatchOf(PatchImplementation.TREE);
+		selection.toggle(Seed.MAPLE);
+		seedsInBank(Seed.MAPLE, 10);
+		bankHolds(ItemID.GARDENING_TROWEL, 1);
+
+		Set<PatchImplementation> both =
+			EnumSet.of(PatchImplementation.GRAPES, PatchImplementation.TREE);
+		int rows = 0;
+		for (LoadoutItem item : loadout.forRun(both))
+		{
+			if (item.getItemId() == ItemID.GARDENING_TROWEL)
+			{
+				rows++;
+			}
+		}
+		assertEquals("one trowel, one row", 1, rows);
 	}
 
 	/**
@@ -2004,6 +2181,58 @@ public class RunLoadoutTest
 
 		assertNull("silence beats noise for something you do not own",
 			find(LoadoutItem.Category.GEAR, "Farmer's outfit"));
+	}
+
+	/**
+	 * The hespori's own trip is a boss fight, so it asks for none of the farm run's gear.
+	 *
+	 * <p>Reported from play: the gear leg told the player to load their combat setup and then, in
+	 * the same breath, to withdraw a farmer's outfit and a seed box for it. The outfit's 2.5% does
+	 * reach the harvest, which is why the row survived this long — 315 experience is still not a
+	 * reason to fight a boss in a straw hat.
+	 */
+	@Test
+	public void theHesporiTripAsksForNoOutfitAndNoSeedBox()
+	{
+		readyPatchOf(PatchImplementation.HESPORI);
+		bankTheWholeOutfit();
+		bankHolds(ItemID.SEED_BOX, 1);
+
+		Set<PatchImplementation> hespori = EnumSet.of(PatchImplementation.HESPORI);
+		// Anchored, or three absences would pass on an empty list and prove nothing.
+		assertFalse("the spade and the dibber are still asked for",
+			loadout.forRun(hespori).isEmpty());
+		assertNull("a boss fight is not dressed for experience",
+			itemNamed(hespori, "Farmer's outfit"));
+		assertNull("one seed does not want a box", itemNamed(hespori, "Seed box"));
+		assertNull("nothing on that drop table is a yield roll",
+			itemNamed(hespori, "Magic secateurs"));
+	}
+
+	/** A run with farming in it as well keeps every one of them, for the legs that farm. */
+	@Test
+	public void aRunWithMoreThanTheHesporiStillWantsTheOutfit()
+	{
+		readyPatchOf(PatchImplementation.HESPORI);
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		bankTheWholeOutfit();
+		bankHolds(ItemID.SEED_BOX, 1);
+
+		Set<PatchImplementation> mixed =
+			EnumSet.of(PatchImplementation.HESPORI, PatchImplementation.HERB);
+		assertNotNull("the swap-back leg is a farm run again",
+			itemNamed(mixed, "Farmer's outfit"));
+		assertNotNull(itemNamed(mixed, "Seed box"));
+		assertNotNull(itemNamed(mixed, "Magic secateurs"));
+	}
+
+	private void bankTheWholeOutfit()
+	{
+		for (FarmingOutfit piece : FarmingOutfit.values())
+		{
+			bankHolds(piece.getMaleItemId(), 1);
+		}
 	}
 
 	/**
@@ -2704,6 +2933,13 @@ public class RunLoadoutTest
 		List<LoadoutItem> rows = itemsIn(LoadoutItem.Category.SEED);
 		assertEquals("expected exactly one seed row", 1, rows.size());
 		return rows.get(0);
+	}
+
+	/** The plantable form in the pack: a tree run whose potting is already done. */
+	private void saplingsInInventory(Seed seed, int quantity)
+	{
+		seeds.record(com.dooglemaps.state.SeedSource.INVENTORY.getContainerId(),
+			containerOf(seed.getPlantedItemID(), quantity));
 	}
 
 	private void seedsInBank(Seed seed, int quantity)

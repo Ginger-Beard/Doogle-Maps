@@ -94,9 +94,17 @@ public class BankHighlightOverlay extends Overlay
 			loadoutItems = types.isEmpty()
 				? java.util.Collections.emptyList()
 				: loadout.forRun(types);
+			// Sampled on the same key for the same reason the list is: this walks the planner
+			// and the allocation, and render runs per frame rather than per tick.
+			selectedPayments = handoff.applies() || types.isEmpty()
+				? java.util.Collections.emptySet()
+				: loadout.paymentsForSelectedSeeds(types);
 		}
 		return loadoutItems;
 	}
+
+	/** The run's possible payments, sampled with the list above. See {@link #keepInPack}. */
+	private java.util.Set<Integer> selectedPayments = java.util.Collections.emptySet();
 
 	/** The route's own item, marked in cyan wherever it sits. See {@link RouteItem}. */
 	private final RouteItem routeItem;
@@ -314,6 +322,14 @@ public class BankHighlightOverlay extends Overlay
 				keep.add(item.getItemId());
 			}
 		}
+
+		// And the payments for crops that are picked and protected but drew no patch this
+		// trip, which have no row to be found on. See RunLoadout.paymentsForSelectedSeeds:
+		// the coconut is the magic tree's protection and the palm's harvest at once, and
+		// without this the harvest half wins and the run's own currency is marked for
+		// deposit. Reported from play. Sampled by the call above, which is why it is asked
+		// first.
+		keep.addAll(selectedPayments);
 
 		com.dooglemaps.data.Produce assigned = contracts.getContract();
 		if (assigned != null)

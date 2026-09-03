@@ -120,7 +120,9 @@ public class PanelRenderTest
 			Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
 			Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
 			Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
-			Mockito.mock(DoogleMapsConfig.class));
+			Mockito.mock(DoogleMapsConfig.class),
+			Mockito.mock(com.dooglemaps.bank.BankContents.class),
+			Mockito.mock(com.dooglemaps.guide.CarriedItems.class));
 
 		// A plain mock answers false for every boolean, which would switch off all 22 patch
 		// types and render an empty sidebar. In the client those come from the interface's

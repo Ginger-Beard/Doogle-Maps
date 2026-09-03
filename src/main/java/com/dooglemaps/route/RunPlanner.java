@@ -100,6 +100,16 @@ public class RunPlanner
 	private final PlantingGroups groups;
 	private final ProtectionSelectionStore protection;
 
+	/**
+	 * The bank and the pack, for one thing only: the payments a protected crop is capped by.
+	 *
+	 * <p>See {@link #seedsWantedFor}. Nothing else here reads them, and the two stores are
+	 * leaves — neither knows this class exists — so the direction is the same one
+	 * {@code ToolNeeds} already comes in from.
+	 */
+	private final com.dooglemaps.bank.BankContents bank;
+	private final com.dooglemaps.guide.CarriedItems carried;
+
 	/** The player's ticked run options, for the harvest-only filter. Named apart from the
 	 * planner's own {@code runTypes} field, which is the live run's patch types. */
 	private final RunTypeStore runOptions;
@@ -276,8 +286,12 @@ public class RunPlanner
 		PlayerLocation playerLocation, ToolNeeds tools, ProtectedPatches protectedPatches,
 		PlantingGroups groups, ProtectionSelectionStore protection, RunTypeStore runOptions,
 		com.dooglemaps.state.CompostRunStore compostRun,
-		com.dooglemaps.DoogleMapsConfig config)
+		com.dooglemaps.DoogleMapsConfig config,
+		com.dooglemaps.bank.BankContents bank,
+		com.dooglemaps.guide.CarriedItems carried)
 	{
+		this.bank = bank;
+		this.carried = carried;
 		this.compostRun = compostRun;
 		this.config = config;
 		this.runOptions = runOptions;
@@ -2597,6 +2611,32 @@ public class RunPlanner
 		return seedsWantedFor(EnumSet.of(PatchImplementation.HESPORI));
 	}
 
+	/**
+	 * The seeds this run will actually plant — the same answer {@code RunLoadout} banks for.
+	 *
+	 * <h2>It used to allocate with {@link ProtectionBudget#NONE}, and that parked runs at banks</h2>
+	 *
+	 * Two allocations decided one run. This one ran unbudgeted, so every picked crop competed on
+	 * rank alone; {@code RunLoadout.allocate} ran with the real budget — the payments in the bank
+	 * and the pack — so a protected crop the player cannot pay for drew patches here and none
+	 * there. The consequences all landed on the supply leg, which is built from this:
+	 *
+	 * <ul>
+	 *   <li>{@link #getSupplySources()} wanted a container for a seed the withdraw list never
+	 *       named, so the leg <b>never ended</b> — nothing to withdraw clears an item that was
+	 *       never on the list. Reported from play: a tree and hardwood run parked at the Farming
+	 *       Guild being routed to the seed vault for a yew, with an empty list and every sapling
+	 *       already in the pack.</li>
+	 *   <li>And the reverse, quietly: a crop the budget <i>does</i> afford could rank below one
+	 *       it does not, so the leg could finish believing it had collected for a plan the run
+	 *       was not going to follow.</li>
+	 * </ul>
+	 *
+	 * <p>So it is built the way the loadout builds it, from the same stores and in the same
+	 * order: the payment budget per group, and the {@code unspent} ledger booked between groups
+	 * so two groups cannot both plan to plant the same seeds. Anything less than both and the
+	 * copies drift again in a way only a live run shows.
+	 */
 	private Set<Seed> seedsWantedFor(Set<PatchImplementation> types)
 	{
 		if (types.isEmpty())
@@ -2605,23 +2645,46 @@ public class RunPlanner
 		}
 
 		Set<Seed> wanted = new LinkedHashSet<>();
+		// Stock left after the groups already served; see RunLoadout.addSeeds, which keeps the
+		// same ledger for the same reason.
+		Map<Seed, Integer> unspent = new java.util.HashMap<>();
+
 		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : actionableByGroup(types).entrySet())
 		{
-			if (entry.getValue().isEmpty() || plantsNothing(entry.getKey()))
+			PlantingGroup group = entry.getKey();
+			if (entry.getValue().isEmpty() || plantsNothing(group))
 			{
 				continue;
 			}
 
-			Set<Seed> picked = selection.getSelectedFor(entry.getKey());
+			Set<Seed> picked = selection.getSelectedFor(group);
 			Map<Seed, Integer> owned = new java.util.HashMap<>();
+			Map<Integer, Integer> payments = new java.util.HashMap<>();
 			for (Seed seed : picked)
 			{
-				owned.put(seed, seedInventory.getOwned(seed));
+				owned.put(seed, Math.max(0,
+					seedInventory.getOwned(seed) + unspent.getOrDefault(seed, 0)));
+
+				com.dooglemaps.data.ProtectionPayment payment =
+					com.dooglemaps.data.ProtectionPayment.forSeed(seed);
+				if (payment != null && protection.isProtecting(group, seed))
+				{
+					// Counted noted as well, because that is how anyone carries thirty of
+					// them and the gardener takes the note either way.
+					payments.put(payment.getItemID(),
+						bank.getCount(payment.getItemID())
+							+ carried.getCountIncludingNoted(payment.getItemID()));
+				}
 			}
 
-			wanted.addAll(SeedAllocation.forPatches(entry.getValue(), picked, owned,
-				seedInventory.getFarmingLevel(), ProtectionBudget.NONE)
-				.counts().keySet());
+			Map<Seed, Integer> share = SeedAllocation.forPatches(entry.getValue(), picked, owned,
+				seedInventory.getFarmingLevel(),
+				new ProtectionBudget(payments, seed -> protection.isProtecting(group, seed)))
+				.counts();
+
+			share.forEach((seed, patches) ->
+				unspent.merge(seed, -patches * seed.getSeedsPerPatch(), Integer::sum));
+			wanted.addAll(share.keySet());
 		}
 		return wanted;
 	}

@@ -144,6 +144,23 @@ each so a wrong result points somewhere.
 
 ## Actionable without the client
 
+- ~~**Two allocations, one run — the supply leg can hold for a seed no row names.**~~ **Fixed
+  2026-09-03.** Found from a tree and hardwood run parked at the Farming Guild with an empty
+  withdraw list and the panel claiming nothing was picked. `RunPlanner.seedsWantedFor` ran
+  `SeedAllocation.forPatches` with **`ProtectionBudget.NONE`**, where `RunLoadout.allocate` ran
+  it with the real budget — bank plus pack, per payment. So a protected crop the payments could
+  not afford drew patches in the planner's copy and none in the loadout's, `getSupplySources`
+  kept naming a container the withdraw list never mentioned, and the leg's "nothing outstanding"
+  exit could never be reached by an item that was never on the list. Reported shape: magic and
+  yew both picked and protected for `TREE` with no cactus spines banked, 45 yew saplings in the
+  vault, and the route drawn to the vault for a yew nobody was asked to fetch. The planner now
+  builds the same budget from the same stores, in the same order, with the same `unspent` ledger
+  between groups — `BankContents` and `CarriedItems` are injected for that and nothing else.
+  Pinned by `RunLoadoutTest.theSupplyLegDoesNotHoldForACropThePaymentsCannotAfford`, which fails
+  against the old `NONE`. **`GuideTracker` still has a third copy of this allocation**; the
+  agreement between it and the loadout is pinned only by `AllocationAgreementTest`, which
+  compares `SeedAllocation` outputs rather than the wiring, so the same drift is still reachable
+  there. One shared allocator is the real answer.
 - **Per-file licence headers.** 8 of 93 files have one, and all 8 are generated files citing
   Abex. RuneLite core puts a BSD header on every file. Not confirmed to be a Hub *requirement*,
   and 85 new headers would bury real changes in a diff, so it wants doing right after a commit

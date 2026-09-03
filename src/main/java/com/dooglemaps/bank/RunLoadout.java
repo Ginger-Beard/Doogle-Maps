@@ -712,7 +712,7 @@ public class RunLoadout
 		addSaltpetre(items, types);
 		addCompostBinSupplies(items, types);
 		addTools(items, types);
-		addGear(items);
+		addGear(items, types);
 		addAxe(items, types);
 		addStorage(items, types);
 		addDivingGear(items, types);
@@ -858,10 +858,33 @@ public class RunLoadout
 		for (ToolNeeds.Requirement requirement : tools.forRun(types))
 		{
 			FarmingTool tool = requirement.getTool();
+			// Said once. The trowel is the only tool two parts of this class can both want —
+			// the vinery asks for it here to spread saltpetre, and the potting asks for it in
+			// addPottingTrowel — and the potting row is the stricter of the two, because it
+			// wants the trowel in hand at the bank rather than at a patch the leprechaun is
+			// standing beside. addSeeds runs first, so that row is already here to be kept.
+			if (alreadyListed(items, tool.getItemID()))
+			{
+				continue;
+			}
 			items.add(new LoadoutItem(tool.getItemID(), tool.getDisplayName(),
 				LoadoutItem.Category.TOOL, needFor(requirement.getSource()), 0,
 				toolReason(tool, requirement.getSource())));
 		}
+	}
+
+	/** Whether a tool of this id already has a row, whoever put it there. */
+	private static boolean alreadyListed(List<LoadoutItem> items, int itemId)
+	{
+		for (LoadoutItem item : items)
+		{
+			if (item.getItemId() == itemId
+				&& item.getCategory() == LoadoutItem.Category.TOOL)
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static LoadoutItem.Need needFor(ToolNeeds.Source source)
@@ -1063,7 +1086,7 @@ public class RunLoadout
 	};
 
 	/**
-	 * The pots and the can, for tree seeds that are still seeds.
+	 * The pots, the trowel and the can, for tree seeds that are still seeds.
 	 *
 	 * <p>A tree seed cannot go in the ground: it is sown into a filled plant pot, watered, and
 	 * becomes the sapling the patch actually takes a few minutes later. The seed's own row
@@ -1075,6 +1098,8 @@ public class RunLoadout
 	 */
 	private void addPottingSupplies(List<LoadoutItem> items, int pots)
 	{
+		addPottingTrowel(items, pots);
+
 		int carriedPots = carried.getCount(ItemID.PLANTPOT_COMPOST);
 		int held = bank.getCount(ItemID.PLANTPOT_COMPOST) + carriedPots;
 		items.add(new LoadoutItem(ItemID.PLANTPOT_COMPOST, "Filled plant pot",
@@ -1089,7 +1114,7 @@ public class RunLoadout
 			Math.max(0, Math.min(pots, held) - carriedPots),
 			"To pot " + pots + (pots == 1 ? " tree seed" : " tree seeds")
 				+ " into saplings - sow, water, and they are plantable in minutes. An empty "
-				+ "pot fills with a trowel at any soil",
+				+ "pot fills at any weeded patch, with the trowel below",
 			LoadoutItem.From.BANK));
 
 		Integer carriedCan = firstOwned(WATERING_CANS, carried::has);
@@ -1102,6 +1127,64 @@ public class RunLoadout
 				: bankedCan != null ? LoadoutItem.Need.WITHDRAW
 				: bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN,
 			0, "A freshly potted sapling has to be watered before it starts growing"));
+	}
+
+	/**
+	 * The trowel, without which none of the potting above can happen at all.
+	 *
+	 * <h2>It is not only for filling the pot</h2>
+	 *
+	 * The pot row's wording had it as an aside — <i>an empty pot fills with a trowel</i> — which
+	 * reads as an errand for anyone who buys their pots empty and as nothing at all for anyone
+	 * who buys them filled. It is neither. The trowel has to be <b>in the inventory to sow the
+	 * seed into the pot</b>, filled or not: the wiki's own wording for every tree seed is "using
+	 * it on a plant pot while a gardening trowel is in the inventory". So a player with a stack
+	 * of filled pots, a watering can and no trowel was told they had everything and could pot
+	 * nothing. Reported from play.
+	 *
+	 * <h2>The bank, not the leprechaun, even though he stores a hundred</h2>
+	 *
+	 * {@code addTools} would offer this as {@code AT_LEPRECHAUN} and be right for the vinery,
+	 * where the trowel is used standing at the patch. The potting is the other case: it happens
+	 * at the <b>bank</b>, before you set off, because a potted seed wants five minutes to become
+	 * a sapling and the travel is what pays for the wait — see {@code LoadoutSummary}. A trowel
+	 * in a store you have not reached yet cannot do that, so the bank wins here and his store is
+	 * only the fallback, said in the tooltip as what it costs you: the potting moves to the
+	 * first patch.
+	 */
+	private void addPottingTrowel(List<LoadoutItem> items, int pots)
+	{
+		String reason = "In the inventory to sow " + (pots == 1 ? "the seed" : "the seeds")
+			+ " into their pots, and again to fill an empty pot at a weeded patch";
+
+		if (carried.has(ItemID.GARDENING_TROWEL))
+		{
+			items.add(new LoadoutItem(ItemID.GARDENING_TROWEL, "Gardening trowel",
+				LoadoutItem.Category.TOOL, LoadoutItem.Need.HAVE, 0, reason));
+			return;
+		}
+
+		if (bank.has(ItemID.GARDENING_TROWEL))
+		{
+			items.add(new LoadoutItem(ItemID.GARDENING_TROWEL, "Gardening trowel",
+				LoadoutItem.Category.TOOL, LoadoutItem.Need.WITHDRAW, 0, reason));
+			return;
+		}
+
+		if (leprechaun.has(FarmingTool.GARDENING_TROWEL))
+		{
+			items.add(new LoadoutItem(ItemID.GARDENING_TROWEL, "Gardening trowel",
+				LoadoutItem.Category.TOOL, LoadoutItem.Need.AT_LEPRECHAUN, 0,
+				reason + " - the leprechaun is holding yours, so the potting waits until "
+					+ "the first patch rather than happening here"));
+			return;
+		}
+
+		items.add(new LoadoutItem(ItemID.GARDENING_TROWEL, "Gardening trowel",
+			LoadoutItem.Category.TOOL,
+			bank.hasBeenSeen() ? LoadoutItem.Need.MISSING : LoadoutItem.Need.UNKNOWN, 0,
+			reason + " - you do not have one anywhere. A farming shop sells one for a few "
+				+ "coins; there is one beside most patch areas"));
 	}
 
 	private static Integer firstOwned(int[] itemIds, java.util.function.IntPredicate owned)
@@ -1426,6 +1509,54 @@ public class RunLoadout
 						+ " - noted is fine; the gardener takes the note",
 				LoadoutItem.From.BANK));
 		}
+	}
+
+	/**
+	 * Every payment the run's <b>choices</b> could call for, funded this trip or not.
+	 *
+	 * <h2>Wider than the payment rows, and that is the point</h2>
+	 *
+	 * {@link #addPayments} lists what this trip's allocation actually spends, which is right for
+	 * a shopping list and wrong for the opposite question — <i>may I put this in the bank?</i>.
+	 * The allocation caps a protected crop at what its payment affords and at what you own, so a
+	 * crop can be picked, protected, and still draw no patch on a given trip. Its payment is then
+	 * on no row at all, and the deposit marks — which keep only what the rows name — read a
+	 * carefully assembled stack as spare harvest.
+	 *
+	 * <p>The reported case: a tree run carrying twenty-five coconuts, marked <i>finished crops -
+	 * deposit them</i> at the bank they had just been withdrawn from. Coconuts are two things at
+	 * once — the palm's harvest and the magic tree's protection — and with no magic patch
+	 * allocated that trip, only the harvest half was left to see them by.
+	 *
+	 * <p>So the answer is the selection rather than the allocation: a payment for a crop you have
+	 * picked and chosen to protect is the run's currency whatever this particular trip does with
+	 * it. Being wrong in this direction costs an inventory slot; being wrong the other way costs
+	 * the patch the payment was for.
+	 */
+	public Set<Integer> paymentsForSelectedSeeds(Set<PatchImplementation> types)
+	{
+		Set<Integer> ids = new LinkedHashSet<>();
+		if (types.isEmpty())
+		{
+			return ids;
+		}
+
+		for (PlantingGroup group : planner.countActionableByGroup(types).keySet())
+		{
+			if (plantsNothing(group))
+			{
+				continue;
+			}
+			for (Seed seed : selection.getSelectedFor(group))
+			{
+				ProtectionPayment payment = ProtectionPayment.forSeed(seed);
+				if (payment != null && protection.isProtecting(group, seed))
+				{
+					ids.add(payment.getItemID());
+				}
+			}
+		}
+		return ids;
 	}
 
 	/**
@@ -1836,14 +1967,46 @@ public class RunLoadout
 	}
 
 	/**
+	 * Whether this trip is the hespori and nothing else, so it is fought rather than farmed.
+	 *
+	 * <h2>The player's own setup owns the pack on that trip</h2>
+	 *
+	 * The hespori is a boss in a cave, and the leg that precedes it says so: deposit everything,
+	 * load your own combat loadout, and take what the cave cannot be replanted without — the
+	 * spade, the seed and the dibber. Anything this class adds on top is the plugin arguing with
+	 * a loadout the player built for the fight, over slots that are about to hold food.
+	 *
+	 * <p><b>The outfit is not useless here, and that is the point.</b> Its 2.5% does apply to the
+	 * harvest — 12,600 experience becomes 12,915 — so the row was not a bug in the arithmetic
+	 * sense, and a future reader checking the wiki will find it defensible. It goes anyway,
+	 * because 315 experience is not a reason to fight a boss in a straw hat, and the same holds
+	 * for the secateurs and the cape: neither touches a drop table. The seed box goes with them,
+	 * for a trip that plants exactly one seed. Reported from play.
+	 *
+	 * <p>Exactly this type and no other, rather than {@code contains}. A mixed run's swap-back leg
+	 * is a farm run again and wants every one of these rows back —
+	 * {@code InventorySetupsHandoff.applies} asks the other question, "does this run have a gear
+	 * leg at all", and copying its test here would strip the outfit off the rest of the trip.
+	 */
+	private static boolean fightsRatherThanFarms(Set<PatchImplementation> types)
+	{
+		return types.size() == 1 && types.contains(PatchImplementation.HESPORI);
+	}
+
+	/**
 	 * The things that change the numbers rather than making the run possible.
 	 *
 	 * <p>Magic secateurs are the awkward one. The leprechaun stores them, but the +10% only
 	 * applies while they are carried or worn, so the storage is a safety net rather than a
 	 * substitute — they are still worth taking.
 	 */
-	private void addGear(List<LoadoutItem> items)
+	private void addGear(List<LoadoutItem> items, Set<PatchImplementation> types)
 	{
+		if (fightsRatherThanFarms(types))
+		{
+			return;
+		}
+
 		// Where they are decides what to say. The store is the interesting case: they are not on
 		// you, so the +10% is not applying, but the errand is a click at the first patch rather
 		// than a trip to a bank — and being sent to a bank for a pair the leprechaun is already
@@ -1955,7 +2118,13 @@ public class RunLoadout
 		// farm run when the leprechaun notes everything — a noted stack is one slot per crop
 		// type, where a basket holds five of one fruit. They matter only as protection
 		// payment, which ProtectionPayment already handles with the full ids.
-		offerStorage(items, SEED_BOX, "Seed box", "Keeps your seeds out of your inventory");
+		//
+		// Not on the hespori's own trip, which carries one seed and fights a boss with the rest
+		// of the pack. See fightsRatherThanFarms.
+		if (!fightsRatherThanFarms(types))
+		{
+			offerStorage(items, SEED_BOX, "Seed box", "Keeps your seeds out of your inventory");
+		}
 
 		// Log baskets earn the place the fruit basket is denied, because the timing is
 		// different: logs arrive one per chop while the tree comes down, so the pack fills in

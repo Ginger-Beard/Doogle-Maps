@@ -589,7 +589,9 @@ public class ProtectedTabTest
 				Mockito.mock(com.dooglemaps.state.ProtectionSelectionStore.class),
 				Mockito.mock(com.dooglemaps.state.RunTypeStore.class),
 				Mockito.mock(com.dooglemaps.state.CompostRunStore.class),
-				Mockito.mock(DoogleMapsConfig.class));
+				Mockito.mock(DoogleMapsConfig.class),
+				Mockito.mock(com.dooglemaps.bank.BankContents.class),
+				Mockito.mock(com.dooglemaps.guide.CarriedItems.class));
 
 			panel = construct(DoogleMapsPanel.class, store, availability, timer, itemManager,
 				config, resolver, seeds, selection, runPlanner,
