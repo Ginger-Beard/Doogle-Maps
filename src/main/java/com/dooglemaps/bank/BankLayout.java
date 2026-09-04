@@ -116,7 +116,9 @@ public final class BankLayout
 		GROUPS.put('T', EnumSet.of(LoadoutItem.Category.TELEPORT));
 		GROUPS.put('S', EnumSet.of(LoadoutItem.Category.SEED,
 			LoadoutItem.Category.BIN_FILL));
-		GROUPS.put('P', EnumSet.of(LoadoutItem.Category.PAYMENT));
+		// Clearing fees share the payments' letter: both are coins a gardener takes off you at a
+		// patch, and neither is the run's produce or its gear.
+		GROUPS.put('P', EnumSet.of(LoadoutItem.Category.PAYMENT, LoadoutItem.Category.CLEARING));
 		GROUPS.put('G', EnumSet.of(LoadoutItem.Category.TOOL, LoadoutItem.Category.GEAR,
 			LoadoutItem.Category.STORAGE, LoadoutItem.Category.COMPOST));
 	}

@@ -157,6 +157,9 @@ public class DoogleMapsPlugin extends Plugin
 	private ProtectionSelectionStore protectionSelection;
 
 	@Inject
+	private com.dooglemaps.state.PayToClearStore payToClear;
+
+	@Inject
 	private BankFilter bankFilter;
 
 	@Inject
@@ -385,6 +388,11 @@ public class DoogleMapsPlugin extends Plugin
 		// be told as well. Without this, applying a run preset left the in-game number counting
 		// the previous selection until the idle refresh. See RunTypeStore.addChangeListener.
 		runTypes.addChangeListener(onStateChanged);
+		// A pay-to-clear toggle changes a checkbox's own label and a loadout coin total, never
+		// which tabs exist, so the light refresh is the right one - the same reasoning as the
+		// other per-store listeners just above, not the structural rebuild the protected-patch
+		// unlocks need.
+		payToClear.addChangeListener(onStateChanged);
 
 		navigationButton = NavigationButton.builder()
 			.tooltip("Doogle Maps")
@@ -447,6 +455,7 @@ public class DoogleMapsPlugin extends Plugin
 		seedStore.removeChangeListener(onStateChanged);
 		seedSelection.removeChangeListener(onStateChanged);
 		runTypes.removeChangeListener(onStateChanged);
+		payToClear.removeChangeListener(onStateChanged);
 
 		overlayManager.remove(guideOverlay);
 		overlayManager.remove(guideInventoryOverlay);
@@ -962,6 +971,7 @@ public class DoogleMapsPlugin extends Plugin
 		runPresets.load();
 		compostSelection.load();
 		protectionSelection.load();
+		payToClear.load();
 		patchLocations.load();
 		bankLocations.load();
 		harvestStats.load();

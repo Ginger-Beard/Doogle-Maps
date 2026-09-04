@@ -108,6 +108,9 @@ public class GuideTracker
 	/** The hespori run's bank leg, which replaces the withdraw list with the player's own gear. */
 	private final com.dooglemaps.bank.InventorySetupsHandoff handoff;
 
+	/** Which crops the player would rather buy a gardener out of clearing than chop themselves. */
+	private final com.dooglemaps.state.PayToClearStore payToClear;
+
 	@Inject
 	GuideTracker(RunPlanner planner, PatchLocationStore locations, PatchStateStore patches,
 		GrowthTimer growthTimer, SeedInventoryStore seeds, SeedSelectionStore selection,
@@ -122,8 +125,10 @@ public class GuideTracker
 		com.dooglemaps.state.DailyTeleports dailyTeleports,
 		com.dooglemaps.state.CompostRunStore compostRun,
 		com.dooglemaps.data.ItemNames itemNames,
-		com.dooglemaps.bank.InventorySetupsHandoff handoff)
+		com.dooglemaps.bank.InventorySetupsHandoff handoff,
+		com.dooglemaps.state.PayToClearStore payToClear)
 	{
+		this.payToClear = payToClear;
 		this.handoff = handoff;
 		this.itemNames = itemNames;
 		this.compostRun = compostRun;
@@ -3850,7 +3855,7 @@ public class GuideTracker
 
 		return GuidePlan.forPatch(projection,
 			snapshot == null ? null : snapshot.getCompost(),
-			group, chosen, seeds, compost, carried, leprechaun, barbarianFarming,
+			group, chosen, seeds, compost, payToClear, carried, leprechaun, barbarianFarming,
 			!alreadyPaid && protection.isProtecting(group, inGround),
 			paidToProtect,
 			harvestShapedOnly || !fullRun, patchesToTreat,

@@ -96,6 +96,9 @@ public class RunLoadoutTest
 	private final java.util.Map<Integer, String> names = new java.util.HashMap<>();
 	private com.dooglemaps.state.ProtectionSelectionStore protection;
 
+	/** Which standing crops the run's fixture has said to buy a gardener out of clearing. */
+	private com.dooglemaps.state.PayToClearStore payToClear;
+
 	/**
 	 * The leprechaun's store, empty to begin with and stocked per test.
 	 *
@@ -142,6 +145,7 @@ public class RunLoadoutTest
 		bank = construct(BankContents.class, configManager, gson);
 		protection = construct(com.dooglemaps.state.ProtectionSelectionStore.class,
 			configManager, gson);
+		payToClear = construct(com.dooglemaps.state.PayToClearStore.class, configManager, gson);
 		RunPlanner planner = this.planner = construct(RunPlanner.class, availability,
 			construct(PatchLocationStore.class, configManager, gson),
 			construct(BankLocationStore.class, configManager, gson),
@@ -199,16 +203,16 @@ public class RunLoadoutTest
 		contracts = Mockito.mock(com.dooglemaps.state.ContractState.class);
 
 		loadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried, bank,
-			toolNeeds, leprechaun, protection, itemNames, config, tickingClient(), runTypes,
-			contracts, compostRun,
+			toolNeeds, leprechaun, protection, payToClear, itemNames, config, tickingClient(),
+			runTypes, contracts, compostRun,
 			boatHolds = construct(com.dooglemaps.bank.BoatHolds.class, configManager, gson));
 
 		// The same collaborators over a client whose tick never moves, so forRun's cache actually
 		// holds. Only one test wants it — see whatIsStillWantedFallsWithinOneTick — and it is built
 		// here because the collaborators above are locals.
 		frozenLoadout = construct(RunLoadout.class, planner, selection, seeds, compost, carried,
-			bank, toolNeeds, leprechaun, protection, itemNames, config, frozenClient(), runTypes,
-			contracts, compostRun, boatHolds);
+			bank, toolNeeds, leprechaun, protection, payToClear, itemNames, config, frozenClient(),
+			runTypes, contracts, compostRun, boatHolds);
 	}
 
 	/**
@@ -3410,5 +3414,224 @@ public class RunLoadoutTest
 		int[] tick = {0};
 		when(client.getTickCount()).thenAnswer(i -> tick[0]++);
 		return client;
+	}
+
+	// ------------------------------------------------------- pay-to-clear
+
+	/**
+	 * A checked, standing magic tree the player has said to buy a gardener out of clearing.
+	 *
+	 * <p>Varbit 61 is the checked, choppable state — per {@code TreeStumpTest
+	 * .magicTellsItsThreeEndStatesApart} and {@code RunPlannerTest.clearableInCountsACheckedStandingTree}.
+	 */
+	@Test
+	public void aCheckedStandingMagicTreeAsksForItsClearingFee()
+	{
+		treePatch(0, 61);
+		payToClear.setPayingFor(Seed.MAGIC, true);
+		bankHolds(ItemID.COINS, 500);
+
+		LoadoutItem coins = itemNamed(EnumSet.of(PatchImplementation.TREE), "Coins");
+		assertNotNull("a checked, paid-for magic tree should ask for its clearing fee", coins);
+		assertEquals(LoadoutItem.Category.CLEARING, coins.getCategory());
+		assertEquals(200, coins.getQuantity());
+		assertEquals(LoadoutItem.Need.WITHDRAW, coins.getNeed());
+	}
+
+	/** Two grown, paid-for magic trees are twice the fee - a gardener charges per tree. */
+	@Test
+	public void twoCheckedMagicTreesDoubleTheClearingFee()
+	{
+		treePatch(0, 61);
+		treePatch(1, 61);
+		payToClear.setPayingFor(Seed.MAGIC, true);
+		bankHolds(ItemID.COINS, 500);
+
+		LoadoutItem coins = itemNamed(EnumSet.of(PatchImplementation.TREE), "Coins");
+		assertNotNull(coins);
+		assertEquals(400, coins.getQuantity());
+	}
+
+	/** Already carrying the whole fee reads as done, exactly like a protection payment does. */
+	@Test
+	public void carryingTheWholeFeeAlreadyReadsAsHave()
+	{
+		treePatch(0, 61);
+		payToClear.setPayingFor(Seed.MAGIC, true);
+		carrying(ItemID.COINS, 50_000);
+
+		LoadoutItem coins = itemNamed(EnumSet.of(PatchImplementation.TREE), "Coins");
+		assertNotNull(coins);
+		assertEquals(LoadoutItem.Need.HAVE, coins.getNeed());
+	}
+
+	/** Never having said to pay for magic means no coins row at all - the axe stays the plan. */
+	@Test
+	public void aMagicTreeNeverToggledOnAsksForNoCoins()
+	{
+		treePatch(0, 61);
+		bankHolds(ItemID.COINS, 500);
+
+		assertNull("nothing was ever paid for, so there is nothing to bank",
+			itemNamed(EnumSet.of(PatchImplementation.TREE), "Coins"));
+	}
+
+	/** A felled stump has nothing left for a gardener to clear - varbit 62. */
+	@Test
+	public void aStumpAsksForNoClearingFee()
+	{
+		treePatch(0, 62);
+		payToClear.setPayingFor(Seed.MAGIC, true);
+		bankHolds(ItemID.COINS, 500);
+
+		assertNull("nothing standing means nothing to buy",
+			itemNamed(EnumSet.of(PatchImplementation.TREE), "Coins"));
+	}
+
+	/**
+	 * A grown-but-unchecked tree is counted too - varbit 60. The coins have to be in the pack
+	 * before the run reaches the patch, and by the time it does the check will already be done.
+	 */
+	@Test
+	public void aGrownButUncheckedMagicTreeIsCountedToo()
+	{
+		treePatch(0, 60);
+		payToClear.setPayingFor(Seed.MAGIC, true);
+		bankHolds(ItemID.COINS, 500);
+
+		LoadoutItem coins = itemNamed(EnumSet.of(PatchImplementation.TREE), "Coins");
+		assertNotNull(coins);
+		assertEquals(200, coins.getQuantity());
+	}
+
+	/** A harvest-only visit plants nothing and clears nothing either. */
+	@Test
+	public void aHarvestOnlyTreeRunAsksForNoClearingFee()
+	{
+		treePatch(0, 61);
+		payToClear.setPayingFor(Seed.MAGIC, true);
+		bankHolds(ItemID.COINS, 500);
+		Mockito.when(runTypes.isHarvestOnly(Mockito.any())).thenReturn(true);
+
+		assertNull("a harvest-only stop is not one this run will clear",
+			itemNamed(EnumSet.of(PatchImplementation.TREE), "Coins"));
+	}
+
+	/**
+	 * Fruit still on a laden fruit tree does not stop the gardener's price - the guide picks it
+	 * first and pays after, but the coins have to already be on the withdraw list by then.
+	 *
+	 * <p>Varbit 175 is papaya's own top-of-range HARVESTABLE value ({@code PatchRules}: 169-175,
+	 * seven states for up to six fruit, mirroring the apple range {@code RunPlannerTest
+	 * .clearableInCountsALadenFruitTree} uses).
+	 */
+	@Test
+	public void aLadenPapayaAsksForItsClearingFeeToo()
+	{
+		fruitTreePatch(175);
+		payToClear.setPayingFor(Seed.PAPAYA, true);
+		bankHolds(ItemID.COINS, 500);
+
+		LoadoutItem coins = itemNamed(EnumSet.of(PatchImplementation.FRUIT_TREE), "Coins");
+		assertNotNull("fruit still on it does not stop the gardener's price", coins);
+		assertEquals(200, coins.getQuantity());
+	}
+
+	/**
+	 * A dead redwood asks for its 2,000 coins with no toggle to check at all - Alexandra's coins
+	 * are the only way one is ever cleared, so there is no axe alternative to fall back to.
+	 */
+	@Test
+	public void aDeadRedwoodAsksForItsFeeWithNoToggleAtAll()
+	{
+		redwoodPatch(28);   // dead - RunPlannerTest.deadRedwoodsInCountsADeadRedwood
+
+		LoadoutItem coins = itemNamed(EnumSet.of(PatchImplementation.REDWOOD), "Coins");
+		assertNotNull("a dead redwood has no other route", coins);
+		assertEquals(2000, coins.getQuantity());
+	}
+
+	/**
+	 * A leg short of nothing but clearing coins must not be held for them, and the withdraw-amount
+	 * swap must never be sized off the player's whole cash stack.
+	 *
+	 * <p>{@code CLEARING} sits outside both {@code CANNOT_PROCEED_WITHOUT} and {@code sizeable} -
+	 * see their javadocs - so a run that has genuinely gathered everything else waits for nothing,
+	 * and a bank slot of coins never gets a Withdraw-10 armed on it.
+	 */
+	@Test
+	public void onlyCoinsOutstandingDoesNotHoldTheSupplyLeg()
+	{
+		treePatch(0, 61);
+		payToClear.setPayingFor(Seed.MAGIC, true);
+		bankHolds(ItemID.COINS, 200);
+		carrying(ItemID.RUNE_AXE, 1);
+		woodcuttingLevel(99);
+		leprechaunHolds(FarmingTool.RAKE, 1);
+		leprechaunHolds(FarmingTool.SPADE, 1);
+		leprechaunHolds(FarmingTool.SEED_DIBBER, 1);
+
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.TREE);
+		LoadoutItem coins = itemNamed(types, "Coins");
+		assertNotNull(coins);
+		assertEquals("the fixture should actually owe the fee for this assertion to mean anything",
+			LoadoutItem.Need.WITHDRAW, coins.getNeed());
+
+		assertFalse("coins outstanding alone must never hold the supply leg",
+			loadout.anythingLeftToWithdraw(types));
+		assertEquals("a cash stack must not get a withdraw-amount click sized on it",
+			0, loadout.stillWantedNow(ItemID.COINS, types));
+	}
+
+	/** A grown, standing tree of the given implementation, at a chosen index so two can differ. */
+	private FarmPatch treePatch(int index, int varbitValue)
+	{
+		return payableTreePatch(PatchImplementation.TREE, index, varbitValue);
+	}
+
+	/** A fruit tree patch at the given varbit - see {@code PatchRules} for papaya's own range. */
+	private FarmPatch fruitTreePatch(int varbitValue)
+	{
+		return payableTreePatch(PatchImplementation.FRUIT_TREE, 0, varbitValue);
+	}
+
+	/** A redwood patch at the given varbit. Only {@code DEAD} (28) is a nameable clearable state. */
+	private FarmPatch redwoodPatch(int varbitValue)
+	{
+		return payableTreePatch(PatchImplementation.REDWOOD, 0, varbitValue);
+	}
+
+	/**
+	 * Records a patch of this type at this varbit, marks it available, and stubs the grouper to
+	 * answer the plain group for it.
+	 *
+	 * <h2>Why the grouper has to be stubbed here and not for every other fixture patch</h2>
+	 *
+	 * {@code RunPlanner.clearableIn} and {@code deadRedwoodsIn} require {@code groups.groupFor}
+	 * to answer the exact group being asked about, with no null fallback — unlike {@code
+	 * actionableByGroup}, which falls back to {@code PlantingGroup.of(type)} when the mock
+	 * answers null. An unstubbed {@code groups} mock therefore makes every patch invisible to
+	 * {@code clearableIn} specifically, which is why {@code RunPlannerTest}'s own clearable-in
+	 * tests stub it per patch too.
+	 */
+	private FarmPatch payableTreePatch(PatchImplementation type, int index, int varbitValue)
+	{
+		FarmPatch patch = FarmingWorldData.getPatches(type).get(index);
+		ProduceState decoded = patch.getImplementation().forVarbitValue(varbitValue);
+		assertNotNull("varbit " + varbitValue + " does not decode for " + type, decoded);
+		patches.recordVarbit(patch, varbitValue, decoded);
+		availability.setAvailable(patch, true);
+
+		com.dooglemaps.data.PlantingGroup group = com.dooglemaps.data.PlantingGroup.of(type);
+		when(groups.groupFor(patch)).thenReturn(group);
+		// Once groupFor stops answering null, RunPlanner.inTheRun stops taking its own "nobody
+		// answered, so let it through" shortcut and asks whether this group's run is actually
+		// ticked - which the ordinary readyTreePatch-style fixtures never needed to stub, because
+		// they leave groupFor unstubbed and get that shortcut for free. So the run has to be
+		// ticked here explicitly, or actionableByGroup drops the patch before addClearingFees
+		// ever asks clearableIn about it.
+		when(plannerRunOptions.isSelected(com.dooglemaps.data.RunOption.full(group)))
+			.thenReturn(true);
+		return patch;
 	}
 }

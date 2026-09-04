@@ -164,8 +164,14 @@ public class GuideMenuSwap
 		// region ("East", "North") is the word the farmer spells into it - rather than on wording
 		// copied out of one NPC's menu. A farmer whose patches have no name, or who phrases it
 		// some other way, matches nothing and the menu is left exactly as the game built it.
+		//
+		// PAY_TO_CLEAR shares this outright: it is the same gardener, the same per-patch "Pay",
+		// and the same disambiguation problem - Chet's coral farmers charge for clearing the
+		// same way they charge for protection, so a run paying to clear one nursery's crop hits
+		// exactly the multi-patch menu this swap exists for.
 		if (config.payLeftClick() && step != null
-			&& step.getAction() == GuideAction.PAY_FARMER)
+			&& (step.getAction() == GuideAction.PAY_FARMER
+				|| step.getAction() == GuideAction.PAY_TO_CLEAR))
 		{
 			promotePayFor(step.getPatch());
 		}

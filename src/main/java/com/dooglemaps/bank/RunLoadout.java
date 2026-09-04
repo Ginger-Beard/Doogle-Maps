@@ -4,7 +4,9 @@ import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingTool;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PayToClear;
 import com.dooglemaps.data.PlantingGroup;
+import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProtectionPayment;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.guide.CarriedItems;
@@ -13,6 +15,7 @@ import com.dooglemaps.route.ProtectionBudget;
 import com.dooglemaps.route.SeedAllocation;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.LeprechaunStore;
+import com.dooglemaps.state.PayToClearStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.ProtectionSelectionStore;
 import com.dooglemaps.state.SeedSelectionStore;
@@ -99,6 +102,8 @@ public class RunLoadout
 	private final ToolNeeds tools;
 	private final LeprechaunStore leprechaun;
 	private final ProtectionSelectionStore protection;
+	/** Which standing crops the player would rather buy a gardener out of clearing. */
+	private final PayToClearStore payToClear;
 	private final com.dooglemaps.data.ItemNames itemNames;
 	private final com.dooglemaps.DoogleMapsConfig config;
 
@@ -122,6 +127,7 @@ public class RunLoadout
 	RunLoadout(RunPlanner planner, SeedSelectionStore selection, SeedInventoryStore seeds,
 		CompostSelectionStore compost, CarriedItems carried, BankContents bank, ToolNeeds tools,
 		LeprechaunStore leprechaun, ProtectionSelectionStore protection,
+		PayToClearStore payToClear,
 		com.dooglemaps.data.ItemNames itemNames, com.dooglemaps.DoogleMapsConfig config,
 		net.runelite.api.Client client, com.dooglemaps.state.RunTypeStore runTypes,
 		com.dooglemaps.state.ContractState contracts,
@@ -134,6 +140,7 @@ public class RunLoadout
 		this.client = client;
 		this.config = config;
 		this.protection = protection;
+		this.payToClear = payToClear;
 		this.itemNames = itemNames;
 		this.planner = planner;
 		this.selection = selection;
@@ -198,6 +205,11 @@ public class RunLoadout
 	 * <p>What is left is the set whose absence makes a stop pointless when you reach it: no seed,
 	 * no compost, no payment, no tool — and the axe, which is a {@code TOOL} here and is not in
 	 * {@code ToolNeeds} at all, because the leprechaun does not stock one.
+	 *
+	 * <p>{@code CLEARING} is deliberately absent too. No coins for it means the gardener is
+	 * simply skipped in favour of the axe path this list already holds the run for — never a
+	 * blocked leg, because chopping it yourself was always the fallback the coins were offered
+	 * instead of.
 	 */
 	private static final Set<LoadoutItem.Category> CANNOT_PROCEED_WITHOUT = EnumSet.of(
 		LoadoutItem.Category.SEED,
@@ -715,7 +727,13 @@ public class RunLoadout
 		return need == LoadoutItem.Need.WITHDRAW || need == LoadoutItem.Need.AT_LEPRECHAUN;
 	}
 
-	/** Whether a row is one the quantity swap may size a click from. See {@link #stillWantedNow}. */
+	/**
+	 * Whether a row is one the quantity swap may size a click from. See {@link #stillWantedNow}.
+	 *
+	 * <p>{@code CLEARING} is deliberately absent: its one row is a single stackable cash total,
+	 * not a pack of discrete things to count out, and arming the withdraw-amount swap on a coin
+	 * stack would offer a Withdraw-10 over a slot the run wants withdrawn whole.
+	 */
 	private static boolean sizeable(LoadoutItem item)
 	{
 		switch (item.getCategory())
@@ -857,6 +875,7 @@ public class RunLoadout
 		addSeeds(items, types);
 		addCompost(items, types);
 		addPayments(items, types);
+		addClearingFees(items, types);
 		addSaltpetre(items, types);
 		addCompostBinSupplies(items, types);
 		addTools(items, types);
@@ -1714,6 +1733,125 @@ public class RunLoadout
 						+ " - noted is fine; the gardener takes the note",
 				LoadoutItem.From.BANK));
 		}
+	}
+
+	/**
+	 * Coins a gardener will take to fell a grown tree, so the player can bank for that instead of
+	 * carrying an axe to a patch they mean to pay their way out of.
+	 *
+	 * <h2>Counted off the same {@code actionableByGroup} the seeds and payments walk</h2>
+	 *
+	 * A harvest-only group plants nothing and clears nothing either — see {@code plantsNothing}'s
+	 * own reasoning, mirrored here the same way {@link #axeNeeded} asks {@code
+	 * runTypes.isHarvestOnly(group)} rather than {@code plantsNothing}, since a contract standing
+	 * there full is still a grown tree a gardener will take coins for. For every other group,
+	 * {@code planner.clearableIn(group)} names the grown, standing crops a gardener would clear,
+	 * and each is only counted where {@link PayToClearStore#isPayingFor(Seed)} says the player
+	 * would rather buy it out than chop it. The dead redwood is the one exception to asking
+	 * first: {@code planner.deadRedwoodsIn(group)} is added unconditionally, because Alexandra's
+	 * 2,000 coins are the <b>only</b> way a dead redwood is ever cleared — there is no axe path to
+	 * fall back to, so there is no choice to record a toggle for.
+	 *
+	 * <h2>One row, whatever is standing</h2>
+	 *
+	 * Every payable crop and every dead redwood this run will meet folds into a single {@code
+	 * COINS} total: a gardener does not care which tree he is felling, only how many coins are in
+	 * the pack when he is asked, so there is nothing for a second row to say.
+	 *
+	 * <h2>A bank short of the total reads MISSING, not a false WITHDRAW</h2>
+	 *
+	 * {@link #paymentNeed} is the same method {@link #addPayments} sizes a protection payment
+	 * with: short of the total across carried and banked coins, it answers {@code MISSING} (or
+	 * {@code UNKNOWN} before a bank has been opened) rather than a withdrawal it cannot actually
+	 * fund. That costs nothing to allow here, because {@code CLEARING} sits outside {@link
+	 * #CANNOT_PROCEED_WITHOUT} and {@link #sizeable} both — a coins-short leg is never held for
+	 * this row, and the row never arms a withdraw-amount click on the player's whole cash stack.
+	 */
+	private void addClearingFees(List<LoadoutItem> items, Set<PatchImplementation> types)
+	{
+		int total = 0;
+		// Grouped by the coins-each price rather than one flat list, because the ordinary 200
+		// and the redwood's 2,000 cannot share one "at N coins each" without lying about one of
+		// them. In the ordinary run - every payable type but the redwood costs the same 200 - this
+		// collapses to exactly one group, which is what keeps the common case's wording plain.
+		Map<Integer, List<String>> partsByCost = new LinkedHashMap<>();
+		// Whether every payable tree this run will meet is both toggled on and, once the total
+		// is known, actually funded - the condition under which the axe row above is nothing
+		// more than a fallback that will not be used.
+		boolean anyTreeCounted = false;
+		boolean everyTreeIsBeingPaidFor = true;
+
+		for (Map.Entry<PlantingGroup, List<FarmPatch>> entry : planner.actionableByGroup(types)
+			.entrySet())
+		{
+			PlantingGroup group = entry.getKey();
+			if (entry.getValue().isEmpty() || runTypes.isHarvestOnly(group))
+			{
+				continue;
+			}
+
+			for (Map.Entry<Produce, Integer> cleared : planner.clearableIn(group).entrySet())
+			{
+				Produce produce = cleared.getKey();
+				int count = cleared.getValue();
+				anyTreeCounted = true;
+
+				Seed seed = Seed.forProduce(produce);
+				if (seed == null || !payToClear.isPayingFor(seed))
+				{
+					everyTreeIsBeingPaidFor = false;
+					continue;
+				}
+
+				int cost = PayToClear.cost(group.getType());
+				total += cost * count;
+				partsByCost.computeIfAbsent(cost, k -> new ArrayList<>())
+					.add(count + " " + produce.getName().toLowerCase());
+			}
+
+			int deadRedwoods = planner.deadRedwoodsIn(group);
+			if (deadRedwoods > 0)
+			{
+				// Alexandra's price off the same table as everyone else's rather than spelled
+				// again here, so a corrected cost cannot be right in the guide and stale in the
+				// bank list.
+				int redwoodCost = PayToClear.cost(PatchImplementation.REDWOOD);
+				anyTreeCounted = true;
+				total += redwoodCost * deadRedwoods;
+				partsByCost.computeIfAbsent(redwoodCost, k -> new ArrayList<>())
+					.add(deadRedwoods + " dead redwood" + (deadRedwoods == 1 ? "" : "s"));
+			}
+		}
+
+		// Plain carried count throughout: coins have no noted form, so getCountIncludingNoted
+		// would only be a longer way of asking the same question addPayments asks of a payment
+		// that can be noted.
+		int carriedCoins = carried.getInventoryCount(ItemID.COINS);
+		int held = carriedCoins + bank.getCount(ItemID.COINS);
+
+		if (anyTreeCounted && everyTreeIsBeingPaidFor && held >= total)
+		{
+			log.debug("Every payable tree on this run is paid for and funded - "
+				+ "the axe row is a fallback only, not something this trip will use");
+		}
+
+		if (total <= 0)
+		{
+			return;
+		}
+
+		List<String> segments = new ArrayList<>();
+		for (Map.Entry<Integer, List<String>> group : partsByCost.entrySet())
+		{
+			segments.add(String.join(", ", group.getValue()) + " at "
+				+ String.format("%,d", group.getKey()) + " coins each");
+		}
+
+		items.add(new LoadoutItem(ItemID.COINS, "Coins", LoadoutItem.Category.CLEARING,
+			paymentNeed(total, held, ItemID.COINS), total,
+			Math.max(0, total - carriedCoins),
+			"Clearing fees: " + String.join("; ", segments),
+			LoadoutItem.From.BANK));
 	}
 
 	/**

@@ -4469,4 +4469,165 @@ public class RunPlannerTest
 		org.junit.Assert.assertEquals(0,
 			com.dooglemaps.data.UnderwaterApproach.objectsFor(PatchImplementation.HERB).length);
 	}
+
+	// ------------------------------------------------------- pay-to-clear
+
+	/**
+	 * A checked, standing tree is exactly what a gardener will take coins for.
+	 *
+	 * <p>Magic: varbit 61 is the tree you can still chop, per {@code TreeStumpTest
+	 * .magicTellsItsThreeEndStatesApart}.
+	 */
+	@Test
+	public void clearableInCountsACheckedStandingTree()
+	{
+		FarmPatch tree = FarmingWorldData.getPatches(PatchImplementation.TREE).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE);
+		when(groups.groupFor(tree)).thenReturn(group);
+
+		record(tree.getKey(), 61);
+		availability.setAvailable(tree, true);
+
+		Map<Produce, Integer> clearable = planner.clearableIn(group);
+
+		assertEquals("one checked magic tree is worth 200 coins",
+			Integer.valueOf(1), clearable.get(Produce.MAGIC));
+	}
+
+	/**
+	 * The coins have to be in the pack before the check happens, so a grown-but-unchecked tree is
+	 * funded too — by the time the run reaches it, the check will already be done.
+	 */
+	@Test
+	public void clearableInCountsAGrownButUncheckedTreeToo()
+	{
+		FarmPatch tree = FarmingWorldData.getPatches(PatchImplementation.TREE).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE);
+		when(groups.groupFor(tree)).thenReturn(group);
+
+		record(tree.getKey(), 60);   // magic, grown, unchecked
+		availability.setAvailable(tree, true);
+
+		Map<Produce, Integer> clearable = planner.clearableIn(group);
+
+		assertEquals(Integer.valueOf(1), clearable.get(Produce.MAGIC));
+	}
+
+	/** A stump has already been felled; there is nothing left for a gardener to clear. */
+	@Test
+	public void clearableInExcludesAStump()
+	{
+		FarmPatch tree = FarmingWorldData.getPatches(PatchImplementation.TREE).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE);
+		when(groups.groupFor(tree)).thenReturn(group);
+
+		record(tree.getKey(), 62);   // the stump
+		availability.setAvailable(tree, true);
+
+		assertTrue("nothing standing means nothing to price",
+			planner.clearableIn(group).isEmpty());
+	}
+
+	/** A freshly raked, empty patch has no crop for a gardener to clear either. */
+	@Test
+	public void clearableInExcludesAnEmptyPatch()
+	{
+		FarmPatch tree = FarmingWorldData.getPatches(PatchImplementation.TREE).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.TREE);
+		when(groups.groupFor(tree)).thenReturn(group);
+
+		record(tree.getKey(), 0);
+		availability.setAvailable(tree, true);
+
+		assertTrue(planner.clearableIn(group).isEmpty());
+	}
+
+	/** No gardener stands by a calquat patch at all; it must never price a clearance. */
+	@Test
+	public void clearableInExcludesAnUnsupportedType()
+	{
+		FarmPatch calquat = FarmingWorldData.getPatches(PatchImplementation.CALQUAT).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.CALQUAT);
+
+		record(calquat.getKey(), 12);   // a grown, harvestable calquat
+		availability.setAvailable(calquat, true);
+
+		assertTrue("no gardener clears a calquat", planner.clearableIn(group).isEmpty());
+	}
+
+	/**
+	 * Fruit still on the tree is counted too — the guide picks it first and pays after, but the
+	 * coins have to already be on the withdraw list by the time the run gets there.
+	 */
+	@Test
+	public void clearableInCountsALadenFruitTree()
+	{
+		FarmPatch fruit = patch(CATHERBY_FRUIT);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.FRUIT_TREE);
+		when(groups.groupFor(fruit)).thenReturn(group);
+
+		record(CATHERBY_FRUIT, APPLES_SIX);
+		availability.setAvailable(fruit, true);
+
+		Map<Produce, Integer> clearable = planner.clearableIn(group);
+
+		assertEquals("fruit still on it does not stop the gardener's price",
+			Integer.valueOf(1), clearable.get(Produce.APPLE));
+	}
+
+	/**
+	 * The redwood is left out of {@code clearableIn}: its table gives no way to tell a growing
+	 * redwood apart from one finished and wanting clearance, so folding it into the same
+	 * predicate would count every growing redwood as clearable. Only {@link
+	 * RunPlanner#deadRedwoodsIn} names a redwood state this plugin can act on.
+	 */
+	@Test
+	public void clearableInNeverCountsARedwoodEvenWhenHarvestable()
+	{
+		FarmPatch redwood = FarmingWorldData.getPatches(PatchImplementation.REDWOOD).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.REDWOOD);
+		when(groups.groupFor(redwood)).thenReturn(group);
+
+		record(redwood.getKey(), 41);   // harvestable
+		availability.setAvailable(redwood, true);
+
+		assertTrue(planner.clearableIn(group).isEmpty());
+	}
+
+	/** A dead redwood is the one state this plugin can name, and Alexandra's coins are the only route. */
+	@Test
+	public void deadRedwoodsInCountsADeadRedwood()
+	{
+		FarmPatch redwood = FarmingWorldData.getPatches(PatchImplementation.REDWOOD).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.REDWOOD);
+		when(groups.groupFor(redwood)).thenReturn(group);
+
+		record(redwood.getKey(), 28);   // dead
+		availability.setAvailable(redwood, true);
+
+		assertEquals(1, planner.deadRedwoodsIn(group));
+	}
+
+	/** A living redwood is not a dead one, whatever state it is actually in. */
+	@Test
+	public void deadRedwoodsInIgnoresALivingRedwood()
+	{
+		FarmPatch redwood = FarmingWorldData.getPatches(PatchImplementation.REDWOOD).get(0);
+		com.dooglemaps.data.PlantingGroup group =
+			com.dooglemaps.data.PlantingGroup.of(PatchImplementation.REDWOOD);
+		when(groups.groupFor(redwood)).thenReturn(group);
+
+		record(redwood.getKey(), 41);   // harvestable, alive
+		availability.setAvailable(redwood, true);
+
+		assertEquals(0, planner.deadRedwoodsIn(group));
+	}
 }

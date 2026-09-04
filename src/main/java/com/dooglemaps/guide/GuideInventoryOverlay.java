@@ -222,6 +222,13 @@ public class GuideInventoryOverlay extends Overlay
 			highlightContractOptions(graphics, colour);
 		}
 
+		// The pay-to-clear conversation's dialogue, the same way the hand-in got its own: the
+		// gardener is outlined, the tree is outlined, and the clicks between them were unlit.
+		if (step.getAction() == GuideAction.PAY_TO_CLEAR)
+		{
+			highlightClearOptions(graphics, colour);
+		}
+
 		if (!step.hasItem())
 		{
 			return null;
@@ -1085,6 +1092,113 @@ public class GuideInventoryOverlay extends Overlay
 				outline(graphics, bounds, colour);
 			}
 		}
+	}
+
+	/** The last pay-to-clear dialogue logged, so an open conversation is not a wall of log. */
+	@javax.annotation.Nullable
+	private String loggedClearDialogue;
+
+	/**
+	 * Marks the pay-to-clear conversation: every option except the ways of declining.
+	 *
+	 * <p>Same arrangement as {@link #highlightContractOptions}: only ever drawn while the
+	 * current step is {@code PAY_TO_CLEAR}, so a similarly-worded row in some unrelated
+	 * dialogue is never at risk.
+	 *
+	 * <h2>A denylist, and why not {@link #highlightPayOptions}'s allowlist</h2>
+	 *
+	 * That allowlist can afford to match by prefix because {@code ProtectionCapture} pins the
+	 * exact acceptance line it is built against, so the two cannot silently drift apart. Nothing
+	 * pins the pay-to-clear wording anywhere in this codebase — the 200-coin gardeners'
+	 * transcripts are incomplete on the wiki, and the dead-redwood clear this feature extends has
+	 * never itself been run in play. An allowlist guessed from that would fail exactly the way an
+	 * unrecognised hand-in option does: quietly, with nothing lit and no way to tell why from
+	 * outside the client.
+	 *
+	 * <p>The declines are worth naming for a sharper reason than "cover them": one of them is
+	 * why an allowlist on "Yes" specifically would be actively wrong rather than merely
+	 * incomplete. <i>"Yes, you're right - I'll do it myself."</i> is the wiki-quoted refusal on
+	 * the talk-to path, and it starts with the very word the payment dialogue's own acceptance
+	 * does — so a prefix match on "Yes" would light up the decline.
+	 */
+	void highlightClearOptions(Graphics2D graphics, Color colour)
+	{
+		Widget list = client.getWidget(InterfaceID.Chatmenu.OPTIONS);
+		if (list == null || list.isHidden() || list.getDynamicChildren() == null)
+		{
+			return;
+		}
+
+		logClearDialogue(list);
+
+		for (Widget row : list.getDynamicChildren())
+		{
+			if (row == null || row.getText() == null)
+			{
+				continue;
+			}
+
+			String text = net.runelite.client.util.Text.removeTags(row.getText()).trim();
+			if (text.isEmpty() || text.startsWith("No")
+				|| text.startsWith("I don't want to pay")
+				|| text.startsWith("Yes, you're right"))
+			{
+				continue;
+			}
+
+			Rectangle bounds = textBounds(row).intersection(list.getBounds());
+			if (!bounds.isEmpty())
+			{
+				outline(graphics, bounds, colour);
+			}
+		}
+	}
+
+	/**
+	 * Says what the pay-to-clear dialogue actually looked like, once per distinct conversation.
+	 *
+	 * <p>Neither the ordinary gardeners' full wording nor the redwood clear's has ever been
+	 * confirmed against a real play session — see the class note on
+	 * {@link #highlightClearOptions} — so this is how that gets checked, from {@code client.log}
+	 * rather than from a screenshot. Read the same way {@code ProtectionCapture} reads a farmer's
+	 * acceptance line: the left chatbox's text widget, beside whatever chathead is showing it.
+	 */
+	private void logClearDialogue(Widget list)
+	{
+		if (!log.isDebugEnabled())
+		{
+			return;
+		}
+
+		StringBuilder options = new StringBuilder();
+		for (Widget row : list.getDynamicChildren())
+		{
+			if (row == null || row.getText() == null)
+			{
+				continue;
+			}
+			String text = net.runelite.client.util.Text.removeTags(row.getText()).trim();
+			if (!text.isEmpty())
+			{
+				if (options.length() > 0)
+				{
+					options.append(" | ");
+				}
+				options.append(text);
+			}
+		}
+
+		Widget npcText = client.getWidget(InterfaceID.ChatLeft.TEXT);
+		String line = npcText == null || npcText.getText() == null
+			? null : net.runelite.client.util.Text.removeTags(npcText.getText()).trim();
+
+		String key = options + "##" + line;
+		if (key.equals(loggedClearDialogue))
+		{
+			return;
+		}
+		loggedClearDialogue = key;
+		log.debug("Pay-to-clear dialogue: npc line=\"{}\", options=[{}]", line, options);
 	}
 
 	/** Marks a worn item in whichever equipment view is open. */

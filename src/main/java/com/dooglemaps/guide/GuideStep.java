@@ -54,7 +54,9 @@ public class GuideStep
 	public boolean highlightsPatch()
 	{
 		// Paying happens at the farmer standing beside the patch, so lighting the patch as well
-		// would be two targets for one click. The farmer is named on the step itself.
+		// would be two targets for one click. The farmer is named on the step itself. Paying to
+		// clear is the same shape for the same reason — one click, one target, and the gardener
+		// who is about to fell the tree is that target, not the tree.
 		//
 		// The contract steps carry a patch only because every step does — it is what places them
 		// at the right stop. The click is on Guildmaster Jane, who stands nowhere near the patch,
@@ -68,6 +70,7 @@ public class GuideStep
 		// moment the bank is open — the seed is already on the withdraw list.
 		return !isAtLeprechaun() && !isAtGuildmaster()
 			&& action != GuideAction.PAY_FARMER
+			&& action != GuideAction.PAY_TO_CLEAR
 			&& action != GuideAction.PICK_UP_DROPS
 			&& action != GuideAction.FETCH_SEED;
 	}

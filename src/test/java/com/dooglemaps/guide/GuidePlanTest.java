@@ -129,7 +129,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 1, false, NAMES);
 
 		assertEquals("the spade first - the game refuses the pick without it",
@@ -167,7 +167,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 1, false, NAMES);
 
 		assertEquals(GuideAction.HARVEST, steps.get(0).getAction());
@@ -197,7 +197,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 1, false, NAMES);
 
 		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
@@ -641,7 +641,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.WITHDRAW_COMPOST, steps.get(0).getAction());
@@ -660,7 +660,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
@@ -713,7 +713,7 @@ public class GuidePlanTest
 		assertTrue("and the stage is what says so", projection.getStage() > 0);
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection,
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.CLEAR, steps.get(0).getAction());
@@ -732,7 +732,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			autoweeded().project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertEquals(GuideAction.APPLY_COMPOST, steps.get(0).getAction());
@@ -762,7 +762,7 @@ public class GuidePlanTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(
 			growthTimer.project(patch, patches.get(patch)),
-			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, carried,
+			patches.get(patch).getCompost(), group(patch), Seed.POTATO, seeds, compost, null, carried,
 			leprechaun, barbarian, false, false, false, 4, false, NAMES);
 
 		assertTrue(steps.get(0).getText(), steps.get(0).getText().contains("4"));
@@ -1099,7 +1099,7 @@ public class GuidePlanTest
 
 		assertTrue("a harvest-only run is finished with this patch",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch), null,
-				seeds, compost, carried, leprechaun, barbarian,
+				seeds, compost, null, carried, leprechaun, barbarian,
 				/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
 	}
 
@@ -1127,7 +1127,7 @@ public class GuidePlanTest
 		carrying(payment.getItemID(), payment.getQuantity());
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
-			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			group(patch), null, seeds, compost, null, carried, leprechaun, barbarian,
 			/* protecting */ true, /* paidToProtect */ true, /* harvestOnly */ false, 1, false, NAMES);
 		assertFalse("the payment is the one thing this patch still wants", steps.isEmpty());
 		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
@@ -1163,7 +1163,7 @@ public class GuidePlanTest
 
 		com.dooglemaps.data.ItemNames named = namesFor(payment.getItemID(), "Basket of tomatoes");
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
-			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			group(patch), null, seeds, compost, null, carried, leprechaun, barbarian,
 			/* protecting */ true, /* paidToProtect */ true, /* harvestOnly */ false, 1, false, named);
 
 		assertEquals(GuideAction.PAY_FARMER, steps.get(0).getAction());
@@ -1200,7 +1200,7 @@ public class GuidePlanTest
 
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
-			group(patch), Seed.CALQUAT, seeds, compost, carried, leprechaun, barbarian,
+			group(patch), Seed.CALQUAT, seeds, compost, null, carried, leprechaun, barbarian,
 			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ false, 1, false, NAMES);
 
 		assertFalse("standing at the patch with the seed and told nothing", steps.isEmpty());
@@ -1222,7 +1222,7 @@ public class GuidePlanTest
 
 		PatchProjection projection = growthTimer.project(patch, patches.get(patch));
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
-			group(patch), Seed.CALQUAT, seeds, compost, carried, leprechaun, barbarian,
+			group(patch), Seed.CALQUAT, seeds, compost, null, carried, leprechaun, barbarian,
 			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ false, 1, false, NAMES);
 
 		assertFalse(steps.isEmpty());
@@ -1282,7 +1282,7 @@ public class GuidePlanTest
 		carryingFullPackOf(net.runelite.api.gameval.ItemID.BUCKET_COMPOST);
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
-			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			group(patch), null, seeds, compost, null, carried, leprechaun, barbarian,
 			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ true, 1, false, NAMES);
 
 		assertFalse("nothing to note, so nothing to say about noting",
@@ -1302,7 +1302,7 @@ public class GuidePlanTest
 		carryingFullPackOf(projection.getProduce().getItemID());
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
-			group(patch), null, seeds, compost, carried, leprechaun, barbarian,
+			group(patch), null, seeds, compost, null, carried, leprechaun, barbarian,
 			/* protecting */ false, /* paidToProtect */ false, /* harvestOnly */ true, 1, false, NAMES);
 
 		assertEquals(GuideAction.NOTE_AT_LEPRECHAUN, steps.get(0).getAction());
@@ -1523,7 +1523,7 @@ public class GuidePlanTest
 		assertNotNull(projection);
 		assertTrue("nothing to do here on a harvest-only visit",
 			GuidePlan.forPatch(projection, patches.get(patch).getCompost(), group(patch),
-				null, seeds, compost, carried, leprechaun, barbarian,
+				null, seeds, compost, null, carried, leprechaun, barbarian,
 				false, false, /* harvestOnly */ true, 1, false, NAMES).isEmpty());
 	}
 
@@ -1856,7 +1856,7 @@ public class GuidePlanTest
 		assertNotNull("fixture patch has no projection", projection);
 		return GuidePlan.forPatch(projection,
 			patches.get(patch) == null ? null : patches.get(patch).getCompost(),
-			group, chosen, seeds, compost, carried, leprechaun, barbarian, false, paidToProtect,
+			group, chosen, seeds, compost, null, carried, leprechaun, barbarian, false, paidToProtect,
 			false, 1, false, NAMES);
 	}
 

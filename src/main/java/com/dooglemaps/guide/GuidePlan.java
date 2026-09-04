@@ -5,6 +5,7 @@ import com.dooglemaps.data.CropState;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingTool;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PayToClear;
 import com.dooglemaps.data.PlantingGroup;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.ProtectionPayment;
@@ -14,6 +15,7 @@ import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.BarbarianFarming;
 import com.dooglemaps.state.CompostSelectionStore;
 import com.dooglemaps.state.LeprechaunStore;
+import com.dooglemaps.state.PayToClearStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.state.SeedSource;
@@ -116,12 +118,17 @@ public final class GuidePlan
 	 *                       been paid" is the moment {@code protecting} goes false while the
 	 *                       crop is at its most protected. See
 	 *                       {@code CropYieldModel.compostWastedOnProtected}.
+	 * @param compostChoice  the run's compost tier preference per group
+	 * @param payToClear     which crops the player would rather buy a gardener out of clearing
+	 *                       than chop themselves. Resolved from the projection's own standing
+	 *                       produce inside this method — see the 0.65 branch below — never from
+	 *                       {@code chosen} or an allocation's pick.
 	 * @param patchesToTreat how many patches at this stop want this patch's compost, so the
 	 *                       withdrawal can name a number rather than leaving you guessing
 	 */
 	public static List<GuideStep> forPatch(PatchProjection projection, CompostTier applied,
 		PlantingGroup group, Seed chosen, SeedInventoryStore seeds,
-		CompostSelectionStore compostChoice,
+		CompostSelectionStore compostChoice, @Nullable PayToClearStore payToClear,
 		CarriedItems carried, LeprechaunStore leprechaun, BarbarianFarming barbarianFarming,
 		boolean protecting, boolean paidToProtect, boolean harvestOnly, int patchesToTreat,
 		boolean binWantsThisCrop,
@@ -219,6 +226,46 @@ public final class GuidePlan
 			addToolStep(steps, patch, FarmingTool.SPADE, carried, leprechaun);
 			steps.add(GuideStep.of(GuideAction.CLEAR, patch,
 				"Dig up the " + projection.getProduce().getName().toLowerCase() + " stump."));
+			return steps;
+		}
+
+		// 0.65 Paying a gardener to fell a checked tree, standing in for the chop below.
+		//
+		//      Sits here rather than above the health check or the stump branch, and both of
+		//      those placements would be wrong for a reason rather than by accident. The check
+		//      has already returned by the time this line is reached — its own branch above
+		//      returns unconditionally — so paying before the health check happens is impossible
+		//      by construction, and no check-health experience is ever at risk. A stump is
+		//      already the player's own doing (they, or someone, already chopped it); there is
+		//      nothing left to pay a gardener to fell, so it stays the spade's job untouched.
+		//      Fruit trees pick first, above this branch entirely, because isChoppable() already
+		//      excludes a fruit tree still carrying fruit — the same test the chop branch below
+		//      makes, so a laden tree is never offered for payment either.
+		//
+		//      Resolved from the standing crop via {@code payToClear.isPayingFor(projection)},
+		//      never from {@code chosen} — see PayToClearStore's own class note. A checked,
+		//      standing tree is HARVESTABLE, so it is an ordinary member of a seed allocation's
+		//      plantable list, and the run may already have picked a different seed for this
+		//      exact patch once this one comes out; asking `chosen` would read the replacement's
+		//      checkbox to decide the fate of the tree next to it.
+		//
+		//      Short of the coins, this falls through to the ordinary chop below rather than
+		//      stall on an instruction the player cannot follow — the coins row is what makes
+		//      this non-blocking. See RunLoadout.addClearingFees.
+		boolean paying = payToClear != null && payToClear.isPayingFor(projection);
+		if (projection.isChoppable() && !harvestOnly && paying
+			&& patch.getFarmer() != -1
+			&& carried.getCount(ItemID.COINS) >= PayToClear.cost(patch.getImplementation())
+			&& (patch.getImplementation() != PatchImplementation.FRUIT_TREE
+				|| (chosen != null && seedAtHand(chosen, seeds))))
+		{
+			int cost = PayToClear.cost(patch.getImplementation());
+			steps.add(GuideStep.atNpc(GuideAction.PAY_TO_CLEAR, patch, ItemID.COINS,
+				patch.getFarmer(),
+				"Pay " + com.dooglemaps.data.Farmers.getName(patch.getFarmer()) + " "
+					+ String.format(java.util.Locale.ROOT, "%,d", cost)
+					+ " coins to clear the " + projection.getProduce().getName().toLowerCase()
+					+ "."));
 			return steps;
 		}
 
@@ -362,10 +409,16 @@ public final class GuidePlan
 		if (projection.getCropState() == CropState.DEAD)
 		{
 			// Except the redwood, which a spade cannot touch - the only tree with no
-			// self-removal. Clearing it is paying Alexandra 2,000 coins, wiki-checked.
+			// self-removal. Clearing it is paying Alexandra 2,000 coins, wiki-checked, and it is
+			// PAY_TO_CLEAR rather than CLEAR: it is the same click as the 0.65 branch above pays
+			// for, just unconditional rather than opt-in - there is no player alternative to
+			// weigh it against, so there is no toggle and no coins-short fallback either. A
+			// living redwood gets no equivalent step in v1: PatchRules gives it fifteen
+			// indistinguishable HARVESTABLE values and no stump, so nothing in the decode can
+			// name "checked and finished" the way a tree's grown/choppable/stump triple does.
 			if (patch.getImplementation() == PatchImplementation.REDWOOD)
 			{
-				steps.add(GuideStep.atNpc(GuideAction.CLEAR, patch, ItemID.COINS,
+				steps.add(GuideStep.atNpc(GuideAction.PAY_TO_CLEAR, patch, ItemID.COINS,
 					patch.getFarmer(),
 					"Pay Alexandra 2,000 coins to remove the dead redwood - a spade cannot."));
 				return steps;

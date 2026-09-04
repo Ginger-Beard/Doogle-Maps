@@ -2,12 +2,13 @@ package com.dooglemaps.ui;
 
 import com.dooglemaps.data.CompostTier;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PayToClear;
 import com.dooglemaps.data.PlantingGroup;
-import java.util.Set;
-import java.util.LinkedHashSet;
+import java.util.Map;
 import javax.swing.JCheckBox;
 import com.dooglemaps.bank.BankContents;
 import com.dooglemaps.guide.CarriedItems;
+import com.dooglemaps.state.PayToClearStore;
 import com.dooglemaps.state.ProtectionSelectionStore;
 import com.dooglemaps.data.ProtectionPayment;
 import com.dooglemaps.state.CompostSelectionStore;
@@ -26,11 +27,13 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.List;
 import javax.swing.BorderFactory;
+import javax.swing.BoxLayout;
 import javax.swing.JComboBox;
 import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingConstants;
+import net.runelite.api.gameval.ItemID;
 import net.runelite.client.game.ItemManager;
 import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
@@ -159,6 +162,29 @@ class SeedSelectorPanel extends JPanel
 	 */
 	private final JPanel protectPanel = new JPanel();
 
+	/** Which crops the player would rather pay a gardener to clear than chop themselves. */
+	private final PayToClearStore payToClear;
+
+	/**
+	 * Whether to pay a gardener to clear a standing tree rather than chop it down.
+	 *
+	 * <p>Placed above {@link #protectPanel} in the body: a protection payment guards a crop that
+	 * is still growing, while this buys a grown, standing one out of being chopped, and the two
+	 * questions belong to different moments in a patch's life.
+	 */
+	private final JPanel clearPanel = new JPanel();
+
+	/**
+	 * How many of each payable seed are actually standing in this group's patches right now.
+	 *
+	 * <p>Handed down from {@code PatchTypePanel.refresh}, which already builds the projections a
+	 * pay-to-clear row needs and runs on the same Swing thread this panel does — asking the
+	 * planner again here would walk a synchronized planner from the wrong thread. Kept as a map
+	 * rather than re-derived per row so a row for a seed with none standing (picked to plant, not
+	 * yet grown) can still be offered at zero. See {@link #setStandingClearable}.
+	 */
+	private Map<Seed, Integer> standingClearable = java.util.Collections.emptyMap();
+
 	/**
 	 * Offers protection when it is possible, and says what it would cost from the bank.
 	 *
@@ -241,6 +267,113 @@ class SeedSelectorPanel extends JPanel
 			box.setForeground(TEXT);
 			box.setToolTipText(Tooltips.text(held + " available, " + wanted + " needed for "
 				+ Plurals.of(patches, "patch", "patches")));
+		}
+		return box;
+	}
+
+	/**
+	 * Told how many of each payable seed are standing in this group's patches, so a clearing row
+	 * can be offered for what is actually out there. See {@link #standingClearable}.
+	 */
+	void setStandingClearable(Map<Seed, Integer> standing)
+	{
+		this.standingClearable = standing;
+	}
+
+	/**
+	 * A pay-to-clear row per payable seed of this tab's patch type, whether or not it is standing
+	 * or selected.
+	 *
+	 * <h2>Every payable crop, not just what is standing or selected</h2>
+	 *
+	 * The owner's own report: the player might walk up to a patch holding a crop they never
+	 * planned to plant — someone else's leftover magic tree on a shared patch, an old rotation the
+	 * run does not intend to repeat. A list drawn from {@link #standingClearable} or the current
+	 * selection could never offer a tick-box for that tree, because neither source knows about it
+	 * until the run gets there. So the rows cover the whole tab: every {@link Seed} whose patch
+	 * type matches this group's, in {@link Seed#forPatchType} order — the same order the seed
+	 * picker itself lists them in, so the two lists read the same. {@link #standingClearable}
+	 * still supplies the standing count each row's label and cost react to; a crop with nothing
+	 * standing just shows a count of zero rather than being left off.
+	 *
+	 * <p>Hidden outright unless this patch type is one the player actually has a choice about — a
+	 * herb tab has nothing to offer here, and an always-visible, always-disabled row would look
+	 * broken rather than simply not apply. {@link PayToClear#offersAChoice} rather than {@code
+	 * supports} for the redwood's sake: Alexandra takes coins, but she is the only route a dead
+	 * redwood has and no living one is ever offered, so a redwood tick-box would be a control
+	 * nothing downstream reads.
+	 */
+	private void updatePayToClear()
+	{
+		clearPanel.removeAll();
+		boolean any = false;
+
+		if (PayToClear.offersAChoice(type))
+		{
+			for (Seed seed : Seed.forPatchType(type))
+			{
+				if (PayToClear.supports(seed))
+				{
+					int standingCount = standingClearable.getOrDefault(seed, 0);
+					clearPanel.add(payToClearRow(seed, standingCount));
+					any = true;
+				}
+			}
+		}
+
+		clearPanel.setVisible(any);
+		clearPanel.revalidate();
+	}
+
+	/**
+	 * One "pay to clear" checkbox, bound to {@link PayToClearStore}.
+	 *
+	 * <p>Cost scales with how many are actually standing - a magic tree in each of two patches
+	 * costs twice what one does - but the {@code x n} only appears once there is more than one to
+	 * distinguish, matching how {@link #protectRow} counts patches rather than crops.
+	 */
+	private JCheckBox payToClearRow(Seed seed, int standingCount)
+	{
+		JCheckBox box = new JCheckBox();
+		Controls.styleCheckBox(box);
+		box.setBackground(getBackground());
+		box.setBorder(BorderFactory.createEmptyBorder(1, 6, 1, 6));
+		box.setSelected(payToClear.isPayingFor(seed));
+		box.addActionListener(e -> payToClear.setPayingFor(seed, box.isSelected()));
+
+		int cost = PayToClear.cost(type);
+		int count = Math.max(standingCount, 1);
+		int wanted = cost * count;
+
+		String label = "Pay to clear " + seed.getName().toLowerCase() + " (" + cost + " coins";
+		label += standingCount > 1 ? " × " + standingCount + ")" : ")";
+		box.setText(label);
+
+		int held = bank.getCount(ItemID.COINS) + carriedCount(ItemID.COINS);
+
+		if (standingCount <= 0)
+		{
+			box.setForeground(TEXT);
+			box.setToolTipText(Tooltips.text("Nothing of this crop is standing right now - "
+				+ "this is what a gardener would charge if there were"));
+		}
+		else if (!bank.hasBeenSeen())
+		{
+			box.setForeground(TEXT);
+			box.setToolTipText(Tooltips.text("Open a bank to see whether you have " + wanted));
+		}
+		else if (held < wanted)
+		{
+			box.setForeground(SHORT);
+			box.setToolTipText(Tooltips.html("You have <b>" + held + "</b> of the " + wanted
+				+ " a gardener would want for " + Plurals.of(standingCount, "standing tree",
+					"standing trees") + "."));
+		}
+		else
+		{
+			box.setForeground(TEXT);
+			box.setToolTipText(Tooltips.text(held + " available, " + wanted + " needed for "
+				+ Plurals.of(standingCount, "standing tree", "standing trees")));
 		}
 		return box;
 	}
@@ -350,12 +483,13 @@ class SeedSelectorPanel extends JPanel
 		SeedInventoryStore seeds, SeedSelectionStore selection, ItemManager itemManager,
 		CompostSelectionStore compost, ProtectionSelectionStore protection, BankContents bank,
 		CarriedItems carried, com.dooglemaps.data.ItemNames itemNames,
-		com.dooglemaps.state.ContractState contracts)
+		com.dooglemaps.state.ContractState contracts, PayToClearStore payToClear)
 	{
 		this.contracts = contracts;
 		this.layout = layout;
 		this.group = group;
 		this.protection = protection;
+		this.payToClear = payToClear;
 		this.bank = bank;
 		this.carried = carried;
 		this.itemNames = itemNames;
@@ -386,6 +520,10 @@ class SeedSelectorPanel extends JPanel
 		protectPanel.setLayout(new javax.swing.BoxLayout(protectPanel, javax.swing.BoxLayout.Y_AXIS));
 		protectPanel.setBackground(getBackground());
 		protectPanel.setBorder(BorderFactory.createEmptyBorder(2, 0, 4, 0));
+
+		clearPanel.setLayout(new BoxLayout(clearPanel, BoxLayout.Y_AXIS));
+		clearPanel.setBackground(getBackground());
+		clearPanel.setBorder(BorderFactory.createEmptyBorder(2, 0, 4, 0));
 
 		heading.setFont(FontManager.getRunescapeSmallFont());
 		Controls.styleButton(heading);
@@ -420,7 +558,16 @@ class SeedSelectorPanel extends JPanel
 			below.add(buildCompostPicker(), BorderLayout.NORTH);
 		}
 		below.add(compostNote, BorderLayout.CENTER);
-		below.add(protectPanel, BorderLayout.SOUTH);
+
+		// Clearing above protecting: a gardener's offer to fell what is already standing is a
+		// different moment in the patch's life than paying to keep the next one safe while it
+		// grows, and the panel reads top to bottom in that order.
+		JPanel payments = new JPanel();
+		payments.setLayout(new BoxLayout(payments, BoxLayout.Y_AXIS));
+		payments.setBackground(getBackground());
+		payments.add(clearPanel);
+		payments.add(protectPanel);
+		below.add(payments, BorderLayout.SOUTH);
 		seedBody.add(below, BorderLayout.SOUTH);
 
 		seedBody.setVisible(seedsVisible);
@@ -443,6 +590,7 @@ class SeedSelectorPanel extends JPanel
 
 		pickedCount = selection.getSelectedFor(group).size();
 		updateHeading();
+		updatePayToClear();
 		updateProtection();
 
 		// With nothing ever cached we genuinely do not know what the player owns, so say

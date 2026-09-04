@@ -133,7 +133,7 @@ public class SavannahHardwoodIsProtectableTest
 
 		List<GuideStep> steps = GuidePlan.forPatch(projection, patches.get(patch).getCompost(),
 			com.dooglemaps.data.PlantingGroup.of(patch.getImplementation()), null, seeds, compost,
-			carried, leprechaun, barbarian,
+			null, carried, leprechaun, barbarian,
 			/* protecting */ true, /* paidToProtect */ true, /* harvestOnly */ false, 1, false,
 			NAMES);
 

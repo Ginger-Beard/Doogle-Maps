@@ -99,6 +99,22 @@ public enum GuideAction
 	PAY_FARMER("Pay the farmer"),
 
 	/**
+	 * Pay the gardener to fell a grown, checked tree rather than swinging the axe yourself.
+	 *
+	 * <p>The player's own alternative — chop, then dig the stump out — never goes away; this is
+	 * a substitute for the {@link #CHOP} click alone, offered only once the health check has
+	 * already happened, so no experience is ever lost by taking it. Only raised for a seed the
+	 * player has said they would rather buy a gardener out of clearing than fell themselves (see
+	 * {@code PayToClearStore}), and only while the coins are actually in the pack — short of the
+	 * price, the guide falls back to {@link #CHOP} rather than stall on an instruction the
+	 * player cannot follow.
+	 *
+	 * <p>Also how a dead redwood comes out, unconditionally: it is the only clearing a spade
+	 * cannot do at all, so Alexandra's coins are not an alternative there but the sole route.
+	 */
+	PAY_TO_CLEAR("Pay to clear"),
+
+	/**
 	 * Hand the empty buckets back before leaving, so they stop costing slots.
 	 *
 	 * <p>Only when the "drop empty buckets" setting is off. Dropping has no action of its

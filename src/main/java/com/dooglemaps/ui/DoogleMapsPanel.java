@@ -100,6 +100,9 @@ public class DoogleMapsPanel extends PluginPanel
 
 	/** The bin run's fill and ash choices, for the compost tab's controls. */
 	private final com.dooglemaps.state.CompostRunStore compostRun;
+
+	/** Which standing crops the player would rather pay a gardener to clear. */
+	private final com.dooglemaps.state.PayToClearStore payToClear;
 	private final RunPanel runPanel;
 	private final HarvestStatsPanel statsPanel;
 
@@ -155,12 +158,14 @@ public class DoogleMapsPanel extends PluginPanel
 		com.dooglemaps.state.ContractState contracts,
 		com.dooglemaps.guide.GuideTracker guideTracker,
 		com.dooglemaps.state.CompostRunStore compostRun,
-		com.dooglemaps.state.RunPresetStore runPresets)
+		com.dooglemaps.state.RunPresetStore runPresets,
+		com.dooglemaps.state.PayToClearStore payToClear)
 	{
 		// Wrapped, so a long list of patches scrolls rather than being clipped.
 		super(true);
 
 		this.compostRun = compostRun;
+		this.payToClear = payToClear;
 
 		this.stateStore = stateStore;
 		this.availability = availability;
@@ -505,7 +510,7 @@ public class DoogleMapsPanel extends PluginPanel
 		PatchTypePanel panel = new PatchTypePanel(
 			layout, groups, group, stateStore, availability, growthTimer, itemManager, config,
 			resolver, seeds, selection, bonuses, compost, protection, bankContents, carriedItems,
-			itemNames, contracts, compostRun);
+			itemNames, contracts, compostRun, payToClear);
 		tabPanels.put(group.getKey(), panel);
 
 		MaterialTab tab = new MaterialTab(new ImageIcon(), tabGroup, panel);

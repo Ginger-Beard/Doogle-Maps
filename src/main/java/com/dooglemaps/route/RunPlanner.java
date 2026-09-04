@@ -4,6 +4,7 @@ import com.dooglemaps.bank.ToolNeeds;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmRegion;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PayToClear;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.AvailabilityProfile;
@@ -980,6 +981,84 @@ public class RunPlanner
 			byProduce.merge(projection.getProduce(), 1, Integer::sum);
 		}
 		return byProduce;
+	}
+
+	/**
+	 * What this group's actionable patches hold that a gardener would be paid to clear, by crop.
+	 *
+	 * <p>The clearing counterpart of {@link #ripeProduceIn}: a grown, standing tree that a gardener
+	 * will fell for coins rather than the player chopping it and digging the stump themselves.
+	 * Counted whether or not the health check has happened yet — the coins have to be in the pack
+	 * before the run reaches the patch, and by the time it does a merely grown-unchecked tree will
+	 * have been checked — and whether or not fruit is still on it, since the guide picks the fruit
+	 * first and pays after. Excluded: a felled stump (nothing left to buy), an empty patch, and a
+	 * diseased or dead crop (both are the gardener's own refusal, and both are already excluded by
+	 * requiring {@code HARVESTABLE} or {@code needsHealthCheck()}, neither of which a diseased or
+	 * dead crop ever answers).
+	 *
+	 * <p>The redwood is deliberately left out of this method. Its own varbit table gives fifteen
+	 * consecutive {@code HARVESTABLE} values with no way to tell a tree still being harvested apart
+	 * from one that is finished and wants clearing, so folding it into this predicate would count
+	 * every growing redwood as clearable. The one redwood state this plugin <i>can</i> name is
+	 * {@code DEAD}, which {@link #deadRedwoodsIn} counts on its own.
+	 */
+	public synchronized Map<Produce, Integer> clearableIn(PlantingGroup group)
+	{
+		Map<Produce, Integer> byProduce = new LinkedHashMap<>();
+		for (FarmPatch patch : availability.getAvailablePatches(group.getType()))
+		{
+			PlantingGroup patchGroup = groups.groupFor(patch);
+			if (patchGroup == null || !patchGroup.equals(group) || !isActionable(patch))
+			{
+				continue;
+			}
+
+			// The predicate lives on PayToClear itself, and the seed selector's standing-crop
+			// rows call the very same method, so the loadout's coin total and the checkboxes
+			// offered in the UI can never disagree about which grown trees are on the table.
+			PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
+			if (!PayToClear.isClearable(projection))
+			{
+				continue;
+			}
+			byProduce.merge(projection.getProduce(), 1, Integer::sum);
+		}
+		return byProduce;
+	}
+
+	/**
+	 * How many of this group's actionable patches are a dead redwood.
+	 *
+	 * <p>A separate count from {@link #clearableIn} rather than a folded-in key, because a dead
+	 * redwood is not a {@code Produce} standing to be counted — it is a patch with nothing left
+	 * growing in it at all, and Alexandra's 2,000 coins are the only way it is ever cleared. Kept
+	 * as its own method so a caller cannot mistake "one dead redwood" for "one redwood log ready to
+	 * pick", which a shared {@code Map<Produce, Integer>} would invite.
+	 */
+	public synchronized int deadRedwoodsIn(PlantingGroup group)
+	{
+		int count = 0;
+		for (FarmPatch patch : availability.getAvailablePatches(group.getType()))
+		{
+			if (patch.getImplementation() != PatchImplementation.REDWOOD)
+			{
+				continue;
+			}
+
+			PlantingGroup patchGroup = groups.groupFor(patch);
+			if (patchGroup == null || !patchGroup.equals(group) || !isActionable(patch))
+			{
+				continue;
+			}
+
+			PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
+			if (projection == null || projection.getCropState() != CropState.DEAD)
+			{
+				continue;
+			}
+			count++;
+		}
+		return count;
 	}
 
 	/**

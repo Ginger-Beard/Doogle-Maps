@@ -4,7 +4,9 @@ import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.FarmPatch;
 import com.dooglemaps.data.FarmingWorldData;
 import com.dooglemaps.data.PatchImplementation;
+import com.dooglemaps.data.PayToClear;
 import com.dooglemaps.data.PlantingGroup;
+import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.PlantingGroups;
 import com.dooglemaps.state.AvailabilityProfile;
 import com.dooglemaps.state.PatchSnapshot;
@@ -24,6 +26,7 @@ import java.awt.FlowLayout;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import javax.swing.BorderFactory;
@@ -87,7 +90,8 @@ class PatchTypePanel extends JPanel
 		com.dooglemaps.bank.BankContents bank, com.dooglemaps.guide.CarriedItems carried,
 		com.dooglemaps.data.ItemNames itemNames,
 		com.dooglemaps.state.ContractState contracts,
-		com.dooglemaps.state.CompostRunStore compostRun)
+		com.dooglemaps.state.CompostRunStore compostRun,
+		com.dooglemaps.state.PayToClearStore payToClear)
 	{
 		// Nothing goes in a compost bin but buckets and weeds, so a "seeds you own" list under
 		// one was simply wrong. Derived from the seed table rather than named here.
@@ -101,7 +105,7 @@ class PatchTypePanel extends JPanel
 		this.itemNames = itemNames;
 		this.seedSelector = PatchTabs.isPlantable(type)
 			? new SeedSelectorPanel(layout, group, resolver, seeds, selection, itemManager, compost,
-				protection, bank, carried, itemNames, contracts)
+				protection, bank, carried, itemNames, contracts, payToClear)
 			: null;
 		// The one tab with no seeds gets the bin run's controls instead - what fills the
 		// bins, and whether the ash upgrade is on. Same footer slot, same reasoning: the
@@ -321,6 +325,33 @@ class PatchTypePanel extends JPanel
 	}
 
 	/**
+	 * How many of each payable seed are standing, grown, in this group's patches right now.
+	 *
+	 * <p>Built from the very projections {@link #refresh} has already gathered, on the very
+	 * predicate {@code RunPlanner.clearableIn} counts by — {@link PayToClear#isClearable} — so the
+	 * seed selector's rows and the loadout's coin total can never disagree about which trees are
+	 * on offer. Read off the Swing thread deliberately, the same reasoning {@link #plantableCount}
+	 * gives: the planner is synchronized and meant to be walked from the client thread instead.
+	 */
+	private static Map<Seed, Integer> standingClearable(List<PatchProjection> projections)
+	{
+		Map<Seed, Integer> byProduce = new LinkedHashMap<>();
+		for (PatchProjection projection : projections)
+		{
+			if (!PayToClear.isClearable(projection))
+			{
+				continue;
+			}
+			Seed seed = Seed.forProduce(projection.getProduce());
+			if (seed != null)
+			{
+				byProduce.merge(seed, 1, Integer::sum);
+			}
+		}
+		return byProduce;
+	}
+
+	/**
 	 * Repaints every row against the current cache. Must run on the EDT.
 	 *
 	 * <h2>One list, not two</h2>
@@ -429,6 +460,7 @@ class PatchTypePanel extends JPanel
 			// the planner: this runs on the Swing thread, and the planner is synchronised and
 			// walked from the client thread.
 			seedSelector.setPatchCount(plantableCount(projections));
+			seedSelector.setStandingClearable(standingClearable(projections));
 			seedSelector.refresh();
 		}
 

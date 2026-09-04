@@ -417,7 +417,8 @@ public interface DoogleMapsConfig extends Config
 		name = "Left-click the right Pay option",
 		description = "While a step is asking you to pay a farmer who charges per patch - the "
 			+ "coral nurseries, the north and south allotments - put that patch's own Pay "
-			+ "option under the left click. Only reorders the menu, and only for that step.",
+			+ "option under the left click. Covers paying to clear a crop as well as paying to "
+			+ "protect one. Only reorders the menu, and only for that step.",
 		position = 42,
 		section = guideSection
 	)

@@ -79,6 +79,17 @@ public class LoadoutItem
 
 		COMPOST("Compost"),
 		PAYMENT("Protection payments"),
+
+		/**
+		 * Coins a gardener will take to fell a grown tree, so the player never swings an axe.
+		 *
+		 * <p>Deliberately its own category rather than folded into {@link #PAYMENT}: a
+		 * protection payment guards a crop that is still growing, while this buys a standing,
+		 * checked one out of being chopped — different moments in a patch's life, and a
+		 * tooltip that mixed the two reasons would read as one payment covering both.
+		 */
+		CLEARING("Clearing fees"),
+
 		TOOL("Tools"),
 		GEAR("Yield and experience gear"),
 		TELEPORT("Teleports"),
