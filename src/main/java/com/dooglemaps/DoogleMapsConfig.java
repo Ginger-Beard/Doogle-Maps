@@ -340,17 +340,19 @@ public interface DoogleMapsConfig extends Config
 	}
 
 	/**
-	 * The same arrangement again, for the one noted item whose left-click fights the step.
+	 * The same arrangement again, for the noted items whose left-click fights the step.
 	 *
-	 * <p>Everything else the leprechaun notes defaults to Use; a grimy herb's left-click is
-	 * Clean, and cleaned herbs are ones he will not note.
+	 * <p>Everything else the leprechaun notes already defaults to Use; a grimy herb's left-click
+	 * is Clean, and an edible crop's is Eat - both take the item away from him instead of
+	 * noting it.
 	 */
 	@ConfigItem(
 		keyName = "herbUseLeftClick",
-		name = "Left-click Use grimy herbs at the leprechaun",
+		name = "Left-click Use crops at the leprechaun",
 		description = "While a step is asking you to note your crops with the tool leprechaun, "
-			+ "make Use a grimy herb's left-click option instead of Clean. Only reorders the "
-			+ "menu, and only for that moment - herbs clean normally the rest of the time.",
+			+ "make Use the left-click option instead of Clean for a grimy herb or Eat for an "
+			+ "edible crop. Only reorders the menu, and only for that moment - herbs clean and "
+			+ "crops eat normally the rest of the time.",
 		position = 41,
 		section = guideSection
 	)

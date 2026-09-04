@@ -140,17 +140,18 @@ public class GuideMenuSwap
 				&& com.dooglemaps.state.ContractState.JANE_NPC_IDS.contains(entry.getNpc().getId()));
 		}
 
-		// A grimy herb's Use option, while a note step is current. Every other crop he notes
-		// already defaults to Use; a grimy herb's left-click is Clean, so following the
-		// highlight quietly cleaned a herb instead — and cleaned herbs are ones he will not
-		// note. Requested from play. Any grimy herb, not just the one the step names: the
-		// step points at the biggest stack, the visit notes them all, and the menu being
-		// reordered is only ever the hovered item's own.
+		// A notable crop's Use option, while a note step is current. A grimy herb's left-click
+		// is Clean and an edible crop's is Eat - both take the item away from him instead of
+		// handing it over, so following the highlight quietly disposed of the harvest instead
+		// of noting it. Every other notable crop already defaults to Use, so promoting it there
+		// is a no-op rather than a second swap to worry about. Requested from play. Any notable
+		// crop, not just the one the step names: the step points at the biggest stack, the
+		// visit notes them all, and the menu being reordered is only ever the hovered item's own.
 		if (config.herbUseLeftClick() && step != null
 			&& step.getAction() == GuideAction.NOTE_AT_LEPRECHAUN)
 		{
 			promote("Use", entry ->
-				com.dooglemaps.data.NotableHarvests.isGrimyHerb(entry.getItemId()));
+				com.dooglemaps.data.NotableHarvests.isLeprechaunNotable(entry.getItemId()));
 		}
 
 		// The per-patch Pay, while a step is asking for one. The only swap here that prevents a

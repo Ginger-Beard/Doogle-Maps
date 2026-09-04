@@ -81,6 +81,34 @@ public final class NotableHarvests
 		GRIMY_HERBS.add(itemId);
 	}
 
+	/**
+	 * Every item id the leprechaun will actually note - {@code Produce}'s own leprechaun-notable
+	 * crops together with the table above.
+	 *
+	 * <p>{@code GuideMenuSwap} promotes Use over whatever a notable item's left-click happens to
+	 * default to while the note step is current: Clean for a grimy herb, Eat for a banana or any
+	 * other edible produce. Every other notable crop already defaults to Use, so promoting it
+	 * there is a no-op rather than a second swap. Named apart from {@link #isNotable}, which asks
+	 * a narrower question - "is this a harvest {@code Produce} cannot name" - and is what the
+	 * bank overlay wants; this one is the union {@code Produce.isLeprechaunNotable} plus that
+	 * table, deliberately not layered onto the existing name.
+	 */
+	private static final java.util.Set<Integer> LEPRECHAUN_NOTABLE = new java.util.LinkedHashSet<>();
+
+	static
+	{
+		for (Produce produce : Produce.values())
+		{
+			if (produce.isLeprechaunNotable())
+			{
+				LEPRECHAUN_NOTABLE.add(produce.getItemID());
+			}
+		}
+		// The table above is entirely items the leprechaun notes that Produce cannot name, so
+		// every one of them belongs here too.
+		LEPRECHAUN_NOTABLE.addAll(BY_ITEM_ID.keySet());
+	}
+
 	private NotableHarvests()
 	{
 	}
@@ -95,6 +123,15 @@ public final class NotableHarvests
 	public static boolean isGrimyHerb(int itemId)
 	{
 		return GRIMY_HERBS.contains(itemId);
+	}
+
+	/**
+	 * Whether the leprechaun notes this item, whether it is a main crop {@code Produce} names
+	 * itself or one of the extras in the table above. A superset of {@link #isGrimyHerb}.
+	 */
+	public static boolean isLeprechaunNotable(int itemId)
+	{
+		return LEPRECHAUN_NOTABLE.contains(itemId);
 	}
 
 	/** The item's name as spoken in guide text, or null for an item not in the table. */

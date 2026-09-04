@@ -243,6 +243,109 @@ public class GuideMenuSwapTest
 	}
 
 	/**
+	 * A banana's left-click is Eat, which takes it away from him rather than handing it over -
+	 * the same fault the grimy herb swap was written for, just on an edible crop instead of a
+	 * herb. While the note step is current, Use gets promoted the same way.
+	 */
+	@Test
+	public void aBananaGetsUsePromotedWhileTheNoteStepIsCurrent()
+	{
+		assertLeprechaunNoteSwapPromotesUse(net.runelite.api.gameval.ItemID.BANANA, "Eat");
+	}
+
+	/** Same fault, a different crop: a papaya's left-click is Eat too. */
+	@Test
+	public void aPapayaGetsUsePromotedWhileTheNoteStepIsCurrent()
+	{
+		assertLeprechaunNoteSwapPromotesUse(net.runelite.api.gameval.ItemID.PAPAYA, "Eat");
+	}
+
+	/**
+	 * Food with nothing to do with farming is left alone: a shark is not a notable harvest, so
+	 * its own Eat stays the left click even with the note step current.
+	 */
+	@Test
+	public void nonCropFoodIsLeftAloneEvenWithTheNoteStepCurrent()
+	{
+		net.runelite.api.MenuEntry use =
+			entry("Use", "<col=ffff00>Shark", net.runelite.api.gameval.ItemID.SHARK);
+		net.runelite.api.MenuEntry eat =
+			entry("Eat", "<col=ffff00>Shark", net.runelite.api.gameval.ItemID.SHARK);
+		net.runelite.api.MenuEntry[] entries = {use, eat};
+
+		runNoteStepSwap(entries);
+
+		assertEquals("a shark is not a notable harvest, so Eat stays put",
+			eat, entries[entries.length - 1]);
+	}
+
+	/** With no note step current, a banana's Eat is left exactly where the game put it. */
+	@Test
+	public void aBananaIsLeftAloneWithNoNoteStepCurrent()
+	{
+		net.runelite.api.MenuEntry use =
+			entry("Use", "<col=ffff00>Banana", net.runelite.api.gameval.ItemID.BANANA);
+		net.runelite.api.MenuEntry eat =
+			entry("Eat", "<col=ffff00>Banana", net.runelite.api.gameval.ItemID.BANANA);
+		net.runelite.api.MenuEntry[] entries = {use, eat};
+
+		runNoteStepSwap(entries, null);
+
+		assertEquals("no note step, so nothing here touches the menu",
+			eat, entries[entries.length - 1]);
+	}
+
+	/**
+	 * Builds a two-entry menu (Use, then Eat as the default left click) for the given item,
+	 * runs the swap with a {@code NOTE_AT_LEPRECHAUN} step current, and asserts Use is promoted.
+	 */
+	private void assertLeprechaunNoteSwapPromotesUse(int itemId, String defaultOption)
+	{
+		net.runelite.api.MenuEntry use = entry("Use", "<col=ffff00>Crop", itemId);
+		net.runelite.api.MenuEntry defaultEntry =
+			entry(defaultOption, "<col=ffff00>Crop", itemId);
+		net.runelite.api.MenuEntry[] entries = {use, defaultEntry};
+
+		runNoteStepSwap(entries);
+
+		assertEquals("Use belongs under the left click, which is the last entry",
+			use, entries[entries.length - 1]);
+	}
+
+	/** Runs {@code onPostMenuSort} with a {@code NOTE_AT_LEPRECHAUN} step current. */
+	private void runNoteStepSwap(net.runelite.api.MenuEntry[] entries)
+	{
+		runNoteStepSwap(entries, GuideStep.of(GuideAction.NOTE_AT_LEPRECHAUN,
+			com.dooglemaps.data.FarmingWorldData
+				.getPatches(com.dooglemaps.data.PatchImplementation.FLOWER).get(0),
+			"Note your crops with the tool leprechaun."));
+	}
+
+	/** As above, with an arbitrary current step (or none, for {@code null}). */
+	private void runNoteStepSwap(net.runelite.api.MenuEntry[] entries, GuideStep currentStep)
+	{
+		net.runelite.api.Menu menu = Mockito.mock(net.runelite.api.Menu.class);
+		when(menu.getMenuEntries()).thenReturn(entries);
+
+		net.runelite.api.Client client = Mockito.mock(net.runelite.api.Client.class);
+		when(client.getMenu()).thenReturn(menu);
+		when(client.isMenuOpen()).thenReturn(false);
+
+		com.dooglemaps.DoogleMapsConfig config =
+			Mockito.mock(com.dooglemaps.DoogleMapsConfig.class);
+		when(config.guidedMode()).thenReturn(true);
+		when(config.herbUseLeftClick()).thenReturn(true);
+
+		GuideTracker tracker = Mockito.mock(GuideTracker.class);
+		when(tracker.getStatus()).thenReturn(statusWithHops());
+		when(tracker.getCurrentStep()).thenReturn(currentStep);
+
+		GuideMenuSwap swap = construct(GuideMenuSwap.class, client, tracker, config, seeds,
+			Mockito.mock(com.dooglemaps.bank.RunLoadout.class), Mockito.mock(CarriedItems.class));
+		swap.onPostMenuSort(new net.runelite.api.events.PostMenuSort());
+	}
+
+	/**
 	 * Stocks the <b>seed</b> item rather than the planted one.
 	 *
 	 * <p>{@code stock} records {@code getPlantedItemID()}, which for a tree crop is the sapling —
@@ -417,6 +520,14 @@ public class GuideMenuSwapTest
 		net.runelite.api.MenuEntry entry = Mockito.mock(net.runelite.api.MenuEntry.class);
 		when(entry.getOption()).thenReturn(option);
 		when(entry.getTarget()).thenReturn(target);
+		return entry;
+	}
+
+	/** As above, for an inventory item - the swaps keyed on item id need one. */
+	private static net.runelite.api.MenuEntry entry(String option, String target, int itemId)
+	{
+		net.runelite.api.MenuEntry entry = entry(option, target);
+		when(entry.getItemId()).thenReturn(itemId);
 		return entry;
 	}
 
