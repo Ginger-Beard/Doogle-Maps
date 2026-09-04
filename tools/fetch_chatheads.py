@@ -91,9 +91,17 @@ def api(**params):
 # id a player actually meets depends on an unlock: _UNLOCKED, 15063, once the nurseries are open.
 # Reported from play with that id. Until this is next run he is named nowhere; the identity half
 # is handled at runtime by FarmerVariants, which does not need a name.
+#
+# The Avium Savannah hardwood gardener is the same shape again: farmer_constants() already
+# finds FROG_QUEST_MARCELLUS, 13401, because that is his patch's farmer id and the wiki does
+# know it. But the scene may carry a quest-dialogue variant instead - FARMER at 12936 or
+# NORMAL at 12935 - and neither is written to Farmers.java today, so a step outlined by name
+# alone would find nobody standing under either. Grouping him writes "Marcellus" under all
+# three the same way the coral farmer's three get one sprite each.
 EXTRA_NPC_GROUPS = [
     ("FARMING_GUILD_MASTER", "FARMING_GUILD_MASTER_1OP", "FARMING_GUILD_MASTER_2OP"),
     ("TORTUGAN_CORAL_FARMER", "TORTUGAN_CORAL_FARMER_LOCKED", "TORTUGAN_CORAL_FARMER_UNLOCKED"),
+    ("FROG_QUEST_MARCELLUS", "FROG_QUEST_MARCELLUS_FARMER", "FROG_QUEST_MARCELLUS_NORMAL"),
 ]
 
 

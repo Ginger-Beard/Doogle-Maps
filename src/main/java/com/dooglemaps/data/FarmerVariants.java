@@ -46,7 +46,43 @@ public final class FarmerVariants
 			NpcID.TORTUGAN_CORAL_FARMER_LOCKED,
 			NpcID.TORTUGAN_CORAL_FARMER_UNLOCKED,
 		},
+		{
+			// The Avium Savannah hardwood gardener. The world data holds 13401
+			// (NpcID.FROG_QUEST_MARCELLUS); the scene may carry either quest-dialogue variant
+			// instead, the same shape as the coral farmer above.
+			NpcID.FROG_QUEST_MARCELLUS,
+			NpcID.FROG_QUEST_MARCELLUS_FARMER,
+			NpcID.FROG_QUEST_MARCELLUS_NORMAL,
+		},
 	};
+
+	/**
+	 * Farmer ids the world data itself carries, as some patch's {@code farmer} — lazily built
+	 * because {@link com.dooglemaps.data.FarmingWorldData} finishes loading after this class
+	 * does.
+	 *
+	 * <p>Not held on {@link Farmers}: that class is generated from the wiki, and this set is
+	 * asking a different question — not "what is this id called" but "does the world data
+	 * already use this id to mean a specific patch's farmer".
+	 */
+	private static java.util.Set<Integer> worldFarmerIds;
+
+	private static java.util.Set<Integer> worldFarmerIds()
+	{
+		if (worldFarmerIds == null)
+		{
+			java.util.Set<Integer> ids = new java.util.HashSet<>();
+			for (FarmPatch patch : FarmingWorldData.getAllPatches())
+			{
+				if (patch.isProtectable())
+				{
+					ids.add(patch.getFarmer());
+				}
+			}
+			worldFarmerIds = ids;
+		}
+		return worldFarmerIds;
+	}
 
 	private FarmerVariants()
 	{
@@ -55,8 +91,9 @@ public final class FarmerVariants
 	/**
 	 * Whether these two NPC ids are the same gardener.
 	 *
-	 * <p>Three tests, cheapest first: the same id, a hand-written variant group, then a shared
-	 * name from {@link Farmers}. The last is what {@code GuideOverlay} already did inline for
+	 * <p>Four tests, cheapest first: the same id, a hand-written variant group, a guard against
+	 * two ids the world data itself uses as two different patches' farmers, then a shared name
+	 * from {@link Farmers}. The name test is what {@code GuideOverlay} already did inline for
 	 * Jane, kept so that adding this does not quietly change her.
 	 */
 	public static boolean same(int a, int b)
@@ -72,6 +109,17 @@ public final class FarmerVariants
 			{
 				return true;
 			}
+		}
+
+		// Two ids the world data both carries as a patch's farmer are two different gardeners
+		// whatever the wiki calls them - Fossil Island's three "Squirrel"s are the case this
+		// exists for, three different NPCs that happen to share a name in Farmers. The name path
+		// below exists for ids the world data does not hold at all (a chathead variant like
+		// Jane's _1OP/_2OP), so requiring one side to be unknown to the world data costs her
+		// nothing: neither of her variants is ever a patch's farmer id.
+		if (worldFarmerIds().contains(a) && worldFarmerIds().contains(b))
+		{
+			return false;
 		}
 
 		String name = Farmers.getName(a);

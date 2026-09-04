@@ -102,6 +102,13 @@ public class ProtectionCapture
 	/** Generous — a payment conversation takes seconds; a minute covers reading the options. */
 	private static final int SELECTION_FRESH_TICKS = 100;
 
+	/**
+	 * The patch a "Protection recorded" line was last logged for, so the conversation says so
+	 * once rather than once a tick for as long as the acceptance line stays on screen.
+	 */
+	@Nullable
+	private String lastRecordedPatchKey;
+
 	@Inject
 	ProtectionCapture(Client client, PatchStateStore stateStore)
 	{
@@ -114,6 +121,7 @@ public class ProtectionCapture
 		lastSelectedOption = 0;
 		lastSelectedText = null;
 		lastSelectedTick = -1000;
+		lastRecordedPatchKey = null;
 		reportedUnmatched.clear();
 	}
 
@@ -125,6 +133,9 @@ public class ProtectionCapture
 		if (text == null || head == null
 			|| head.getModelType() != WidgetModelType.NPC_CHATHEAD)
 		{
+			// The dialogue closed - the next acceptance line, whenever it comes, is a new
+			// conversation and earns its own log line.
+			lastRecordedPatchKey = null;
 			return;
 		}
 
@@ -149,9 +160,17 @@ public class ProtectionCapture
 			return;
 		}
 
-		log.info("Protection recorded: {} paid for, from chathead {}",
-			patch.getDisplayName(), head.getModelId());
 		stateStore.recordProtected(patch, true);
+
+		// The acceptance line stays on screen for several ticks with nothing changing about
+		// it, and onGameTick fires every one of them - without this it was "Protection
+		// recorded" once a tick for as long as the player left the dialogue open.
+		if (!patch.getKey().equals(lastRecordedPatchKey))
+		{
+			lastRecordedPatchKey = patch.getKey();
+			log.info("Protection recorded: {} paid for, from chathead {}",
+				patch.getDisplayName(), head.getModelId());
+		}
 	}
 
 	@Subscribe
@@ -339,7 +358,16 @@ public class ProtectionCapture
 			return null;
 		}
 
-		FarmPatch found = null;
+		// Two tiers, exact beating variant, rather than one running list where the last
+		// candidate silently won. Fossil Island has three hardwood patches whose farmers are
+		// three different NPCs that all happen to share the name "Squirrel" - FarmerVariants
+		// treats them as three gardeners now, but before this a variant-table match on the name
+		// fallback still made all three "the same farmer" as far as this method was concerned,
+		// and whichever patch iterated last (West) kept overwriting `found`. Every payment at
+		// Fossil Island was recorded against West. Reported from play, all three squirrels paid
+		// and only one patch ever reading protected.
+		java.util.List<FarmPatch> exact = new java.util.ArrayList<>();
+		java.util.List<FarmPatch> variant = new java.util.ArrayList<>();
 		for (FarmRegion region : FarmingWorldData.getRegionsForLocation(client.getLocalPlayer().getWorldLocation()))
 		{
 			for (FarmPatch patch : region.getPatches())
@@ -359,10 +387,40 @@ public class ProtectionCapture
 				boolean fresh = age >= 0 && age <= SELECTION_FRESH_TICKS;
 				if (patch.getPatchNumber() == -1 || (fresh && chosen(patch)))
 				{
-					found = patch;
+					(patch.getFarmer() == npcId ? exact : variant).add(patch);
 				}
 			}
 		}
-		return found;
+
+		// Exact id matches beat variant matches outright - the world data's own id is the
+		// stronger claim, and letting it win is what tells Chet's exact-id coral entries apart
+		// from a variant match that only shares a name.
+		java.util.List<FarmPatch> winners = exact.isEmpty() ? variant : exact;
+		if (winners.size() > 1)
+		{
+			// Two patches of equal strength both claim this chathead - the same failure mode
+			// as before, just refused instead of resolved by iteration order. A missed record
+			// shows up as "pay the farmer" reappearing, which is visible; a wrong one never is.
+			log.info("Chathead {} matched {} patches at equal strength and none could be "
+					+ "preferred over the others ({}) - refusing to guess which was paid. See "
+					+ "FarmerVariants.",
+				npcId, winners.size(), displayNames(winners));
+			return null;
+		}
+		return winners.isEmpty() ? null : winners.get(0);
+	}
+
+	private static String displayNames(java.util.List<FarmPatch> patches)
+	{
+		StringBuilder names = new StringBuilder();
+		for (FarmPatch patch : patches)
+		{
+			if (names.length() > 0)
+			{
+				names.append(", ");
+			}
+			names.append(patch.getDisplayName());
+		}
+		return names.toString();
 	}
 }

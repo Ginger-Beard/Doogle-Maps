@@ -1426,29 +1426,72 @@ public class GuideOverlay extends Overlay
 	 */
 	private void highlightNpcById(Graphics2D graphics, Color colour, int npcId)
 	{
-		// Through the variant table, not the raw id alone. One person can be several ids —
-		// Guildmaster Jane is three, and the step carries her chathead id while the NPC in the
-		// guild stands as an _1OP/_2OP variant, so the exact compare outlined nobody.
-		//
-		// This used to group by shared NAME, which covers Jane and cannot cover the coral
-		// farmer: the generator has never found a wiki page for him, so he has no name to
-		// share and the step outlined nobody at the nurseries. FarmerVariants keeps the name
-		// path and adds the ids that have been seen in play.
+		// Two passes, exact id first. Fossil Island has three hardwood patches whose farmers
+		// are three different NPCs that all happen to share the name "Squirrel" - a single
+		// name-matching pass (what FarmerVariants.same falls back to) would outline whichever
+		// squirrel came first in world order for all three steps. The exact id, which is the
+		// one FarmingWorldData actually names for this step's patch, is the disambiguator; the
+		// variant pass exists only for a farmer whose step-carried id is not the one the world
+		// data recorded - Guildmaster Jane's _1OP/_2OP, the coral farmer's _LOCKED/_UNLOCKED.
+		NPC variantMatch = null;
 		for (NPC npc : client.getTopLevelWorldView().npcs())
 		{
 			if (npc == null)
 			{
 				continue;
 			}
-			if (!com.dooglemaps.data.FarmerVariants.same(npcId, npc.getId()))
+			if (npc.getId() == npcId)
 			{
-				continue;
+				outlineNpc(graphics, colour, npc);
+				loggedNpcMissId = -1;
+				return;
 			}
+			if (variantMatch == null && com.dooglemaps.data.FarmerVariants.same(npcId, npc.getId()))
+			{
+				variantMatch = npc;
+			}
+		}
 
-			outlineNpc(graphics, colour, npc);
+		if (variantMatch != null)
+		{
+			outlineNpc(graphics, colour, variantMatch);
+			loggedNpcMissId = -1;
 			return;
 		}
+
+		// Nothing in the scene matched, by either pass - said once per id rather than once a
+		// frame, mirroring findPatchObjects' loggedMissKey. A variant-id mismatch like the
+		// Savannah gardener's is otherwise invisible from outside: the step names an id, the
+		// scene holds a different one for the same person, and nothing on screen says so.
+		if (npcId != loggedNpcMissId)
+		{
+			loggedNpcMissId = npcId;
+			String name = com.dooglemaps.data.Farmers.getName(npcId);
+			StringBuilder sameName = new StringBuilder();
+			if (name != null)
+			{
+				for (NPC npc : client.getTopLevelWorldView().npcs())
+				{
+					if (npc != null && name.equals(npc.getName()))
+					{
+						if (sameName.length() > 0)
+						{
+							sameName.append(", ");
+						}
+						sameName.append(npc.getId());
+					}
+				}
+			}
+			log.info("No scene NPC matches id {} ({}) by id or by variant - nothing to "
+					+ "outline. {}",
+				npcId, name, sameName.length() > 0
+					? "Scene NPCs named \"" + name + "\": " + sameName
+					: "No scene NPC shares that name either.");
+		}
 	}
+
+	/** The last step NPC id a highlight miss was logged for; see {@link #highlightNpcById}. */
+	private int loggedNpcMissId = -1;
 
 	/** Outlines the nearest tool leprechaun, for the noting and withdrawing steps. */
 	private void highlightLeprechaun(Graphics2D graphics, Color colour)

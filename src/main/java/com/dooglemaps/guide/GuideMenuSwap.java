@@ -226,10 +226,31 @@ public class GuideMenuSwap
 	/** Puts this patch's own Pay option under the left click, if the farmer offers one. */
 	private void promotePayFor(com.dooglemaps.data.FarmPatch patch)
 	{
-		String name = patch == null ? "" : patch.getName();
+		if (patch == null)
+		{
+			return;
+		}
+
+		if (isOnlyPatchForItsFarmer(patch))
+		{
+			// No sibling patch shares this farmer, so there is nothing else a plain "Pay"
+			// could mean - the exact id is the whole disambiguation and the option's wording
+			// does not have to name the patch at all. Fossil Island's three hardwood patches
+			// are three different squirrels, each the sole farmer of its own patch, and each
+			// squirrel's menu reads a plain "Pay" with no patch name in it anywhere - so the
+			// name-contains rule below could never match there and paying never promoted.
+			// Reported from play: none of the three squirrels ever swapped.
+			promoteMatching(entry -> entry.getNpc() != null
+				&& entry.getNpc().getId() == patch.getFarmer()
+				&& startsWithPay(entry.getOption()));
+			return;
+		}
+
+		String name = patch.getName();
 		if (name.isEmpty())
 		{
-			// One patch, one Pay - there is nothing to choose between.
+			// Several patches share this farmer and this one has no disambiguating name -
+			// nothing in the option text can single it out, so leave the menu as built.
 			return;
 		}
 
@@ -239,10 +260,37 @@ public class GuideMenuSwap
 			String option = entry.getOption();
 			return entry.getNpc() != null
 				&& com.dooglemaps.data.FarmerVariants.same(patch.getFarmer(), entry.getNpc().getId())
-				&& option != null
-				&& option.toLowerCase(java.util.Locale.ROOT).startsWith("pay")
+				&& startsWithPay(option)
 				&& option.toLowerCase(java.util.Locale.ROOT).contains(wanted);
 		});
+	}
+
+	private static boolean startsWithPay(@javax.annotation.Nullable String option)
+	{
+		return option != null && option.toLowerCase(java.util.Locale.ROOT).startsWith("pay");
+	}
+
+	/**
+	 * Whether no other patch in this farmer's region answers to the same farmer id.
+	 *
+	 * <p>A farmer tending several patches (Chet, the two coral nurseries) needs the option text
+	 * itself to say which one was chosen; a farmer with exactly one needs nothing beyond the
+	 * exact id, which is the case the name-contains rule cannot cover at Fossil Island.
+	 */
+	private static boolean isOnlyPatchForItsFarmer(com.dooglemaps.data.FarmPatch patch)
+	{
+		if (patch.getRegion() == null)
+		{
+			return true;
+		}
+		for (com.dooglemaps.data.FarmPatch sibling : patch.getRegion().getPatches())
+		{
+			if (sibling != patch && sibling.getFarmer() == patch.getFarmer())
+			{
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** Moves the named option on the matched entry to the left-click, at full priority. */
