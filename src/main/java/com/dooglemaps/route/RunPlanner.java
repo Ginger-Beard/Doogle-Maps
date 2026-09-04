@@ -719,6 +719,11 @@ public class RunPlanner
 		// player has said crops may be fed to a bin, and are serviced wherever the run already
 		// goes - planStops drops any stop that would exist only for one, so they never cause
 		// travel of their own.
+		//
+		// Which makes this half an answer for them, on purpose: "in the run" here means the
+		// fodder toggle allows it, not that the trip goes there. Anything telling the player
+		// what a run WOULD DO about one of these has to ask binServicedByARun as well - see
+		// selectedForRuns, and the tree-only run that announced ready compost at Ardougne.
 		if (com.dooglemaps.data.CompostBin.forType(patch.getImplementation()) != null)
 		{
 			return compostRun.isFodderEnabled();
@@ -748,11 +753,75 @@ public class RunPlanner
 	 * for its slowest crop is precisely a patch <b>Start run would not visit</b>, so counting
 	 * its ready flower said "go now" about a teleport the setting exists to prevent. The run's
 	 * own types are what the hold is scoped to, which is what {@code runTypes()} answers.
+	 *
+	 * <p>The seven bins beside the allotments need the third question, because for them
+	 * {@link #inTheRun} is deliberately not the whole answer: it says the fodder toggle lets the
+	 * run touch them, and {@link #binServicedByARun} says whether the run goes anywhere near
+	 * one. Reported from play as a tree-only run announcing supercompost ready at Ardougne —
+	 * true of the bin, and nothing a tree run would ever collect.
 	 */
 	public boolean selectedForRuns(FarmPatch patch)
 	{
-		return inTheRun(patch) && !heldForRegrowth(patch)
-			&& !clusterHeld(patch, tickedTypes());
+		Set<PatchImplementation> types = tickedTypes();
+		if (!inTheRun(patch) || heldForRegrowth(patch) || clusterHeld(patch, types))
+		{
+			return false;
+		}
+		// COMPOST rather than CompostBin.forType, and the same test planStops itself skips on:
+		// the guild's big bin is a ticked line that plans its own stop, so it is answered in
+		// full by the three questions above.
+		return patch.getImplementation() != PatchImplementation.COMPOST
+			|| binServicedByARun(patch, types);
+	}
+
+	/**
+	 * Whether a run over these types would stand in front of one of the seven allotment bins.
+	 *
+	 * <h2>Being in a run is not being visited</h2>
+	 *
+	 * These bins are the one thing in the plugin that can be in a run without being a reason to
+	 * make one. {@link #inTheRun} answers true for all seven the moment the fodder toggle is on,
+	 * whatever is ticked, because they are serviced <b>wherever the run already goes</b> — and
+	 * the rule that keeps that honest lives in {@link #addOpportunisticBins}, which bolts a bin
+	 * onto a region that already has a stop and never creates one.
+	 *
+	 * <p>So anything asking "would a run do this" about a bin has to ask both halves, and until
+	 * this existed the ready counter asked only the first: a tree-only run was told supercompost
+	 * was ready at Ardougne, where no stop would ever be made. Reported from play.
+	 *
+	 * <p>The rule restated, deliberately in the same words {@link #planStops} builds it from — a
+	 * region gets a stop from a patch that is ticked, in the run, wanting something doing, and
+	 * held back by neither hold. {@code COMPOST} is skipped here for the reason planStops skips
+	 * it there: a bin cannot be the patch that creates the stop it is asking to join. Restating
+	 * rather than reading the plan back, as {@code allotmentBinsInTheRun} does, because this is
+	 * asked from every thread the ready counter runs on and {@code planStops} is only ever
+	 * entered under this planner's monitor — see {@code ReadyInfoBox.update}, which is called
+	 * from the client thread, the Swing thread and a profile load alike. Everything here is
+	 * lock-guarded store reads and pure projection arithmetic, the same as its caller.
+	 *
+	 * <p>The region object is the unit rather than a region id because that is what planStops
+	 * groups by: every patch in a {@link FarmRegion} carries its id, and no two regions share
+	 * one. The bin's own neighbours are therefore exactly the patches that could put a stop
+	 * where it stands. Availability has to be asked as we go — unlike planStops, this is not
+	 * already walking an available-only set, the same as {@link #guildWillFeed}.
+	 */
+	public boolean binServicedByARun(FarmPatch bin, Set<PatchImplementation> types)
+	{
+		for (FarmPatch neighbour : bin.getRegion().getPatches())
+		{
+			if (neighbour.getImplementation() == PatchImplementation.COMPOST
+				|| !types.contains(neighbour.getImplementation())
+				|| !availability.isAvailable(neighbour))
+			{
+				continue;
+			}
+			if (inTheRun(neighbour) && isActionable(neighbour) && !heldForRegrowth(neighbour)
+				&& !clusterHeld(neighbour, types))
+			{
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

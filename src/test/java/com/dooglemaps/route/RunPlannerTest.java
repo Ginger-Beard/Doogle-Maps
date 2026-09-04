@@ -1317,7 +1317,17 @@ public class RunPlannerTest
 	/** A bin varbit meaning "finished, waiting to be emptied", decoded rather than assumed. */
 	private int readyBinValue()
 	{
-		FarmPatch bin = patch(FALADOR_BIN);
+		return readyBinValue(patch(FALADOR_BIN));
+	}
+
+	/**
+	 * The same, asked of a particular bin.
+	 *
+	 * <p>The guild's holds thirty rather than fifteen and decodes on its own table, so a value
+	 * read off an allotment bin says nothing about it.
+	 */
+	private int readyBinValue(FarmPatch bin)
+	{
 		for (int value = 0; value < 256; value++)
 		{
 			ProduceState decoded = bin.getImplementation().forVarbitValue(value);
@@ -1327,7 +1337,7 @@ public class RunPlannerTest
 				return value;
 			}
 		}
-		throw new AssertionError("no harvestable varbit decodes for the Falador bin");
+		throw new AssertionError("no harvestable varbit decodes for " + bin.getKey());
 	}
 
 	/**
@@ -2646,6 +2656,158 @@ public class RunPlannerTest
 			}
 		}
 		throw new AssertionError("no " + type + " patch at Kourend");
+	}
+
+	/** Ardougne's plot: two allotments, a flower, a herb and the bin, and not a tree in sight. */
+	private static final String ARDOUGNE_BIN = "10548.4775";
+	private static final String ARDOUGNE_ALLOTMENT = "10548.4771";
+
+	/** Falador's tree patch, which is its own region and nowhere near Ardougne. */
+	private static final String FALADOR_TREE = "11828.4771";
+
+	/** Kourend's north-east allotment, beside its own bin. */
+	private static final String KOUREND_ALLOTMENT = "6967.4771";
+
+	/**
+	 * The ready counter does not promise compost at a plot the run never reaches.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * <i>"I'm doing a tree-only run (hardwood/tree checked) and the infobox is telling me I have
+	 * supercompost ready at Ardougne. It shouldn't; it should be based on the profile you have
+	 * selected."</i>
+	 *
+	 * <p>The bin was in the run and would never be visited, and those are two different facts
+	 * about the seven beside the allotments: {@code inTheRun} says true for all of them the
+	 * moment the fodder toggle is on, because they are serviced <b>wherever the run already
+	 * goes</b>. Ardougne is an allotment plot — tick nothing on it and no tree run has a reason
+	 * to stop there, and the compost sitting in its bin is not one.
+	 */
+	@Test
+	public void aBinIsNotReadyWhereNoRunWouldGo()
+	{
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+		groupsAndOptionsBehaveNormally(EnumSet.of(PatchImplementation.TREE,
+			PatchImplementation.HARDWOOD_TREE));
+
+		// A tree run with somewhere real to go, so the run is not empty for the wrong reason.
+		record(FALADOR_TREE, 0);
+		availability.setAvailable(patch(FALADOR_TREE), true);
+
+		// And Ardougne's bin finished, a kingdom away from any of it.
+		FarmPatch bin = patch(ARDOUGNE_BIN);
+		record(ARDOUGNE_BIN, readyBinValue());
+		availability.setAvailable(bin, true);
+
+		assertFalse("the run makes no stop at Ardougne, so nothing there is ready for it",
+			planner.selectedForRuns(bin));
+
+		List<RunStop> plan = planner.previewStops(EnumSet.of(PatchImplementation.TREE,
+			PatchImplementation.HARDWOOD_TREE));
+		assertEquals("fixture: the tree run is a real run with one stop in it", 1, plan.size());
+		assertTrue("and Start run agrees, which is the property the counter is for",
+			plan.stream().noneMatch(stop -> stop.getPatches().contains(bin)));
+	}
+
+	/** ...and it is ready the moment something on that plot gives the run a reason to stop. */
+	@Test
+	public void aBinIsReadyOnceTheRunStopsBesideIt()
+	{
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+		groupsAndOptionsBehaveNormally(EnumSet.of(PatchImplementation.TREE,
+			PatchImplementation.ALLOTMENT));
+
+		record(ARDOUGNE_ALLOTMENT, 60);                  // watermelon, ready
+		availability.setAvailable(patch(ARDOUGNE_ALLOTMENT), true);
+		FarmPatch bin = patch(ARDOUGNE_BIN);
+		record(ARDOUGNE_BIN, readyBinValue());
+		availability.setAvailable(bin, true);
+
+		assertTrue("the allotment earns the stop and the bin is stood beside it",
+			planner.selectedForRuns(bin));
+		assertTrue("which is exactly what the plan does with it",
+			planner.previewStops(EnumSet.of(PatchImplementation.ALLOTMENT)).stream()
+				.anyMatch(stop -> stop.getPatches().contains(bin)));
+	}
+
+	/**
+	 * The guild's big bin is unaffected, because it is the one bin that is a line of its own.
+	 *
+	 * <p>It has a bank in its own region, so a run can be asked to supply it and it plans its own
+	 * stop. Its answer is the compost tick and nothing else — no neighbour required.
+	 */
+	@Test
+	public void theBigBinStillFollowsTheCompostTick()
+	{
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+
+		FarmPatch big = guildPatch(PatchImplementation.BIG_COMPOST);
+		stateStore.recordVarbit(big, readyBinValue(big),
+			big.getImplementation().forVarbitValue(readyBinValue(big)));
+		availability.setAvailable(big, true);
+
+		// The ticks are mutated rather than re-stubbed: stubbing isSelected a second time makes
+		// Mockito replay the first answer with a null option on its way past.
+		Set<PatchImplementation> ticked = EnumSet.of(PatchImplementation.TREE);
+		groupsAndOptionsBehaveNormally(ticked);
+		assertFalse("the line is unticked, so the run is not going for it",
+			planner.selectedForRuns(big));
+
+		ticked.add(PatchImplementation.COMPOST);
+		assertTrue("ticked, and it needs no allotment beside it to be worth the trip",
+			planner.selectedForRuns(big));
+	}
+
+	/**
+	 * The counter's bin question and the plan's cannot drift, because they are one rule.
+	 *
+	 * <p>{@code binServicedByARun} restates {@code planStops}' "a bin joins a stop that already
+	 * exists" rather than reading the plan back — it is asked from the counter's every thread and
+	 * {@code planStops} runs under the planner's monitor — so the two are pinned against each
+	 * other over a world with both answers in it: Falador stopped at for a ripe herb, Kourend for
+	 * a ripe allotment, Catherby holding a herb that is still growing, and four plots with
+	 * nothing on them but the bin.
+	 */
+	@Test
+	public void binServicedByARunAgreesWithThePlan()
+	{
+		when(compostRun.isFodderEnabled()).thenReturn(true);
+		when(compostRun.getFodderCrops()).thenReturn(Collections.emptySet());
+		Set<PatchImplementation> types = EnumSet.of(PatchImplementation.HERB,
+			PatchImplementation.ALLOTMENT);
+		groupsAndOptionsBehaveNormally(types);
+
+		record(FALADOR_HERB, 43);                        // ripe, so Falador is a stop
+		availability.setAvailable(patch(FALADOR_HERB), true);
+		record(CATHERBY_HERB, 32);                       // a ranarr with its growth ahead of it
+		availability.setAvailable(patch(CATHERBY_HERB), true);
+		record(KOUREND_ALLOTMENT, 60);                   // ripe, so Kourend is a stop
+		availability.setAvailable(patch(KOUREND_ALLOTMENT), true);
+
+		// Every bin in the game finished and waiting, so the only thing that can separate them
+		// is whether the run goes there.
+		for (FarmPatch bin : FarmingWorldData.getPatches(PatchImplementation.COMPOST))
+		{
+			stateStore.recordVarbit(bin, readyBinValue(),
+				bin.getImplementation().forVarbitValue(readyBinValue()));
+			availability.setAvailable(bin, true);
+		}
+
+		List<RunStop> plan = planner.previewStops(types);
+		int serviced = 0;
+		for (FarmPatch bin : FarmingWorldData.getPatches(PatchImplementation.COMPOST))
+		{
+			boolean inThePlan = plan.stream()
+				.anyMatch(stop -> stop.getPatches().contains(bin));
+			assertEquals(bin.getRegion().getName() + "'s bin",
+				inThePlan, planner.binServicedByARun(bin, types));
+			serviced += inThePlan ? 1 : 0;
+		}
+
+		assertEquals("fixture: exactly two plots earn a stop on this world", 2, serviced);
 	}
 
 	/**

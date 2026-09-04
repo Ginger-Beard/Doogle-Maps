@@ -79,6 +79,11 @@ public class ReadyInfoBox extends InfoBox
 			// counter showing every enabled patch. The sidebar's own summary deliberately
 			// stays account-wide; this is the glanceable in-game number, and it should agree
 			// with what Start run would do.
+			//
+			// Which includes the compost bins beside the allotments, and they are the case
+			// where "would a run do this" is not the same question as "is it ticked": the
+			// planner answers both halves for us here. Reported from play as a tree-only run
+			// promising supercompost at Ardougne, where no stop would be made.
 			if (!planner.selectedForRuns(projection.getPatch()))
 			{
 				continue;
