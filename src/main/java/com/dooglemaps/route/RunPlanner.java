@@ -7,6 +7,7 @@ import com.dooglemaps.data.PatchImplementation;
 import com.dooglemaps.data.Produce;
 import com.dooglemaps.data.Seed;
 import com.dooglemaps.state.AvailabilityProfile;
+import com.dooglemaps.state.ContractState;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.state.SeedSelectionStore;
 import com.dooglemaps.state.SeedSource;
@@ -343,6 +344,12 @@ public class RunPlanner
 			skippedRegions.clear();
 			committedRegion = -1;
 			stops.putAll(planStops(types));
+			// Before active is decided, because for a contract-only run this can be the only
+			// stop there is: between the hand-in and the next contract the guild's patch is
+			// empty, wants nothing, and planStops rightly plans nothing for it — while the
+			// reward is uncollected and Jane has the next contract in her pocket. Pressing
+			// Start run then produced "0 stops" twice in a row. See ensureJaneHasAStop.
+			ensureJaneHasAStop();
 			runTypes.clear();
 			runTypes.addAll(types);
 			active = !stops.isEmpty();
@@ -1113,6 +1120,18 @@ public class RunPlanner
 	 */
 	private boolean isComplete(RunStop stop)
 	{
+		// A stop is finished when its patches are, and the Farming Guild has one thing at it that
+		// is not a patch. The contract chain — hand the finished one in, take the next, plant it
+		// before you leave — happens at Jane, and the harvest that starts it empties the very
+		// patch the stop was holding itself open for. So the stop completed on the harvest, the
+		// run ended, and the three steps that were the whole point of the trip were never offered.
+		// Reported from play. See GuideTracker.contractBusinessOutstanding, which is where the
+		// claim is made and, more importantly, where each way it ends is written down.
+		if (contractBusiness && stop.claimsRegion(ContractState.FARMING_GUILD_REGION))
+		{
+			return false;
+		}
+
 		Set<String> blocked = nothingToDo;
 		Set<PatchImplementation> types = runTypesSnapshot();
 		for (FarmPatch patch : stop.getPatches())
@@ -1321,6 +1340,25 @@ public class RunPlanner
 	public void setGearStopOutstanding(boolean outstanding)
 	{
 		gearStopOutstanding = outstanding;
+	}
+
+	/**
+	 * Whether Guildmaster Jane still has business with this run.
+	 *
+	 * <p>Pushed once a tick beside {@link #setNothingToDo}, and from the same producer, because it
+	 * is the same shape of answer: a fact about the world the guide can see and this planner
+	 * cannot. What it holds open is the Farming Guild stop — see {@link #isComplete}.
+	 *
+	 * <p>Pushed while the run is idle as well, which none of its neighbours are. {@link #start}
+	 * reads it to decide whether a run with no actionable patch left in the guild should stop there
+	 * anyway, and a flag that only existed during a run could never answer that.
+	 */
+	private volatile boolean contractBusiness;
+
+	/** Told whether the contract chain still owes a visit to Jane; see the field above. */
+	public void setContractBusinessOutstanding(boolean outstanding)
+	{
+		contractBusiness = outstanding;
 	}
 
 	/**
@@ -3354,7 +3392,21 @@ public class RunPlanner
 		}
 
 		Produce wanted = groups.contractCrop();
-		if (wanted == null || !contractIsInTheRun(wanted))
+		if (wanted == null)
+		{
+			// Nothing assigned is not the same as nothing outstanding, and this is where that
+			// used to end the chain. Two of its four states have a null assignment — a grown
+			// contract waiting to be handed in, and the gap between the hand-in and the next one
+			// — and in both the run has to be standing in the guild. So the stop is made sure of
+			// rather than the method returning; adopting a patch is the assigned case's business
+			// and waits for her to name a crop.
+			synchronized (this)
+			{
+				ensureJaneHasAStop();
+			}
+			return;
+		}
+		if (!contractIsInTheRun(wanted))
 		{
 			return;
 		}
@@ -3406,6 +3458,66 @@ public class RunPlanner
 		{
 			collectForTheContract();
 		}
+	}
+
+	/**
+	 * Makes sure the Farming Guild is a stop while Jane still has business, and returns whether
+	 * one had to be added.
+	 *
+	 * <h2>A stop for a conversation, not for a patch</h2>
+	 *
+	 * Every other stop exists because a patch at it is actionable. This one can exist because a
+	 * reward is uncollected or a contract is unclaimed — neither of which is a patch state, and
+	 * both of which are the most valuable thing in the run. {@link #planStops} is deliberately
+	 * left alone: it answers "which patches are worth visiting" for the panel's preview as well as
+	 * for the run, and a phantom patch is not the way to say "there is a person to talk to".
+	 *
+	 * <p>The patch it hangs the stop on is the contract's own type — the crop just settled, or the
+	 * one waiting to be handed in — because that is the patch the next contract is most likely to
+	 * want, and because the guild's eleven patch types are all within a few steps of Jane, so any
+	 * of them routes correctly. It is also what the contract errands anchor on; see
+	 * {@code GuideTracker.appendContractErrands}.
+	 *
+	 * <p>Gated on the same tick as everything else — a player who has not asked for the contract
+	 * is not sent to the guild for one — and on the same pushed answer the completion test uses,
+	 * so a stop cannot be created for business that will not also keep it open.
+	 *
+	 * <p>Called with this planner's monitor held, from {@link #start} and {@link #reviewContract}.
+	 */
+	private boolean ensureJaneHasAStop()
+	{
+		if (!contractBusiness)
+		{
+			return false;
+		}
+
+		PatchImplementation type = groups.contractPatchType();
+		if (type == null || !runOptions.isSelected(
+			com.dooglemaps.data.RunOption.full(PlantingGroup.contract(type))))
+		{
+			return false;
+		}
+		if (stops.containsKey(ContractState.FARMING_GUILD_REGION))
+		{
+			return false;
+		}
+
+		for (FarmPatch patch : availability.getAvailablePatches(type))
+		{
+			if (patch.getRegion().getRegionId() != ContractState.FARMING_GUILD_REGION)
+			{
+				continue;
+			}
+			stops.put(ContractState.FARMING_GUILD_REGION,
+				new RunStop(patch.getRegion(), Collections.singletonList(patch)));
+			// A completion announced before Jane came into it must not keep the stop from being
+			// routed to - the same re-arming reviewContract does when a patch joins.
+			announced.remove(ContractState.FARMING_GUILD_REGION);
+			log.info("The Farming Guild is a stop for Guildmaster Jane alone - the contract chain "
+				+ "still owes a hand-in, a new contract or a planting");
+			return true;
+		}
+		return false;
 	}
 
 	/**

@@ -108,6 +108,30 @@ public class PlantingGroups
 	}
 
 	/**
+	 * The patch type the contract chain concerns right now, or null when it concerns nothing.
+	 *
+	 * <p>Broader than {@link #contractCrop()} on purpose, and the breadth is the point: the chain
+	 * runs assigned → grown → handed in → the next one taken, and for two of those four the
+	 * assignment is null while the Farming Guild still has business the run must be planned around.
+	 * The run planner needs a patch to hang that stop on, and this is the type it hangs it on.
+	 *
+	 * <p>Here rather than in the planner for the reason {@link #contractCrop()} gives: the planner
+	 * asks this in the same breath as {@link #groupFor}, and two collaborators answering "which
+	 * patch is the contract's" is how the two answers drift apart.
+	 */
+	@javax.annotation.Nullable
+	public PatchImplementation contractPatchType()
+	{
+		PatchImplementation active = contracts.getActiveContractType();
+		if (active != null)
+		{
+			return active;
+		}
+		com.dooglemaps.data.Produce settled = contracts.getSettledContract();
+		return settled == null ? null : settled.getPatchImplementation();
+	}
+
+	/**
 	 * Which group a patch belongs to.
 	 *
 	 * <p>The contract is asked first, because it is the narrower claim and the guild's patch can

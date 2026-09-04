@@ -90,6 +90,12 @@ public class ContractState
 	/** Our own record that a contract has grown and the reward has not been collected. */
 	private static final String AWAITING_HAND_IN_KEY = "contractAwaitingHandIn";
 
+	/**
+	 * The crop of the last contract we watched being handed in, while Time Tracking's key is
+	 * still naming it. See {@link #getContract()} for what it is for.
+	 */
+	private static final String SETTLED_KEY = "contractSettled";
+
 	/** The Farming Guild, which is the only place a contract can be grown. */
 	public static final int FARMING_GUILD_REGION = 4922;
 
@@ -137,16 +143,70 @@ public class ContractState
 	 * that crop no longer wants a patch, and treating it as assigned would have the run reserving
 	 * the guild's herb patch for something already sitting in your pack. See
 	 * {@link #getAwaitingHandIn()}, which is the other half of the question.
+	 *
+	 * <h2>Nor one that has already been handed back</h2>
+	 *
+	 * Time Tracking's key is cleared by the <i>completion message</i>, and a contract that ripened
+	 * while you were logged out never sends one — so for that whole cycle its key goes on naming
+	 * the crop, through the hand-in and afterwards. Read literally that says "a cadantine contract
+	 * is assigned" to a player who has just given Jane the cadantine, which suppressed the one step
+	 * that could move things on: {@code GuideTracker} offers TAKE_CONTRACT only while nothing is
+	 * assigned, so it had never fired in any session on record.
+	 *
+	 * <p>{@link #recordHandedIn()} therefore writes down which crop it settled, and that record
+	 * outranks Time Tracking's key for exactly as long as the key names the same crop. The moment
+	 * it names a different one — the next assignment — the marker is stale and says nothing; see
+	 * {@link #getSettledContract()}.
 	 */
 	@Nullable
 	public Produce getContract()
 	{
 		Produce stored = fromTimeTracking();
-		if (stored != null)
+		if (stored != null && stored != settledMarker())
 		{
 			return stored;
 		}
+		// Our own capture, either because Time Tracking is silent or because its answer is the
+		// contract we have already handed back. Both are cleared by recordHandedIn, and a fresh
+		// assignment seen by ContractCapture clears the marker, so the two cannot disagree here.
 		return fromOurCapture();
+	}
+
+	/**
+	 * The crop of the last contract handed in, while Jane has yet to hand out its replacement.
+	 *
+	 * <p>Null once Time Tracking names a <b>different</b> crop, because that is the new assignment
+	 * arriving and the window closing. Its key merely going quiet is not: an online hand-in leaves
+	 * it empty, and the take-a-new-one errand is owed just the same.
+	 *
+	 * <p>That window is the one moment the guide has to keep the guild stop alive with no contract
+	 * to point at — see {@code GuideTracker.contractBusinessOutstanding}. Without it the run ended
+	 * between the hand-in and the next contract, which is the middle of the chain.
+	 */
+	@Nullable
+	public Produce getSettledContract()
+	{
+		Produce settled = settledMarker();
+		if (settled == null)
+		{
+			return null;
+		}
+		Produce assigned = fromTimeTracking();
+		return assigned == null || assigned == settled ? settled : null;
+	}
+
+	/**
+	 * The marker as stored, without asking whether it still applies.
+	 *
+	 * <p>A plain read: {@link #getContract()} is called per patch inside loops over patches, so
+	 * nothing here writes config or announces anything. Clearing a stale marker is
+	 * {@link #reconcileAwaitingHandIn} and {@link #recordAssigned}'s business, at the two moments
+	 * a new assignment can arrive.
+	 */
+	@Nullable
+	private Produce settledMarker()
+	{
+		return produceFromName(read(DoogleMapsConfig.GROUP, SETTLED_KEY));
 	}
 
 	/**
@@ -290,6 +350,10 @@ public class ContractState
 		// has been settled, so a stale hand-in flag here is a record of something that has
 		// already happened.
 		clear(AWAITING_HAND_IN_KEY);
+		// ...and it closes the hand-in window with it. The marker exists only to say "the crop
+		// Time Tracking is still naming is one you have already given back"; a fresh assignment
+		// is the answer to that, whichever source saw it.
+		clear(SETTLED_KEY);
 		log.debug("Farming contract assigned: {}", contract.getName());
 		fireChanged();
 	}
@@ -313,16 +377,41 @@ public class ContractState
 		// Time Tracking clears its own key on this same message. Clearing ours keeps the two
 		// agreeing about what is still growing, which is what "assigned" now means.
 		clear(CAPTURED_CONTRACT_KEY);
+		// A completion is proof a contract was live, so nothing can still be in the window
+		// between a hand-in and the next assignment.
+		clear(SETTLED_KEY);
 		log.debug("Farming contract completed: {} is waiting to be handed in", contract.getName());
 		fireChanged();
 	}
 
-	/** Records the reward being collected, which ends the cycle. */
+	/**
+	 * Records the reward being collected, which ends one cycle and opens the window before the
+	 * next.
+	 *
+	 * <p>The crop is written down rather than merely forgotten, because Time Tracking's key can
+	 * still be naming it — see {@link #getContract()}. Taken from whatever we believe was
+	 * outstanding: the awaiting record for the ordinary case, and Time Tracking's own key for a
+	 * contract that ripened while logged out, where no completion ever cleared it.
+	 */
 	public void recordHandedIn()
 	{
+		Produce settled = getAwaitingHandIn();
+		if (settled == null)
+		{
+			settled = fromTimeTracking();
+		}
+
 		clear(AWAITING_HAND_IN_KEY);
 		clear(CAPTURED_CONTRACT_KEY);
-		log.debug("Farming contract handed in");
+		Produce assigned = fromTimeTracking();
+		if (settled != null && (assigned == null || assigned == settled))
+		{
+			// Not written where Time Tracking already names a different crop: the next contract
+			// is out, nothing is owed, and a marker for a closed window is only there to go stale.
+			write(SETTLED_KEY, settled.name());
+		}
+		log.debug("Farming contract handed in: {}",
+			settled == null ? "crop unknown" : settled.getName());
 		fireChanged();
 	}
 
@@ -344,12 +433,33 @@ public class ContractState
 	 */
 	public void reconcileAwaitingHandIn()
 	{
+		reconcileAwaitingHandIn(GroundEvidence.UNREAD);
+	}
+
+	/**
+	 * As {@link #reconcileAwaitingHandIn()}, told what the contract's own patch looks like.
+	 *
+	 * @param evidence what is standing in the contract's ground, which only the guide can read
+	 */
+	public void reconcileAwaitingHandIn(GroundEvidence evidence)
+	{
 		Produce awaiting = getAwaitingHandIn();
+		Produce assigned = fromTimeTracking();
+
+		// A marker naming a crop Time Tracking no longer names is spent, whatever else is
+		// decided below: the next contract has been handed out, and the window it stood for is
+		// closed. Read-only paths ignore it already (see getSettledContract); this is where it
+		// stops taking up room in config.
+		Produce settled = settledMarker();
+		if (settled != null && assigned != null && assigned != settled)
+		{
+			clear(SETTLED_KEY);
+		}
+
 		if (awaiting == null)
 		{
 			return;
 		}
-		Produce assigned = fromTimeTracking();
 		if (assigned != null && assigned != awaiting)
 		{
 			log.debug("Time Tracking sees {} assigned while {} still read as awaiting hand-in - "
@@ -358,21 +468,54 @@ public class ContractState
 			return;
 		}
 
-		// The same crop still ASSIGNED there is the other contradiction. The completion
-		// message clears Time Tracking's key the moment it fires, and Jane never assigns the
-		// same crop twice running — so its key still holding the crop we think is awaiting
-		// means no completion message ever came, and the record is corruption from the old
-		// patch-evidence fallback, which read a crop health-checked before the contract as a
-		// completion. Only judged while Time Tracking is actually on: switched off, its key
-		// merely goes stale, and a stale key still holding the crop is exactly what a real
-		// completion looks like from here.
-		if (assigned == awaiting && isTimeTrackingEnabled())
+		// The same crop still ASSIGNED there was read as the other contradiction, and on its own
+		// it is not one. The reasoning was that the completion message clears Time Tracking's key
+		// the moment it fires, so a key still holding the crop means no completion ever came — and
+		// that is precisely false for the case this class's own note is about: a contract that
+		// finishes growing while you are logged out sends no message at all, so the key is never
+		// cleared AND the record is legitimate. Clearing on the same-crop case alone deleted a
+		// real hand-in eight times in one session, which is what stranded the run at the guild
+		// with the reward sitting uncollected.
+		//
+		// So it now takes evidence from the ground, which is the only place the difference shows:
+		// the crop still standing in the contract's patch <b>unfinished</b> — mid-growth, or the
+		// health-checked bush that was checked before the contract and can never satisfy it —
+		// cannot have completed, and that is the corruption the old patch-evidence fallback
+		// wrote. A patch that is empty, or holding the finished crop, says nothing against the
+		// record and keeps it.
+		//
+		// Only judged while Time Tracking is actually on: switched off, its key merely goes
+		// stale, and a stale key still holding the crop is exactly what a real completion looks
+		// like from here.
+		if (assigned == awaiting && evidence == GroundEvidence.CROP_STANDS_UNFINISHED
+			&& isTimeTrackingEnabled())
 		{
-			log.info("Time Tracking still has {} assigned, so no completion message ever fired - "
-				+ "clearing the awaiting-hand-in record as corruption", awaiting.getName());
+			log.info("Time Tracking still has {} assigned and it is standing unfinished in the "
+				+ "guild, so no completion ever fired - clearing the awaiting-hand-in record as "
+				+ "corruption", awaiting.getName());
 			clear(AWAITING_HAND_IN_KEY);
 			fireChanged();
 		}
+	}
+
+	/**
+	 * What the contract's own patch says about a record waiting to be handed in.
+	 *
+	 * <p>Read by the guide rather than here: this class is a config reader and the answer wants a
+	 * projection of the patch's varbit, which is two packages away. See
+	 * {@code GuideTracker.contractGroundEvidence}.
+	 */
+	public enum GroundEvidence
+	{
+		/** Nobody has looked, or what is standing there decides nothing either way. */
+		UNREAD,
+
+		/**
+		 * The crop is in the contract's patch and has not finished for it — still growing, or a
+		 * health-checked crop whose one check happened before the contract was taken. Either way
+		 * no completion can have fired, so a record saying one did is corruption.
+		 */
+		CROP_STANDS_UNFINISHED
 	}
 
 	/** Announces the contract once at start-up, so a silent one is diagnosable after the fact. */
@@ -388,9 +531,11 @@ public class ContractState
 				awaiting == null ? "nothing" : awaiting.getName());
 			return;
 		}
-		log.info("Farming contract: {}; awaiting hand-in: {}.",
+		Produce settled = getSettledContract();
+		log.info("Farming contract: {}; awaiting hand-in: {}; just handed in: {}.",
 			contract == null ? "none" : contract.getName(),
-			awaiting == null ? "nothing" : awaiting.getName());
+			awaiting == null ? "nothing" : awaiting.getName(),
+			settled == null ? "nothing" : settled.getName() + " (so a new one is owed)");
 	}
 
 	/**

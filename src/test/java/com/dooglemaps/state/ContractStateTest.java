@@ -369,6 +369,11 @@ public class ContractStateTest
 	 * exactly this state when it mistook a bush health-checked <i>before</i> the contract for a
 	 * completion, and the record persists in config; this is what heals installs that already
 	 * carry it.
+	 *
+	 * <p>Config alone no longer says it, and cannot: a contract that ripens while you are logged
+	 * out leaves exactly the same two keys and its record is legitimate. The bush standing there
+	 * unfinished is the difference, and it is passed in. See
+	 * {@link AContractGrownWhileLoggedOutIsStillOwedTest}.
 	 */
 	@Test
 	public void anAwaitingRecordTimeTrackingContradictsIsCleared()
@@ -379,7 +384,7 @@ public class ContractStateTest
 		contracts.recordCompleted();
 		assertEquals(Produce.POISON_IVY, contracts.getAwaitingHandIn());
 
-		contracts.reconcileAwaitingHandIn();
+		contracts.reconcileAwaitingHandIn(ContractState.GroundEvidence.CROP_STANDS_UNFINISHED);
 
 		assertNull("no completion message ever fired, so nothing is awaiting",
 			contracts.getAwaitingHandIn());
@@ -399,7 +404,9 @@ public class ContractStateTest
 		assignInTimeTracking(Produce.POISON_IVY);
 		contracts.recordCompleted();
 
-		contracts.reconcileAwaitingHandIn();
+		// The ground says corruption; the disabled plugin is the only thing holding the clear
+		// back, which is what this test is about.
+		contracts.reconcileAwaitingHandIn(ContractState.GroundEvidence.CROP_STANDS_UNFINISHED);
 
 		assertEquals("the reward really is waiting - a disabled plugin's key proves nothing",
 			Produce.POISON_IVY, contracts.getAwaitingHandIn());

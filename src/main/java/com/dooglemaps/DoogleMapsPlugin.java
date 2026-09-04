@@ -591,8 +591,11 @@ public class DoogleMapsPlugin extends Plugin
 			&& CONTRACT_CONFIG_KEY.equals(event.getKey()))
 		{
 			// A fresh assignment from Time Tracking is proof the previous contract was
-			// settled, seen or not - the trigger reconcileAwaitingHandIn was written for.
-			contracts.reconcileAwaitingHandIn();
+			// settled, seen or not - the trigger reconcileAwaitingHandIn was written for. What
+			// the guild's ground shows goes with it, because the other half of that judgment -
+			// whether the SAME crop still assigned there is corruption - cannot be made from
+			// config alone. See GuideTracker.contractGroundEvidence.
+			contracts.reconcileAwaitingHandIn(guideTracker.contractGroundEvidence());
 			panel.structureChanged();
 			refresh();
 			return;
@@ -983,7 +986,7 @@ public class DoogleMapsPlugin extends Plugin
 		// actually wired anywhere - the deadlock heal it carries ran zero times. Here, and on
 		// every Time Tracking key change (onConfigChanged), which are the two moments its
 		// evidence can newly contradict ours.
-		contracts.reconcileAwaitingHandIn();
+		contracts.reconcileAwaitingHandIn(guideTracker.contractGroundEvidence());
 		// Said outright, once, because a contract that never appears has three possible causes —
 		// Time Tracking switched off, nothing assigned, or one already handed in — and from the
 		// sidebar all three look identical to the feature not working.

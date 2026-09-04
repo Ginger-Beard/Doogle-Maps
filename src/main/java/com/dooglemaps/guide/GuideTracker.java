@@ -1478,10 +1478,21 @@ public class GuideTracker
 	 * <p>The contract's run line only exists while one is assigned and its patch belongs to
 	 * this account, so "not ticked" covers both "there is no contract" and "there is one and
 	 * the player is ignoring it". Either way the guild has no reason to be kept clear.
+	 *
+	 * <p>The just-settled crop counts as well, because the tick outlives the assignment: between
+	 * handing one in and taking the next there is nothing assigned and nothing awaiting, and a
+	 * gate reading only those two went false in the middle of the chain — which took the guild
+	 * hold-back and every contract errand with it, at the exact moment the errand was the only
+	 * thing left to do. The stored line is unchanged throughout; it is what the player asked for.
 	 */
 	private boolean contractIsInTheRun()
 	{
 		com.dooglemaps.data.PatchImplementation type = contracts.getActiveContractType();
+		if (type == null)
+		{
+			Produce settled = contracts.getSettledContract();
+			type = settled == null ? null : settled.getPatchImplementation();
+		}
 		return type != null && runTypes.isSelected(
 			com.dooglemaps.data.RunOption.full(
 				com.dooglemaps.data.PlantingGroup.contract(type)));
@@ -1650,6 +1661,12 @@ public class GuideTracker
 	 */
 	private void reportIdlePatches()
 	{
+		// Pushed before the idle return below, unlike everything after it, because this one is
+		// read by a run that has not started yet: Start run plans the guild stop off it when the
+		// only thing left in the contract chain is a conversation with Jane. See
+		// contractBusinessOutstanding and RunPlanner.ensureJaneHasAStop.
+		planner.setContractBusinessOutstanding(contractBusinessOutstanding());
+
 		if (!planner.isActive())
 		{
 			planner.setNothingToDo(java.util.Collections.emptySet());
@@ -2081,6 +2098,184 @@ public class GuideTracker
 			// guild's steps into "while you're at it" rather than "instead".
 			steps.add(0, fetch);
 		}
+	}
+
+	/**
+	 * Whether Guildmaster Jane still has business with this run.
+	 *
+	 * <h2>The same three errands as {@link #appendContractErrands}, asked without a step list</h2>
+	 *
+	 * The steps above are only ever built for the stop the player is standing in, and only while
+	 * the run is alive — {@link #computeStepsHere} returns before any of it otherwise. That made
+	 * the contract chain unable to keep itself going, in the one way that matters: harvesting the
+	 * contract crop empties its patch, the patch then wants nothing, the guild stop reads finished,
+	 * the run ends, and the hand-in and the contract behind it are never offered at all. Reported
+	 * from play at a cadantine contract — the run ended on the harvest, Start run planned the same
+	 * stop and ended again a tick later, and the player handed in and took the next one unguided.
+	 *
+	 * <p>So the same question is asked here from the contract's own state and the patch
+	 * projections, which are true wherever the player is standing and whether or not a run is
+	 * under way. {@code RunPlanner} is told the answer once a tick and holds the guild stop open
+	 * on it; {@code RunPlanner.start} plans that stop for it alone.
+	 *
+	 * <h2>Every branch has to be able to go false</h2>
+	 *
+	 * A flag that holds a stop open is a flag that can hold a run open forever, so each of the
+	 * three ends by itself: the hand-in when Jane takes the crop, the take when she names the next
+	 * one, and the planting when the seed is in the ground. Skip step is the fourth way out, and
+	 * the one the player has — waving the errand past withdraws the claim with it, exactly as it
+	 * withdraws the step.
+	 *
+	 * <p>Package-private so the guide's own tests can ask it directly. Nothing outside this class
+	 * reads it; the planner is told.
+	 */
+	boolean contractBusinessOutstanding()
+	{
+		if (!config.guideFarmingContracts() || !contractIsInTheRun())
+		{
+			return false;
+		}
+
+		if (contractToHandIn() != null)
+		{
+			return !wavedPast(GuideAction.HAND_IN_CONTRACT);
+		}
+
+		if (contracts.getAwaitingHandIn() != null)
+		{
+			// Grown, but the patch still owes a check or a pick before Jane will take it. That
+			// work is the patch's own and holds the stop open by itself, so claiming it here as
+			// well would be two things saying one thing.
+			return false;
+		}
+
+		if (!contracts.hasContract())
+		{
+			// Handed in, with the next one still Jane's to give out. The settled marker is what
+			// tells this window apart from "no contract and none wanted" — see
+			// ContractState.getSettledContract.
+			return contracts.getSettledContract() != null
+				&& !wavedPast(GuideAction.TAKE_CONTRACT);
+		}
+
+		return newContractStillToPlant();
+	}
+
+	/**
+	 * Whether a contract that has just been taken still wants sowing this trip.
+	 *
+	 * <p>Judged from the ground and the seed rather than from the step list, for the reason
+	 * {@link #contractBusinessOutstanding} gives: at the moment this matters there is no step list.
+	 * Three things have to be true together, and each of them is a way out of the claim.
+	 *
+	 * <ul>
+	 *   <li><b>The seed can be got at.</b> In hand, or in a bank or the vault — and the guild has
+	 *       both a few steps from Jane, so "owned somewhere" and "obtainable here" are the same
+	 *       answer. A contract whose seed the player simply does not have is work for another day,
+	 *       and holding the stop open for it would strand the run.
+	 *   <li><b>Its patch can receive it.</b> Empty, dead, or a picked-clean crop a spade takes
+	 *       straight out — the same three shapes {@link #contractSeedFetch} sends a player
+	 *       shopping for. Anything else standing there has {@link #contractNote} to explain it.
+	 *   <li><b>It is not already sown.</b> The contract crop growing in its own patch is the end
+	 *       of the chain, and the point at which the guild opens up again.
+	 * </ul>
+	 */
+	private boolean newContractStillToPlant()
+	{
+		Produce contract = contracts.getContract();
+		if (contract == null)
+		{
+			return false;
+		}
+
+		Seed seed = contracts.getContractSeed();
+		if (seed == null || !seedIsWithinReach(seed))
+		{
+			return false;
+		}
+
+		boolean plantable = false;
+		for (FarmPatch patch : groups.patchesIn(
+			com.dooglemaps.data.PlantingGroup.contract(contract.getPatchImplementation())))
+		{
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection == null)
+			{
+				// Never seen. Unknown ground makes no promises, here or in contractSeedFetch.
+				continue;
+			}
+
+			boolean dead = projection.getCropState() == com.dooglemaps.data.CropState.DEAD;
+			if (!dead && projection.getProduce() == contract)
+			{
+				// Sown and growing: the chain is finished and the stop may close.
+				return false;
+			}
+			plantable |= dead || projection.isEmpty()
+				|| (projection.isReady()
+					&& SpadeClearedCrops.isSpadeCleared(patch.getImplementation()));
+		}
+		return plantable;
+	}
+
+	/** Whether a seed is in hand or in storage the guild can reach; see the note above. */
+	private boolean seedIsWithinReach(Seed seed)
+	{
+		return GuidePlan.seedAtHand(seed, seeds)
+			|| seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.BANK) > 0
+			|| seeds.getPlantable(seed, com.dooglemaps.state.SeedSource.SEED_VAULT) > 0;
+	}
+
+	/**
+	 * Whether an errand of this kind has been waved past.
+	 *
+	 * <p>By action rather than by the step's own key, because the key carries the patch the step
+	 * was anchored to and the anchor is whichever patch the stop happens to list first — which is
+	 * not knowable from here, and is not what the player meant anyway. There is one Jane.
+	 */
+	private boolean wavedPast(GuideAction action)
+	{
+		for (String key : skippedSteps)
+		{
+			if (key.endsWith("#" + action.name()))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * What the guild's ground says about a record waiting to be handed in.
+	 *
+	 * <p>Read here because reading a patch is what this class does; the judgment made from it is
+	 * {@code ContractState.reconcileAwaitingHandIn}'s, which is a config reader two packages away
+	 * and cannot see a varbit. Called from the plugin at the two moments that reconcile runs.
+	 *
+	 * <p>{@link #isGrownInGuild} is what "unfinished" is measured against, so the two cannot
+	 * disagree: a crop that reads as a completion there can never be read as corruption here.
+	 */
+	public ContractState.GroundEvidence contractGroundEvidence()
+	{
+		Produce awaiting = contracts.getAwaitingHandIn();
+		if (awaiting == null || isGrownInGuild(awaiting))
+		{
+			return ContractState.GroundEvidence.UNREAD;
+		}
+
+		for (FarmPatch patch : groups.patchesIn(
+			com.dooglemaps.data.PlantingGroup.contract(awaiting.getPatchImplementation())))
+		{
+			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
+			if (projection != null && projection.getProduce() == awaiting)
+			{
+				// Standing there, and not standing there finished. Nothing else reads as proof:
+				// an empty patch is what a hand-in looks like from behind, and what a harvested
+				// contract looks like too.
+				return ContractState.GroundEvidence.CROP_STANDS_UNFINISHED;
+			}
+		}
+		return ContractState.GroundEvidence.UNREAD;
 	}
 
 	/**
