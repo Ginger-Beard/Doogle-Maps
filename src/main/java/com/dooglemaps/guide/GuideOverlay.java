@@ -2,6 +2,7 @@ package com.dooglemaps.guide;
 
 import com.dooglemaps.DoogleMapsConfig;
 import com.dooglemaps.data.FarmPatch;
+import com.dooglemaps.data.FarmRegion;
 import com.dooglemaps.route.PatchLocationStore;
 import com.dooglemaps.state.PlayerHouse;
 import java.awt.Color;
@@ -1558,13 +1559,25 @@ public class GuideOverlay extends Overlay
 	 * nothing on it carries a patch varbit at all, which is why {@link #findPatchObjects} falls
 	 * through to {@code UnderwaterApproach.objectsFor}.
 	 *
+	 * <h2>A region is not always one map square</h2>
+	 *
+	 * <p>Reported from play at the Great Conch: the step "check the health of the calquat" marked
+	 * a bare tile at the ship's corner instead of outlining the tree. The calquat physically
+	 * stands in region 12325, but the Great Conch is filed under 12581 — the ship spans thirteen
+	 * regions in all. Requiring {@code objectRegionId == patch.getRegion().getRegionId()} made the
+	 * object test fail even though the varbit matched, so the scan found nothing and
+	 * {@code highlightPatch} fell back to marking a tile. {@link FarmRegion#covers} widens the
+	 * region half of the test to every region the patch's {@code FarmRegion} was registered
+	 * with, not just the one it is filed under; the varbit id is still what identifies the
+	 * patch, so this only stops a same-varbit patch in another region entirely from matching.
+	 *
 	 * <p>Static and parameterised so it can be tested without a scene, like
 	 * {@link #routeObjectMatch}.
 	 */
 	static boolean objectIsThisPatch(int objectVarbitId, int objectRegionId, FarmPatch patch)
 	{
 		return objectVarbitId == patch.getVarbit()
-			&& objectRegionId == patch.getRegion().getRegionId();
+			&& patch.getRegion().covers(objectRegionId);
 	}
 
 	private void consider(@Nullable TileObject object, FarmPatch patch, Set<Long> seen,

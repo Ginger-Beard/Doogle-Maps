@@ -39,6 +39,15 @@ public class PatchHighlightIdentityTest
 	private static final int CHAMPIONS_GUILD = 12596;
 	private static final int LUMBRIDGE = 12851;
 
+	/** The Great Conch farming ship: filed under one region, physically spanning thirteen. */
+	private static final int GREAT_CONCH = 12581;
+	/** Where the Great Conch's calquat actually stands, per {@code WikiPatchLocations}. */
+	private static final int GREAT_CONCH_CALQUAT_REGION = 12325;
+
+	/** Falador and Port Sarim: two {@code FarmRegion}s that both claim region 12083. */
+	private static final int FALADOR = 12083;
+	private static final int PORT_SARIM = 12082;
+
 	@Test
 	public void theRightPatchInTheRightRegionMatches()
 	{
@@ -106,6 +115,60 @@ public class PatchHighlightIdentityTest
 				+ "highlight cannot identify a patch by varbit alone (" + shared + " patches "
 				+ "share one with at least one other)",
 			shared > FarmingWorldData.getAllPatches().size() / 2);
+	}
+
+	/**
+	 * A region can span more than one 64x64 map square, and the object sits wherever the patch
+	 * physically is — not necessarily in the square the region is filed under.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * Reported from play at the Great Conch: the step "check the health of the calquat" marked a
+	 * bare tile at the ship's corner instead of outlining the tree. The Great Conch is filed
+	 * under region 12581, but its calquat physically stands in region 12325 — one of the
+	 * thirteen regions the ship spans. Requiring an exact region match on top of the varbit
+	 * match failed even though the varbit was right, so the scan found no object and the
+	 * highlight fell back to a marked tile.
+	 */
+	@Test
+	public void aPatchMatchesAnObjectInAnyRegionItsShipSpans()
+	{
+		FarmPatch calquat = patchIn(PatchImplementation.CALQUAT, GREAT_CONCH);
+
+		assertTrue("the region the calquat is filed under still matches",
+			GuideOverlay.objectIsThisPatch(calquat.getVarbit(), GREAT_CONCH, calquat));
+
+		assertTrue("the region the calquat physically stands in, one of the ship's thirteen, "
+				+ "must match too",
+			GuideOverlay.objectIsThisPatch(calquat.getVarbit(), GREAT_CONCH_CALQUAT_REGION, calquat));
+	}
+
+	/** The same varbit in a region the Great Conch's ship does not span is still not a match. */
+	@Test
+	public void aPatchDoesNotMatchARegionItsShipDoesNotSpan()
+	{
+		FarmPatch calquat = patchIn(PatchImplementation.CALQUAT, GREAT_CONCH);
+		assertFalse("Falador is nowhere near the Great Conch's ship",
+			GuideOverlay.objectIsThisPatch(calquat.getVarbit(), FALADOR, calquat));
+	}
+
+	/**
+	 * Two {@code FarmRegion}s can claim the same region id — Port Sarim's spirit tree patch
+	 * lists Falador's region (12083) as an extra, since both regions' varbits can be live there.
+	 * But Falador's allotment patch owns 12083 outright and shares the spirit tree's varbit
+	 * number, so an allotment object standing on its own canonical ground must not satisfy a
+	 * search for the spirit tree.
+	 */
+	@Test
+	public void anExtraRegionDoesNotOverrideAnotherPatchsCanonicalGround()
+	{
+		FarmPatch spiritTree = patchIn(PatchImplementation.SPIRIT_TREE, PORT_SARIM);
+		FarmPatch allotment = patchIn(PatchImplementation.ALLOTMENT, FALADOR);
+		assertEquals("fixture: the collision this is about",
+			spiritTree.getVarbit(), allotment.getVarbit());
+
+		assertFalse("Falador's own ground must not answer for Port Sarim's spirit tree",
+			GuideOverlay.objectIsThisPatch(spiritTree.getVarbit(), FALADOR, spiritTree));
 	}
 
 	private static FarmPatch patchIn(PatchImplementation type, int regionId)
