@@ -249,15 +249,66 @@ public class RunLoadout
 	 */
 	public boolean anythingLeftToWithdraw(Set<PatchImplementation> types)
 	{
+		return !outstandingSources(types).isEmpty();
+	}
+
+	/**
+	 * The containers that answer is spread across — the same rows, named rather than counted.
+	 *
+	 * <h2>Why the leg's destination is asked of the list that wrote it</h2>
+	 *
+	 * {@code RunPlanner.getSupplySources} used to re-derive this from the raw seed counts, and it
+	 * drifted from the list in exactly the way {@link #anythingLeftToWithdraw}'s own note warns
+	 * about — the two ends of one leg worked out separately. The reported run was a seven-stop
+	 * tree trip whose list read "Maple sapling x7 from the seed vault": the planner asked for one
+	 * patch's worth rather than the run's, counted two maple <b>seeds</b> in the seed box as
+	 * saplings, concluded nothing was owed anywhere, and an empty source set means "any bank" to
+	 * {@code supplyTargetsFor}. The player was routed to and shown the nearest booth, which was
+	 * the one container in the game that could not hold what the guide was asking for, and the
+	 * run parked there because an empty set never changes.
+	 *
+	 * <p>So it is one walk of one list. The filter is {@link #anythingLeftToWithdraw}'s, to the
+	 * character, and that method is now written in terms of this one rather than beside it — so
+	 * {@code !outstandingSources(types).isEmpty()} is not merely equal to "is anything left to
+	 * withdraw", it <b>is</b> it, and no future edit can make the leg end somewhere it was never
+	 * sent.
+	 *
+	 * <p>Named in the loadout's own vocabulary ({@link LoadoutItem.From}, which is what the
+	 * withdraw list prints) rather than the planner's; {@link #asSeedSources} translates where
+	 * the planner consumes it.
+	 */
+	public Set<LoadoutItem.From> outstandingSources(Set<PatchImplementation> types)
+	{
+		Set<LoadoutItem.From> sources = EnumSet.noneOf(LoadoutItem.From.class);
 		for (LoadoutItem item : forRun(types))
 		{
 			if (item.getNeed() == LoadoutItem.Need.WITHDRAW
 				&& CANNOT_PROCEED_WITHOUT.contains(item.getCategory()))
 			{
-				return true;
+				sources.add(item.getFrom());
 			}
 		}
-		return false;
+		return sources;
+	}
+
+	/**
+	 * The same containers in the planner's words.
+	 *
+	 * <p>Two enums for two vocabularies: a withdraw row says where you fetch it {@code From}, and
+	 * a {@link SeedSource} is one of the four places the plugin counts a crop. Only two of those
+	 * four are places you can be sent to, which is why the mapping is total in this direction and
+	 * not in the other.
+	 */
+	public static Set<SeedSource> asSeedSources(Set<LoadoutItem.From> containers)
+	{
+		Set<SeedSource> sources = EnumSet.noneOf(SeedSource.class);
+		for (LoadoutItem.From from : containers)
+		{
+			sources.add(from == LoadoutItem.From.SEED_VAULT
+				? SeedSource.SEED_VAULT
+				: SeedSource.BANK);
+		}
+		return sources;
 	}
 
 	/**

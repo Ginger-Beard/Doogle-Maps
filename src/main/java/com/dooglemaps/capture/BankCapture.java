@@ -68,6 +68,12 @@ public class BankCapture
 		// it had been done. Called from here as well as from the tick so a withdrawal is acted on
 		// in the same tick it happens — which is why the flag is refreshed first rather than
 		// trusting the guide's last per-tick push.
+		// The flag only, never the leg's containers. Those are the guide's push, because it is the
+		// guide that knows the gear phase narrows them to the hespori's own kit — see
+		// GuideTracker.supplyLegSources. Asking the loadout here for the whole run's types and
+		// pushing that would point a gear trip at the vault holding next week's saplings for as
+		// long as it took the next tick to narrow it back. Ending the leg early is the one thing
+		// this event is better placed to answer than the tick, and it is all it answers.
 		if (runPlanner.isActive())
 		{
 			runPlanner.setWithdrawOutstanding(

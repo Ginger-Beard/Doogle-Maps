@@ -793,6 +793,10 @@ public class DoogleMapsPlugin extends Plugin
 		if (runPlanner.isActive())
 		{
 			runPlanner.setWithdrawOutstanding(guideTracker.supplyLegOutstanding());
+			// And its containers, refreshed in the same breath: emptying the vault leaves the
+			// bank owed and vice versa, and leaveBank redraws the route off this set. See
+			// RunPlanner.followSupplyProgress.
+			runPlanner.setWithdrawSources(guideTracker.supplyLegSources());
 		}
 		runPlanner.leaveBank();
 

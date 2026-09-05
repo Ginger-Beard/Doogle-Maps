@@ -1108,7 +1108,7 @@ No behaviour should change; that is the point, and it is what to verify.
   smoother near the guild — the panel no longer takes the planner's monitor at all in steady
   state.
 - **Fail signatures**: a run that opens at a bank when it should not (or vice versa) → the
-  start-time flag from `GuideTracker.withdrawListOutstanding`; a supply leg that ends one
+  start-time answer from `GuideTracker.withdrawListSources`; a supply leg that ends one
   withdrawal late → the refresh-before-`leaveBank` in the plugin tick or `BankCapture`;
   pricing that sticks after a checkbox change → the snapshot type-match in
   `RunPanel.snapshotFor`.

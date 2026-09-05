@@ -219,6 +219,47 @@ public class SupplyRoutingTest
 			planner.getSupplySources().isEmpty());
 	}
 
+	/**
+	 * A vault-only fetch starts at the guild, and nowhere else is offered.
+	 *
+	 * <h2>Asked of the pushed containers, not of the seed counts</h2>
+	 *
+	 * The withdraw list says where each row comes out of, and the leg now follows that answer
+	 * rather than re-deriving one — see {@code RunPlanner.setWithdrawSources} for the run where
+	 * the two disagreed and the player was routed to a booth on the far side of the map. This is
+	 * that path: told {@code SEED_VAULT} and nothing else, the route has to end at the vault,
+	 * never at whichever of {@code getUsableBanks} happens to be nearest.
+	 */
+	@Test
+	public void aVaultOnlyFetchStartsAtTheGuild()
+	{
+		planner.setWithdrawSources(Set.of(SeedSource.SEED_VAULT));
+
+		assertEquals(Set.of(SeedSource.SEED_VAULT), planner.getSupplySources());
+		assertEquals("one target, and it is the vault", Set.of(BankLocations.SEED_VAULT),
+			supplyTargets());
+	}
+
+	/**
+	 * And an empty push is not the same as no push.
+	 *
+	 * <p>Nothing owed is the one case the every-bank fallback is still right for — the run is not
+	 * going shopping at all — and it stays. What must not happen is reaching it by <i>failing to
+	 * work the containers out</i>, which is what an empty set used to mean beside a withdraw list
+	 * asking for seven saplings.
+	 */
+	@Test
+	public void nothingOwedOffersTheBanksAsBefore()
+	{
+		selection.toggle(Seed.GUAM);
+		stock(SeedSource.SEED_VAULT, Seed.GUAM, 100);
+		planner.setWithdrawSources(Set.of());
+
+		assertTrue("the list has nothing to fetch, whatever the vault holds",
+			planner.getSupplySources().isEmpty());
+		assertTrue(supplyTargets().size() > 1);
+	}
+
 	@SuppressWarnings("unchecked")
 	private Set<WorldPoint> supplyTargets()
 	{

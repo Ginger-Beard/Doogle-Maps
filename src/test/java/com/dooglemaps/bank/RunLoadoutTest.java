@@ -81,6 +81,9 @@ public class RunLoadoutTest
 	/** The planner the loadout is built on, for the tests that ask where a run would go. */
 	private RunPlanner planner;
 
+	/** The planner's own bank store, so a test can name the two containers in the guild. */
+	private BankLocationStore bankLocations;
+
 	/** The planner's own run-options mock, so a test can tick the compost line for routing. */
 	private com.dooglemaps.state.RunTypeStore plannerRunOptions;
 
@@ -148,7 +151,7 @@ public class RunLoadoutTest
 		payToClear = construct(com.dooglemaps.state.PayToClearStore.class, configManager, gson);
 		RunPlanner planner = this.planner = construct(RunPlanner.class, availability,
 			construct(PatchLocationStore.class, configManager, gson),
-			construct(BankLocationStore.class, configManager, gson),
+			bankLocations = construct(BankLocationStore.class, configManager, gson),
 			selection, seeds, patches, construct(GrowthTimer.class, configManager),
 			construct(ShortestPathIntegration.class, Mockito.mock(EventBus.class),
 				Mockito.mock(net.runelite.client.callback.ClientThread.class)),
@@ -1836,6 +1839,153 @@ public class RunLoadoutTest
 		planner.start(trees);
 		assertTrue("so the planner must not be waiting on a container either",
 			planner.getSupplySources().isEmpty());
+	}
+
+	/**
+	 * A seed in the box does not stand in for the sapling a tree run is going to plant.
+	 *
+	 * <h2>The reported run</h2>
+	 *
+	 * Seven tree stops, a withdraw list reading "Maple sapling x7 from the seed vault", and the
+	 * player routed to a bank booth in Civitas illa Fortis with it outlined — where the run then
+	 * parked. {@code getSupplySources} worked the containers out for itself from the raw counts:
+	 * it asked whether <b>one patch's</b> worth was covered, and it counted the two loose maple
+	 * seeds rattling around the seed box as though they were saplings. Nothing owed anywhere, and
+	 * an empty source set means "any bank" to {@code supplyTargetsFor}.
+	 *
+	 * <p>Two seeds are not seven saplings on either count, and both halves are asserted here: the
+	 * list's answer, which is what the leg now follows, and the planner's own fallback, which had
+	 * to stop being wrong in the same direction.
+	 */
+	@Test
+	public void aSeedInTheBoxDoesNotMaskASaplingRun()
+	{
+		readyAllTreePatches();
+		selection.toggle(Seed.MAPLE);
+		seedsInBox(Seed.MAPLE, 2);
+		saplingsInVault(Seed.MAPLE, 172);
+
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		assertEquals("the list fetches every sapling, and from the vault",
+			EnumSet.of(LoadoutItem.From.SEED_VAULT), loadout.outstandingSources(trees));
+
+		planner.start(trees, RunLoadout.asSeedSources(loadout.outstandingSources(trees)));
+		assertEquals("so that is where the leg goes, not to whichever booth is nearest",
+			EnumSet.of(com.dooglemaps.state.SeedSource.SEED_VAULT),
+			EnumSet.copyOf(planner.getSupplySources()));
+
+		// And again with nothing pushed, which is the fallback the panel uses before a run.
+		planner.start(trees);
+		assertEquals("two seeds in the box never covered seven patches",
+			EnumSet.of(com.dooglemaps.state.SeedSource.SEED_VAULT),
+			EnumSet.copyOf(planner.getSupplySources()));
+	}
+
+	/**
+	 * Two saplings on the player do not cover seven patches.
+	 *
+	 * <p>The {@code required} half of the same fallback, with the seed box out of it: the question
+	 * was "is one patch's worth here", which any stack at all answers yes to. A run wanting seven
+	 * therefore went shopping for none of them.
+	 */
+	@Test
+	public void twoSaplingsDoNotCoverSevenPatches()
+	{
+		int patches = readyAllTreePatches();
+		assertTrue("this scenario wants more patches than the pack holds saplings", patches > 2);
+		selection.toggle(Seed.MAPLE);
+		saplingsInInventory(Seed.MAPLE, 2);
+		saplingsInVault(Seed.MAPLE, 172);
+
+		planner.start(EnumSet.of(PatchImplementation.TREE));
+		assertEquals(EnumSet.of(com.dooglemaps.state.SeedSource.SEED_VAULT),
+			EnumSet.copyOf(planner.getSupplySources()));
+	}
+
+	/**
+	 * The leg visits both containers the withdraw list names, and only those.
+	 *
+	 * <p>The list is written a row at a time, each row saying where its item comes out of — so a
+	 * run whose saplings are in the vault and whose axe is in the bank is a two-container trip,
+	 * and the guild is where both are. Working the containers out from the seed counts could
+	 * never see the axe at all: outside the gear phase the old code only ever added {@code BANK}
+	 * from the seed loop, so tools, payments and gear contributed nothing and were masked by the
+	 * empty-set fallback that sends the run to every bank in the game.
+	 */
+	@Test
+	public void theSupplyLegFollowsTheWithdrawListsContainers()
+	{
+		readyAllTreePatches();
+		selection.toggle(Seed.MAPLE);
+		saplingsInVault(Seed.MAPLE, 172);
+		// The one thing a tree run cannot borrow from the leprechaun.
+		bankHolds(ItemID.BRONZE_AXE, 1);
+
+		Set<PatchImplementation> trees = EnumSet.of(PatchImplementation.TREE);
+		assertEquals("fixture: a vault row for the saplings and a bank row for the axe",
+			EnumSet.of(LoadoutItem.From.SEED_VAULT, LoadoutItem.From.BANK),
+			loadout.outstandingSources(trees));
+
+		planner.start(trees, RunLoadout.asSeedSources(loadout.outstandingSources(trees)));
+		assertEquals(EnumSet.of(com.dooglemaps.state.SeedSource.SEED_VAULT,
+				com.dooglemaps.state.SeedSource.BANK),
+			EnumSet.copyOf(planner.getSupplySources()));
+
+		Set<net.runelite.api.coords.WorldPoint> targets = supplyTargets();
+		assertEquals("the guild serves both, so nowhere else is offered: " + targets,
+			2, targets.size());
+		assertTrue("the vault itself", targets.contains(bankLocations.getSeedVault()));
+		assertTrue("and the chest ten tiles from it",
+			targets.contains(bankLocations.getFarmingGuildBank()));
+	}
+
+	/**
+	 * The containers the leg visits and the condition that ends it are one answer.
+	 *
+	 * <p>A seed box in the bank is a {@code WITHDRAW} row like any other, and it is deliberately
+	 * not one the run is held at a bank for — see {@code CANNOT_PROCEED_WITHOUT}. So the leg has
+	 * nothing it must collect and, necessarily, nowhere it must go. The two are written as one
+	 * walk of one list precisely so they cannot come apart: an empty source set means "any bank"
+	 * to the router, so a leg that thought it had somewhere to be while believing itself finished
+	 * would be the reported bug from the other side.
+	 */
+	@Test
+	public void theLegsContainersAndItsExitAgree()
+	{
+		readyHerbPatch();
+		selection.toggle(Seed.RANARR);
+		seeds.record(com.dooglemaps.state.SeedSource.INVENTORY.getContainerId(),
+			containerOf(Seed.RANARR.getItemID(), 50));
+		bankHolds(ItemID.SEED_BOX, 1);
+
+		boolean optionalFetch = false;
+		for (LoadoutItem item : loadout.forRun(HERBS))
+		{
+			optionalFetch |= item.getNeed() == LoadoutItem.Need.WITHDRAW
+				&& item.getItemId() == ItemID.SEED_BOX;
+		}
+		assertTrue("fixture: the box is on the list, as something worth taking", optionalFetch);
+
+		assertTrue("but nothing the run cannot proceed without",
+			loadout.outstandingSources(HERBS).isEmpty());
+		assertFalse("which is the same answer the leg's exit gives",
+			loadout.anythingLeftToWithdraw(HERBS));
+	}
+
+	/** The private route question, asked the way {@code SupplyRoutingTest} asks it. */
+	@SuppressWarnings("unchecked")
+	private Set<net.runelite.api.coords.WorldPoint> supplyTargets()
+	{
+		try
+		{
+			java.lang.reflect.Method method = RunPlanner.class.getDeclaredMethod("getSupplyTargets");
+			method.setAccessible(true);
+			return (Set<net.runelite.api.coords.WorldPoint>) method.invoke(planner);
+		}
+		catch (ReflectiveOperationException e)
+		{
+			throw new IllegalStateException(e);
+		}
 	}
 
 	/** The vinery and the potting both want one, and one row is what a player can act on. */

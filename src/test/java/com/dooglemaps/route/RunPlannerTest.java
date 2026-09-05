@@ -1561,8 +1561,9 @@ public class RunPlannerTest
 		record(FALADOR_HERB, 43);
 		availability.setAvailable(patch(FALADOR_HERB), true);
 
-		// The guide's pre-start answer for a gear run is "outstanding", so the run opens at
-		// a bank — see GuideTracker.withdrawListOutstanding.
+		// The guide's pre-start answer for a gear run names a bank, so the run opens at one —
+		// see GuideTracker.withdrawListSources. The boolean form here is the fixture's: it
+		// leaves the containers unpushed, so getSupplySources works them out for itself.
 		planner.start(EnumSet.of(PatchImplementation.HESPORI, PatchImplementation.HERB), true);
 		assertTrue("a gear run opens at a bank", planner.isAtBankLeg());
 		assertTrue("and the gear phase is on", planner.isGearPhase());

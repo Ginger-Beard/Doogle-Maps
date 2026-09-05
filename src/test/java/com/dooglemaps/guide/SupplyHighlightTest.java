@@ -31,6 +31,26 @@ public class SupplyHighlightTest
 			GuideOverlay.marks(EnumSet.of(SeedSource.SEED_VAULT), false));
 	}
 
+	/**
+	 * The same rule reached from a withdraw row rather than from a bare set.
+	 *
+	 * <p>What the overlay is handed comes from the loadout now — one walk of the list that told
+	 * the player what to fetch — so the translation between the two vocabularies is part of the
+	 * outlining. A vault row that arrived here as {@code BANK} would light every booth in sight
+	 * for a trip that wants none of them, which is the reported bug with the enums swapped.
+	 */
+	@Test
+	public void aVaultRowLightsTheVaultAndNotTheBooth()
+	{
+		java.util.Set<SeedSource> sources = com.dooglemaps.bank.RunLoadout.asSeedSources(
+			EnumSet.of(com.dooglemaps.bank.LoadoutItem.From.SEED_VAULT));
+
+		assertTrue("the row says the vault, so the vault is what lights",
+			GuideOverlay.marks(sources, true));
+		assertFalse("and the booth the player happens to be stood at does not",
+			GuideOverlay.marks(sources, false));
+	}
+
 	@Test
 	public void seedsInTheBankMarkTheBanksAndNotTheVault()
 	{

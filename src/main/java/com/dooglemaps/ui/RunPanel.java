@@ -1044,8 +1044,10 @@ class RunPanel extends JPanel
 		{
 			java.util.Set<com.dooglemaps.data.PatchImplementation> types = getSelectedTypes();
 			// The withdraw list's answer rides along, asked of the guide - the coordinator
-			// that owns both ends - so the planner never has to ask the loadout itself.
-			planner.start(types, guideTracker.withdrawListOutstanding(types));
+			// that owns both ends - so the planner never has to ask the loadout itself. The
+			// containers, not merely "is anything owed": where the leg goes is the half the
+			// planner used to work out again from the seed counts, and it drifted.
+			planner.start(types, guideTracker.withdrawListSources(types));
 		}
 		refresh();
 	}

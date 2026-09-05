@@ -1676,6 +1676,11 @@ public class GuideTracker
 		{
 			planner.setNothingToDo(java.util.Collections.emptySet());
 			planner.setWithdrawOutstanding(false);
+			// Null rather than an empty set, which is the difference between "this run owes
+			// nothing" and "there is no run to speak for". An idle planner is still asked where
+			// a trip would go — the panel's destination list — and the answer it worked out for
+			// itself is the only one available before a run exists. See setWithdrawSources.
+			planner.setWithdrawSources(null);
 			runEnded();
 			return;
 		}
@@ -1696,6 +1701,9 @@ public class GuideTracker
 		// set so the planner never has to ask the loadout — which is what removed the
 		// construction cycle between the two.
 		planner.setWithdrawOutstanding(supplyLegOutstanding());
+		// And the same answer's containers, pushed beside it and from the same list, so where the
+		// leg is sent cannot disagree with whether it is finished. See supplyLegSources.
+		planner.setWithdrawSources(supplyLegSources());
 		// And the narrower half of it, for the one thing worth diverting mid-run over. See
 		// RunLoadout.toolsLeftToWithdraw and RunPlanner.reviewSupplies. Silent during the
 		// gear phase for the reason that method's own gate gives: the farming tools the
@@ -1717,13 +1725,23 @@ public class GuideTracker
 	}
 
 	/**
-	 * The withdraw list's answer for a run over these types, for the moment before it starts.
+	 * Where a run over these types would have to collect from, for the moment before it starts.
 	 *
 	 * <p>{@code RunPanel}'s start button needs the answer the planner used to compute for
 	 * itself, and this tracker is the coordinator that holds both ends — the panel asks here,
 	 * this asks the loadout, and the planner is handed the result. One question, one owner.
+	 *
+	 * <p>Containers rather than a bare "is anything owed", because the planner needs both and
+	 * only one of them can be derived from the other. Whether the leg has anything left is
+	 * {@code !isEmpty()} on this; the reverse is not true, and re-deriving the where from the
+	 * seed counts is the bug this returns a set to close. See {@code RunLoadout.outstandingSources}.
+	 *
+	 * <p>Asked with the types the panel is about to start, not with {@code planner.coveredTypes()}:
+	 * this runs <b>before</b> {@code RunPlanner.start}, so the planner is still describing the
+	 * last run.
 	 */
-	public boolean withdrawListOutstanding(java.util.Set<PatchImplementation> types)
+	public java.util.Set<com.dooglemaps.state.SeedSource> withdrawListSources(
+		java.util.Set<PatchImplementation> types)
 	{
 		// The other half of RunPlanner's "Run planned" line, at the same moment and the same
 		// level: that line says which seed sources the run trusts, this one says what the
@@ -1744,6 +1762,8 @@ public class GuideTracker
 		}
 		log.info("Loadout for {}: {}", types, verdicts);
 
+		java.util.Set<com.dooglemaps.state.SeedSource> sources = sourcesFor(types);
+
 		if (com.dooglemaps.bank.InventorySetupsHandoff.appliesTo(types)
 			&& planner.wouldOpenWithGearPhase(types))
 		{
@@ -1751,9 +1771,27 @@ public class GuideTracker
 			// concluded: depositing everything and loading the setup is the trip, not a fetch
 			// list to be found already satisfied. Only when the hespori would actually be a
 			// stop, though — ticked but still growing is an ordinary farm run.
-			return true;
+			//
+			// Named as a container rather than returned as a bare "yes", which is what keeps the
+			// planner's boolean derivable from this set: the setup is a bank errand, so BANK is
+			// the honest answer to "where is this trip going", and a trip with nowhere to go is
+			// exactly a trip with nothing to collect.
+			sources.add(com.dooglemaps.state.SeedSource.BANK);
 		}
-		return loadout.anythingLeftToWithdraw(types);
+		return sources;
+	}
+
+	/**
+	 * The withdraw list's containers, in the planner's words.
+	 *
+	 * <p>The one place the two vocabularies meet. {@code RunLoadout} answers in
+	 * {@code LoadoutItem.From}, because that is what the withdraw list prints; the planner routes
+	 * by {@code SeedSource}, because that is what it counts crops in.
+	 */
+	private java.util.Set<com.dooglemaps.state.SeedSource> sourcesFor(
+		java.util.Set<PatchImplementation> types)
+	{
+		return com.dooglemaps.bank.RunLoadout.asSeedSources(loadout.outstandingSources(types));
 	}
 
 	/** Fewer than this many slots of logs is not worth a bank trip to free. */
@@ -1836,6 +1874,27 @@ public class GuideTracker
 					java.util.EnumSet.of(PatchImplementation.HESPORI));
 		}
 		return loadout.anythingLeftToWithdraw(planner.coveredTypes());
+	}
+
+	/**
+	 * The same leg's containers, narrowed exactly as {@link #supplyLegOutstanding} narrows.
+	 *
+	 * <p>Deliberately the same {@code handoff.applies()} split, and for the same reason: sources
+	 * the leg does not wait for would light and route to containers it will not end at, which is
+	 * the disagreement the gear phase has already been reported for twice. A mixed run's tree
+	 * saplings belong to the swap-back trip, so a gear-phase leg asks about the hespori alone.
+	 *
+	 * <p>The gear stop's own bank is <b>not</b> added here. It is not a withdraw row — there is
+	 * nothing to fetch, only a setup to load — and {@code RunPlanner.getSupplySources} adds it
+	 * from {@code gearStopOutstanding}, which is the flag that can tell that errand from this
+	 * one as each finishes. Adding it here as well would put the bank back for the whole phase
+	 * and leave {@code followSupplyProgress} nothing to follow.
+	 */
+	public java.util.Set<com.dooglemaps.state.SeedSource> supplyLegSources()
+	{
+		return sourcesFor(handoff.applies()
+			? java.util.EnumSet.of(PatchImplementation.HESPORI)
+			: planner.coveredTypes());
 	}
 
 	/** Resurrect Crops wants 78 Magic; the varbit value that means the Arceuus book is 3. */

@@ -323,13 +323,17 @@ public class RunPlanner
 	public List<RunStop> start(Set<PatchImplementation> types)
 	{
 		// The flagless form exists for fixtures, where the withdraw list is empty by
-		// construction. Production goes through the two-argument form: RunPanel asks the
+		// construction. Production goes through the source-set form: RunPanel asks the
 		// guide, which asks the loadout, before this planner is ever involved.
 		return start(types, false);
 	}
 
 	/**
 	 * Starts a run covering the given patch types.
+	 *
+	 * <p>The fixture form. It says whether anything is owed without saying where from, so the
+	 * containers are left unpushed and {@link #getSupplySources()} works them out from the seed
+	 * counts — which is the answer the tests that predate the withdraw list are written against.
 	 *
 	 * @param withdrawOutstanding the withdraw list's answer for these types, computed by the
 	 *                            caller — the planner no longer asks the loadout itself, which
@@ -338,6 +342,31 @@ public class RunPlanner
 	public List<RunStop> start(Set<PatchImplementation> types, boolean withdrawOutstanding)
 	{
 		this.withdrawOutstanding = withdrawOutstanding;
+		setWithdrawSources(null);
+		return startPlanned(types);
+	}
+
+	/**
+	 * Starts a run, told both halves of the withdraw list's answer at once.
+	 *
+	 * <p>The production form. The boolean is not passed separately because it is not a separate
+	 * fact: a trip with nowhere to go is a trip with nothing to collect, and the two were last
+	 * seen disagreeing — an empty source set beside a seven-sapling withdraw list, which routed
+	 * the run to the nearest bank booth and parked it there. See {@link #setWithdrawSources}.
+	 *
+	 * @param withdrawSources the containers the list still wants visiting, from
+	 *                        {@code GuideTracker.withdrawListSources}
+	 */
+	public List<RunStop> start(Set<PatchImplementation> types, Set<SeedSource> withdrawSources)
+	{
+		this.withdrawOutstanding = !withdrawSources.isEmpty();
+		setWithdrawSources(withdrawSources);
+		return startPlanned(types);
+	}
+
+	/** The run itself, once both callers have said what the withdraw list concluded. */
+	private List<RunStop> startPlanned(Set<PatchImplementation> types)
+	{
 		synchronized (this)
 		{
 			stops.clear();
@@ -1382,6 +1411,47 @@ public class RunPlanner
 	{
 		withdrawOutstanding = outstanding;
 	}
+
+	/**
+	 * The other half of the same push: <b>where</b> the withdraw list says to collect from.
+	 *
+	 * <h2>Why this is told rather than worked out</h2>
+	 *
+	 * {@link #withdrawOutstanding} answers whether the leg is finished and this answers where it
+	 * is going, and the two were being decided by different code from different inputs. The
+	 * loadout listed "Maple sapling x7 from the seed vault"; {@link #getSupplySources()} asked
+	 * its own question of the raw seed counts, found two maple <b>seeds</b> in the seed box,
+	 * decided one patch's worth was covered, and returned nothing at all. An empty set means "any
+	 * bank" to {@link #supplyTargetsFor} — so a seven-stop tree run was routed to a booth in
+	 * Civitas illa Fortis, had it outlined, and parked there: nothing left to collect according
+	 * to the route, seven saplings owed according to the list. Reported from play.
+	 *
+	 * <p>So the leg's destination now comes from the same walk of the same list its exit
+	 * condition does — see {@code RunLoadout.outstandingSources}, which is what
+	 * {@code anythingLeftToWithdraw} is itself written in terms of.
+	 *
+	 * <p>Null is not the empty set. Empty means a run that owes nothing; null means nothing has
+	 * spoken for this planner at all — no run in flight, or a fixture that never pushes — and
+	 * {@link #getSupplySources()} falls back to working it out for itself, which is the only
+	 * answer available before a run exists.
+	 */
+	public void setWithdrawSources(@Nullable Set<SeedSource> sources)
+	{
+		if (sources == null)
+		{
+			withdrawSources = null;
+			return;
+		}
+		// Copied, because it is read from the tick, the bank capture and the router's thread
+		// alike, and the caller builds a fresh set every push either way.
+		Set<SeedSource> copy = EnumSet.noneOf(SeedSource.class);
+		copy.addAll(sources);
+		withdrawSources = copy;
+	}
+
+	/** The pushed containers, or null where nothing has been pushed. See the setter. */
+	@Nullable
+	private volatile Set<SeedSource> withdrawSources;
 
 	/**
 	 * The same push, narrowed to tools — the one thing worth a mid-run trip back.
@@ -2780,7 +2850,7 @@ public class RunPlanner
 	 * <p>Outside a run this falls back to the raw selection, like
 	 * {@link #selectedForThisRun} and for the same reason.
 	 */
-	private Set<Seed> seedsWantedThisRun()
+	private Map<Seed, Integer> seedsWantedThisRun()
 	{
 		return seedsWantedFor(runTypesSnapshot());
 	}
@@ -2792,7 +2862,7 @@ public class RunPlanner
 	 * and route to containers this leg does not wait for — the words and the leg were both
 	 * narrowed to the hespori, and the sources have to agree or the surfaces disagree again.
 	 */
-	private Set<Seed> hesporiSeedsWanted()
+	private Map<Seed, Integer> hesporiSeedsWanted()
 	{
 		return seedsWantedFor(EnumSet.of(PatchImplementation.HESPORI));
 	}
@@ -2822,15 +2892,26 @@ public class RunPlanner
 	 * order: the payment budget per group, and the {@code unspent} ledger booked between groups
 	 * so two groups cannot both plan to plant the same seeds. Anything less than both and the
 	 * copies drift again in a way only a live run shows.
+	 *
+	 * @return each seed the run will plant, against how many of it the <b>whole run</b> wants —
+	 *         patches times the seeds each takes. The count used to be computed here and dropped
+	 *         on the floor, and its absence is half of why the supply leg went to the wrong place
 	 */
-	private Set<Seed> seedsWantedFor(Set<PatchImplementation> types)
+	private Map<Seed, Integer> seedsWantedFor(Set<PatchImplementation> types)
 	{
+		Map<Seed, Integer> wanted = new LinkedHashMap<>();
+
 		if (types.isEmpty())
 		{
-			return selection.getSelected();
+			// No run, so no allocation and no total: one patch's worth is the honest guess, and
+			// it is what the destination list was built on before a run existed.
+			for (Seed seed : selection.getSelected())
+			{
+				wanted.put(seed, seed.getSeedsPerPatch());
+			}
+			return wanted;
 		}
 
-		Set<Seed> wanted = new LinkedHashSet<>();
 		// Stock left after the groups already served; see RunLoadout.addSeeds, which keeps the
 		// same ledger for the same reason.
 		Map<Seed, Integer> unspent = new java.util.HashMap<>();
@@ -2868,9 +2949,15 @@ public class RunPlanner
 				new ProtectionBudget(payments, seed -> protection.isProtecting(group, seed)))
 				.counts();
 
+			// The counts, not only the keys. They were computed here and thrown away, and the
+			// question downstream — is this crop's errand covered — cannot be answered without
+			// them: seven tree patches want seven saplings, and asking whether one patch's worth
+			// was on the player is how a seven-stop run concluded it had nothing to collect.
 			share.forEach((seed, patches) ->
-				unspent.merge(seed, -patches * seed.getSeedsPerPatch(), Integer::sum));
-			wanted.addAll(share.keySet());
+			{
+				unspent.merge(seed, -patches * seed.getSeedsPerPatch(), Integer::sum);
+				wanted.merge(seed, patches * seed.getSeedsPerPatch(), Integer::sum);
+			});
 		}
 		return wanted;
 	}
@@ -2922,16 +3009,36 @@ public class RunPlanner
 	 */
 	private String describeSelectedForThisRun()
 	{
+		Map<Seed, Integer> wanted = seedsWantedThisRun();
 		List<String> named = new ArrayList<>();
 		for (Seed seed : selectedForThisRun())
 		{
-			named.add(seed.getName() + " x" + seed.getSeedsPerPatch()
-				+ " (inv " + seedInventory.getCount(seed, SeedSource.INVENTORY)
-				+ ", box " + seedInventory.getCount(seed, SeedSource.SEED_BOX)
-				+ ", bank " + seedInventory.getCount(seed, SeedSource.BANK)
-				+ ", vault " + seedInventory.getCount(seed, SeedSource.SEED_VAULT) + ")");
+			named.add(seed.getName()
+				// What the run wants in total, beside what one patch takes. The line printed only
+				// the second, which reads as an answer to "how many am I short" and is not one.
+				+ " x" + wanted.getOrDefault(seed, 0) + " (" + seed.getSeedsPerPatch() + "/patch)"
+				+ " inv " + describeSplit(seed, SeedSource.INVENTORY)
+				+ ", box " + describeSplit(seed, SeedSource.SEED_BOX)
+				+ ", bank " + describeSplit(seed, SeedSource.BANK)
+				+ ", vault " + describeSplit(seed, SeedSource.SEED_VAULT));
 		}
 		return named.isEmpty() ? "none" : named.toString();
+	}
+
+	/**
+	 * What one container holds, with the two forms of a tree crop told apart.
+	 *
+	 * <p>Printed as {@code plantable+seeds} rather than as a total, because the total is what the
+	 * decision above used to be made on and it hid the whole of a reported bug: two maple
+	 * <b>seeds</b> in the seed box read as two saplings, so a run wanting seven of them concluded
+	 * it had nothing to collect and parked at a bank booth. A line saying {@code box 0+2} settles
+	 * that in one glance; a line saying {@code box 2} is the question all over again.
+	 */
+	private String describeSplit(Seed seed, SeedSource source)
+	{
+		int plantable = seedInventory.getPlantable(seed, source);
+		int seeds = seedInventory.getSeedCount(seed, source);
+		return seed.isSapling() ? plantable + "+" + seeds : String.valueOf(plantable);
 	}
 
 	/**
@@ -3045,6 +3152,20 @@ public class RunPlanner
 	/**
 	 * Where the current supply leg collects from.
 	 *
+	 * <h2>The withdraw list answers this, wherever it has been asked</h2>
+	 *
+	 * The containers come from {@link #setWithdrawSources} — one walk of the same list whose
+	 * emptying ends the leg. This used to work them out here instead, from the raw seed counts,
+	 * and the two answers drifted: the list said "Maple sapling x7 from the seed vault" while
+	 * this said nothing was owed anywhere, because it asked for one patch's worth and counted two
+	 * loose seeds in the box as saplings. Empty means "any bank" below, so the run was routed to
+	 * a booth in Civitas illa Fortis, had it outlined, and parked. Reported from play.
+	 *
+	 * <p>The loop below survives only for a planner nothing has spoken to — the panel asking
+	 * where a trip would go before there is a trip, and the fixtures. Its arithmetic was fixed
+	 * rather than left as it was, because a fallback that is wrong in the same direction is worse
+	 * than no fallback at all.
+	 *
 	 * <p>The seed vault matters here because there is exactly one, in the Farming Guild.
 	 * Routing to "the nearest bank" for seeds that are sitting in the vault sends the player
 	 * to precisely the wrong side of the map. Seeds already in the inventory or seed box need
@@ -3093,14 +3214,47 @@ public class RunPlanner
 			needed.add(SeedSource.BANK);
 		}
 
+		// The withdraw list's own answer, where there is one. It is the list that told the player
+		// what to fetch and from where, and the leg ends when it empties, so it is the list that
+		// says where the leg goes — see setWithdrawSources for the run this was reported from.
+		Set<SeedSource> pushed = withdrawSources;
+		if (pushed != null)
+		{
+			needed.addAll(pushed);
+			return needed;
+		}
+
+		// Nothing has spoken for this planner, so it answers for itself: no run in flight, or a
+		// fixture. Kept because the panel asks where a trip would go before there is a trip, and
+		// the loadout's answer does not exist yet at that point.
+		//
 		// The hespori's own seed during the phase, never the run's other saplings: the words
 		// and the leg were both narrowed to it, and sources that were not would light and
 		// route to containers this leg will not wait for. See GuideTracker.supplyLegOutstanding.
-		for (Seed seed : gearPhase ? hesporiSeedsWanted() : seedsWantedThisRun())
+		for (Map.Entry<Seed, Integer> entry
+			: (gearPhase ? hesporiSeedsWanted() : seedsWantedThisRun()).entrySet())
 		{
-			int required = seed.getSeedsPerPatch();
-			int carried = seedInventory.getCount(seed, SeedSource.INVENTORY)
-				+ seedInventory.getCount(seed, SeedSource.SEED_BOX);
+			Seed seed = entry.getKey();
+			// The whole run's want, not one patch's. Seven tree patches want seven saplings, and
+			// asking whether one patch was covered is how two spare seeds in the box came to
+			// stand in for a seven-sapling errand.
+			int required = entry.getValue();
+
+			// What is on you, counted as what will actually go in the ground — RunLoadout.addSeeds'
+			// inPack, and deliberately the same arithmetic. A tree's seed is a sapling plus an
+			// errand at a plant pot, so it only counts towards the trip as far as it is going to be
+			// potted; getCount folds the two forms together and answered "covered" for a pack of
+			// acorns and a run wanting trees.
+			int owned = seedInventory.getOwned(seed);
+			int toPot = seed.isSapling()
+				? Math.max(0, Math.min(required, owned) - seedInventory.getOwnedPlantable(seed))
+				: 0;
+			int carried = seedInventory.getPlantable(seed, SeedSource.INVENTORY)
+				+ seedInventory.getPlantable(seed, SeedSource.SEED_BOX)
+				+ (seed.isSapling()
+					? Math.min(seedInventory.getSeedCount(seed, SeedSource.INVENTORY)
+						+ seedInventory.getSeedCount(seed, SeedSource.SEED_BOX), toPot)
+					: 0);
 			if (carried >= required)
 			{
 				continue;
@@ -3109,14 +3263,26 @@ public class RunPlanner
 			// Enough to be worth the trip, not merely present. A single seed sitting in the
 			// bank used to send the player there for an allotment that needs three, while the
 			// vault that actually had them was never considered.
-			boolean inBank = seedInventory.getCount(seed, SeedSource.BANK) >= required;
-			boolean inVault = seedInventory.getCount(seed, SeedSource.SEED_VAULT) >= required;
-
-			if (inBank)
+			//
+			// The plantable form first, wherever it is kept, for the reason addSeeds takes it
+			// first: a sapling is the thing that goes in the ground and a seed is the same thing
+			// plus a detour. Only when neither container can cover the trip in saplings does the
+			// seed form get a say, and then the bank leads, because it is where the rest of the
+			// run's items are anyway.
+			int shortfall = required - carried;
+			if (covers(seed, SeedSource.BANK, shortfall, true))
 			{
 				needed.add(SeedSource.BANK);
 			}
-			else if (inVault)
+			else if (covers(seed, SeedSource.SEED_VAULT, shortfall, true))
+			{
+				needed.add(SeedSource.SEED_VAULT);
+			}
+			else if (covers(seed, SeedSource.BANK, shortfall, false))
+			{
+				needed.add(SeedSource.BANK);
+			}
+			else if (covers(seed, SeedSource.SEED_VAULT, shortfall, false))
 			{
 				needed.add(SeedSource.SEED_VAULT);
 			}
@@ -3132,6 +3298,20 @@ public class RunPlanner
 			}
 		}
 		return needed;
+	}
+
+	/**
+	 * Whether one container holds enough of a crop to be worth the trip.
+	 *
+	 * @param plantableOnly counting saplings alone, which is the first pass; the second counts
+	 *                      the seed form too, for a trip that will take in a plant pot on the way
+	 */
+	private boolean covers(Seed seed, SeedSource source, int wanted, boolean plantableOnly)
+	{
+		int held = plantableOnly
+			? seedInventory.getPlantable(seed, source)
+			: seedInventory.getCount(seed, source);
+		return held >= wanted;
 	}
 
 	/**
