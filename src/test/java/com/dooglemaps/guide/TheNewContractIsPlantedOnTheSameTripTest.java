@@ -197,6 +197,7 @@ public class TheNewContractIsPlantedOnTheSameTripTest
 	private void inHand(Seed seed)
 	{
 		when(seeds.getPlantable(seed, SeedSource.INVENTORY)).thenReturn(seed.getSeedsPerPatch());
+		when(seeds.getPlantableOnHand(seed)).thenReturn(seed.getSeedsPerPatch());
 	}
 
 	private List<GuideStep> errands() throws Exception

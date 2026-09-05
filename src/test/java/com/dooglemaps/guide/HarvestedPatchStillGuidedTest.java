@@ -128,6 +128,7 @@ public class HarvestedPatchStillGuidedTest
 		// are actually on the trip.
 		when(seeds.getPlantable(Seed.GUAM, com.dooglemaps.state.SeedSource.INVENTORY))
 			.thenReturn(10);
+		when(seeds.getPlantableOnHand(Seed.GUAM)).thenReturn(10);
 		when(seeds.getFarmingLevel()).thenReturn(99);
 
 		com.dooglemaps.state.PlantingGroups groups =

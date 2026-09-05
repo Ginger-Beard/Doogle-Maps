@@ -20,6 +20,7 @@ import java.util.function.Predicate;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
 
 /**
  * Asserts the reward table and the guide plant the same thing.
@@ -154,6 +155,60 @@ public class AllocationAgreementTest
 
 		assertEquals("and it is still one magic and three yews, whichever patch got which",
 			byKey.counts(), claimed.counts());
+	}
+
+	/**
+	 * Where the guide and the bank list are <b>supposed</b> to disagree, and why that is not drift.
+	 *
+	 * <h2>The agreement this file guards is about the sums, not about the stock</h2>
+	 *
+	 * Everything above compares two allocations given the same seeds and asserts they divide the
+	 * patches the same way. That is the property worth having: one ranking, one payment budget, one
+	 * answer. It is <i>not</i> a claim that the two callers count the same seeds.
+	 *
+	 * <p>They deliberately do not, once a run is under way. {@code RunLoadout.allocate} counts
+	 * seeds wherever the account keeps them, because it is answering "what should I take out of the
+	 * bank" and a seed you are not carrying is exactly the thing it exists to name. The guide's
+	 * copy narrows to what is on the trip the moment the supply leg is over — see
+	 * {@code GuideTracker.supplyLegDone} — because a palm in the seed vault is not something a
+	 * player standing at Lletya can put in the ground, and pretending otherwise is what had a palm
+	 * sapling follow one run from stop to stop while six papayas sat unplanted in the pack.
+	 *
+	 * <p>So this case asserts the divergence rather than the agreement: given one stock the bank
+	 * list sees and one it does not, the two produce different plans, and each is right about its
+	 * own question. If a future change makes these agree here, it has almost certainly done it by
+	 * putting the bug back.
+	 */
+	@Test
+	public void theBankListAndTheGuideDivergeOnceTheRunHasLeftTheBank()
+	{
+		Set<Seed> selected = new LinkedHashSet<>();
+		selected.add(Seed.MAGIC);   // position 1, and every one of them is in the bank
+		selected.add(Seed.YEW);     // position 2, and these are the ones in the pack
+
+		// What the loadout sees before the trip: everything the account owns, anywhere.
+		Map<Seed, Integer> ownedAnywhere = new HashMap<>();
+		ownedAnywhere.put(Seed.MAGIC, 10);
+		ownedAnywhere.put(Seed.YEW, 10);
+
+		// What the guide sees at a patch, once the bank is behind the run.
+		Map<Seed, Integer> onTheTrip = new HashMap<>();
+		onTheTrip.put(Seed.MAGIC, 0);
+		onTheTrip.put(Seed.YEW, 10);
+
+		List<FarmPatch> patches = treePatches(4);
+
+		SeedAllocation loadout = SeedAllocation.forPatches(patches, selected, ownedAnywhere, 99,
+			budget(MAGIC_COST * 99));
+		SeedAllocation guide = SeedAllocation.forPatches(patches, selected, onTheTrip, 99,
+			budget(MAGIC_COST * 99));
+
+		assertEquals("the bank list names the magics, because fetching them is its whole job",
+			Integer.valueOf(4), loadout.counts().get(Seed.MAGIC));
+		assertEquals("the guide plants the yews, because those are the saplings in the pack",
+			Integer.valueOf(4), guide.counts().get(Seed.YEW));
+		assertNull("and it does not ask for a magic sapling that is in the bank",
+			guide.counts().get(Seed.MAGIC));
 	}
 
 	/** A claim for a patch this allocation was never given changes nothing. */

@@ -3616,6 +3616,42 @@ public class RunPlanner
 		return supplyOwed;
 	}
 
+	/**
+	 * Whether this run is at a supply leg or still owes itself one.
+	 *
+	 * <h2>Why anyone outside asks</h2>
+	 *
+	 * The guide's seed allocation counts seeds wherever they are kept right up until the supply
+	 * leg is behind the run, and only what is on the trip afterwards — see
+	 * {@code GuideTracker.supplyLegDone}. The moment that switch flips has to be "the player has
+	 * left the bank with what they took", and no single flag says that: {@link #atBankLeg} going
+	 * false is not enough on its own, because a run that starts standing on ripe crops defers its
+	 * shopping ({@link #start} sets {@link #supplyOwed} with no leg armed) and would otherwise
+	 * read as having already been.
+	 *
+	 * <p>So both halves are asked, in the same pairing {@link #pickUpDeferredSupplies} uses to
+	 * decide whether a deferred trip is still coming: a debt nothing can be withdrawn against is
+	 * not a trip, or the run would sit waiting for one that never arms.
+	 *
+	 * <p>{@link #needsSupplyTrip()} is asked with the monitor released, like every other store
+	 * walk here — see the ordering note at the top of the file.
+	 */
+	public boolean isCollectingSupplies()
+	{
+		synchronized (this)
+		{
+			if (atBankLeg)
+			{
+				return true;
+			}
+			if (!supplyOwed)
+			{
+				return false;
+			}
+		}
+		return needsSupplyTrip();
+	}
+
 	public void stop()
 	{
 		synchronized (this)

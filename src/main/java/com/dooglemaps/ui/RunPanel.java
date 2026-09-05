@@ -1459,12 +1459,36 @@ class RunPanel extends JPanel
 		return Tooltips.html(text.toString());
 	}
 
+	/**
+	 * The stock the Projected table is allowed to price the run against.
+	 *
+	 * <h2>Two questions, and which one is being asked depends on where the run is</h2>
+	 *
+	 * Before a run — and for the whole of its supply leg — this is "what does the account own",
+	 * counted in either form, because everything the answer names can still be fetched and an
+	 * unpotted acorn is exactly the thing to take to a plant pot.
+	 *
+	 * <p>Once the run has left the bank behind it is "what am I carrying", and the difference is
+	 * not academic. Reported from play on a fruit tree run: the palm saplings stayed in the seed
+	 * vault because the papayas to protect them were thirteen short of fifteen, and six papayas
+	 * harvested at the first stop made palm affordable again — so the table went on promising a
+	 * row of palms that were four regions away. {@code GuideTracker.supplyLegDone} carries the
+	 * whole account of it; this is the same rule applied to the sidebar's copy of the sums, so
+	 * the panel and the guide cannot promise different runs.
+	 *
+	 * <p>Plantable rather than owned in that half, and for the same reason the guide uses
+	 * plantable: potting a seed is a bank errand, and a run past the bank cannot do it.
+	 */
 	private Map<Seed, Integer> ownedSeeds()
 	{
+		boolean onlyWhatIsCarried = planner.isActive() && guideTracker.isSupplyLegDone();
+
 		Map<Seed, Integer> owned = new EnumMap<>(Seed.class);
 		for (Seed seed : selection.getSelected())
 		{
-			owned.put(seed, seeds.getOwned(seed));
+			owned.put(seed, onlyWhatIsCarried
+				? seeds.getPlantableOnHand(seed)
+				: seeds.getOwned(seed));
 		}
 		return owned;
 	}

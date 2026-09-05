@@ -754,14 +754,6 @@ public final class GuidePlan
 	}
 
 	/**
-	 * Whether this seed can go in the ground on <b>this trip</b> — in the pack or the seed
-	 * box, as opposed to merely owned somewhere.
-	 *
-	 * <p>Plantable counts, not raw counts, so a pocketed acorn does not pass for the sapling
-	 * a tree patch actually takes. Also the tracker's test for wording the skip, so the two
-	 * cannot drift: the guide goes silent about a patch exactly when the panel explains why.
-	 */
-	/**
 	 * How many raw, unpotted seeds of this crop are on the player.
 	 *
 	 * <p>{@code getCount} counts both forms and {@code getPlantable} counts only the sapling, so
@@ -776,10 +768,22 @@ public final class GuidePlan
 			+ seeds.getPlantable(seed, SeedSource.SEED_BOX));
 	}
 
+	/**
+	 * Whether this seed can go in the ground on <b>this trip</b> — in the pack or the seed
+	 * box, as opposed to merely owned somewhere.
+	 *
+	 * <p>Plantable counts, not raw counts, so a pocketed acorn does not pass for the sapling
+	 * a tree patch actually takes. Also the tracker's test for wording the skip, so the two
+	 * cannot drift: the guide goes silent about a patch exactly when the panel explains why.
+	 *
+	 * <p>The "in the pack or the seed box" half is {@link SeedInventoryStore#getPlantableOnHand}
+	 * rather than two additions written out here, because the tracker's allocation now asks the
+	 * same question of the same store — and two spellings of "at hand" are two things to keep in
+	 * step. All this adds is the per-patch quantity, which is the part that is about a patch.
+	 */
 	static boolean seedAtHand(Seed seed, SeedInventoryStore seeds)
 	{
-		return seeds.getPlantable(seed, SeedSource.INVENTORY)
-			+ seeds.getPlantable(seed, SeedSource.SEED_BOX) >= seed.getSeedsPerPatch();
+		return seeds.getPlantableOnHand(seed) >= seed.getSeedsPerPatch();
 	}
 
 	/**

@@ -196,6 +196,7 @@ public class SkippedStopStaysFinishedTest
 		// workable on this trip.
 		when(seeds.getPlantable(Seed.GUAM, com.dooglemaps.state.SeedSource.INVENTORY))
 			.thenReturn(10);
+		when(seeds.getPlantableOnHand(Seed.GUAM)).thenReturn(10);
 		when(seeds.getFarmingLevel()).thenReturn(99);
 		when(groups.patchesIn(any())).thenReturn(java.util.Arrays.asList(
 			patch(FALADOR_HERB), patch(CATHERBY_HERB)));

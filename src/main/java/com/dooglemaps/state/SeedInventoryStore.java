@@ -1263,6 +1263,26 @@ public class SeedInventoryStore
 	}
 
 	/**
+	 * How many can go in the ground <b>on this trip</b> — the pack and the seed box, nothing else.
+	 *
+	 * <p>The counterpart to {@link #getOwnedPlantable}, and the difference between them is the
+	 * difference between two genuinely different questions. "What do I own" is what the bank list
+	 * answers, because a seed in the vault is a seed you can go and get. "What can I plant here"
+	 * is what a player standing at a patch is asking, and a vault four regions away is no answer
+	 * to it.
+	 *
+	 * <p>Lives here rather than being spelled out at each call site because it had been spelled
+	 * out at two of them and was about to be a third. {@code GuidePlan.seedAtHand} is this test
+	 * plus a per-patch quantity, and having the definition in one place is what stops the guide's
+	 * idea of "at hand" drifting from the tracker's — which is the pair that decides whether a
+	 * patch gets a plant step or a line of explanation.
+	 */
+	public int getPlantableOnHand(Seed seed)
+	{
+		return getPlantable(seed, SeedSource.INVENTORY) + getPlantable(seed, SeedSource.SEED_BOX);
+	}
+
+	/**
 	 * Whether the game has shown us inside the seed box since the client started.
 	 *
 	 * <h2>Why anything has to ask</h2>

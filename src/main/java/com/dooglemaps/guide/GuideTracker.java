@@ -237,6 +237,7 @@ public class GuideTracker
 	{
 		allocations.clear();
 		compostWanting.clear();
+		noteSupplyLegProgress();
 		retargetIfMoved();
 		// Before the status snapshot below reads the route, so the object it points at is
 		// this tick's next hop rather than one already taken.
@@ -773,6 +774,11 @@ public class GuideTracker
 		working = null;
 		interrupted = null;
 		workingRegion = -1;
+
+		// The next run gets to plan against everything the account owns again, and to say so
+		// once when it sets off. See supplyLegDone.
+		supplyLegDone = false;
+		lastAllocations.clear();
 	}
 
 	/**
@@ -2094,7 +2100,15 @@ public class GuideTracker
 			Seed chosen = allocationFor(group).seedFor(patch);
 			if (chosen == null)
 			{
-				reasons.add("Skipping " + patch.getDisplayName().toLowerCase() + " - no seed.");
+				// Nothing was assigned here, and past the supply leg that is usually not "you own
+				// no seeds" but "the ones you still own are not on the trip" — the allocation now
+				// declines to plan around a bank, so a seed left behind never reaches the branch
+				// below. Saying where it is anyway is what keeps the Prifddinas wording alive:
+				// see aPickedSeedLeftBehind.
+				Seed leftBehind = aPickedSeedLeftBehind(group);
+				reasons.add(leftBehind == null
+					? "Skipping " + patch.getDisplayName().toLowerCase() + " - no seed."
+					: skipBecause(patch, leftBehind));
 			}
 			else if (!GuidePlan.seedAtHand(chosen, seeds))
 			{
@@ -2102,14 +2116,51 @@ public class GuideTracker
 				// trip. Saying where they are is what turns "the plugin skipped my patch" into
 				// "I forgot to withdraw them". Reported from play, at Prifddinas, as a plant
 				// instruction for seeds sitting in the bank.
-				reasons.add("Skipping " + patch.getDisplayName().toLowerCase() + " - the "
-					+ chosen.getName().toLowerCase()
-					+ (chosen.isSapling() ? " sapling is " : " seeds are ")
-					+ whereSeedsAre(chosen) + ".");
+				reasons.add(skipBecause(patch, chosen));
 			}
 		}
 
 		skipped = reasons;
+	}
+
+	/** One patch passed over because its seed is somewhere else, in words. */
+	private String skipBecause(FarmPatch patch, Seed seed)
+	{
+		return "Skipping " + patch.getDisplayName().toLowerCase() + " - the "
+			+ seed.getName().toLowerCase()
+			+ (seed.isSapling() ? " sapling is " : " seeds are ")
+			+ whereSeedsAre(seed) + ".";
+	}
+
+	/**
+	 * A seed picked for this group that the account owns a patch's worth of, and is not carrying.
+	 *
+	 * <h2>Why the skip has to look this up for itself</h2>
+	 *
+	 * It used to be able to read the answer straight off the allocation: the allocation counted
+	 * seeds wherever they were kept, so a patch it assigned a banked seed to came back with that
+	 * seed and the wording followed. Since {@link #supplyLegDone} narrows it to what is on the
+	 * trip, a seed left in the bank is not assigned to anything — and the patch it would have
+	 * filled dropped from "the palm sapling is in the seed vault" to a bare "no seed", which is
+	 * both less true and less useful.
+	 *
+	 * <p>So the seeds are asked about directly, in the player's own click order — the order the
+	 * selection is kept in — and the first one the account owns enough of but is not carrying is
+	 * the one worth naming. "No seed" is then reserved for what it says: nothing picked for this
+	 * group exists anywhere.
+	 */
+	@Nullable
+	private Seed aPickedSeedLeftBehind(PlantingGroup group)
+	{
+		for (Seed seed : selection.getSelectedFor(group))
+		{
+			if (!GuidePlan.seedAtHand(seed, seeds)
+				&& seeds.getOwnedPlantable(seed) >= seed.getSeedsPerPatch())
+			{
+				return seed;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -3780,12 +3831,93 @@ public class GuideTracker
 	}
 
 	/**
+	 * Whether this run has left its supply leg behind, and so may only plant what it is carrying.
+	 *
+	 * <h2>The reported dead end: a palm that followed the player around Gielinor</h2>
+	 *
+	 * A fruit tree run, seeds picked in click order palm, dragonfruit, papaya. Palm was ticked to
+	 * protect, at fifteen papayas a patch, and at the bank the account had thirteen — so
+	 * {@code ProtectionBudget.affordablePatches} said zero palm patches were affordable, the
+	 * allocation skipped palm entirely, and the loadout took seven papaya saplings and left
+	 * twenty-eight palms in the seed vault. Correct, and the run set off with the right things.
+	 *
+	 * <p>Then the first tree was harvested for six papayas. Nineteen is more than fifteen, so on
+	 * the next tick palm became affordable — and the allocation, which is rebuilt from scratch
+	 * every tick against everything the account owns <i>anywhere</i>, promptly gave a patch to a
+	 * sapling sitting in the vault. Worse, the patch it gave it to was whichever one the player
+	 * was standing at, because {@code patchUnderfoot} hands that patch first claim. So the palm
+	 * followed the player from stop to stop: Lletya and then the Gnome Stronghold each answered
+	 * "Skipping - the palm sapling is in the seed vault" while six papaya saplings sat in the pack
+	 * with nothing to do. Reported from play.
+	 *
+	 * <p>The rebuilding is not the bug and is not being undone — it is what lets the run continue
+	 * correctly from whatever remains after each planting. The bug is that the <b>inputs</b> to it
+	 * stop being true partway through a run. Before the supply leg, "what do I own" is the right
+	 * question, because anything the answer names can still be fetched. Once the player has walked
+	 * away from the bank, the only seeds that exist for planting purposes are the ones on their
+	 * back.
+	 *
+	 * <h2>Latched, and deliberately one-way</h2>
+	 *
+	 * A mid-run detour to a bank — a deposit trip, the gear swap after the hespori, a diverted
+	 * top-up — does not put the run back into its opening state. Whatever it fetches arrives in
+	 * the pack and is counted there like anything else, so nothing is lost by staying latched; and
+	 * a flag that flickered would put the palm back the moment the run passed a bank.
+	 *
+	 * <p>Cleared in {@link #runEnded()} with everything else scoped to one run.
+	 *
+	 * <p><b>Not</b> the same rule the loadout follows. {@code RunLoadout.allocate} stays on
+	 * owned-anywhere on purpose, and its own comment says why: it is answering "what should I take
+	 * out of the bank", and a seed you are not carrying is precisely the thing it exists to name.
+	 * The two allocations agreeing was never that they ask the same question of the same stock —
+	 * it is that they apply the same ranking and the same budget to whatever stock they are given.
+	 *
+	 * <p>Volatile because the sidebar reads it from the Swing thread — see
+	 * {@link #isSupplyLegDone()} — while the tick writes it on the client thread.
+	 */
+	private volatile boolean supplyLegDone;
+
+	/**
+	 * Whether the run is past the point where a seed in a bank can still join it.
+	 *
+	 * <p>Public for the sidebar's Projected table, which prices the run from the same seeds and
+	 * had the same fault: it went on promising six palms while the palms were in the vault and
+	 * the run was three regions away. One rule, two surfaces.
+	 */
+	public boolean isSupplyLegDone()
+	{
+		return supplyLegDone;
+	}
+
+	/**
+	 * Notices the moment the run leaves its supply leg behind, once per run.
+	 *
+	 * <p>{@link com.dooglemaps.route.RunPlanner#isCollectingSupplies()} is the exact question —
+	 * see its note for why neither the bank-leg flag nor the owed-supplies flag answers it alone.
+	 * Asked at the top of the tick, before anything builds an allocation from it.
+	 */
+	private void noteSupplyLegProgress()
+	{
+		if (supplyLegDone || !planner.isActive() || planner.isCollectingSupplies())
+		{
+			return;
+		}
+
+		supplyLegDone = true;
+		log.info("Supply leg over - from here the run plants what it is carrying, and seeds left "
+			+ "in a bank or the seed vault stop being allocated to patches.");
+	}
+
+	/**
 	 * The run's seed assignment for a group, rebuilt each tick.
 	 *
 	 * <p>Cached for the tick because several patches at a stop ask for it and building it walks
 	 * the availability and seed stores. Not cached longer: as patches are planted their seeds and
 	 * payments leave the stores, and the next allocation continues from what remains — which is
 	 * what keeps it correct without anything having to be remembered.
+	 *
+	 * <p>What it is allowed to spend narrows once the run is past its supply leg — see
+	 * {@link #supplyLegDone}, which carries the reported case.
 	 */
 	private SeedAllocation allocationFor(PlantingGroup group)
 	{
@@ -3815,7 +3947,11 @@ public class GuideTracker
 		Map<Integer, Integer> payments = new java.util.HashMap<>();
 		for (Seed seed : selection.getSelectedFor(group))
 		{
-			owned.put(seed, seeds.getOwnedPlantable(seed));
+			// Everywhere the account keeps seeds until the supply leg is over, and only what is
+			// on the trip afterwards. See supplyLegDone for the palm that followed the player.
+			owned.put(seed, supplyLegDone
+				? seeds.getPlantableOnHand(seed)
+				: seeds.getOwnedPlantable(seed));
 
 			ProtectionPayment payment = ProtectionPayment.forSeed(seed);
 			if (payment != null && protection.isProtecting(group, seed))
@@ -3834,8 +3970,67 @@ public class GuideTracker
 			// scarce seed was being reserved for whichever patch sorted first by key.
 			patchUnderfoot(plantable));
 
+		noteAllocationChange(group, allocation);
 		allocations.put(group.getKey(), allocation);
 		return allocation;
+	}
+
+	/** The previous tick's assignment per group, for {@link #noteAllocationChange}. */
+	private final Map<String, Map<String, Seed>> lastAllocations =
+		new java.util.HashMap<>();
+
+	/**
+	 * Says out loud when a group's seed assignment changes under the player.
+	 *
+	 * <h2>Why this is worth a log line of its own</h2>
+	 *
+	 * The allocation is rebuilt from live stores every tick, so it is <i>designed</i> to move as
+	 * seeds are planted and payments are spent — and that made the one movement nobody wanted
+	 * invisible. A harvest put six papayas in the pack, palm went from unaffordable to affordable
+	 * on the next tick, and the run silently re-planned around a sapling in the seed vault; every
+	 * line in the log afterwards was a downstream symptom ("Skipping lletya", "Skipping gnome
+	 * stronghold") with nothing naming the moment the plan changed. See {@link #supplyLegDone}.
+	 *
+	 * <p>Once per change rather than once per tick — the map is compared against the previous
+	 * answer, so a stable allocation says nothing however many times it is asked for. Cleared with
+	 * the run, so the first allocation of a run is a beginning rather than a change.
+	 */
+	private void noteAllocationChange(PlantingGroup group, SeedAllocation allocation)
+	{
+		Map<String, Seed> now = new java.util.HashMap<>(allocation.assignments());
+		Map<String, Seed> before = lastAllocations.put(group.getKey(), now);
+		if (before == null || before.equals(now))
+		{
+			return;
+		}
+
+		log.info("The {} allocation changed mid-run: was {}, now {} (patches: was {}, now {})",
+			group.getKey(), describeAllocation(before), describeAllocation(now), before, now);
+	}
+
+	/** One group's assignment as counts per seed, for the line above. */
+	private static String describeAllocation(Map<String, Seed> assignment)
+	{
+		Map<Seed, Integer> counts = new java.util.EnumMap<>(Seed.class);
+		for (Seed seed : assignment.values())
+		{
+			counts.merge(seed, 1, Integer::sum);
+		}
+		if (counts.isEmpty())
+		{
+			return "nothing";
+		}
+
+		StringBuilder text = new StringBuilder();
+		counts.forEach((seed, count) ->
+		{
+			if (text.length() > 0)
+			{
+				text.append(", ");
+			}
+			text.append(seed.getName()).append(" x").append(count);
+		});
+		return text.toString();
 	}
 
 	/**

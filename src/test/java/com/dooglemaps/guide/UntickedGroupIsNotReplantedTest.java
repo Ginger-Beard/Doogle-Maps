@@ -91,6 +91,7 @@ public class UntickedGroupIsNotReplantedTest
 		when(seeds.getFarmingLevel()).thenReturn(99);
 		when(seeds.getOwnedPlantable(Seed.POISON_IVY)).thenReturn(94);
 		when(seeds.getPlantable(Seed.POISON_IVY, SeedSource.SEED_BOX)).thenReturn(94);
+		when(seeds.getPlantableOnHand(Seed.POISON_IVY)).thenReturn(94);
 		when(selection.getSelectedFor(bushGroup))
 			.thenReturn(new LinkedHashSet<>(Collections.singletonList(Seed.POISON_IVY)));
 	}

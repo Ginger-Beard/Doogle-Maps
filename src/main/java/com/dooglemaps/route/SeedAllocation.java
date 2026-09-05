@@ -49,6 +49,19 @@ public final class SeedAllocation
 		return patch == null ? null : byPatch.get(patch.getKey());
 	}
 
+	/**
+	 * The whole assignment, patch key to seed, for comparing one tick's answer with the last.
+	 *
+	 * <p>{@link #counts()} is the comparison the estimate wants and is the wrong one here: two
+	 * allocations can put the same number of each seed in the ground and disagree about which
+	 * patch gets which, which is a change the player sees and a change worth logging. See
+	 * {@code GuideTracker.noteAllocationChange}.
+	 */
+	public Map<String, Seed> assignments()
+	{
+		return java.util.Collections.unmodifiableMap(byPatch);
+	}
+
 	/** How many patches each seed was given, for comparing against the estimate. */
 	public Map<Seed, Integer> counts()
 	{

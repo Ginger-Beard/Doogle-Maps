@@ -126,6 +126,7 @@ public class ContractSeedFetchStepTest
 	public void noStepOnceTheSeedIsAtHand() throws Exception
 	{
 		when(seeds.getPlantable(Seed.CADANTINE, SeedSource.SEED_BOX)).thenReturn(1);
+		when(seeds.getPlantableOnHand(Seed.CADANTINE)).thenReturn(1);
 
 		assertFalse(has(errands(), GuideAction.FETCH_SEED));
 	}

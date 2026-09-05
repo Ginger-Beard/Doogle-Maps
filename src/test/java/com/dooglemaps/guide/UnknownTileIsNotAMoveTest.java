@@ -138,6 +138,7 @@ public class UnknownTileIsNotAMoveTest
 		when(seeds.getOwnedPlantable(com.dooglemaps.data.Seed.GUAM)).thenReturn(10);
 		when(seeds.getPlantable(com.dooglemaps.data.Seed.GUAM,
 			com.dooglemaps.state.SeedSource.INVENTORY)).thenReturn(10);
+		when(seeds.getPlantableOnHand(com.dooglemaps.data.Seed.GUAM)).thenReturn(10);
 		when(seeds.getFarmingLevel()).thenReturn(99);
 		when(groups.patchesIn(any())).thenReturn(java.util.Arrays.asList(
 			patch(FALADOR_HERB), patch(CATHERBY_HERB)));
