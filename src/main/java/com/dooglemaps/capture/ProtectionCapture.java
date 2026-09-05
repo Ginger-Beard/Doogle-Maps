@@ -263,6 +263,12 @@ public class ProtectionCapture
 	 * the diagnostic that was missing: when a payment is not recorded there is currently no way
 	 * to tell from a log whether the wording was new, and "I paid and it did not take" is not
 	 * something anyone can debug after the fact.
+	 *
+	 * <p>At {@code info} rather than {@code debug}: this install runs at INFO only, and a
+	 * 2026-09-04 report of an unresolved Kastori payment had no way to be diagnosed after the
+	 * fact because the one line that would have shown a declined or unrecognised dialogue never
+	 * reached the log. The guard above already bounds it to once per distinct line and only for
+	 * a farmer standing at the player's own patch, so this does not turn into per-tick noise.
 	 */
 	private void reportUnmatched(int npcId, @Nullable String line)
 	{
@@ -272,7 +278,7 @@ public class ProtectionCapture
 		}
 		if (reportedUnmatched.add(line))
 		{
-			log.debug("Farmer chathead {} said something not recognised as a payment: \"{}\"",
+			log.info("Farmer chathead {} said something not recognised as a payment: \"{}\"",
 				npcId, line);
 		}
 	}

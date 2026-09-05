@@ -41,10 +41,30 @@ public class FarmPatch
 		return region.getRegionId() + "." + varbit;
 	}
 
-	/** Region plus disambiguator, e.g. "Falador North West". */
+	/**
+	 * Region plus disambiguator, e.g. "Falador North West".
+	 *
+	 * <p>A patch with no name of its own ("") is unambiguous only when it is the one patch
+	 * in its region - Falador's tree patch stays plain "Falador". A region can hold several
+	 * blank-named patches of different kinds (Kastori's calquat, fruit tree and flower all
+	 * read ""), so a bare region name there would read as the same place for all of them.
+	 * Those fall back to the patch's kind instead: "Kastori calquat", "Kastori fruit tree".
+	 * Reported from play: Kastori's calquat and fruit tree payments both logged as plain
+	 * "Kastori", so a calquat payment read as the fruit tree's.
+	 */
 	public String getDisplayName()
 	{
-		return name.isEmpty() ? region.getName() : region.getName() + " " + name;
+		if (!name.isEmpty())
+		{
+			return region.getName() + " " + name;
+		}
+
+		if (region.getPatches().size() > 1)
+		{
+			return region.getName() + " " + implementation.getDisplayName().toLowerCase(java.util.Locale.ROOT);
+		}
+
+		return region.getName();
 	}
 
 	/** The patch's kind, which is also its sidebar tab and its seed-selection group. */

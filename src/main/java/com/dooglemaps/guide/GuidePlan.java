@@ -640,7 +640,8 @@ public final class GuidePlan
 			? null : itemNames.get(payment.getItemID());
 		steps.add(GuideStep.atNpc(GuideAction.PAY_FARMER, patch, payment.getItemID(),
 			patch.getFarmer(),
-			"Pay the farmer " + payment.getQuantity() + " "
+			"Pay " + com.dooglemaps.data.Farmers.getName(patch.getFarmer()) + " "
+				+ payment.getQuantity() + " "
 				+ (paying == null ? "of the payment item" : paying.toLowerCase())
 				+ " to protect the " + projection.getProduce().getName().toLowerCase() + "."));
 	}
