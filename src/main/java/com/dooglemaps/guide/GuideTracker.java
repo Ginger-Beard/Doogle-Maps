@@ -188,6 +188,25 @@ public class GuideTracker
 	private int lastRegion = -1;
 
 	/**
+	 * The player's tile as of the previous tick {@link #retargetIfMoved} ran, for telling a
+	 * teleport apart from a walk that happens to cross a region boundary.
+	 *
+	 * <p>Null whenever last tick's tile was unknown — the LOADING tick of a teleport blanks the
+	 * position store (see the null check in {@link #retargetIfMoved}) — so that the tile which
+	 * follows it, wherever that turns out to be, is read as a jump rather than measured against
+	 * a stale tile from before the teleport.
+	 */
+	@Nullable
+	private WorldPoint lastPlayerTile;
+
+	/**
+	 * Tiles between two known ticks that no walk or run could cover, so seeing more than this
+	 * means the player teleported. Running is the fastest non-teleport movement, at two tiles a
+	 * tick; this leaves headroom above that rather than sitting on the exact limit.
+	 */
+	private static final int JUMP_TILES = 8;
+
+	/**
 	 * Derives the whole of this tick's guidance: the step list, the destination and the status
 	 * the panel and the overlays read.
 	 *
@@ -699,6 +718,7 @@ public class GuideTracker
 	{
 		status = GuideStatus.idle();
 		lastRegion = -1;
+		lastPlayerTile = null;
 		runEnded();
 	}
 
@@ -4364,9 +4384,27 @@ public class GuideTracker
 	 * from where the player used to be. So after a teleport the panel kept naming the tablet that
 	 * had just been used, and the hops it listed were the old journey's.
 	 *
-	 * <p>Keyed on the region changing rather than on distance, which is what makes it a teleport
-	 * test rather than a walking one — walking across a region boundary asks once more than
-	 * strictly needed, and asking is cheap. Only while a run is actually under way.
+	 * <h2>A crossed boundary is not a jump</h2>
+	 *
+	 * This used to retarget on the region changing alone, on the reasoning that walking across a
+	 * boundary asks once more than strictly needed and asking is cheap. It is not cheap: Shortest
+	 * Path answers afresh from the new tile, and its walk-versus-teleport cost comparison can
+	 * flip on a one-tile difference — so the route and the hint changed under the player's feet
+	 * while they were still following it. Reported from play at Falador: standing on one tile the
+	 * guide had drawn as a walk to Taverley, stepping onto the next tile — straddling a region
+	 * boundary — flipped the instruction to "Cast Teleport to House ... via Grand Exchange
+	 * Portal". So the region changing is necessary but no longer sufficient; it also has to look
+	 * like a jump, judged against {@link #lastPlayerTile}:
+	 *
+	 * <ul>
+	 * <li>the previous tile was unknown (see the null check below — that is what a teleport's
+	 * LOADING tick leaves behind), or
+	 * <li>the previous tile was on a different plane, or
+	 * <li>the previous tile is more than {@link #JUMP_TILES} away, further than a single tick of
+	 * running could cover.
+	 * </ul>
+	 *
+	 * <p>Only while a run is actually under way.
 	 */
 	private void retargetIfMoved()
 	{
@@ -4383,14 +4421,24 @@ public class GuideTracker
 			// through the house), so a nexus leg was re-planned from the front door — and
 			// the empty answer, arriving late, was taken as that plan. Reported from play,
 			// Catherby via the nexus. Waiting one tick for a real tile costs nothing.
+			//
+			// Also blanks lastPlayerTile, so whatever tile turns up once the loading screen
+			// clears is compared against nothing rather than against wherever the player was
+			// before the teleport — which is what lets that tile read as a jump below.
+			lastPlayerTile = null;
 			return;
 		}
 		int region = player.getRegionID();
+		WorldPoint previous = lastPlayerTile;
+		lastPlayerTile = player;
 
 		if (region != lastRegion)
 		{
 			lastRegion = region;
-			if (planner.isActive())
+			boolean jumped = previous == null
+				|| previous.getPlane() != player.getPlane()
+				|| previous.distanceTo(player) > JUMP_TILES;
+			if (jumped && planner.isActive())
 			{
 				planner.retarget();
 			}
