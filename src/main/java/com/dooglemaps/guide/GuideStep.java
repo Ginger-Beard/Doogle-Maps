@@ -75,6 +75,31 @@ public class GuideStep
 			&& action != GuideAction.FETCH_SEED;
 	}
 
+	/**
+	 * Whether the step's item should be outlined in the inventory.
+	 *
+	 * <p>False for the four steps whose item never leaves the pack by being clicked in it: the
+	 * payment for protection, the payment to clear, and both contract steps all move the item
+	 * (or nothing at all, for the contract steps) through an NPC's dialogue instead — "Pay",
+	 * "Yes.", or the reward conversation itself. Outlining the coins in the pack on top of that
+	 * pointed at a second target for a click that only ever happens in the chatbox. Reported
+	 * from play, alongside the dialogue's own title row getting the same treatment it should
+	 * not have — see {@code GuideInventoryOverlay#isOptionRow}.
+	 *
+	 * <p>{@link GuideAction#TAKE_CONTRACT} and {@link GuideAction#HAND_IN_CONTRACT} never carry
+	 * an item in the first place — {@link #hasItem()} is already false for them — so naming them
+	 * here changes nothing today. They are named anyway so this method answers the same question
+	 * {@link #highlightsPatch()} does for its four exemptions: one place that says which steps
+	 * are dialogue-only, rather than that fact being re-derived per surface.
+	 */
+	public boolean highlightsItemInPack()
+	{
+		return action != GuideAction.PAY_FARMER
+			&& action != GuideAction.PAY_TO_CLEAR
+			&& action != GuideAction.TAKE_CONTRACT
+			&& action != GuideAction.HAND_IN_CONTRACT;
+	}
+
 	/** Whether this step happens in front of Guildmaster Jane rather than at a patch. */
 	public boolean isAtGuildmaster()
 	{

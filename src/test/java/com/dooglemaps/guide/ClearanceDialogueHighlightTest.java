@@ -74,11 +74,14 @@ public class ClearanceDialogueHighlightTest
 
 	/**
 	 * The three acceptance-path lines are outlined; the three declines are not — matched by
-	 * exact wiki wording, not by a guess at a shorter prefix.
+	 * exact wiki wording, not by a guess at a shorter prefix. Neither is the title row above
+	 * them, which is the owner's screenshot: "Pay 200 Coins to have your tree chopped down?"
+	 * outlined alongside "Yes." when only "Yes." should be.
 	 */
 	@Test
-	public void outlinesTheAcceptancesAndSkipsTheDeclines()
+	public void outlinesTheAcceptancesAndSkipsTheDeclinesAndTheTitle()
 	{
+		String title = "Pay 200 Coins to have your tree chopped down?";
 		String[] accepted = {
 			"Yes.",
 			"Here's 200 Coins - chop my tree down please.",
@@ -90,7 +93,7 @@ public class ClearanceDialogueHighlightTest
 			"Yes, you're right - I'll do it myself.",
 		};
 
-		java.util.Map<String, Rectangle> rows = optionsWidget(concat(accepted, declined));
+		java.util.Map<String, Rectangle> rows = optionsWidget(title, concat(accepted, declined));
 
 		overlay.highlightClearOptions(graphics, Color.CYAN);
 
@@ -104,6 +107,56 @@ public class ClearanceDialogueHighlightTest
 			assertFalse("expected \"" + text + "\" NOT to be outlined",
 				drawn.contains(rows.get(text)));
 		}
+		assertFalse("expected the title row NOT to be outlined",
+			drawn.contains(rows.get(title)));
+	}
+
+	/**
+	 * The payment dialogue's own title, guarded the same way: {@code highlightPayOptions}
+	 * matches "Pay" and "Yes" by prefix, and a title that states the question outright — "Pay 5
+	 * Coins to have this crop watched over?" — starts with the very word the allowlist looks
+	 * for. Only the index-based {@code isOptionRow} gate keeps it dark.
+	 */
+	@Test
+	public void payOptionsSkipsItsOwnTitleRow()
+	{
+		String title = "Pay 5 Coins to have this crop watched over?";
+		String[] options = {"Yes.", "No."};
+
+		java.util.Map<String, Rectangle> rows = optionsWidget(title, options);
+
+		overlay.highlightPayOptions(graphics, Color.CYAN);
+
+		assertEquals("only the \"Yes.\" row is outlined", 1, drawn.size());
+		assertTrue("expected \"Yes.\" to be outlined", drawn.contains(rows.get("Yes.")));
+		assertFalse("expected the title row NOT to be outlined",
+			drawn.contains(rows.get(title)));
+	}
+
+	/**
+	 * The hand-in conversation's title, guarded the same way: {@code highlightContractOptions}
+	 * is a denylist rather than an allowlist, and a title that merely avoids the deny words —
+	 * "You have completed the tomato contract! Would you like to take on a new one?" — was
+	 * outlined right along with the real choices before this gate existed.
+	 */
+	@Test
+	public void contractOptionsSkipsItsOwnTitleRow()
+	{
+		String title = "You have completed the tomato contract! Would you like to take on a new "
+			+ "one?";
+		// "No thanks." is already excluded on its own terms, by the existing "No" denylist entry
+		// — this fixture is only here to pin the title, not to re-cover that.
+		String[] options = {"Yes, please.", "No thanks."};
+
+		java.util.Map<String, Rectangle> rows = optionsWidget(title, options);
+
+		overlay.highlightContractOptions(graphics, Color.CYAN);
+
+		assertEquals("only the real \"Yes\" choice is outlined", 1, drawn.size());
+		assertTrue("expected \"Yes, please.\" to be outlined",
+			drawn.contains(rows.get("Yes, please.")));
+		assertFalse("expected the title row NOT to be outlined",
+			drawn.contains(rows.get(title)));
 	}
 
 	private static String[] concat(String[] a, String[] b)
@@ -114,25 +167,34 @@ public class ClearanceDialogueHighlightTest
 		return all;
 	}
 
-	/** Builds a mocked {@code Chatmenu.OPTIONS} widget with one mocked row per option text. */
-	private java.util.Map<String, Rectangle> optionsWidget(String[] optionTexts)
+	/**
+	 * Builds a mocked {@code Chatmenu.OPTIONS} widget: the title as child 0 — matching the real
+	 * dialogue's layout, and the layout {@code isOptionRow} tests against — then one mocked row
+	 * per option text after it, indexed 1, 2, 3....
+	 */
+	private java.util.Map<String, Rectangle> optionsWidget(String title, String[] optionTexts)
 	{
 		Widget list = Mockito.mock(Widget.class);
 		when(list.isHidden()).thenReturn(false);
 		Rectangle listBounds = new Rectangle(0, 0, 500, 500);
 		when(list.getBounds()).thenReturn(listBounds);
 
-		Widget[] rows = new Widget[optionTexts.length];
+		String[] allTexts = new String[optionTexts.length + 1];
+		allTexts[0] = title;
+		System.arraycopy(optionTexts, 0, allTexts, 1, optionTexts.length);
+
+		Widget[] rows = new Widget[allTexts.length];
 		java.util.Map<String, Rectangle> bounds = new java.util.HashMap<>();
-		for (int i = 0; i < optionTexts.length; i++)
+		for (int i = 0; i < allTexts.length; i++)
 		{
 			Widget row = Mockito.mock(Widget.class);
-			when(row.getText()).thenReturn(optionTexts[i]);
+			when(row.getText()).thenReturn(allTexts[i]);
 			when(row.getFont()).thenReturn(null);
+			when(row.getIndex()).thenReturn(i);
 			Rectangle rowBounds = new Rectangle(10, i * 20, 400, 18);
 			when(row.getBounds()).thenReturn(rowBounds);
 			rows[i] = row;
-			bounds.put(optionTexts[i], rowBounds);
+			bounds.put(allTexts[i], rowBounds);
 		}
 		when(list.getDynamicChildren()).thenReturn(rows);
 		when(client.getWidget(InterfaceID.Chatmenu.OPTIONS)).thenReturn(list);

@@ -253,7 +253,7 @@ public class GuideInventoryOverlay extends Overlay
 			highlightInLeprechaunStore(graphics, step.getItemId(), colour,
 				step.itemIsOnYourSideOfTheStore());
 		}
-		else
+		else if (step.highlightsItemInPack())
 		{
 			highlightInInventory(graphics, step.getItemId(), colour,
 				step.getAction() == GuideAction.PAY_FARMER);
@@ -1019,7 +1019,7 @@ public class GuideInventoryOverlay extends Overlay
 	 * step is {@code PAY_FARMER}, so a "Yes" in some unrelated dialogue is not at risk — there
 	 * is no payment conversation it could belong to.
 	 */
-	private void highlightPayOptions(Graphics2D graphics, Color colour)
+	void highlightPayOptions(Graphics2D graphics, Color colour)
 	{
 		Widget list = client.getWidget(InterfaceID.Chatmenu.OPTIONS);
 		if (list == null || list.isHidden() || list.getDynamicChildren() == null)
@@ -1029,7 +1029,7 @@ public class GuideInventoryOverlay extends Overlay
 
 		for (Widget row : list.getDynamicChildren())
 		{
-			if (row == null || row.getText() == null)
+			if (row == null || row.getText() == null || !isOptionRow(row))
 			{
 				continue;
 			}
@@ -1048,6 +1048,25 @@ public class GuideInventoryOverlay extends Overlay
 	}
 
 	/**
+	 * Whether a chatbox-options row is a clickable choice rather than the title above them.
+	 *
+	 * <p>The dialogue's title — "Select an Option", or, for these three conversations, the
+	 * actual question ("Pay 200 Coins to have your tree chopped down?") — is always the first
+	 * dynamic child of {@code Chatmenu.OPTIONS}, with every clickable row after it.
+	 * {@code ProtectionCapture} already leans on that same layout to turn a clicked widget's
+	 * index back into a patch choice ("Child 0 is the Select an Option header"). Structural
+	 * rather than textual on purpose: the title's wording is not fixed, and a farming prompt
+	 * that states the question outright starts with the very word — "Pay" — the payment
+	 * allowlist below is built to catch, and reads "Yes"-shaped enough that a denylist would
+	 * not save it either. Reported from play, screenshot in hand: the title and the coin stack
+	 * both lit up alongside the "Yes." that was the only intended target.
+	 */
+	private static boolean isOptionRow(Widget row)
+	{
+		return row.getIndex() > 0;
+	}
+
+	/**
 	 * Marks the hand-in conversation's rows at Guildmaster Jane.
 	 *
 	 * <p>Same arrangement as {@link #highlightPayOptions}: only ever drawn while the current
@@ -1062,7 +1081,7 @@ public class GuideInventoryOverlay extends Overlay
 	 * obvious declines; when the real wording has been captured in play, tighten this to a
 	 * prefix list and record the strings beside {@code ContractCapture}'s patterns.
 	 */
-	private void highlightContractOptions(Graphics2D graphics, Color colour)
+	void highlightContractOptions(Graphics2D graphics, Color colour)
 	{
 		Widget list = client.getWidget(InterfaceID.Chatmenu.OPTIONS);
 		if (list == null || list.isHidden() || list.getDynamicChildren() == null)
@@ -1072,7 +1091,7 @@ public class GuideInventoryOverlay extends Overlay
 
 		for (Widget row : list.getDynamicChildren())
 		{
-			if (row == null || row.getText() == null)
+			if (row == null || row.getText() == null || !isOptionRow(row))
 			{
 				continue;
 			}
@@ -1133,7 +1152,7 @@ public class GuideInventoryOverlay extends Overlay
 
 		for (Widget row : list.getDynamicChildren())
 		{
-			if (row == null || row.getText() == null)
+			if (row == null || row.getText() == null || !isOptionRow(row))
 			{
 				continue;
 			}
