@@ -2984,7 +2984,89 @@ public class RunPlanner
 			return false;
 		}
 		Produce contract = groups.contractCrop();
-		return contract != null && ripeProduceIn(group).containsKey(contract);
+		return contract != null && ripeProduceIn(group).containsKey(contract)
+			// ...unless what is standing there can never finish the contract, in which case the
+			// patch is ground to clear and sow rather than a crop to hand in. See
+			// contractStandingIsSpent, which is the whole of that distinction.
+			&& !contractStandingIsSpent(group);
+	}
+
+	/**
+	 * Whether the contract's crop is standing in this group already <b>spent</b> — health-checked
+	 * before the contract was taken, so no amount of harvesting it can ever satisfy the contract.
+	 *
+	 * <h2>Ripe is not the same as finished, and reading it as finished stopped a run dead</h2>
+	 *
+	 * {@link #plantsNothing} treats the contract crop standing ripe in the contract's own patch as
+	 * "harvest it and hand it in, sow nothing" — which is right for a crop that grew <i>during</i>
+	 * the contract, and exactly wrong for this one. The wiki is explicit that a check-health crop
+	 * completes its contract <b>at the check</b>: a bush checked before Jane named it can never
+	 * count, and the only way forward is to dig it up and plant a fresh seed.
+	 *
+	 * <p>Reported from play, on a contract-only run at a pre-checked poison ivy bush. The group was
+	 * skipped for seeds, so no seed was picked for the run; no seeds picked sends
+	 * {@link #needsSupplyTrip()} to a bank; opening at a bank silences {@code computeStepsHere}
+	 * entirely — so the plugin sat at the guild saying nothing at all, on every tick, through
+	 * repeated Stop/Start. Nothing threw; every piece behaved as designed off one wrong answer here.
+	 *
+	 * <p>One predicate, three callers, deliberately. {@code RunLoadout.contractIsStandingThere} asks
+	 * it so the run banks for the plan it plants, and {@code GuideTracker.contractDudPatch} asks it
+	 * so the words the player reads come from the same judgment as the routing. Three copies of a
+	 * rule this fiddly is three chances to disagree, and the disagreement is invisible until a run
+	 * goes quiet.
+	 *
+	 * <p>Walks the same patches {@link #ripeProduceIn} does — actionable, in this group — because
+	 * that is the set {@code plantsNothing} is deciding about; the per-patch overload is the
+	 * judgment itself and carries no such filter.
+	 */
+	public synchronized boolean contractStandingIsSpent(@Nullable PlantingGroup group)
+	{
+		if (group == null || !group.isContract())
+		{
+			return false;
+		}
+
+		for (FarmPatch patch : availability.getAvailablePatches(group.getType()))
+		{
+			PlantingGroup patchGroup = groups.groupFor(patch);
+			if (patchGroup == null || !patchGroup.equals(group) || !isActionable(patch))
+			{
+				continue;
+			}
+			if (contractStandingIsSpent(patch))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * The same judgment asked of one patch, which is the form the guide needs.
+	 *
+	 * <p>Three things together, and each of them is a way out: the crop standing there is the
+	 * assigned one, its family completes its contract at the health check, and it is
+	 * {@code HARVESTABLE} — a state that for those families only exists <i>after</i> a check. A
+	 * check made during the contract announces itself in the chatbox and is recorded, so the caller
+	 * that can see that record is the one that consults it; see
+	 * {@code GuideTracker.contractDudPatch}.
+	 *
+	 * <p>Harvest-class crops can never answer true here, and that is correct rather than an
+	 * omission: their completion event empties the patch, so a crop still standing is a crop still
+	 * eligible.
+	 */
+	public synchronized boolean contractStandingIsSpent(@Nullable FarmPatch patch)
+	{
+		Produce assigned = groups.contractCrop();
+		if (patch == null || assigned == null
+			|| !assigned.getPatchImplementation().isHealthCheckRequired())
+		{
+			return false;
+		}
+
+		PatchProjection projection = growthTimer.project(patch, stateStore.get(patch));
+		return projection != null && projection.getProduce() == assigned
+			&& projection.getCropState() == CropState.HARVESTABLE;
 	}
 
 	/** Stop regions, for the diagnostic. */

@@ -903,6 +903,15 @@ public class RunLoadout
 	 * <p>Once it is handed in the patch empties, the group's ripe produce no longer matches, and
 	 * the next contract's seed is asked for normally — on the same trip, since taking the contract
 	 * moves its patch into this group immediately.
+	 *
+	 * <h2>A crop that can never finish the contract is not a finished contract</h2>
+	 *
+	 * A check-health crop that was checked <i>before</i> the contract was taken stands ripe in the
+	 * patch and matches the assignment, and every word above reads as though it were the contract
+	 * grown — while in fact it can never satisfy it, and the seed is the one thing the trip does
+	 * need. The planner owns that distinction and is asked for it rather than it being re-derived
+	 * here, because the two answers deciding one run is precisely what these two methods exist to
+	 * keep from happening. See {@code RunPlanner.contractStandingIsSpent}.
 	 */
 	private boolean contractIsStandingThere(PlantingGroup group)
 	{
@@ -912,7 +921,8 @@ public class RunLoadout
 		}
 
 		com.dooglemaps.data.Produce contract = contracts.getContract();
-		return contract != null && planner.ripeProduceIn(group).containsKey(contract);
+		return contract != null && planner.ripeProduceIn(group).containsKey(contract)
+			&& !planner.contractStandingIsSpent(group);
 	}
 
 	private List<LoadoutItem> build(Set<PatchImplementation> types)

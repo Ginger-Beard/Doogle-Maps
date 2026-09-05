@@ -936,10 +936,29 @@ public class GuideTracker
 		skipped = new ArrayList<>();
 
 		List<GuideStep> steps = new ArrayList<>();
-		if (!planner.isActive() || planner.isAtBankLeg())
+		if (!planner.isActive())
 		{
 			return steps;
 		}
+
+		// The supply leg speaks through the withdraw list and the highlighted booth rather than
+		// through a step, so this stop's patches are deliberately silent while it runs.
+		//
+		// Said in the log, once per leg, because that silence is indistinguishable from the plugin
+		// having stopped and has been reported as exactly that. A contract-only run whose seed was
+		// never allocated opens at a bank with an empty withdraw list, so every surface goes quiet
+		// at once and there is no line anywhere saying why. The contract note is the one thing that
+		// survives this return — it is built beside the status rather than inside the step list,
+		// which is what lets the guild's explanation stay on screen through the leg. See the
+		// status build in onGameTick.
+		if (planner.isAtBankLeg())
+		{
+			sayNothingHere("the run is at its supply leg (" + planner.getBankLegReason()
+				+ "), collecting from " + planner.getSupplySources()
+				+ "; an empty list there means nothing was picked for this run");
+			return steps;
+		}
+		lastSilence = null;
 
 		WorldPoint player = playerLocation();
 		if (player == null)
@@ -1650,6 +1669,27 @@ public class GuideTracker
 	/** The last thing said about the contract patch, so it is said once and not every tick. */
 	private String lastContractDiagnostic;
 
+	/** The last reason the guide had nothing to say, kept apart from the contract diagnostic so
+	 * two alternating messages cannot each read as new every tick. */
+	private String lastSilence;
+
+	/**
+	 * Says why there is no step, once per spell of silence.
+	 *
+	 * <p>Silence is the guide's normal state on a travel leg and its failure state everywhere
+	 * else, and from the player's side the two are identical — "the plugin just stopped doing
+	 * anything" is how the failure gets reported. Cleared the moment a stop speaks again, so a
+	 * second spell says so again rather than being swallowed as a repeat.
+	 */
+	private void sayNothingHere(String reason)
+	{
+		if (!reason.equals(lastSilence))
+		{
+			lastSilence = reason;
+			log.info("The guide has no step for where you are standing: {}", reason);
+		}
+	}
+
 	private void logOnce(String message)
 	{
 		if (!message.equals(lastContractDiagnostic))
@@ -1690,7 +1730,27 @@ public class GuideTracker
 		// read by a run that has not started yet: Start run plans the guild stop off it when the
 		// only thing left in the contract chain is a conversation with Jane. See
 		// contractBusinessOutstanding and RunPlanner.ensureJaneHasAStop.
-		planner.setContractBusinessOutstanding(contractBusinessOutstanding());
+		//
+		// Wrapped, because this is the first thing the tick does and the chain behind it is the
+		// longest reach in the class - config, the patch stores, the planner's allocation and the
+		// seed inventory, one of which can be empty or half-loaded at login. An exception thrown
+		// here would take the whole tick with it: no steps, no idle report, no snapshot, on every
+		// tick, which from the player's side is the plugin having stopped. So the chain is allowed
+		// to fail loudly in the log and quietly on screen - "no business" is the answer that lets a
+		// run end rather than the one that strands it - and the trace is printed so a silence that
+		// does happen is a silence with a cause in client.log.
+		boolean business;
+		try
+		{
+			business = contractBusinessOutstanding();
+		}
+		catch (RuntimeException e)
+		{
+			log.warn("The farming contract chain could not be judged this tick, so the guild is "
+				+ "not being held open on it", e);
+			business = false;
+		}
+		planner.setContractBusinessOutstanding(business);
 
 		if (!planner.isActive())
 		{
@@ -2118,6 +2178,18 @@ public class GuideTracker
 			return;
 		}
 
+		if (stop.getPatches().isEmpty())
+		{
+			// Every stop the planner makes is made because a patch is at it — ensureJaneHasAStop
+			// included, which hangs the guild on the contract's own patch — so this is a state
+			// nothing produces today. It is guarded anyway because the alternative is an
+			// IndexOutOfBounds thrown from the tick that builds the step list, which takes the
+			// guide silent for the rest of the session over a stop with nothing in it.
+			logOnce("The Farming Guild stop has no patch to anchor Jane's errands on, so they are "
+				+ "not being offered");
+			return;
+		}
+
 		FarmPatch anchor = stop.getPatches().get(0);
 
 		Produce handIn = contractToHandIn();
@@ -2261,7 +2333,14 @@ public class GuideTracker
 	 *       straight out — the same three shapes {@link #contractSeedFetch} sends a player
 	 *       shopping for. Anything else standing there has {@link #contractNote} to explain it.
 	 *   <li><b>It is not already sown.</b> The contract crop growing in its own patch is the end
-	 *       of the chain, and the point at which the guild opens up again.
+	 *       of the chain, and the point at which the guild opens up again — <i>unless</i> what is
+	 *       standing there is spent, which is the one shape of "the contract crop is in its patch"
+	 *       that is not the chain finished but the chain not yet begun. See
+	 *       {@code RunPlanner.contractStandingIsSpent}: a bush checked before the contract was
+	 *       taken can never satisfy it, so the dig and the sowing are both still owed and the
+	 *       guild still has business. Without this the claim went false at a patch the run had
+	 *       every reason to visit, Jane's stop stopped being held open, and the guide had nothing
+	 *       to say for the rest of the trip.
 	 * </ul>
 	 */
 	private boolean newContractStillToPlant()
@@ -2290,9 +2369,13 @@ public class GuideTracker
 			}
 
 			boolean dead = projection.getCropState() == com.dooglemaps.data.CropState.DEAD;
-			if (!dead && projection.getProduce() == contract)
+			if (!dead && projection.getProduce() == contract
+				&& !planner.contractStandingIsSpent(patch))
 			{
-				// Sown and growing: the chain is finished and the stop may close.
+				// Sown and growing: the chain is finished and the stop may close. A spent crop
+				// reads identically from here — the contract's own produce, alive, in its own
+				// patch — and is the opposite state: nothing has been sown for this contract at
+				// all, and the spade is the first thing it wants.
 				return false;
 			}
 			plantable |= dead || projection.isEmpty()
@@ -2728,23 +2811,36 @@ public class GuideTracker
 	 * to dig the crop up and plant a fresh one.
 	 *
 	 * <p>That state is identified exactly as {@link #isGrownInGuild} refuses it: a check-health
-	 * crop standing {@code HARVESTABLE} (which only exists after the check) while nothing is
-	 * recorded as awaiting hand-in (a check made <i>during</i> the contract announces itself in
-	 * the chatbox, and that capture writes the record before this is ever asked). Harvest-class
-	 * crops cannot be duds — their completion event empties the patch, so a standing crop is
-	 * always still eligible.
+	 * crop standing {@code HARVESTABLE}, which for those families only exists after the check.
+	 * The judgment itself is {@code RunPlanner.contractStandingIsSpent} rather than a copy of it
+	 * here, because the same question decides whether the run allocates the seed at all — and the
+	 * two answering differently is how a run came to explain a dud in words while routing as
+	 * though the contract were finished. Harvest-class crops cannot be duds: their completion
+	 * event empties the patch, so a standing crop is always still eligible.
+	 *
+	 * <p>What the record adds is the one thing the planner cannot see. A check made <i>during</i>
+	 * the contract announces itself in the chatbox, and that capture writes the awaiting-hand-in
+	 * record — so a record naming <b>this crop</b> is proof the check counted and the crop is not
+	 * a dud. A record naming some <i>other</i> crop is a leftover from an earlier cycle and says
+	 * nothing about this contract at all; refusing on any record whatsoever is how a stale
+	 * snapdragon in config silenced the explanation for a live poison ivy. Reported from play.
 	 *
 	 * <p>No new steps hang off this. The run already knows how to replant a picked-clean bush or
-	 * cactus — harvest, dig up, plant — and the contract machinery already allocates the seed;
-	 * what was missing was only the refusal above and the explanation this feeds, in
-	 * {@link #contractNote}.
+	 * cactus — harvest, dig up, plant — and with the planner asking the same question the seed for
+	 * that replant is now allocated; what was missing was the refusal above and the explanation
+	 * this feeds, in {@link #contractNote}.
 	 */
 	@Nullable
 	private FarmPatch contractDudPatch()
 	{
 		Produce assigned = contracts.getContract();
-		if (assigned == null || contracts.getAwaitingHandIn() != null
-			|| !assigned.getPatchImplementation().isHealthCheckRequired())
+		if (assigned == null)
+		{
+			return null;
+		}
+
+		Produce awaiting = contracts.getAwaitingHandIn();
+		if (awaiting != null && awaiting == assigned)
 		{
 			return null;
 		}
@@ -2752,9 +2848,7 @@ public class GuideTracker
 		for (FarmPatch patch : groups.patchesIn(
 			com.dooglemaps.data.PlantingGroup.contract(assigned.getPatchImplementation())))
 		{
-			PatchProjection projection = growthTimer.project(patch, patches.get(patch));
-			if (projection != null && projection.getProduce() == assigned
-				&& projection.getCropState() == com.dooglemaps.data.CropState.HARVESTABLE)
+			if (planner.contractStandingIsSpent(patch))
 			{
 				return patch;
 			}

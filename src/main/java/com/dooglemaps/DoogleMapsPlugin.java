@@ -784,6 +784,25 @@ public class DoogleMapsPlugin extends Plugin
 			load();
 		}
 
+		// The awaiting-hand-in record, squared against Time Tracking and the ground, before
+		// anything this tick reads it.
+		//
+		// It used to be reconciled at exactly two moments — plugin load, and a change of Time
+		// Tracking's contract key — on the reasoning that those are the only moments the two
+		// sources can newly contradict each other. They are not: our own capture writes the record
+		// too, the key can change while the plugin is not listening (another machine, a session
+		// with Time Tracking alone), and a record that goes stale in between is read by every
+		// contract question there is until something happens to trigger a reconcile. Reported from
+		// play as a snapdragon sitting in the awaiting record while a poison ivy contract was
+		// live, which suppressed the guide's explanation of that contract entirely.
+		//
+		// Cheap enough to do every tick: three config reads, and it writes only when it has found
+		// a contradiction — which, having cleared it, it will not find again.
+		if (loaded)
+		{
+			contracts.reconcileAwaitingHandIn(guideTracker.contractGroundEvidence());
+		}
+
 		// The supply leg ends when there is nothing left to collect, and that can become true
 		// without a bank event: withdrawing the last seed from the *vault* fires nothing the bank
 		// capture listens for. The flag is refreshed first so the answer is this tick's, not the

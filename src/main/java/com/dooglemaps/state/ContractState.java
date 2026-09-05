@@ -354,7 +354,14 @@ public class ContractState
 		// Time Tracking is still naming is one you have already given back"; a fresh assignment
 		// is the answer to that, whichever source saw it.
 		clear(SETTLED_KEY);
-		log.debug("Farming contract assigned: {}", contract.getName());
+		// At INFO, like every other write in this class. These four methods are the only things
+		// that change what the whole contract chain believes, they are driven by chat lines that
+		// are gone the moment they scroll past, and the state they leave behind survives restarts
+		// in config - so a wrong answer days later has no trail at all at DEBUG. Reported from
+		// play: an awaiting-hand-in record naming a crop from a previous contract, with nothing in
+		// client.log to say when or why it was written.
+		log.info("Farming contract assigned: {} - the seed for it is now the run's to fetch, and "
+			+ "any awaiting or settled record from the last one is superseded", contract.getName());
 		fireChanged();
 	}
 
@@ -370,7 +377,8 @@ public class ContractState
 		Produce contract = getContract();
 		if (contract == null)
 		{
-			log.debug("A farming contract completed, but nothing was recorded as assigned");
+			log.info("A farming contract completed, but nothing was recorded as assigned - "
+				+ "nothing is written down, so the hand-in will be read off the ground");
 			return;
 		}
 		write(AWAITING_HAND_IN_KEY, contract.name());
@@ -380,7 +388,8 @@ public class ContractState
 		// A completion is proof a contract was live, so nothing can still be in the window
 		// between a hand-in and the next assignment.
 		clear(SETTLED_KEY);
-		log.debug("Farming contract completed: {} is waiting to be handed in", contract.getName());
+		log.info("Farming contract completed: {} is waiting to be handed in, and the assignment "
+			+ "has been cleared with it", contract.getName());
 		fireChanged();
 	}
 
@@ -410,8 +419,10 @@ public class ContractState
 			// is out, nothing is owed, and a marker for a closed window is only there to go stale.
 			write(SETTLED_KEY, settled.name());
 		}
-		log.debug("Farming contract handed in: {}",
-			settled == null ? "crop unknown" : settled.getName());
+		log.info("Farming contract handed in: {} - the awaiting record is cleared and the window "
+				+ "before the next contract is {}",
+			settled == null ? "crop unknown" : settled.getName(),
+			settled != null && (assigned == null || assigned == settled) ? "open" : "closed");
 		fireChanged();
 	}
 
@@ -453,6 +464,9 @@ public class ContractState
 		Produce settled = settledMarker();
 		if (settled != null && assigned != null && assigned != settled)
 		{
+			log.info("The just-handed-in marker still named {} while Time Tracking has {} "
+				+ "assigned, so the window it stood for is closed - clearing it",
+				settled.getName(), assigned.getName());
 			clear(SETTLED_KEY);
 		}
 
@@ -462,8 +476,9 @@ public class ContractState
 		}
 		if (assigned != null && assigned != awaiting)
 		{
-			log.debug("Time Tracking sees {} assigned while {} still read as awaiting hand-in - "
-				+ "the hand-in happened unseen", assigned.getName(), awaiting.getName());
+			log.info("Time Tracking sees {} assigned while {} still read as awaiting hand-in - "
+				+ "the hand-in happened unseen, so the stale record is being settled",
+				assigned.getName(), awaiting.getName());
 			recordHandedIn();
 			return;
 		}

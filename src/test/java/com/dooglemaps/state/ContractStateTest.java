@@ -359,6 +359,38 @@ public class ContractStateTest
 	}
 
 	/**
+	 * The exact state read off a live profile: a snapdragon awaiting, a poison ivy assigned.
+	 *
+	 * <p>Reported from play. Where the record came from is not knowable after the fact — the writes
+	 * that could have made it were at DEBUG, and are at INFO now for exactly this reason — but its
+	 * effect was: every contract question that consults the record answered as though a hand-in
+	 * were owed, including the one that explains a dud contract to the player, and the record
+	 * outlived several sessions because it lives in config.
+	 *
+	 * <p>Reconciling clears it and leaves the live assignment alone, which is the shape the whole
+	 * chain needs: nothing awaiting, poison ivy assigned, and no settled marker shadowing it.
+	 */
+	@Test
+	public void aRecordFromAnEarlierCycleIsClearedWithoutTouchingTheLiveContract()
+	{
+		assignInTimeTracking(Produce.SNAPDRAGON);
+		contracts.recordCompleted();
+		assertEquals(Produce.SNAPDRAGON, contracts.getAwaitingHandIn());
+
+		// Jane's next contract, seen by Time Tracking while our own capture missed both the
+		// reward and the assignment.
+		assignInTimeTracking(Produce.POISON_IVY);
+		contracts.reconcileAwaitingHandIn();
+
+		assertNull("a record for last cycle's crop cannot speak for this one",
+			contracts.getAwaitingHandIn());
+		assertEquals("and the contract actually assigned is untouched",
+			Produce.POISON_IVY, contracts.getContract());
+		assertNull("the hand-in window closed the moment the next contract was named",
+			contracts.getSettledContract());
+	}
+
+	/**
 	 * An awaiting record contradicted by Time Tracking still holding the SAME crop is corruption.
 	 *
 	 * <h2>The poison ivy report</h2>

@@ -59,6 +59,18 @@ public class ContractHandInOrderTest
 	private com.dooglemaps.state.SeedInventoryStore seeds;
 	private FarmPatch cactus;
 
+	/**
+	 * The planner, because it owns one answer this class asks for.
+	 *
+	 * <p>Whether a standing contract crop is <b>spent</b> — checked before the contract was taken,
+	 * so it can never satisfy it — is {@code RunPlanner.contractStandingIsSpent}, and it lives
+	 * there because the same question decides whether the run allocates a seed for the replant.
+	 * The guide asks rather than re-deriving, so a test about the dud has to say what the planner
+	 * would answer. The judgment itself is tested in
+	 * {@code route.ADudContractStillWantsItsSeedTest}.
+	 */
+	private com.dooglemaps.route.RunPlanner planner;
+
 	@Before
 	public void setUp() throws Exception
 	{
@@ -74,7 +86,10 @@ public class ContractHandInOrderTest
 		when(config.contractSeedAdvice())
 			.thenReturn(DoogleMapsConfig.ContractSeedAdvice.ASK_FOR_EASIER);
 
-		tracker = trackerWith(contracts, groups, growthTimer, patches, config, chat, seeds);
+		planner = Mockito.mock(com.dooglemaps.route.RunPlanner.class);
+
+		tracker = trackerWith(contracts, groups, growthTimer, patches, config, chat, seeds,
+			planner);
 
 		cactus = guildPatch(PatchImplementation.CACTUS);
 		assertNotNull("the Farming Guild has no cactus patch in the data", cactus);
@@ -350,6 +365,9 @@ public class ContractHandInOrderTest
 		when(contracts.getAwaitingHandIn()).thenReturn(null);
 		when(contracts.hasContract()).thenReturn(true);
 		project(cactus, Produce.POTATO_CACTUS, CropState.HARVESTABLE, 0);
+		// The planner's verdict on that projection; see the field note on why it is asked for
+		// rather than worked out here.
+		when(planner.contractStandingIsSpent(cactus)).thenReturn(true);
 
 		String note = note();
 		assertNotNull("digging up a healthy crop needs its why", note);
@@ -489,7 +507,8 @@ public class ContractHandInOrderTest
 	/** A tracker with the four collaborators the contract errands actually read. */
 	private static GuideTracker trackerWith(ContractState contracts, PlantingGroups groups,
 		GrowthTimer growthTimer, PatchStateStore patches, DoogleMapsConfig config,
-		ChatMessageManager chat, com.dooglemaps.state.SeedInventoryStore seeds)
+		ChatMessageManager chat, com.dooglemaps.state.SeedInventoryStore seeds,
+		com.dooglemaps.route.RunPlanner planner)
 		throws Exception
 	{
 		Constructor<?> constructor = GuideTracker.class.getDeclaredConstructors()[0];
@@ -527,6 +546,10 @@ public class ContractHandInOrderTest
 			else if (type == com.dooglemaps.state.SeedInventoryStore.class)
 			{
 				args[i] = seeds;
+			}
+			else if (type == com.dooglemaps.route.RunPlanner.class)
+			{
+				args[i] = planner;
 			}
 			else
 			{
