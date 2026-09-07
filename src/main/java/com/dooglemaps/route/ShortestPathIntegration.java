@@ -30,7 +30,12 @@ import net.runelite.client.events.PluginMessage;
  *   <li>{@code path} with {@code target} — a {@link WorldPoint}, a packed int, or a
  *       <b>set</b> of either. Optional {@code start} defaults to where the player is.</li>
  *   <li>{@code path} with {@code config} — a map of config overrides applied to that
- *       request, e.g. the path colour or {@code postTransports}.</li>
+ *       request, e.g. the path colour or {@code postTransports}. Only the keys its
+ *       {@code cacheConfigValues} reads go through the override map; the two settings that
+ *       govern its <b>own</b> re-planning — {@code recalculateDistance} and
+ *       {@code cancelInstead} — are read straight off the user's config, so a request cannot
+ *       ask for a route that will not be re-planned underneath it. See
+ *       {@link #stillFollowingThePlan}.</li>
  *   <li>{@code clear} — drops the path and any overrides.</li>
  *   <li>It posts {@code transports} back, listing the fairy rings, spirit trees and so on
  *       the current path uses — but only when {@code postTransports} is on, which is why
@@ -271,6 +276,11 @@ public class ShortestPathIntegration
 		hops = new ArrayList<>();
 		hopsPassed = 0;
 		routeDepartsPoh = false;
+		// What this leg is for, kept so the plan the router answers with can be told from a
+		// plan it re-computes on its own later; see stillFollowingThePlan.
+		requestedTargets = new HashSet<>(targets);
+		nearestApproach = Integer.MAX_VALUE;
+		routeAnswered = false;
 		// ...and the gap itself is now a stated fact, because empty-while-waiting and
 		// empty-as-the-answer mean different things: "no transports" as an *answer* is what
 		// sends the overlay to the exit portal, and jumping there during the wait lit the
@@ -327,6 +337,9 @@ public class ShortestPathIntegration
 		routeDepartsPoh = false;
 		awaitingRoute = false;
 		routeRequested = false;
+		requestedTargets = new HashSet<>();
+		nearestApproach = Integer.MAX_VALUE;
+		routeAnswered = false;
 		routeGeneration++;
 		post(new PluginMessage(NAMESPACE, MESSAGE_CLEAR));
 	}
@@ -435,9 +448,19 @@ public class ShortestPathIntegration
 		// the nexus row while the nexus itself stayed lit off the previous route. Every
 		// message inside the window is read and the latest wins; the window is the router's
 		// own no-progress cutoff with room to spare.
-		if (!isAwaitingRoute() && Boolean.TRUE.equals(playerInInstance.get())
-			&& System.currentTimeMillis() - requestedAtMillis > ROUTE_SETTLE_MILLIS)
+		boolean unsolicited = !isAwaitingRoute()
+			&& System.currentTimeMillis() - requestedAtMillis > ROUTE_SETTLE_MILLIS;
+
+		if (unsolicited && Boolean.TRUE.equals(playerInInstance.get()))
 		{
+			return;
+		}
+
+		// And not a re-plan of the leg the player is already walking; see
+		// stillFollowingThePlan for the whole of why.
+		if (unsolicited && stillFollowingThePlan())
+		{
+			declineReplan(event);
 			return;
 		}
 
@@ -470,10 +493,185 @@ public class ShortestPathIntegration
 		}
 		currentDestinations = destinations;
 		awaitingRoute = false;
+		// This plan is now the one being held. Its hops are anchors the player can be judged
+		// against, so the closest approach starts over with them counted in; the next tick
+		// fills it back in. See stillFollowingThePlan.
+		routeAnswered = true;
+		nearestApproach = Integer.MAX_VALUE;
 		routeGeneration++;
 
 		log.debug("Path uses {} transport(s), ending at {} point(s)",
 			currentTransports.size(), currentDestinations.size());
+	}
+
+	/**
+	 * What the outstanding request asked to reach — the leg's own destinations, not the
+	 * router's answer.
+	 *
+	 * <p>{@link #currentDestinations} cannot stand in for this: it is read from the message's
+	 * {@code destination} list, which is where each <i>hop</i> lands, so a leg walked on foot
+	 * answers with nothing at all. The targets are the only description of the leg that
+	 * survives a walking route, and {@link #stillFollowingThePlan} needs one.
+	 */
+	private volatile Set<WorldPoint> requestedTargets = new HashSet<>();
+
+	/** Where the player was as of the last tick; see {@link #noteProgress}. */
+	@Nullable
+	private volatile WorldPoint playerTile;
+
+	/**
+	 * The closest the player has come to the accepted plan since it was accepted, or
+	 * {@code Integer.MAX_VALUE} while nothing has been measured. See {@link #approachDistance}.
+	 */
+	private volatile int nearestApproach = Integer.MAX_VALUE;
+
+	/** Whether a message has been accepted as the answer to the outstanding request. */
+	private volatile boolean routeAnswered;
+
+	/** The generation a decline was last logged for, so a re-planning router logs once. */
+	private volatile int declineLogged = -1;
+
+	/**
+	 * How much ground the player may lose before the leg's plan is considered abandoned.
+	 *
+	 * <p>Shortest Path re-plans once the player is more than its {@code recalculateDistance}
+	 * from every step of the line it drew — twenty tiles by default — so a player who is
+	 * merely walking a slightly different line than the one drawn has lost at most about that
+	 * much ground. Real routes also make you walk away from where you are going: around a
+	 * building, back to a fairy ring, along the far side of a river. This has to sit well
+	 * clear of both, and losing four full screens of ground is not something following the
+	 * plan does.
+	 */
+	private static final int PLAN_ABANDONED_TILES = 48;
+
+	/**
+	 * Whether the player is still walking the plan we accepted, so a re-plan nobody asked for
+	 * should be ignored.
+	 *
+	 * <h2>The bug this exists for</h2>
+	 *
+	 * Shortest Path re-plans on its own. Every tick it checks whether the player is within
+	 * {@code recalculateDistance} of any step of the line it is drawing, and when they are
+	 * not it pathfinds again from wherever they are standing and posts a fresh transports
+	 * message. Its walk-versus-teleport comparison can flip on a one-tile difference, so the
+	 * fresh plan is not necessarily the old plan minus the ground covered: walking from
+	 * Taverley to Varrock with three stops left, the guide's hint flipped mid-walk from the
+	 * drawn line to "Cast Teleport to House ... via Grand Exchange Portal". Reported from
+	 * play, twice — the first fix stopped <i>our</i> re-asking on a region change
+	 * ({@code GuideTracker.retargetIfMoved}), which left the router's own re-plan.
+	 *
+	 * <p>It cannot be stopped at the source. The {@code config} override a request carries
+	 * only reaches the keys Shortest Path caches for drawing; {@code recalculateDistance} and
+	 * {@code cancelInstead} are read straight off the user's own settings on the tick, so
+	 * there is no per-request way to ask for a route it will leave alone. (A player who wants
+	 * the drawn line to stop moving too can set that setting to -1, which switches its
+	 * recalculation off entirely.) So the plan is held here instead.
+	 *
+	 * <h2>How "still following it" is judged</h2>
+	 *
+	 * Not by distance from the line: the message carries only the hops, never the path, so we
+	 * do not have the line to measure against. By ground made instead — the player is
+	 * following the plan while they are no further from it than the closest they have been,
+	 * give or take {@link #PLAN_ABANDONED_TILES}. That reads a walk to a target and a walk
+	 * back to a fairy ring the plan wants taken as the same thing, which they are: progress
+	 * towards the plan. Someone who has genuinely left it — walked off to a bank, ended up
+	 * somewhere the leg does not go — loses ground and gets the re-plan.
+	 *
+	 * <p>Real jumps are not this method's problem and must not be: a teleport is a region
+	 * change of more than a tick's running, and the guide asks for a fresh route itself when
+	 * it sees one. An asked-for answer is never declined here — see the {@code unsolicited}
+	 * test at the call site, which covers the whole of the request window.
+	 */
+	private boolean stillFollowingThePlan()
+	{
+		return groundLost() >= 0;
+	}
+
+	/**
+	 * How far the player has fallen back from their closest approach to the accepted plan, or
+	 * -1 when that is not a question this can answer — no plan accepted yet, no tick seen, or
+	 * nothing to measure against. Unanswerable means the message is read, as it was before.
+	 */
+	private int groundLost()
+	{
+		WorldPoint player = playerTile;
+		int best = nearestApproach;
+		if (!routeAnswered || player == null || best == Integer.MAX_VALUE)
+		{
+			return -1;
+		}
+		int now = approachDistance(player);
+		if (now == Integer.MAX_VALUE)
+		{
+			return -1;
+		}
+		int lost = now - best;
+		return lost <= PLAN_ABANDONED_TILES ? Math.max(lost, 0) : -1;
+	}
+
+	/**
+	 * How near the player is to the plan: the distance to the closest thing the plan is made
+	 * of — a target it is heading for, or either end of one of its hops.
+	 *
+	 * <p>Both ends of every hop <b>still ahead</b>, and every target. The plan is a journey
+	 * between known points with unknown line between them, and being near any of them is being
+	 * on it — which is what makes a walk to a fairy ring sixty tiles the wrong way count as
+	 * progress rather than as leaving. Hops already taken are dropped, or the anchor nearest
+	 * the player would be the one behind them for the rest of the leg; see
+	 * {@link #noteProgress}, which starts the closest approach over when that set changes.
+	 *
+	 * <p>{@code distanceTo2D}, so a staircase inside a building on the way is not a departure
+	 * from the plan — plain {@code distanceTo} answers "infinitely far" across planes.
+	 */
+	private int approachDistance(WorldPoint player)
+	{
+		int nearest = Integer.MAX_VALUE;
+		for (WorldPoint target : requestedTargets)
+		{
+			if (target != null)
+			{
+				nearest = Math.min(nearest, player.distanceTo2D(target));
+			}
+		}
+		List<Hop> route = hops;
+		for (int i = hopsPassed; i < route.size(); i++)
+		{
+			Hop hop = route.get(i);
+			if (hop.origin != null)
+			{
+				nearest = Math.min(nearest, player.distanceTo2D(hop.origin));
+			}
+			if (hop.destination != null)
+			{
+				nearest = Math.min(nearest, player.distanceTo2D(hop.destination));
+			}
+		}
+		return nearest;
+	}
+
+	/**
+	 * Says once, per plan, that a re-plan was turned down.
+	 *
+	 * <p>Once, because the router re-plans every tick the player is off its line and would
+	 * otherwise fill the log with the same sentence. At info, because the one thing this
+	 * costs is visible on screen and the log is where the explanation has to be: Shortest
+	 * Path draws its own new line whatever we do with the message, so the map can show a line
+	 * to the house while the guide keeps saying walk. Holding the instruction the player is
+	 * following is the lesser of the two evils; knowing which one you are looking at is the
+	 * consolation.
+	 */
+	private void declineReplan(PluginMessage event)
+	{
+		if (declineLogged == routeGeneration)
+		{
+			return;
+		}
+		declineLogged = routeGeneration;
+
+		List<String> replan = readTransports(event);
+		log.info("Keeping the leg's plan: Shortest Path re-planned from {}, {} tile(s) off the"
+			+ " accepted plan; its plan would go {}", playerTile, groundLost(),
+			replan.isEmpty() ? "on foot" : replan.get(0));
 	}
 
 	/**
@@ -610,6 +808,7 @@ public class ShortestPathIntegration
 		{
 			return;
 		}
+
 		List<Hop> route = hops;
 		int passed = hopsPassed;
 		// The furthest hop the player is standing at the far end of, so a spread of duplicate
@@ -621,10 +820,25 @@ public class ShortestPathIntegration
 				passed = i + 1;
 			}
 		}
-		if (passed != hopsPassed)
+		boolean movedOn = passed != hopsPassed;
+		if (movedOn)
 		{
 			hopsPassed = passed;
 			routeGeneration++;
+		}
+
+		// The tick is also where the plan-holding rule gets its facts: the transports message
+		// arrives off the client thread, so the player's tile has to have been read here
+		// first. See stillFollowingThePlan.
+		playerTile = player;
+		int approach = approachDistance(player);
+		// Taking a hop retires its anchors, and the plan is suddenly measured against points
+		// further off — walking through the Taverley gate leaves the gate behind and Varrock
+		// is what is left to be near. That is not ground lost, so the closest approach starts
+		// again from here rather than from a number belonging to a hop already behind.
+		if (movedOn || approach < nearestApproach)
+		{
+			nearestApproach = approach;
 		}
 	}
 
