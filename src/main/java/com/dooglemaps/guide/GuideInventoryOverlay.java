@@ -578,8 +578,23 @@ public class GuideInventoryOverlay extends Overlay
 	 * router's own choices, in path order. The destination name comes last, as the fallback
 	 * it always was: the nexus's model-less destinations (Stony basalt) are only findable
 	 * that way.
+	 *
+	 * <p>A hop planned through a <b>standalone portal</b> names the portal — "Falador Portal"
+	 * — but the player may reach the same place through the nexus (or a jewellery box)
+	 * instead, whose row says only the place: "5: Falador". The portal was only the router's
+	 * pick of vehicle; the place is what the leg actually needs. So a hop's row name that ends
+	 * in "portal" also contributes the place with that word stripped, right after the hop's own
+	 * name — same rule {@link HouseTeleports#furnitureServesHop} uses to match a portal's
+	 * furniture to its hop — as a lower-priority want, still ahead of the destination fallback.
+	 *
+	 * <p>Reported from play: "Enter Falador Portal - Falador Portal" with only a Portal Nexus
+	 * on screen and no "Falador Portal" row to be found; its "5: Falador" row went unmatched,
+	 * and the stop's destination ("Taverley", a walk beyond the portal) matched nothing either.
+	 * Nothing lit. Only a row naming the portal directly is stripped this way — a hop already
+	 * shaped like "Portal Nexus - Varrock" or "Jewellery Box - N: Varrock" already names the row
+	 * and needs no help.
 	 */
-	private java.util.List<String> rowNames(@javax.annotation.Nullable String destination)
+	java.util.List<String> rowNames(@javax.annotation.Nullable String destination)
 	{
 		java.util.List<String> names = new java.util.ArrayList<>();
 		for (String hop : tracker.liveTransports())
@@ -591,6 +606,16 @@ public class GuideInventoryOverlay extends Overlay
 				if (row.length() >= 2)
 				{
 					names.add(row);
+
+					String lower = row.toLowerCase(java.util.Locale.ROOT);
+					if (lower.endsWith("portal"))
+					{
+						String place = lower.replace("portal", "").trim();
+						if (!place.isEmpty() && !place.equals(lower))
+						{
+							names.add(place);
+						}
+					}
 				}
 			}
 		}
