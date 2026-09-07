@@ -187,8 +187,8 @@ public class DoogleMapsPanel extends PluginPanel
 		this.runPanel = new RunPanel(layout, groups, protection, bankContents, carriedItems,
 			runPlanner, selection, seeds, runTypes, bonuses, compost, config, guideTracker,
 			compostRun, runPresets);
-		this.statsPanel = new HarvestStatsPanel(harvestStats, harvestHistory, diseaseStats, seeds,
-			availability, compost, bonuses, itemPrices);
+		this.statsPanel = new HarvestStatsPanel(layout, harvestStats, harvestHistory, diseaseStats,
+			seeds, availability, compost, bonuses, itemPrices);
 
 		setLayout(new BorderLayout(0, 4));
 		setBackground(ColorScheme.DARK_GRAY_COLOR);

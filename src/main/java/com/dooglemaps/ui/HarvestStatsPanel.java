@@ -10,28 +10,24 @@ import com.dooglemaps.state.FarmingBonusStore;
 import com.dooglemaps.state.SeedInventoryStore;
 import com.dooglemaps.timer.PlantOutEstimate;
 import com.dooglemaps.validate.CropHarvestStats;
-import com.dooglemaps.validate.DiseaseStats;
 import com.dooglemaps.validate.DiseaseStatsStore;
 import com.dooglemaps.validate.FarmRun;
 import com.dooglemaps.validate.HarvestHistory;
 import com.dooglemaps.validate.HarvestStatsStore;
 import java.awt.BorderLayout;
+import java.awt.Color;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import javax.annotation.Nullable;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
-import javax.swing.JComponent;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import net.runelite.api.Experience;
@@ -45,30 +41,41 @@ import net.runelite.client.ui.FontManager;
  * is recorded with its prediction beside the actual — but they are the interesting ones to
  * look at as a player too, so they are shown rather than only written to a CSV.
  *
- * <h2>Sections, not one table</h2>
+ * <h2>Four cards, each with an answer on the outside</h2>
  *
- * The tab began as the validation table alone, which answered the developer's question and
- * only accidentally answered the player's. It is now four questions in a deliberate order,
- * each with its own heading:
+ * The tab used to be five stacked sections of prose, table, prose, about 1350px of it, opening
+ * on a paragraph in the dimmest text on the page. Three of its five tables were the same per-crop
+ * rows with a different fourth column. It is now four collapsible {@link StatSection} cards:
  *
  * <ol>
- *   <li><b>Lifetime</b> — what you have actually got, per crop.</li>
- *   <li><b>Luck</b> — where you landed against expectation, as a position in a distribution
- *       rather than a mean.</li>
- *   <li><b>Expected</b> — what the seeds you are holding are worth, planted out, levelling up
- *       as they go. The one section that reads the bank rather than the history, so it is also
- *       the only one with anything to say on a fresh install.</li>
- *   <li><b>Validation</b> — the original crop / n / got / avg table, which is the developer's
- *       view and belongs at the bottom rather than being the whole tab.</li>
+ *   <li><b>Harvests</b> — one table of what you have actually got, per crop, with a signed
+ *       difference against expectation where the crop is modelled well enough to have one.
+ *       Open by default; it is the question the tab exists for.</li>
+ *   <li><b>Runs</b> — sittings reconstructed from the gaps between harvests, headed by the
+ *       number of them between you and the next level.</li>
+ *   <li><b>Bank</b> — what the seeds you hold are worth planted out, levelling as they go. The
+ *       one card that reads the bank rather than the history, so also the only one with anything
+ *       to say on a fresh install.</li>
+ *   <li><b>Checks</b> — disease, measured against its prediction. The one figure here the
+ *       harvest log could never produce, because a patch that dies produces no harvest.</li>
  * </ol>
  *
- * <p>The tab's tooltip is <b>"Nerd."</b> and that is the design brief. This is the one place
- * in the plugin where the answer being long is the point — everything else is a run you are
- * in the middle of; this is what you read when you are not farming.
+ * <p>Each card's headline is readable while the card is shut, which is the point of shutting
+ * them: four numbers in the space the old tab spent on one paragraph.
  *
- * <p>Its own top-level tab rather than a section under the run controls. It is a history
- * rather than something you act on mid-run, so it neither needs to be on screen while you
- * farm nor deserves to be buried under a hundred patch rows when you do want it.
+ * <h2>What was taken out, and why it is not hiding somewhere</h2>
+ *
+ * A numerical audit of a real account found that several of the tab's most confident figures were
+ * measuring the plugin's own capture faults rather than the game. The luck percentile, the
+ * account-wide "N items over expectation" headline, the "N items came from patches left standing"
+ * line, the compost comparison, the Farming-level bands and the "23% more than estimated" verdict
+ * are all gone from the screen for that reason. The code that computes them still exists — the
+ * inputs are being fixed elsewhere — but a panel that prints a number it has been shown to be
+ * wrong about is worse than one that prints nothing.
+ *
+ * <p>The tab's tooltip is <b>"Nerd."</b> and that is still the design brief. The long
+ * explanations were not deleted with the prose; they moved onto the headers and columns they
+ * explain, where they are one hover away instead of in the way.
  */
 class HarvestStatsPanel extends JPanel
 {
@@ -83,9 +90,9 @@ class HarvestStatsPanel extends JPanel
 	/**
 	 * Patches a crop needs before its histogram is drawn at all.
 	 *
-	 * <p>Lower than the percentile's floor because the two claim different things. A percentile
-	 * is a confident statement about where you sit and needs the normal approximation to hold; a
-	 * histogram is just the observations, and showing a dozen of them is honest as long as the
+	 * <p>Lower than the {@code +/-} column's colour floor because the two claim different things.
+	 * A coloured difference is a statement about where you sit and needs the sample to be stable;
+	 * a histogram is just the observations, and showing a dozen of them is honest as long as the
 	 * count is beside each bar. Six would not be - it looks like a distribution and is a list.
 	 */
 	private static final int MIN_PATCHES_FOR_HISTOGRAM = 12;
@@ -103,12 +110,33 @@ class HarvestStatsPanel extends JPanel
 	 */
 	private static final int MIN_CYCLES_FOR_DISEASE = 50;
 
+	/**
+	 * Above expectation. RuneLite's own "good price" green, 8.58:1 against the row behind it.
+	 *
+	 * <p>The <b>sign</b> carries the meaning and the colour only reinforces it, so the column
+	 * still reads for a red-green colour-blind player and in a screenshot.
+	 */
+	private static final Color OVER = ColorScheme.GRAND_EXCHANGE_PRICE;
+
+	/**
+	 * Below expectation, at 5.08:1.
+	 *
+	 * <p>Not {@code PROGRESS_ERROR_COLOR}: it measures 3.10:1 against this background, below the
+	 * 4.5:1 text this small needs, and saturated red on near-black is the worst case for the most
+	 * common colour deficiency.
+	 */
+	private static final Color UNDER = new Color(235, 120, 120);
+
 	/** Names on the tables, so a test can tell one crop list from another. */
-	static final String LIFETIME_TABLE = "lifetime";
-	static final String LUCK_TABLE = "luck";
+	static final String CROP_TABLE = "crops";
 	static final String RUNS_TABLE = "runs";
 	static final String EXPECTED_TABLE = "expected";
-	static final String VALIDATION_TABLE = "validation";
+
+	/** Keys the collapsed state is remembered under. Global, so they follow the person. */
+	static final String HARVESTS_KEY = "stats.harvests";
+	static final String RUNS_KEY = "stats.runs";
+	static final String BANK_KEY = "stats.bank";
+	static final String CHECKS_KEY = "stats.checks";
 
 	private final HarvestStatsStore stats;
 	private final HarvestHistory history;
@@ -121,49 +149,32 @@ class HarvestStatsPanel extends JPanel
 
 	private final JPanel body = new JPanel();
 
-	/** The stack of sections, hidden wholesale when there is nothing at all to show. */
+	/** The stack of cards, hidden wholesale when there is nothing at all to show. */
 	private final JPanel sections = new JPanel();
 	private final WrappedText nothingYet = new WrappedText();
 
-	/**
-	 * The three sections drawn from harvest history, hidden together on a fresh install.
-	 *
-	 * <p>Held apart from Expected because that one reads the <i>bank</i>, not the history — a
-	 * player who has planted their first seeds and harvested nothing still has a projection
-	 * worth reading, and hiding it behind "nothing recorded yet" would be the tab refusing to
-	 * answer the one question it could.
-	 */
-	private final JPanel lifetimeSection = new JPanel();
-	private final JPanel luckSection = new JPanel();
-	private final JPanel runsSection = new JPanel();
-	private final JPanel expectedSection = new JPanel();
-	private final JPanel validationSection = new JPanel();
+	private final StatSection harvests;
+	private final StatSection runs;
+	private final StatSection bank;
+	private final StatSection checks;
 
-	private final WrappedText lifetimeSummary = new WrappedText();
 	/**
-	 * Crop, patches, items, experience — sorted by experience.
+	 * Crop, patches, items, experience, and a signed difference against expectation.
+	 *
+	 * <p>One table where there were three. Lifetime, Luck and Validation listed the same rows
+	 * with the same name column and the same tooltip; only the fourth column differed, and two of
+	 * those three were derivable from columns already on screen. Merging them is what makes room
+	 * for the one column that was worth having.
 	 *
 	 * <p>Sorted by experience rather than by items because that is what the reader is scanning
 	 * for: a farmer knows roughly how many watermelons they have picked and does not know which
 	 * crop has actually paid for the levels.
 	 */
-	private final DataTable lifetimeTable = new DataTable("crop", "n", "items", "xp");
-	/** What it would all be worth now, and the three things that qualify that. */
-	private final WrappedText lifetimeValue = new WrappedText();
+	private final DataTable cropTable = new DataTable("crop", "n", "got", "xp", "+/-");
 
-	private final WrappedText luckSummary = new WrappedText();
-	/**
-	 * Crop, patches, items over expectation, and where that lands as a percentile.
-	 *
-	 * <p>The percentile is the column worth having and the one that is usually blank: it needs
-	 * both a modelled spread for the crop and {@link CropHarvestStats#MIN_PATCHES_FOR_LUCK}
-	 * patches of it. Blank is the honest answer there, and the surplus beside it is not — a
-	 * cumulative total needs no variance and no sample size to be true.
-	 */
-	private final DataTable luckTable = new DataTable("crop", "n", "+/-", "luck");
-	private final WrappedText luckNotes = new WrappedText();
+	/** What the whole history would fetch today. One line; the caveat is on hover. */
+	private final JLabel lifetimeValue = note();
 
-	private final WrappedText runsSummary = new WrappedText();
 	/**
 	 * Last, best and average sitting.
 	 *
@@ -171,9 +182,9 @@ class HarvestStatsPanel extends JPanel
 	 * whole history including everything picked before the guided mode existed.
 	 */
 	private final DataTable runsTable = new DataTable("run", "n", "items", "xp");
-	private final WrappedText runsNotes = new WrappedText();
+	private final JLabel xpPerDay = note();
+	private final JLabel xpPerHour = note();
 
-	private final WrappedText expectedSummary = new WrappedText();
 	/**
 	 * Seed, how many you hold, what one of them is worth, and what the stack is worth.
 	 *
@@ -183,35 +194,33 @@ class HarvestStatsPanel extends JPanel
 	 */
 	private final DataTable expectedTable = new DataTable("seed", "n", "each", "xp");
 	private final WrappedText expectedUnlocks = new WrappedText();
-	private final WrappedText expectedNotes = new WrappedText();
+	private final JLabel expectedValue = note();
+	private final JLabel lockedCrops = note();
 
-	private final WrappedText accuracy = new WrappedText();
-	/**
-	 * Patches, items, average.
-	 *
-	 * <p>The patch count is here rather than in the tooltip because without it the other two
-	 * columns look like they disagree: 23 limpwurt roots beside an average of 3 reads as one
-	 * impossible harvest, when what it means is one finished patch and several abandoned ones.
-	 * The predicted average moved to the tooltip to make room — the headline already says
-	 * whether the estimates are matching overall, which is the version of that most people
-	 * want.
-	 */
-	private final DataTable table = new DataTable("crop", "n", "got", "avg");
-	/**
-	 * Average yield by band of ten Farming levels.
-	 *
-	 * <p>The one view that checks the level <i>scaling</i> rather than the constants, and the
-	 * only thing on the tab that shows the chance-to-save curve flattening — a real effect most
-	 * players never see, because nobody keeps records across forty levels of farming.
-	 */
-	private final DataTable levelTable = new DataTable("level", "n", "got", "pred");
 	/**
 	 * Disease, measured rather than published.
 	 *
 	 * <p>The one figure on this tab that the harvest log could never have produced, because a
 	 * patch that dies produces no harvest.
 	 */
-	private final WrappedText diseaseNotes = new WrappedText();
+	private final JLabel diseaseNote = note();
+
+	/**
+	 * Whether the crop and seed tables are showing everything they have.
+	 *
+	 * <p>Not remembered between sessions, unlike the collapsed state above it: opening a card is
+	 * furniture, and asking to see the other twenty-two crops is a moment's curiosity.
+	 */
+	private boolean showAllCrops;
+	private boolean showAllSeeds;
+
+	/**
+	 * Whether the fresh-install override has already had its say, so it only fires once.
+	 *
+	 * <p>Without it, a player who deliberately shut Bank on an account with no harvests would
+	 * find it open again on the next repaint.
+	 */
+	private boolean openedBankForFreshInstall;
 
 	/**
 	 * The store's two views, read once per {@link #refresh} and shared by every section.
@@ -222,9 +231,9 @@ class HarvestStatsPanel extends JPanel
 	private List<CropHarvestStats> byCrop = new ArrayList<>();
 	private Map<String, List<CropHarvestStats>> tiers = new LinkedHashMap<>();
 
-	HarvestStatsPanel(HarvestStatsStore stats, HarvestHistory history, DiseaseStatsStore disease,
-		SeedInventoryStore seeds, AvailabilityProfile availability, CompostSelectionStore compost,
-		FarmingBonusStore bonuses, ItemPrices items)
+	HarvestStatsPanel(PanelLayoutStore layout, HarvestStatsStore stats, HarvestHistory history,
+		DiseaseStatsStore disease, SeedInventoryStore seeds, AvailabilityProfile availability,
+		CompostSelectionStore compost, FarmingBonusStore bonuses, ItemPrices items)
 	{
 		this.prices = new Prices(items);
 		this.stats = stats;
@@ -244,11 +253,19 @@ class HarvestStatsPanel extends JPanel
 		sections.setLayout(new BoxLayout(sections, BoxLayout.Y_AXIS));
 		sections.setBackground(getBackground());
 
-		lifetimeTable.setName(LIFETIME_TABLE);
-		luckTable.setName(LUCK_TABLE);
+		cropTable.setName(CROP_TABLE);
 		runsTable.setName(RUNS_TABLE);
 		expectedTable.setName(EXPECTED_TABLE);
-		table.setName(VALIDATION_TABLE);
+		cropTable.setColumnTooltip("+/-", differenceTooltip());
+
+		lifetimeValue.setToolTipText(Tooltips.text("Today's prices - what it would fetch now, not"
+			+ " what it made at the time. Nothing recorded the price when the herb was picked and"
+			+ " historical prices are not available offline, so this is the right number for"
+			+ " deciding what to plant next and the wrong one for anything retrospective."));
+		lockedCrops.setToolTipText(Tooltips.text("Crops you hold seeds for that this projection"
+			+ " never reaches the Farming level to plant, left out of the total. There is no"
+			+ " honest number for a crop you cannot reach - saying what it would be worth at a"
+			+ " level you do not get to is a number about a different account."));
 
 		nothingYet.setText("Nothing here yet. Harvest a patch, or put some seeds in the bank, "
 			+ "and this fills in.\n\n"
@@ -256,45 +273,44 @@ class HarvestStatsPanel extends JPanel
 			+ "doubles as a check on the estimates elsewhere in the plugin.");
 		nothingYet.setAlignmentX(LEFT_ALIGNMENT);
 
-		fill(lifetimeSection, heading("Lifetime", Tooltips.html(
+		harvests = new StatSection(layout, HARVESTS_KEY, "Harvests", Tooltips.html(
 			"Everything harvested since the plugin was installed, one row per crop."
-				+ "<br><br>Items from patches you walked away from are counted here and only here."
-				+ " A watermelon you picked three of is three watermelons - but three is not a fair"
-				+ " sample of a full patch, so those items stay out of every average below.")),
-			lifetimeSummary, lifetimeTable, lifetimeValue);
+				+ "<br><br>Items from patches you walked away from are counted in <b>got</b> and"
+				+ " only there. A watermelon you picked three of is three watermelons - but three"
+				+ " is not a fair sample of a full patch, so those items stay out of the"
+				+ " <b>+/-</b> beside it."
+				+ "<br><br>Ordered by experience, because a farmer knows roughly how many"
+				+ " watermelons they have picked and does not know which crop paid for the"
+				+ " levels."),
+			true, cropTable, lifetimeValue);
 
-		fill(luckSection, heading("Luck", Tooltips.html(
-			"Where your harvests landed against what the game should have given you."
-				+ "<br><br>Not a comparison with other players. A patch is picked until its lives"
-				+ " run out, which is a distribution with a known mean <i>and</i> a known spread, so"
-				+ " your own history is enough to place you in it exactly."
-				+ "<br><br>The percentile needs " + CropHarvestStats.MIN_PATCHES_FOR_LUCK
-				+ " picked patches of a crop before it means anything, and it is left blank until"
-				+ " then rather than shown as noise.")),
-			luckSummary, luckTable, luckNotes);
-
-		fill(runsSection, heading("Runs", Tooltips.html(
+		runs = new StatSection(layout, RUNS_KEY, "Runs", Tooltips.html(
 			"Sittings, reconstructed from the gaps between your harvests - a dozen patches in a"
 				+ " quarter of an hour and then nothing for an hour is a run, whether or not you"
 				+ " started one."
 				+ "<br><br><b>Experience per run and per day</b> rather than per hour, because"
 				+ " farming is not continuous. Measured over the run alone, an hourly rate is a"
 				+ " flattering number describing nothing you can keep up; measured over elapsed"
-				+ " time it is a tiny one dominated by sleep.")),
-			runsSummary, runsTable, runsNotes);
+				+ " time it is a tiny one dominated by sleep."),
+			false, runsTable, xpPerDay, xpPerHour);
 
-		fill(expectedSection, heading("Expected", Tooltips.html(
-			"What the seeds you are holding are worth if you plant every one of them, through"
-				+ " the patches you have switched on."
-				+ "<br><br>Levels up as it goes: chance-to-save rises with your Farming level, so a"
-				+ " big stack is worth more than its first patch suggests. The figure for staying"
-				+ " on your current level is given too, because the gap between them is the point."
-				+ "<br><br><b>Says nothing about time.</b> Growth is real but so is logging off, and"
-				+ " a date would be the first dishonest number on this tab.")),
-			expectedSummary, expectedTable, expectedUnlocks, expectedNotes);
+		bank = new StatSection(layout, BANK_KEY, "Bank", Tooltips.html(bankTooltip()), false,
+			expectedTable, expectedUnlocks, expectedValue, lockedCrops);
 
-		fill(validationSection, heading("Validation", accuracyTooltip()), accuracy, table,
-			levelTable, diseaseNotes);
+		checks = new StatSection(layout, CHECKS_KEY, "Checks", Tooltips.html(
+			"Disease, on the account's own numbers rather than on the published ones."
+				+ "<br><br>The only claim on this tab that could not be checked at all until it"
+				+ " was measured directly: a dead patch produces no harvest, so nothing built on"
+				+ " the harvest log can see one. This counts observed growth cycles against the"
+				+ " survival chance predicted for those same cycles."
+				+ "<br><br>Protected and immune patches are left out of both sides, so protection"
+				+ " is neither credited nor charged here."),
+			false, diseaseNote);
+
+		sections.add(harvests);
+		sections.add(runs);
+		sections.add(bank);
+		sections.add(checks);
 
 		body.add(nothingYet);
 		body.add(sections);
@@ -307,29 +323,27 @@ class HarvestStatsPanel extends JPanel
 	{
 		boolean recorded = stats.getTotalHarvests() > 0 || stats.getTotalItems() > 0;
 
-		lifetimeSection.setVisible(recorded);
-		luckSection.setVisible(recorded);
-		validationSection.setVisible(recorded);
+		harvests.setVisible(recorded);
+		checks.setVisible(recorded);
 
 		if (recorded)
 		{
-			// Both views of the store, read once for the whole refresh. Three sections and a
+			// Both views of the store, read once for the whole refresh. Several sections and a
 			// tooltip per row all want them, and each call rebuilds a map over every crop and
 			// tier - the same mistake the patch list was carrying when it walked itself four
 			// times per refresh.
 			byCrop = stats.getByCrop();
 			tiers = tiersByCrop();
 
-			rebuildLifetime();
-			rebuildLuck();
-			rebuildValidation();
+			rebuildHarvests();
+			rebuildChecks();
 		}
 
 		boolean anyRuns = rebuildRuns();
-		runsSection.setVisible(anyRuns);
+		runs.setVisible(anyRuns);
 
-		boolean seedsToPlant = rebuildExpected();
-		expectedSection.setVisible(seedsToPlant);
+		boolean seedsToPlant = rebuildBank();
+		bank.setVisible(seedsToPlant);
 
 		// Every section that found something has to count here, or one of them gets built,
 		// marked visible, and then hidden anyway inside a container nobody switched on. Runs
@@ -340,16 +354,99 @@ class HarvestStatsPanel extends JPanel
 		boolean anything = recorded || anyRuns || seedsToPlant;
 		nothingYet.setVisible(!anything);
 		sections.setVisible(anything);
+
+		// A fresh install has seeds and no harvests, so the card that is open by default is also
+		// the one that is hidden. Without this the player's first sight of the tab is a shut
+		// accordion, which reads as a tab that failed to load.
+		if (!openedBankForFreshInstall && !recorded && seedsToPlant && !bank.isOpen())
+		{
+			openedBankForFreshInstall = true;
+			bank.setOpen(true, false);
+		}
 	}
 
-	// ---------------------------------------------------------------- lifetime
-
-	private void rebuildLifetime()
+	/**
+	 * Shows every crop, or goes back to the readable twelve.
+	 *
+	 * <p>Rebuilds through {@link #refresh} rather than adding the missing rows, so the total row
+	 * and the action row's own label are derived once from the same list. The explicit relayout
+	 * is because the row that raised this event has just been removed from under it.
+	 */
+	private void toggleAllCrops()
 	{
-		StringBuilder text = new StringBuilder();
-		text.append(Plurals.of(stats.getTotalHarvests(), "patch, ", "patches, "))
-			.append(stats.getTotalItems()).append(" items, ")
-			.append(DataTable.shortNumber(stats.getTotalXp())).append(" xp.");
+		showAllCrops = !showAllCrops;
+		refresh();
+		revalidate();
+		repaint();
+	}
+
+	private void toggleAllSeeds()
+	{
+		showAllSeeds = !showAllSeeds;
+		refresh();
+		revalidate();
+		repaint();
+	}
+
+	// ------------------------------------------------------------------ harvests
+
+	private void rebuildHarvests()
+	{
+		harvests.setHeadline(DataTable.shortNumber(stats.getTotalXp()));
+		harvests.setCaption(harvestsCaption());
+
+		byCrop.sort(Comparator.comparingDouble(CropHarvestStats::getTotalXp).reversed());
+
+		cropTable.clearRows();
+		int limit = showAllCrops ? byCrop.size() : MAX_ROWS;
+		int shown = 0;
+		for (CropHarvestStats crop : byCrop)
+		{
+			if (shown++ >= limit)
+			{
+				break;
+			}
+			cropTable.addRow(crop.getCrop(), cropTooltip(crop, tiers.get(crop.getCrop())),
+				new Color[]{null, null, null, differenceColour(crop)},
+				DataTable.count(crop.getHarvests()),
+				DataTable.count(crop.getTotalItems()),
+				DataTable.shortNumber(crop.getTotalXp()),
+				difference(crop));
+		}
+		if (byCrop.size() > MAX_ROWS)
+		{
+			cropTable.addActionRow(
+				showAllCrops
+					? "▴ show " + MAX_ROWS
+					: "▾ show all " + byCrop.size() + " crops",
+				Tooltips.text("The list is cut at " + MAX_ROWS + " crops because beyond that it"
+					+ " stops being readable. The total below counts every crop either way."),
+				this::toggleAllCrops);
+		}
+
+		cropTable.addTotalRow("total",
+			DataTable.count(stats.getTotalHarvests()),
+			DataTable.count(stats.getTotalItems()),
+			DataTable.shortNumber(stats.getTotalXp()),
+			"");
+
+		String value = describeLifetimeValue();
+		lifetimeValue.setText(value);
+		lifetimeValue.setVisible(!value.isEmpty());
+	}
+
+	/**
+	 * The one grey line under the Harvests headline: how many patches, since when, how often.
+	 *
+	 * <p>The cadence is one division rather than two roundings. The old line printed
+	 * {@code Math.round(weeks)} beside {@code patches / weeks}, so "618 patches over 3 weeks,
+	 * about 184 a week" multiplied out to 552 — two figures rounded from the same number and
+	 * disagreeing on screen. Only the rate is shown now; the span is what "since" already says.
+	 */
+	private String harvestsCaption()
+	{
+		StringBuilder text = new StringBuilder(
+			Plurals.of(stats.getTotalHarvests(), "patch", "patches"));
 
 		// Without the start date these read as an account's whole farming history. They are not:
 		// they begin the day the plugin was installed, and saying so is the difference between a
@@ -357,37 +454,19 @@ class HarvestStatsPanel extends JPanel
 		String since = firstHarvestDate();
 		if (since != null)
 		{
-			text.append("\nSince ").append(since).append('.');
+			text.append(" since ").append(since);
 		}
-		lifetimeSummary.setText(text.toString());
 
-		byCrop.sort(Comparator.comparingDouble(CropHarvestStats::getTotalXp).reversed());
-
-		lifetimeTable.clearRows();
-		int shown = 0;
-		for (CropHarvestStats crop : byCrop)
+		long first = stats.getFirstHarvest();
+		long last = stats.getLastHarvest();
+		if (first > 0 && last - first >= WEEK)
 		{
-			if (shown++ >= MAX_ROWS)
-			{
-				break;
-			}
-			lifetimeTable.addRow(crop.getCrop(), cropTooltip(crop, tiers.get(crop.getCrop())),
-				String.valueOf(crop.getHarvests()),
-				String.valueOf(crop.getTotalItems()),
-				DataTable.shortNumber(crop.getTotalXp()));
+			// Below a week the rate is one week's farming extrapolated, which for a skill you
+			// touch every few days is a number invented rather than measured.
+			double weeks = (last - first) / (double) WEEK;
+			text.append(String.format(" · ~%.0f a week", stats.getTotalHarvests() / weeks));
 		}
-		if (byCrop.size() > MAX_ROWS)
-		{
-			lifetimeTable.addRow("+ " + (byCrop.size() - MAX_ROWS) + " more", null, "", "", "");
-		}
-
-		lifetimeTable.addTotalRow("total",
-			String.valueOf(stats.getTotalHarvests()),
-			String.valueOf(stats.getTotalItems()),
-			DataTable.shortNumber(stats.getTotalXp()));
-
-		lifetimeValue.setText(describeLifetimeValue());
-		lifetimeValue.setVisible(lifetimeValue.getText().length() > 0);
+		return text.toString();
 	}
 
 	/**
@@ -396,7 +475,8 @@ class HarvestStatsPanel extends JPanel
 	 * <p>Deliberately "would fetch <b>now</b>". Nothing ever recorded the price at the time and
 	 * historical prices are not available offline, so this is not a lifetime earnings claim and
 	 * must not read like one — it is the right number for deciding what to plant next and the
-	 * wrong one for anything retrospective.
+	 * wrong one for anything retrospective. That sentence is on the line's tooltip rather than
+	 * beside it, because it is a caveat and the number is the answer.
 	 */
 	private String describeLifetimeValue()
 	{
@@ -408,10 +488,7 @@ class HarvestStatsPanel extends JPanel
 
 		// Zero means the item cache has not loaded or nothing here is tradeable. Either way
 		// there is no figure to show, and "worth 0" would be a claim rather than a gap.
-		return value <= 0
-			? ""
-			: "Worth about " + DataTable.shortNumber(value)
-				+ " gp at today's prices - what it would fetch now, not what it made at the time.";
+		return value <= 0 ? "" : "Worth about " + DataTable.shortNumber(value) + " gp";
 	}
 
 	/** The day the first patch was recorded, e.g. "4 August", or null with nothing recorded. */
@@ -430,332 +507,82 @@ class HarvestStatsPanel extends JPanel
 		return DateTimeFormatter.ofPattern(pattern).format(at);
 	}
 
-	// -------------------------------------------------------------------- luck
+	// ---------------------------------------------------------------------- +/-
 
-	private void rebuildLuck()
+	/**
+	 * The signed percentage against expectation, or blank where the crop cannot carry one.
+	 *
+	 * <p>The gate is {@link CropHarvestStats#hasSurplus}, the store's own predicate, rather than
+	 * a rule of the panel's: a difference is only a difference if the prediction it is measured
+	 * against is a real distribution's mean. Bushes, cacti, calquat and the trees have no
+	 * published formula, so the model falls back to a floor or to a wiki average measured at 99
+	 * with a cape — and a crop can then read hundreds of items "over expectation" when the truth
+	 * is that nobody knows what to expect. Those fall out of the column instead.
+	 *
+	 * <p>An empty cell, never a {@code "-"}: in a column of signed numbers a dash reads as a
+	 * minus sign, and it reads as broken rather than as deliberately withheld. The tooltip says
+	 * which.
+	 */
+	private static String difference(CropHarvestStats crop)
 	{
-		luckSummary.setText(describeLuck());
-
-		List<CropHarvestStats> crops = new ArrayList<>();
-		for (CropHarvestStats crop : byCrop)
-		{
-			// A crop with no prediction has nothing to be lucky against, and showing it with a
-			// blank surplus would read as "dead level" rather than "not scored".
-			if (crop.getPredicted() > 0 && crop.getHarvests() > 0)
-			{
-				crops.add(crop);
-			}
-		}
-		crops.sort(Comparator.comparingInt(CropHarvestStats::getHarvests).reversed());
-
-		luckTable.clearRows();
-		luckTable.setVisible(!crops.isEmpty());
-
-		int shown = 0;
-		for (CropHarvestStats crop : crops)
-		{
-			if (shown++ >= MAX_ROWS)
-			{
-				break;
-			}
-			luckTable.addRow(crop.getCrop(), luckTooltip(crop),
-				String.valueOf(crop.getHarvests()),
-				String.format("%+.0f", crop.getSurplus()),
-				crop.hasLuckPercentile() ? ordinal(percentile(crop)) : "-");
-		}
-		if (crops.size() > MAX_ROWS)
-		{
-			luckTable.addRow("+ " + (crops.size() - MAX_ROWS) + " more", null, "", "", "");
-		}
-
-		luckNotes.setText(String.join("\n\n", notes()));
-		luckNotes.setVisible(luckNotes.getText().length() > 0);
-	}
-
-	/** The account-wide line: how far up or down you are, and what you left standing. */
-	private String describeLuck()
-	{
-		StringBuilder text = new StringBuilder();
-
-		int scored = 0;
-		for (CropHarvestStats crop : byCrop)
-		{
-			if (crop.getPredicted() > 0)
-			{
-				scored += crop.getHarvests();
-			}
-		}
-
-		double surplus = stats.getTotalSurplus();
-		if (scored == 0)
-		{
-			text.append("Nothing harvested yet that the plugin makes a prediction for.");
-		}
-		else if (Math.abs(surplus) < 1)
-		{
-			text.append("Level with expectation across ")
-				.append(Plurals.of(scored, "patch.", "patches."));
-		}
-		else
-		{
-			// Cumulative rather than a percentile, because this one needs no spread and no
-			// sample size to be true - it is simply what you got minus what was predicted.
-			text.append(String.format("%.0f %s %s expectation, across ", Math.abs(surplus),
-					Plurals.pick(Math.round(Math.abs(surplus)), "item", "items"),
-					surplus > 0 ? "over" : "under"))
-				.append(Plurals.of(scored, "patch.", "patches."));
-		}
-
-		int partial = stats.getTotalPartialItems();
-		if (partial > 0)
-		{
-			// The one actionable line on the tab: these are patches that still had crop on them
-			// when you walked off.
-			text.append('\n').append(partial)
-				.append(Plurals.pick(partial, " item", " items"))
-				.append(" came from patches left standing.");
-		}
-		return text.toString();
-	}
-
-	/** The prose that will not fit in a column: what compost did, and how often you farm. */
-	private List<String> notes()
-	{
-		List<String> notes = new ArrayList<>();
-		String compost = describeCompost();
-		if (compost != null)
-		{
-			notes.add(compost);
-		}
-		String cadence = describeCadence();
-		if (cadence != null)
-		{
-			notes.add(cadence);
-		}
-		return notes;
+		return crop.hasSurplus()
+			? String.format("%+.0f%%", (crop.getAccuracy() - 1) * 100)
+			: "";
 	}
 
 	/**
-	 * What compost has actually been worth, on this account's own numbers.
+	 * Green over, red under, and grey until the sample settles.
 	 *
-	 * <p>The only question anyone asks about compost, and the store can answer it because it
-	 * has always split every crop by tier. Answered from the crop with the most patches farmed
-	 * under more than one tier, since that is the comparison with the least noise in it.
-	 *
-	 * <p><b>Most players use one tier forever</b>, so the usual case is that no comparison can
-	 * be drawn at all. That degrades to saying which tier you have always used rather than to a
-	 * half-answer, because "ultracompost gave you 8.4 a patch" with nothing to compare against
-	 * is a fact masquerading as a finding.
+	 * <p>The floor is {@link CropHarvestStats#MIN_PATCHES_FOR_LUCK}, reused rather than
+	 * reinvented: its javadoc justifies twenty on the grounds that the spread grows like
+	 * {@code √n} while the total grows like {@code n}, which is exactly the argument for not
+	 * colouring a difference over four patches. The number is still shown — it is true — it just
+	 * is not dressed up as a finding.
 	 */
 	@Nullable
-	private String describeCompost()
+	private static Color differenceColour(CropHarvestStats crop)
 	{
-		CropHarvestStats best = null;
-		CropHarvestStats worst = null;
-		int mostPatches = 0;
-
-		for (Map.Entry<String, List<CropHarvestStats>> entry : tiers.entrySet())
-		{
-			CropHarvestStats high = null;
-			CropHarvestStats low = null;
-			int patches = 0;
-
-			for (CropHarvestStats tier : entry.getValue())
-			{
-				if (tier.getHarvests() == 0)
-				{
-					continue;
-				}
-				patches += tier.getHarvests();
-				if (high == null || tier.getAverageYield() > high.getAverageYield())
-				{
-					high = tier;
-				}
-				if (low == null || tier.getAverageYield() < low.getAverageYield())
-				{
-					low = tier;
-				}
-			}
-
-			if (high != null && high != low && patches > mostPatches)
-			{
-				mostPatches = patches;
-				best = high;
-				worst = low;
-			}
-		}
-
-		if (best == null)
-		{
-			return onlyTierUsed();
-		}
-
-		return String.format("%s gave you %.1f %s a patch against %.1f %s, over %s.",
-			tierName(best.getCompost()), best.getAverageYield(), best.getCrop().toLowerCase(),
-			worst.getAverageYield(), tierName(worst.getCompost()).toLowerCase(),
-			Plurals.of(mostPatches, "patch", "patches"));
-	}
-
-	/** Said when there is only ever one tier in the history, so no comparison exists to draw. */
-	@Nullable
-	private String onlyTierUsed()
-	{
-		Set<String> tiers = new LinkedHashSet<>();
-		for (CropHarvestStats entry : stats.getAll())
-		{
-			if (entry.getHarvests() > 0)
-			{
-				tiers.add(entry.getCompost());
-			}
-		}
-		return tiers.size() == 1
-			? "You have only ever used " + tierName(tiers.iterator().next()).toLowerCase()
-				+ ", so there is nothing here to compare it against."
-			: null;
-	}
-
-	/**
-	 * How long you have been at it, and how often.
-	 *
-	 * <p>Only once a week has passed. Below that the rate is one week's farming extrapolated,
-	 * which for a skill you touch every few days is a number invented rather than measured.
-	 */
-	@Nullable
-	private String describeCadence()
-	{
-		long first = stats.getFirstHarvest();
-		long last = stats.getLastHarvest();
-		if (first <= 0 || last - first < WEEK)
+		if (!crop.hasSurplus())
 		{
 			return null;
 		}
-
-		double weeks = (last - first) / (double) WEEK;
-		return String.format("%s over %s, about %.0f a week.",
-			Plurals.of(stats.getTotalHarvests(), "patch", "patches"),
-			Plurals.of(Math.round(weeks), "week", "weeks"),
-			stats.getTotalHarvests() / weeks);
-	}
-
-	private String luckTooltip(CropHarvestStats crop)
-	{
-		StringBuilder text = new StringBuilder("<b>").append(crop.getCrop()).append("</b><br>")
-			.append(String.format("%d harvested against %.0f predicted, over %s",
-				crop.getItems(), crop.getPredicted(),
-				Plurals.of(crop.getHarvests(), "patch", "patches")));
-
-		if (crop.getBest() > 0)
+		if (crop.getHarvests() < CropHarvestStats.MIN_PATCHES_FOR_LUCK)
 		{
-			text.append("<br>best patch ").append(crop.getBest())
-				.append(", worst ").append(crop.getWorst());
+			return ColorScheme.LIGHT_GRAY_COLOR;
 		}
-
-		if (crop.hasLuckPercentile())
+		double accuracy = crop.getAccuracy();
+		if (accuracy > 1)
 		{
-			long at = percentile(crop);
-			text.append("<br><br>Your total sits at the <b>").append(ordinal(at))
-				.append(" percentile</b> of where ").append(crop.getHarvests())
-				.append(" patches should land - so ").append(at)
-				.append("% of the time the game would have given you less than this.");
+			return OVER;
 		}
-		else if (crop.getHarvests() < CropHarvestStats.MIN_PATCHES_FOR_LUCK)
-		{
-			text.append("<br><br>Not enough yet for a percentile: ")
-				.append(CropHarvestStats.MIN_PATCHES_FOR_LUCK - crop.getHarvests())
-				.append(" more picked patches. Below that the spread swamps the total and the"
-					+ " figure would be noise.");
-		}
-		else
-		{
-			// Either the crop has no modelled spread, or its history predates the spread being
-			// recorded. Both are "we cannot place this", and the distinction is not the reader's
-			// problem - what matters is that the blank is deliberate.
-			text.append("<br><br>No percentile for this crop: the spread of a single patch is not"
-				+ " modelled for it, or these harvests were recorded before it was.");
-		}
-
-		text.append(histogram(crop.getCrop()));
-		return Tooltips.html(text.toString());
+		return accuracy < 1 ? UNDER : ColorScheme.TEXT_COLOR;
 	}
 
 	/**
-	 * Where a crop's patches actually clustered, as bars.
+	 * The {@code +/-} column, explained on its own header.
 	 *
-	 * <p>The percentile says you are at the 71st; this says <i>how</i>. They answer different
-	 * questions and the shape is the one a running total cannot reconstruct — it needs the rows
-	 * back, which is what {@link HarvestHistory} is for.
-	 *
-	 * <p>Empty below a floor of its own. A histogram over six patches is six bars of height one,
-	 * which looks like a finding and is a picture of nothing.
+	 * <p>Two things have to be said here and neither fits in a 47px column. The first is that
+	 * {@code got} and {@code +/-} are computed over different sets of patches on purpose — a
+	 * half-picked patch is a real pile of items and a fake low yield — which was invisible while
+	 * they lived in two different tables and is unavoidable now they share a row. The second is
+	 * the sample floor under the colour.
 	 */
-	private String histogram(String crop)
+	private static String differenceTooltip()
 	{
-		HarvestHistory.Histogram spread = history.getHistogram(crop);
-		if (spread == null || spread.getPatches() < MIN_PATCHES_FOR_HISTOGRAM)
-		{
-			return "";
-		}
-
-		StringBuilder text = new StringBuilder("<br><br>Where they landed, against prediction:");
-		int most = Math.max(1, spread.getMost());
-		int reach = HarvestHistory.HISTOGRAM_BUCKETS / 2;
-
-		for (int bucket = 0; bucket < spread.getBuckets().length; bucket++)
-		{
-			int delta = bucket - reach;
-			int count = spread.getBuckets()[bucket];
-			// Scaled to the tallest bar rather than to the patch count, so a crop with one
-			// dominant bucket still shows the shape of the rest.
-			int bar = (int) Math.round(HISTOGRAM_WIDTH * (double) count / most);
-
-			text.append("<br>").append(label(delta, reach)).append(' ');
-			for (int drawn = 0; drawn < bar; drawn++)
-			{
-				text.append('#');
-			}
-			text.append(' ').append(count);
-		}
-		return text.toString();
-	}
-
-	/** The bucket's name, with the outermost two open-ended because the tails are unbounded. */
-	private static String label(int delta, int reach)
-	{
-		if (delta <= -reach)
-		{
-			return "-" + reach + " or worse";
-		}
-		if (delta >= reach)
-		{
-			return "+" + reach + " or better";
-		}
-		return delta > 0 ? "+" + delta : String.valueOf(delta);
-	}
-
-	/** Clamped off the ends: nothing is ever the 0th or 100th percentile of a live distribution. */
-	private static long percentile(CropHarvestStats crop)
-	{
-		return Math.min(99, Math.max(1, Math.round(crop.getLuckPercentile())));
-	}
-
-	private static String ordinal(long value)
-	{
-		long lastTwo = value % 100;
-		if (lastTwo >= 11 && lastTwo <= 13)
-		{
-			return value + "th";
-		}
-		switch ((int) (value % 10))
-		{
-			case 1:
-				return value + "st";
-			case 2:
-				return value + "nd";
-			case 3:
-				return value + "rd";
-			default:
-				return value + "th";
-		}
+		return Tooltips.html("How far above or below the plugin's own prediction you landed, as a"
+			+ " percentage.<br><br>Each patch was predicted using the level, compost and gear in"
+			+ " play at the time, so the totals compare like with like."
+			+ "<br><br><b>got</b> counts every item including the ones from patches you walked"
+			+ " away from; <b>+/-</b> counts only patches picked clean, because a half-picked"
+			+ " patch is not a low yield. That is why the two do not reconcile."
+			+ "<br><br>Coloured from " + CropHarvestStats.MIN_PATCHES_FOR_LUCK + " picked patches"
+			+ " on. Below that the figure is shown in grey: the spread grows like the square root"
+			+ " of the patch count while the total grows with it, so a handful of patches is"
+			+ " noise. Blank means either fewer than " + CropHarvestStats.MIN_PATCHES_FOR_SURPLUS
+			+ " picked patches, or a crop with no published yield formula to be measured"
+			+ " against - a bush, a cactus, a calquat or a tree, where the plugin's"
+			+ " \"prediction\" is a floor or a level-99 average standing in for a formula nobody"
+			+ " has.");
 	}
 
 	// -------------------------------------------------------------------- runs
@@ -763,36 +590,55 @@ class HarvestStatsPanel extends JPanel
 	/**
 	 * What your sittings look like, and the rates that follow from them.
 	 *
-	 * @return whether any run has been reconstructed, and so whether the section is drawn
+	 * @return whether any run has been reconstructed, and so whether the card is drawn
 	 */
 	private boolean rebuildRuns()
 	{
 		// Read once. Every figure below is derived from this same list, so the count in the
-		// summary cannot disagree with the average in the table.
-		List<FarmRun> runs = history.getRuns();
-		if (runs.isEmpty())
+		// caption cannot disagree with the average in the table.
+		List<FarmRun> all = history.getRuns();
+		if (all.isEmpty())
 		{
 			return false;
 		}
 
-		runsSummary.setText(Plurals.of(runs.size(), "run", "runs") + " so far, "
-			+ DataTable.shortNumber(history.getXpPerRun()) + " xp each.");
+		double perRun = history.getXpPerRun();
+		String toLevel = describeRunsToNextLevel();
+
+		// The most useful line on the tab, and it used to be the third sentence of the third
+		// paragraph of the third section - below the fold on every screen.
+		runs.setHeadline(toLevel != null ? toLevel : DataTable.shortNumber(perRun));
+		runs.setCaption(all.size() == 1
+			? "first run"
+			: DataTable.shortNumber(perRun) + " xp a run over "
+				+ Plurals.of(all.size(), "run", "runs"));
 
 		runsTable.clearRows();
 		addRunRow("last", history.getLastRun());
 		addRunRow("best", history.getBestRun());
-		if (runs.size() > 1)
+		if (all.size() > 1)
 		{
 			runsTable.addTotalRow("average",
 				String.format("%.1f",
-					runs.stream().mapToInt(FarmRun::getPatches).sum() / (double) runs.size()),
+					all.stream().mapToInt(FarmRun::getPatches).sum() / (double) all.size()),
 				String.format("%.0f",
-					runs.stream().mapToInt(FarmRun::getItems).sum() / (double) runs.size()),
-				DataTable.shortNumber(history.getXpPerRun()));
+					all.stream().mapToInt(FarmRun::getItems).sum() / (double) all.size()),
+				DataTable.shortNumber(perRun));
 		}
 
-		runsNotes.setText(String.join("\n\n", runNotes()));
-		runsNotes.setVisible(runsNotes.getText().length() > 0);
+		double perDay = history.getXpPerDay();
+		xpPerDay.setText(perDay > 0 ? DataTable.shortNumber(perDay) + " xp a day" : "");
+		xpPerDay.setToolTipText(Tooltips.text("Averaged over the whole history, sleep included -"
+			+ " the rate a skill on a growth timer actually runs at, and the one nobody"
+			+ " displays."));
+		xpPerDay.setVisible(perDay > 0);
+
+		double active = history.getActiveXpPerHour();
+		xpPerHour.setText(active > 0 ? DataTable.shortNumber(active) + " xp an hour farming" : "");
+		xpPerHour.setToolTipText(Tooltips.text("Measured from the first patch of a run to the"
+			+ " last, so it is the rate while you are actually farming. Not a rate you can keep"
+			+ " up - the crops grow for an hour between runs."));
+		xpPerHour.setVisible(active > 0);
 		return true;
 	}
 
@@ -802,15 +648,15 @@ class HarvestStatsPanel extends JPanel
 		{
 			return;
 		}
-		runsTable.addRow(name, runTooltip(name, run), String.valueOf(run.getPatches()),
-			String.valueOf(run.getItems()), DataTable.shortNumber(run.getXp()));
+		runsTable.addRow(name, runTooltip(name, run), DataTable.count(run.getPatches()),
+			DataTable.count(run.getItems()), DataTable.shortNumber(run.getXp()));
 	}
 
 	private static String runTooltip(String name, FarmRun run)
 	{
 		StringBuilder text = new StringBuilder("<b>").append(name).append(" run</b><br>")
 			.append(Plurals.of(run.getPatches(), "patch", "patches")).append(", ")
-			.append(run.getItems()).append(" items, ")
+			.append(DataTable.count(run.getItems())).append(" items, ")
 			.append(DataTable.shortNumber(run.getXp())).append(" experience");
 
 		if (run.getDuration() > 0)
@@ -821,43 +667,12 @@ class HarvestStatsPanel extends JPanel
 		return Tooltips.html(text.toString());
 	}
 
-	/** The rates, each named for what it actually measures. */
-	private List<String> runNotes()
-	{
-		List<String> notes = new ArrayList<>();
-
-		double perDay = history.getXpPerDay();
-		if (perDay > 0)
-		{
-			// The honest throughput number for a skill gated by a growth timer rather than by
-			// your attention, and the one nobody displays.
-			notes.add(DataTable.shortNumber(perDay) + " xp a day, averaged over the whole"
-				+ " history - the rate a skill on a growth timer actually runs at.");
-		}
-
-		double active = history.getActiveXpPerHour();
-		if (active > 0)
-		{
-			// Labelled active rather than left to imply it is sustainable: it is measured from
-			// the first patch of a run to the last, which is a fraction of the day.
-			notes.add(DataTable.shortNumber(active) + " xp an hour while you are actually"
-				+ " farming. Not a rate you can keep up - the crops grow for an hour between"
-				+ " runs.");
-		}
-
-		String toLevel = describeRunsToNextLevel();
-		if (toLevel != null)
-		{
-			notes.add(toLevel);
-		}
-		return notes;
-	}
-
 	/**
 	 * How many more runs the next Farming level is.
 	 *
-	 * <p>Arguably the single most useful line on the tab, and it costs almost nothing: the
-	 * experience to the next level is one API call and the experience per run is already here.
+	 * <p>The Runs headline. It costs almost nothing — the experience to the next level is one API
+	 * call and the experience per run is already here — and it is the one thing on this tab a
+	 * player would act on.
 	 */
 	@Nullable
 	private String describeRunsToNextLevel()
@@ -876,21 +691,20 @@ class HarvestStatsPanel extends JPanel
 		}
 
 		int runs = (int) Math.max(1, Math.ceil((Experience.getXpForLevel(level + 1) - xp) / perRun));
-		return "About " + Plurals.of(runs, "more run", "more runs") + " to " + (level + 1)
-			+ ", at the rate your runs have been paying.";
+		return Plurals.of(runs, "run", "runs") + " to " + (level + 1);
 	}
 
-	// ---------------------------------------------------------------- expected
+	// -------------------------------------------------------------------- bank
 
 	/**
 	 * What the bank is worth planted out.
 	 *
-	 * <p>The only section that reads the seed stores rather than the harvest history, so it is
+	 * <p>The only card that reads the seed stores rather than the harvest history, so it is
 	 * also the only one that can say anything on a fresh install.
 	 *
-	 * @return whether it has anything to show, and so whether the section is drawn at all
+	 * @return whether it has anything to show, and so whether the card is drawn at all
 	 */
-	private boolean rebuildExpected()
+	private boolean rebuildBank()
 	{
 		PlantOutEstimate.Projection projection = PlantOutEstimate.of(ownedSeeds(),
 			patchesByType(), compostByType(), bonuses.current(), seeds.getFarmingXp());
@@ -901,42 +715,92 @@ class HarvestStatsPanel extends JPanel
 			return false;
 		}
 
-		expectedSummary.setText(describeExpected(projection));
-		expectedTable.setVisible(!lines.isEmpty());
+		bank.setHeadline(lines.isEmpty() ? "" : DataTable.shortNumber(projection.getXp()));
+		bank.setCaption(bankCaption(projection));
+		bank.setTooltip(Tooltips.html(bankTooltip()
+			+ "<br><br>" + describeExpected(projection).replace("\n", "<br>")));
 
+		expectedTable.setVisible(!lines.isEmpty());
 		expectedTable.clearRows();
+
+		int limit = showAllSeeds ? lines.size() : MAX_ROWS;
 		int shown = 0;
 		int totalSeeds = 0;
 		for (PlantOutEstimate.Line line : lines)
 		{
 			totalSeeds += line.getSeeds();
-			if (shown++ >= MAX_ROWS)
+			if (shown++ >= limit)
 			{
 				continue;
 			}
 			expectedTable.addRow(line.getSeed().getName(), expectedTooltip(line),
-				String.valueOf(line.getSeeds()),
+				DataTable.count(line.getSeeds()),
 				DataTable.shortNumber(line.getXpPerSeed()),
 				DataTable.shortNumber(line.getXp()));
 		}
 		if (lines.size() > MAX_ROWS)
 		{
-			expectedTable.addRow("+ " + (lines.size() - MAX_ROWS) + " more", null, "", "", "");
+			expectedTable.addActionRow(
+				showAllSeeds
+					? "▴ show " + MAX_ROWS
+					: "▾ show all " + lines.size() + " seeds",
+				Tooltips.text("The list is cut at " + MAX_ROWS + " stacks because beyond that it"
+					+ " stops being readable. The total below counts every seed either way."),
+				this::toggleAllSeeds);
 		}
 		if (!lines.isEmpty())
 		{
-			expectedTable.addTotalRow("total", String.valueOf(totalSeeds), "",
+			expectedTable.addTotalRow("total", DataTable.count(totalSeeds), "",
 				DataTable.shortNumber(projection.getXp()));
 		}
 
 		expectedUnlocks.setText(describeUnlocks(projection));
 		expectedUnlocks.setVisible(expectedUnlocks.getText().length() > 0);
 
-		expectedNotes.setText(String.join("\n\n", expectedNotes(projection)));
-		expectedNotes.setVisible(expectedNotes.getText().length() > 0);
+		updateExpectedValue(projection);
+
+		lockedCrops.setText(projection.getLockedCrops() > 0
+			? "Holding " + Plurals.of(projection.getLockedCrops(), "crop", "crops")
+				+ " you never reach"
+			: "");
+		lockedCrops.setVisible(projection.getLockedCrops() > 0);
 		return true;
 	}
 
+	/** The one grey line under the Bank headline: what the number covers, and where it lands. */
+	private static String bankCaption(PlantOutEstimate.Projection projection)
+	{
+		if (projection.getLines().isEmpty())
+		{
+			return "nothing you can plant yet";
+		}
+		return projection.getEndLevel() > projection.getStartLevel()
+			? "everything you hold · " + projection.getStartLevel() + " → "
+				+ projection.getEndLevel()
+			: "not quite a level from " + projection.getStartLevel();
+	}
+
+	/** The fixed half of the Bank explanation; the projection's own numbers are appended. */
+	private static String bankTooltip()
+	{
+		return "What the seeds you are holding are worth if you plant every one of them, through"
+			+ " the patches you have switched on."
+			+ "<br><br>Levels up as it goes: chance-to-save rises with your Farming level, so a"
+			+ " big stack is worth more than its first patch suggests."
+			+ "<br><br><b>Assumes you always plant the best experience per patch you can</b>, into"
+			+ " the patches you have switched on. Every seed goes in eventually - the order is"
+			+ " what changes."
+			+ "<br><br><b>Says nothing about time.</b> Growth is real but so is logging off, and"
+			+ " a date would be the first dishonest number on this tab.";
+	}
+
+	/**
+	 * The projection's own working, which now lives on the header rather than under it.
+	 *
+	 * <p>Three sentences of methodology that were the top of the section. They are still exact
+	 * and still worth reading; they are simply not the answer, and the answer is a number that
+	 * was buried in the middle of them.
+	 */
 	private static String describeExpected(PlantOutEstimate.Projection projection)
 	{
 		if (projection.getLines().isEmpty())
@@ -964,7 +828,7 @@ class HarvestStatsPanel extends JPanel
 		{
 			text.append("\n99 arrives on ")
 				.append(Plurals.of(projection.getSeedsToMaxLevel(), "seed", "seeds"))
-				.append("; the other ").append(projection.getSeedsBeyondMaxLevel())
+				.append("; the other ").append(DataTable.count(projection.getSeedsBeyondMaxLevel()))
 				.append(" are worth ").append(DataTable.shortNumber(
 					projection.getXpBeyondMaxLevel()))
 				.append(" more beyond it.");
@@ -986,10 +850,11 @@ class HarvestStatsPanel extends JPanel
 	/**
 	 * The route through the levels: what becomes plantable, and when.
 	 *
-	 * <p>The part of this section that answers "show me my path", and the only place the
-	 * simulation's working is visible rather than just its total. Capped because a bank of forty
-	 * crops from level 1 unlocks something every few levels, and a wall of them stops being a
-	 * route and starts being a list.
+	 * <p>The part of this card that answers "show me my path", and the only place the simulation's
+	 * working is visible rather than just its total. A list rather than prose, which is why it is
+	 * the one block of {@link WrappedText} that survived the move to tooltips. Capped because a
+	 * bank of forty crops from level 1 unlocks something every few levels, and a wall of them
+	 * stops being a route and starts being a list.
 	 */
 	private static String describeUnlocks(PlantOutEstimate.Projection projection)
 	{
@@ -1010,7 +875,7 @@ class HarvestStatsPanel extends JPanel
 			}
 			text.append("\n").append(unlock.getLevel()).append(" - ")
 				.append(unlock.getSeed().getName())
-				.append(" (").append(unlock.getSeeds()).append(" banked)");
+				.append(" (").append(DataTable.count(unlock.getSeeds())).append(" banked)");
 		}
 		return text.toString();
 	}
@@ -1022,14 +887,14 @@ class HarvestStatsPanel extends JPanel
 	 * snapdragon beats ranarr this month — and it moves with the market in a way no guide keeps
 	 * up with. Seeds and compost are charged; protection payments are not, because the
 	 * projection does not model disease either and charging for a benefit it does not credit
-	 * would be worse than omitting both.
+	 * would be worse than omitting both. All of that is on the line's tooltip: the produce figure
+	 * is the answer and the accounting is the footnote.
 	 *
 	 * <p><b>"Produced" rather than "profit" where the costs are notional.</b> An ironman did not
 	 * buy the seed and made the compost, so the same arithmetic means a different word for them
 	 * — and since the plugin cannot tell, it says what it charged rather than claiming either.
 	 */
-	@Nullable
-	private String describeExpectedValue(PlantOutEstimate.Projection projection)
+	private void updateExpectedValue(PlantOutEstimate.Projection projection)
 	{
 		long value = 0;
 		long cost = 0;
@@ -1044,64 +909,39 @@ class HarvestStatsPanel extends JPanel
 
 		if (value <= 0)
 		{
-			return null;
+			expectedValue.setText("");
+			expectedValue.setVisible(false);
+			return;
 		}
 
-		StringBuilder text = new StringBuilder("Worth about ")
-			.append(DataTable.shortNumber(value)).append(" gp of produce");
+		StringBuilder detail = new StringBuilder();
 		if (cost > 0)
 		{
 			// Expensive compost on a cheap crop makes this negative, and "so -3k net" reads
 			// like a typo rather than a warning — a loss gets called one.
 			long net = value - cost;
-			text.append(", against ").append(DataTable.shortNumber(cost))
+			detail.append("Against ").append(DataTable.shortNumber(cost))
 				.append(" of seeds and compost - ");
-			if (net < 0)
-			{
-				text.append("a ").append(DataTable.shortNumber(-net)).append(" loss");
-			}
-			else
-			{
-				text.append("so ").append(DataTable.shortNumber(net)).append(" net");
-			}
+			detail.append(net < 0
+				? "a " + DataTable.shortNumber(-net) + " loss."
+				: "so " + DataTable.shortNumber(net) + " net.");
+			detail.append(' ');
 		}
-		text.append(". Today's prices, and no protection payments counted.");
-		return text.toString();
-	}
+		detail.append("Today's prices, and no protection payments counted - the projection does"
+			+ " not model disease either, and charging for a benefit it does not credit would be"
+			+ " worse than omitting both.");
 
-	private List<String> expectedNotes(PlantOutEstimate.Projection projection)
-	{
-		List<String> notes = new ArrayList<>();
-
-		String value = describeExpectedValue(projection);
-		if (value != null)
-		{
-			notes.add(value);
-		}
-
-		if (projection.getLockedCrops() > 0)
-		{
-			notes.add("You hold " + Plurals.of(projection.getLockedCrops(), "crop", "crops")
-				+ " this never reaches the level for, left out of the total.");
-		}
-
-		// The one assumption a reader could not infer from the numbers. It decides the order,
-		// not the contents: every seed is planted eventually, and best-first is simply the order
-		// that gets the most out of the levelling.
-		if (projection.getLines().size() > 1)
-		{
-			notes.add("Assumes you always plant the best experience per patch you can, into the"
-				+ " patches you have switched on. Every seed goes in eventually - the order is"
-				+ " what changes.");
-		}
-		return notes;
+		expectedValue.setToolTipText(Tooltips.text(detail.toString()));
+		expectedValue.setText("Worth about " + DataTable.shortNumber(value) + " gp of produce");
+		expectedValue.setVisible(true);
 	}
 
 	private String expectedTooltip(PlantOutEstimate.Line line)
 	{
 		Seed seed = line.getSeed();
 		StringBuilder text = new StringBuilder("<b>").append(seed.getName()).append("</b><br>")
-			.append(line.getSeeds()).append(Plurals.pick(line.getSeeds(), " seed", " seeds"))
+			.append(DataTable.count(line.getSeeds()))
+			.append(Plurals.pick(line.getSeeds(), " seed", " seeds"))
 			.append(" filling ").append(Plurals.of(line.getPatches(), "patch", "patches"));
 
 		if (seed.getSeedsPerPatch() > 1)
@@ -1110,7 +950,7 @@ class HarvestStatsPanel extends JPanel
 			text.append("<br>").append(seed.getSeedsPerPatch()).append(" seeds to a patch");
 		}
 
-		text.append("<br>").append(String.format("%.0f", line.getItems()))
+		text.append("<br>").append(String.format("%,.0f", line.getItems()))
 			.append(" items, ").append(DataTable.shortNumber(line.getXp())).append(" experience");
 
 		CompostTier tier = compost.get(seed.getPatchType());
@@ -1167,180 +1007,53 @@ class HarvestStatsPanel extends JPanel
 		return chosen;
 	}
 
-	// -------------------------------------------------------------- validation
-
-	private void rebuildValidation()
-	{
-		double overall = stats.getOverallAccuracy();
-		accuracy.setText(overall > 0
-			? describeAccuracy(overall)
-			: "Nothing harvested yet that the plugin makes a prediction for.");
-		accuracy.setToolTipText(accuracyTooltip());
-
-		table.clearRows();
-
-		// By items, not by experience: this is the estimate-checking view, and the crops worth
-		// checking first are the ones with the most harvests behind them.
-		byCrop.sort(Comparator.comparingInt(CropHarvestStats::getTotalItems).reversed());
-
-		int shown = 0;
-		for (CropHarvestStats crop : byCrop)
-		{
-			if (shown++ >= MAX_ROWS)
-			{
-				break;
-			}
-			table.addRow(crop.getCrop(), cropTooltip(crop, tiers.get(crop.getCrop())),
-				String.valueOf(crop.getHarvests()),
-				String.valueOf(crop.getTotalItems()),
-				format(crop.getAverageYield()));
-		}
-
-		if (byCrop.size() > MAX_ROWS)
-		{
-			table.addRow("+ " + (byCrop.size() - MAX_ROWS) + " more", null, "", "", "");
-		}
-
-		table.addTotalRow("total", String.valueOf(stats.getTotalHarvests()),
-			String.valueOf(stats.getTotalItems()), "");
-
-		rebuildLevelBands();
-
-		diseaseNotes.setText(String.join("\n\n", diseaseNotes()));
-		diseaseNotes.setVisible(diseaseNotes.getText().length() > 0);
-	}
+	// ------------------------------------------------------------------ checks
 
 	/**
 	 * Disease, on the account's own numbers rather than on the published ones.
 	 *
-	 * <p>The only claim on this tab that could not be checked at all until it was measured
-	 * directly: a dead patch produces no harvest, so nothing built on the harvest log can see
-	 * one. Everything here therefore compares a count of observed growth cycles against the
-	 * survival chance predicted for those same cycles.
+	 * <p>All that is left of the old Validation section, and deliberately so. Its crop table was
+	 * the Harvests table with one derived column; its level bands were a single band of nine
+	 * hundred patches mixing thirty-four crops and four yield models, which cannot show a level
+	 * curve; and its "23% more than estimated" verdict was measuring the plugin's own missed
+	 * compost rather than the game. Disease is the one figure here that nothing else could
+	 * produce.
 	 */
-	private List<String> diseaseNotes()
+	private void rebuildChecks()
 	{
 		int cycles = disease.getTotalCycles();
+		int caught = disease.getTotalDiseased();
+
 		if (cycles < MIN_CYCLES_FOR_DISEASE)
 		{
-			return Collections.emptyList();
-		}
-
-		List<String> notes = new ArrayList<>();
-		int caught = disease.getTotalDiseased();
-		double expected = cycles - disease.getPredictedSurvivals();
-
-		notes.add(String.format("Disease: %d of %s caught something, against a predicted %.0f."
-				+ " %d died.", caught, Plurals.of(cycles, "growth cycle", "growth cycles"),
-			expected, disease.getTotalDied()));
-
-		String compare = compareTiersOnDisease();
-		if (compare != null)
-		{
-			notes.add(compare);
-		}
-		return notes;
-	}
-
-	/**
-	 * What compost bought you against disease, measured.
-	 *
-	 * <p>The other half of the compost question, and the half nobody can answer from the wiki
-	 * for their own account: ultracompost's yield bonus is easy to feel, its disease protection
-	 * is invisible until something dies. Needs both tiers to have a real sample behind them,
-	 * because a tier with four cycles against one with two hundred is a comparison in name only.
-	 */
-	@Nullable
-	private String compareTiersOnDisease()
-	{
-		DiseaseStats most = null;
-		DiseaseStats least = null;
-
-		for (DiseaseStats entry : disease.getAll())
-		{
-			if (entry.getCycles() < MIN_CYCLES_FOR_DISEASE)
-			{
-				continue;
-			}
-			if (most == null || entry.getSurvivalRate() > most.getSurvivalRate())
-			{
-				most = entry;
-			}
-			if (least == null || entry.getSurvivalRate() < least.getSurvivalRate())
-			{
-				least = entry;
-			}
-		}
-
-		if (most == null || most == least)
-		{
-			return null;
-		}
-
-		return String.format("%s lost %.0f%% of its cycles to disease; %s lost %.0f%%.",
-			tierName(most.getCompost()), (1 - most.getSurvivalRate()) * 100,
-			tierName(least.getCompost()).toLowerCase(), (1 - least.getSurvivalRate()) * 100);
-	}
-
-	/**
-	 * Yield by band of ten Farming levels, which checks the level scaling rather than the
-	 * constants.
-	 *
-	 * <p>Needs at least two bands to say anything — a single band is one number with nothing to
-	 * compare it against, and the whole point is the shape of the curve between them.
-	 */
-	private void rebuildLevelBands()
-	{
-		List<HarvestHistory.LevelBand> bands = history.getLevelBands();
-		levelTable.setVisible(bands.size() > 1);
-		if (bands.size() < 2)
-		{
+			checks.setHeadline("");
+			checks.setCaption("not enough growth cycles yet");
+			// Named rather than left blank. A card that shows nothing looks broken; a card that
+			// says what it is waiting for is answering the question it was opened with.
+			diseaseNote.setText("Needs " + MIN_CYCLES_FOR_DISEASE + " growth cycles, "
+				+ cycles + " so far");
+			diseaseNote.setToolTipText(Tooltips.text("Disease is a few percent a cycle for most"
+				+ " crops, so a rate over a couple of dozen cycles is one patch either way and"
+				+ " reads as a finding. Fifty is the floor at which it stops being actively"
+				+ " misleading, not the one at which it becomes reliable."));
+			diseaseNote.setVisible(true);
 			return;
 		}
 
-		levelTable.clearRows();
-		for (HarvestHistory.LevelBand band : bands)
-		{
-			levelTable.addRow(band.getFrom() + "-" + (band.getFrom() + 9),
-				Tooltips.html("Levels " + band.getFrom() + " to " + (band.getFrom() + 9)
-					+ "<br>" + Plurals.of(band.getPatches(), "patch", "patches")
-					+ " picked clean<br>" + band.getItems() + " items against a predicted "
-					+ String.format("%.0f", band.getPredicted())
-					+ "<br><br>Chance to save climbs with the level and then flattens, so the"
-					+ " gap between bands should shrink as they rise."),
-				String.valueOf(band.getPatches()),
-				format(band.getAverage()),
-				format(band.getAveragePredicted()));
-		}
-	}
+		double expected = cycles - disease.getPredictedSurvivals();
+		checks.setHeadline(String.format("%.0f%%", 100.0 * caught / cycles));
+		checks.setCaption(caught + " of " + Plurals.of(cycles, "growth cycle", "growth cycles"));
 
-	/**
-	 * How the predictions are doing, in words rather than as a bare ratio.
-	 *
-	 * <p>Within a twentieth either way is called right: the figure is noisy until a couple of
-	 * dozen patches are in, and reporting "1.03x" for what is almost certainly sampling noise
-	 * would invite chasing it.
-	 */
-	private static String describeAccuracy(double accuracy)
-	{
-		if (accuracy >= 0.95 && accuracy <= 1.05)
-		{
-			return "Estimates are matching what you get.";
-		}
-		return accuracy > 1
-			? String.format("You are getting %.0f%% more than estimated.", (accuracy - 1) * 100)
-			: String.format("You are getting %.0f%% less than estimated.", (1 - accuracy) * 100);
-	}
-
-	private static String accuracyTooltip()
-	{
-		// All three sentences earn their place - the last one is the only explanation of why
-		// "got" does not equal n x "avg" - so this is wrapped rather than cut.
-		return Tooltips.html("Compares what you actually harvested against what the plugin"
-			+ " predicted for those same patches.<br><br>Each patch was predicted using the level,"
-			+ " compost and gear in play at the time, so the totals compare like with like."
-			+ "<br><br>Patches you walked away from are counted in the item totals but kept out of"
-			+ " the averages - a half-picked patch is not a low yield.");
+		diseaseNote.setText(String.format("Disease: %,d of %,d cycles, predicted %,.0f",
+			caught, cycles, expected));
+		diseaseNote.setToolTipText(Tooltips.text(String.format(
+			"%,d of %s caught something, against a predicted %,.0f. %,d died."
+				+ " The prediction is the wiki's survival chance applied to those same cycles,"
+				+ " using the compost the plugin saw go into each patch - so a bucket it never"
+				+ " watched go in counts as untreated and pushes the prediction up.",
+			caught, Plurals.of(cycles, "growth cycle", "growth cycles"), expected,
+			disease.getTotalDied())));
+		diseaseNote.setVisible(true);
 	}
 
 	// ----------------------------------------------------------------- shared
@@ -1357,16 +1070,20 @@ class HarvestStatsPanel extends JPanel
 	}
 
 	/**
-	 * Everything about one crop that will not fit in three narrow columns.
+	 * Everything about one crop that will not fit in four narrow columns.
 	 *
 	 * <p>The compost breakdown is the part worth hovering for: compost is the single biggest
 	 * lever on yield, so a crop's overall average mixes conditions that are not comparable,
 	 * and the split is what makes the number mean anything.
+	 *
+	 * <p>It also carries the two things the merged row can no longer say for itself — why the
+	 * {@code +/-} cell is grey, or empty — and the histogram, which is the shape the running
+	 * totals cannot reconstruct.
 	 */
 	private String cropTooltip(CropHarvestStats crop, @Nullable List<CropHarvestStats> tiers)
 	{
 		StringBuilder text = new StringBuilder("<b>").append(crop.getCrop())
-			.append("</b><br>").append(crop.getHarvests())
+			.append("</b><br>").append(DataTable.count(crop.getHarvests()))
 			.append(Plurals.pick(crop.getHarvests(), " patch picked clean", " patches picked clean"));
 
 		if (crop.getHarvests() > 0)
@@ -1378,12 +1095,14 @@ class HarvestStatsPanel extends JPanel
 		}
 		if (crop.getPartialItems() > 0)
 		{
-			// Spelt out because these are the items the average deliberately ignores, and the
-			// gap between "got" and n x "avg" is otherwise unexplained.
-			text.append("<br>").append(crop.getPartialItems())
+			// Spelt out because these are the items the +/- deliberately ignores, and the gap
+			// between "got" and the difference beside it is otherwise unexplained.
+			text.append("<br>").append(DataTable.count(crop.getPartialItems()))
 				.append(" more from patches left standing, not counted in the average");
 		}
 		text.append("<br>").append(DataTable.shortNumber(crop.getTotalXp())).append(" experience");
+
+		text.append("<br><br>").append(explainDifference(crop));
 
 		if (tiers != null && tiers.size() > 1)
 		{
@@ -1396,64 +1115,112 @@ class HarvestStatsPanel extends JPanel
 				}
 				text.append("<br>&bull; ").append(tierName(tier.getCompost())).append(": ")
 					.append(format(tier.getAverageYield())).append(" avg over ")
-					.append(tier.getHarvests())
+					.append(DataTable.count(tier.getHarvests()))
 					.append(Plurals.pick(tier.getHarvests(), " patch", " patches"));
 			}
 		}
 
+		text.append(histogram(crop.getCrop()));
 		return Tooltips.html(text.toString());
 	}
 
-	/**
-	 * A section heading, in the body font rather than a bold or coloured one.
-	 *
-	 * <p>The whole tab is the same small font, and the hierarchy comes from brightness instead:
-	 * headings in the full text colour, prose a shade down, column names a shade below that.
-	 * Nothing else in the plugin introduces a second font or an accent colour for emphasis, and
-	 * a tab that did would look like it came from somewhere else.
-	 */
-	private static JLabel heading(String text, String tooltip)
+	/** Why this crop's {@code +/-} is coloured, grey, or absent. */
+	private static String explainDifference(CropHarvestStats crop)
 	{
-		JLabel label = new JLabel(text);
-		label.setFont(FontManager.getRunescapeSmallFont());
-		label.setForeground(ColorScheme.TEXT_COLOR);
-		label.setToolTipText(tooltip);
-		label.setAlignmentX(LEFT_ALIGNMENT);
-		// Space above rather than below, so a heading sits with the section it names instead of
-		// floating equidistant between two of them.
-		label.setBorder(BorderFactory.createEmptyBorder(10, 0, 3, 0));
-		return label;
+		if (!crop.hasSurplus())
+		{
+			if (crop.getPredicted() > 0 && crop.getPredictedVariance() > 0
+				&& crop.getVariancePatches() == crop.getHarvests())
+			{
+				return "No <b>+/-</b> yet: a single patch scatters by three or four either way, so"
+					+ " under " + CropHarvestStats.MIN_PATCHES_FOR_SURPLUS + " picked patches the"
+					+ " figure would be quoting one roll and calling it a tendency.";
+			}
+			return "No <b>+/-</b> for this crop: the spread of a single patch is not modelled for"
+				+ " it, or these harvests were recorded before it was. A difference against a"
+				+ " prediction nobody has published would be measuring the guess.";
+		}
+		if (crop.getHarvests() < CropHarvestStats.MIN_PATCHES_FOR_LUCK)
+		{
+			return "The <b>+/-</b> is grey until "
+				+ (CropHarvestStats.MIN_PATCHES_FOR_LUCK - crop.getHarvests())
+				+ " more picked patches settle it. Below that the spread swamps the total.";
+		}
+		return String.format("<b>%,d</b> harvested against <b>%,.0f</b> predicted, over %s picked"
+			+ " clean.", crop.getItems(), crop.getPredicted(),
+			Plurals.of(crop.getHarvests(), "patch", "patches"));
 	}
 
 	/**
-	 * Builds one section — a heading and its contents — and adds it to the stack.
+	 * Where a crop's patches actually clustered, as bars.
 	 *
-	 * <p>A panel per section rather than one flat stack, so a section can be hidden as a unit.
-	 * That is what lets Expected appear on an account with seeds and no harvests while the
-	 * three history sections stay away.
+	 * <p>The difference column says you are 4% up; this says <i>how</i>. They answer different
+	 * questions and the shape is the one a running total cannot reconstruct — it needs the rows
+	 * back, which is what {@link HarvestHistory} is for.
 	 *
-	 * <p>Alignment is set here rather than at each call site because {@code BoxLayout} centres
-	 * anything that does not ask otherwise, and one component that forgets to ask is enough to
-	 * make the whole column look ragged. No border on the section panel: {@link WrappedText}
-	 * computes its height against the full sidebar width and clips its last line if it is given
-	 * any less.
+	 * <p>Empty below a floor of its own. A histogram over six patches is six bars of height one,
+	 * which looks like a finding and is a picture of nothing.
 	 */
-	private void fill(JPanel section, JComponent... children)
+	private String histogram(String crop)
 	{
-		section.setLayout(new BoxLayout(section, BoxLayout.Y_AXIS));
-		section.setBackground(getBackground());
-		section.setAlignmentX(LEFT_ALIGNMENT);
-
-		for (JComponent child : children)
+		HarvestHistory.Histogram spread = history.getHistogram(crop);
+		if (spread == null || spread.getPatches() < MIN_PATCHES_FOR_HISTOGRAM)
 		{
-			child.setAlignmentX(LEFT_ALIGNMENT);
-			if (child.isOpaque())
-			{
-				child.setBackground(getBackground());
-			}
-			section.add(child);
+			return "";
 		}
-		sections.add(section);
+
+		StringBuilder text = new StringBuilder("<br><br>Where they landed, against prediction:");
+		int most = Math.max(1, spread.getMost());
+		int reach = HarvestHistory.HISTOGRAM_BUCKETS / 2;
+
+		for (int bucket = 0; bucket < spread.getBuckets().length; bucket++)
+		{
+			int delta = bucket - reach;
+			int count = spread.getBuckets()[bucket];
+			// Scaled to the tallest bar rather than to the patch count, so a crop with one
+			// dominant bucket still shows the shape of the rest.
+			int bar = (int) Math.round(HISTOGRAM_WIDTH * (double) count / most);
+
+			text.append("<br>").append(label(delta, reach)).append(' ');
+			for (int drawn = 0; drawn < bar; drawn++)
+			{
+				text.append('#');
+			}
+			text.append(' ').append(count);
+		}
+		return text.toString();
+	}
+
+	/** The bucket's name, with the outermost two open-ended because the tails are unbounded. */
+	private static String label(int delta, int reach)
+	{
+		if (delta <= -reach)
+		{
+			return "-" + reach + " or worse";
+		}
+		if (delta >= reach)
+		{
+			return "+" + reach + " or better";
+		}
+		return delta > 0 ? "+" + delta : String.valueOf(delta);
+	}
+
+	/**
+	 * A one-line note inside a card's body.
+	 *
+	 * <p>A plain label, never {@link WrappedText}: a text area computes its height against the
+	 * full sidebar width and clips its last line the moment it is laid out any narrower, which is
+	 * exactly what a nested card does to it. One line, hard cap, and anything longer belongs on
+	 * the tooltip — which is the prose budget for the whole tab in one sentence.
+	 */
+	private static JLabel note()
+	{
+		JLabel label = new JLabel();
+		label.setFont(FontManager.getRunescapeSmallFont());
+		label.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		label.setAlignmentX(LEFT_ALIGNMENT);
+		label.setBorder(BorderFactory.createEmptyBorder(4, 0, 0, 0));
+		return label;
 	}
 
 	/** The tier's display name, falling back to whatever was stored if it no longer exists. */

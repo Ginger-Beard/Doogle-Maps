@@ -4,10 +4,14 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
+import java.awt.Cursor;
 import java.awt.GridLayout;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import javax.annotation.Nullable;
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
+import javax.swing.JButton;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.SwingConstants;
@@ -29,8 +33,16 @@ import net.runelite.client.ui.FontManager;
  */
 class DataTable extends JPanel
 {
-	/** Width reserved for the name, which needs more room than a number does. */
-	private static final int LABEL_WIDTH = 90;
+	/**
+	 * Width reserved for the name, which needs more room than a number does.
+	 *
+	 * <p>Was 90, which was generous — "Ranarr weed" and "Potato cactus" both draw inside 70px in
+	 * RuneScape Small. Eight pixels came off it when the crop table grew a fifth column: at the
+	 * 225px minimum the four value columns share whatever the name leaves, and 90 left each of
+	 * them exactly wide enough for "+10%" and not a pixel more, so the columns ran into each
+	 * other. See the gutter in {@code addCell}.
+	 */
+	private static final int LABEL_WIDTH = 82;
 
 	/**
 	 * Width a value column asks for.
@@ -41,9 +53,32 @@ class DataTable extends JPanel
 	 */
 	private static final int COLUMN_WIDTH = 34;
 
+	/**
+	 * The widest a row ever asks to be, however many columns it has.
+	 *
+	 * <p>The same budget {@link WrappedText} uses — the 225px sidebar less the borders it sits
+	 * inside. Without it a five-column table asks for {@code 90 + 4 x 34 = 226px} and pushes the
+	 * whole tab past the edge of the sidebar, which is a worse failure than a narrow column: the
+	 * columns share whatever width the row is actually given, so capping the <i>request</i> costs
+	 * nothing at a width where the honest figure would have fitted anyway.
+	 */
+	private static final int MAX_WIDTH = 195;
+
 	/** Alternating row backgrounds, a shade either side of the panel. */
 	private static final Color STRIPE = ColorScheme.DARKER_GRAY_COLOR;
 	private static final Color HEADER = ColorScheme.DARK_GRAY_COLOR;
+
+	/**
+	 * Header text and rules, measured against {@link #HEADER} (40,40,40).
+	 *
+	 * <p>{@code MEDIUM_GRAY_COLOR} (77,77,77) used to do both jobs at 1.68:1 — below WCAG AA's
+	 * 4.5:1 for text and below 1.4.11's 3:1 for a meaningful graphic, i.e. the column names and
+	 * the rules under them were, in practice, invisible. {@code LIGHT_GRAY_COLOR} is already the
+	 * plugin's secondary-text colour (the total row, {@code WrappedText}) and measures 5.78:1
+	 * here, so using it for headers is a return to house style rather than a new one. The rule
+	 * only needs 3:1, so it gets a colour of its own rather than borrowing text's: 3.23:1.
+	 */
+	private static final Color RULE = new Color(120, 120, 120);
 
 	private static final int ROW_HEIGHT = 15;
 
@@ -52,6 +87,15 @@ class DataTable extends JPanel
 
 	/** Built once and re-added on every clear, so it cannot drift from the column count. */
 	private final JPanel headingRow;
+
+	/**
+	 * The header cell per column name, so a column can be explained without a legend.
+	 *
+	 * <p>A column of signed percentages needs a sentence about its sample floor that will not fit
+	 * anywhere on screen. Hanging it off the header is the one place a reader looks when a column
+	 * puzzles them.
+	 */
+	private final Map<String, JLabel> headerCells = new LinkedHashMap<>();
 
 	/** Alternates as rows are added, so the caller never has to track it. */
 	private boolean striped;
@@ -87,11 +131,30 @@ class DataTable extends JPanel
 	 */
 	void addRow(String name, @Nullable String tooltip, String... values)
 	{
+		addRow(name, tooltip, null, values);
+	}
+
+	/**
+	 * Adds one row of data, colouring individual cells.
+	 *
+	 * <p>Per cell rather than per row because the one column that carries a colour is a signed
+	 * difference, and colouring the whole row for it would say the crop was good or bad rather
+	 * than that one number was above or below expectation.
+	 *
+	 * @param cellColours one entry per value, null for the ordinary text colour; the array itself
+	 *                    may be null, and may be shorter than {@code values}
+	 */
+	void addRow(String name, @Nullable String tooltip, @Nullable Color[] cellColours,
+		String... values)
+	{
 		JPanel row = row(striped ? STRIPE : getBackground());
 		addName(row, name, ColorScheme.TEXT_COLOR);
-		for (String value : values)
+		for (int i = 0; i < values.length; i++)
 		{
-			addCell(row, value, ColorScheme.TEXT_COLOR);
+			Color colour = cellColours != null && i < cellColours.length && cellColours[i] != null
+				? cellColours[i]
+				: ColorScheme.TEXT_COLOR;
+			addCell(row, values[i], colour);
 		}
 		if (tooltip != null)
 		{
@@ -99,6 +162,50 @@ class DataTable extends JPanel
 		}
 		rows.add(row);
 		striped = !striped;
+	}
+
+	/**
+	 * A full-width row that does something when it is clicked.
+	 *
+	 * <p>Replaces the {@code "+ 22 more"} row, which looked like a row, was not clickable, and
+	 * whose only content was the news that the thing you were looking for had been left out. A
+	 * row that can act on that is the same pixels doing the opposite job.
+	 *
+	 * <p>A button rather than a labelled panel with a mouse listener: it is a button, and the one
+	 * built out of a panel would have to reimplement the keyboard, the cursor and the hit target
+	 * to be one anyway. Styled flat so it still reads as a row of the table it ends.
+	 */
+	void addActionRow(String text, @Nullable String tooltip, Runnable onClick)
+	{
+		JButton row = new JButton(text);
+		row.setFont(FontManager.getRunescapeSmallFont());
+		row.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		row.setHorizontalAlignment(SwingConstants.LEFT);
+		row.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 0));
+		row.setContentAreaFilled(false);
+		row.setOpaque(false);
+		row.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		row.setAlignmentX(Component.LEFT_ALIGNMENT);
+		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, ROW_HEIGHT));
+		row.setPreferredSize(new Dimension(rowWidth(), ROW_HEIGHT));
+		Controls.makeNonFocusable(row);
+		if (tooltip != null)
+		{
+			row.setToolTipText(tooltip);
+		}
+		row.addActionListener(e -> onClick.run());
+		rows.add(row);
+		striped = !striped;
+	}
+
+	/** Explains one column, on the header cell that names it. */
+	void setColumnTooltip(String columnName, String tooltip)
+	{
+		JLabel cell = headerCells.get(columnName);
+		if (cell != null)
+		{
+			cell.setToolTipText(tooltip);
+		}
 	}
 
 	/** Adds the summing row, ruled off from the data above it. */
@@ -110,19 +217,19 @@ class DataTable extends JPanel
 		{
 			addCell(row, value, ColorScheme.LIGHT_GRAY_COLOR);
 		}
-		row.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, ColorScheme.MEDIUM_GRAY_COLOR));
+		row.setBorder(BorderFactory.createMatteBorder(1, 0, 0, 0, RULE));
 		rows.add(row);
 	}
 
 	private JPanel headerRow(String nameHeading, String[] columnNames)
 	{
 		JPanel row = row(HEADER);
-		addName(row, nameHeading, ColorScheme.MEDIUM_GRAY_COLOR);
+		addName(row, nameHeading, ColorScheme.LIGHT_GRAY_COLOR);
 		for (String name : columnNames)
 		{
-			addCell(row, name, ColorScheme.MEDIUM_GRAY_COLOR);
+			headerCells.put(name, addCell(row, name, ColorScheme.LIGHT_GRAY_COLOR));
 		}
-		row.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, ColorScheme.MEDIUM_GRAY_COLOR));
+		row.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, RULE));
 		return row;
 	}
 
@@ -141,12 +248,17 @@ class DataTable extends JPanel
 		// A fixed height keeps BoxLayout from stretching the last row to fill the panel; the
 		// unbounded width lets it fill one that is wider than the columns need.
 		row.setMaximumSize(new Dimension(Integer.MAX_VALUE, ROW_HEIGHT));
-		row.setPreferredSize(new Dimension(LABEL_WIDTH + columns * COLUMN_WIDTH, ROW_HEIGHT));
+		row.setPreferredSize(new Dimension(rowWidth(), ROW_HEIGHT));
 
 		JPanel cells = new JPanel(new GridLayout(1, columns, 0, 0));
 		cells.setOpaque(false);
 		row.add(cells, BorderLayout.CENTER);
 		return row;
+	}
+
+	private int rowWidth()
+	{
+		return Math.min(LABEL_WIDTH + columns * COLUMN_WIDTH, MAX_WIDTH);
 	}
 
 	/** Puts the name in the reserved left column. */
@@ -158,10 +270,17 @@ class DataTable extends JPanel
 	}
 
 	/** Adds a value cell to the grid that fills the rest of the row. */
-	private static void addCell(JPanel row, String text, Color colour)
+	private static JLabel addCell(JPanel row, String text, Color colour)
 	{
+		JLabel cell = label(text, colour, SwingConstants.RIGHT);
+		// A gutter, so two full columns do not run into each other. At the 225px minimum a
+		// five-column row gives each value about 30px, which "3k" and "+10%" both fill — and
+		// right-aligned text with no inset puts the end of one hard against the start of the
+		// next, which reads as one number.
+		cell.setBorder(BorderFactory.createEmptyBorder(0, 0, 0, 2));
 		((JPanel) ((BorderLayout) row.getLayout()).getLayoutComponent(BorderLayout.CENTER))
-			.add(label(text, colour, SwingConstants.RIGHT));
+			.add(cell);
+		return cell;
 	}
 
 	private static JLabel label(String text, Color colour, int alignment)
@@ -210,5 +329,17 @@ class DataTable extends JPanel
 			return String.format("%.1fk", value / 1000).replace(".0k", "k");
 		}
 		return String.valueOf(rounded);
+	}
+
+	/**
+	 * A count, thousands-separated: {@code 12043} reads as "12043" until the eye lands on it
+	 * character by character, next to an xp column that abbreviates the same magnitude to
+	 * "12k". {@code shortNumber} is wrong for counts — losing the last three digits of an item
+	 * total is losing real information a farmer would want — so this keeps every digit and
+	 * only adds the separator.
+	 */
+	static String count(long n)
+	{
+		return String.format("%,d", n);
 	}
 }
