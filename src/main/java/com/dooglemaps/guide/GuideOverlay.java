@@ -1514,9 +1514,21 @@ public class GuideOverlay extends Overlay
 	/** The last step NPC id a highlight miss was logged for; see {@link #highlightNpcById}. */
 	private int loggedNpcMissId = -1;
 
-	/** Outlines the nearest tool leprechaun, for the noting and withdrawing steps. */
+	/**
+	 * Outlines the nearest tool leprechaun, for the noting and withdrawing steps.
+	 *
+	 * <p>Nearest by tile, not first in scene order: a region can hold several — the Farming
+	 * Guild has one per wing — and the first one the client happened to load is whichever
+	 * wing loaded first, not the one the player is standing next to. Falls back to the first
+	 * match when there is no local player to measure distance from.
+	 */
 	private void highlightLeprechaun(Graphics2D graphics, Color colour)
 	{
+		Player player = client.getLocalPlayer();
+		WorldPoint playerLocation = player == null ? null : player.getWorldLocation();
+
+		NPC nearest = null;
+		int nearestDistance = Integer.MAX_VALUE;
 		for (NPC npc : client.getTopLevelWorldView().npcs())
 		{
 			if (npc == null || npc.getName() == null)
@@ -1530,8 +1542,29 @@ public class GuideOverlay extends Overlay
 				continue;
 			}
 
-			outlineNpc(graphics, colour, npc);
-			return;
+			if (playerLocation == null)
+			{
+				nearest = npc;
+				break;
+			}
+
+			WorldPoint npcLocation = npc.getWorldLocation();
+			if (npcLocation.getPlane() != playerLocation.getPlane())
+			{
+				continue;
+			}
+
+			int distance = npcLocation.distanceTo(playerLocation);
+			if (distance < nearestDistance)
+			{
+				nearestDistance = distance;
+				nearest = npc;
+			}
+		}
+
+		if (nearest != null)
+		{
+			outlineNpc(graphics, colour, nearest);
 		}
 	}
 
