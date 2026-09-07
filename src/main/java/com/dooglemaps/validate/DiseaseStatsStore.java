@@ -11,6 +11,7 @@ import com.google.gson.reflect.TypeToken;
 import java.lang.reflect.Type;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -77,6 +78,16 @@ public class DiseaseStatsStore extends com.dooglemaps.state.ProfileJsonStore
 	 */
 	private final Set<String> sickThisCycle = new HashSet<>();
 
+	/**
+	 * Patches whose current planting has already had its growth cycle counted.
+	 *
+	 * <p>In memory beside {@link #sickThisCycle} and for the same reason: it describes the
+	 * planting standing in the patch right now, and a planting that spans a logout has already
+	 * lost the transitions in the middle of it. Cleared when the patch empties, dies, or comes
+	 * back holding something else — all three of which mean a new planting, and so a new cycle.
+	 */
+	private final Map<String, Produce> cycleCounted = new HashMap<>();
+
 	@Inject
 	DiseaseStatsStore(ConfigManager configManager, Gson gson)
 	{
@@ -114,26 +125,75 @@ public class DiseaseStatsStore extends com.dooglemaps.state.ProfileJsonStore
 				close(patch, produceOf(previous, current), compost, protectedByFarmer, diseaseFree,
 					true, true);
 				sickThisCycle.remove(key);
+				cycleCounted.remove(key);
 				break;
 
 			case HARVESTABLE:
-				// Only from growing. A bush going back to harvestable as it regrows is the same
-				// cycle continuing, not a new one survived.
-				if (previous.getCropState() == CropState.GROWING)
+				// Only from growing, and only once per planting. See isARegrow: the state pair
+				// alone says nothing, because a bush, a fruit tree and a tree all really do pass
+				// back through GROWING every time they restock.
+				if (previous.getCropState() == CropState.GROWING && !isARegrow(key, current))
 				{
 					close(patch, produceOf(previous, current), compost, protectedByFarmer,
 						diseaseFree, sickThisCycle.contains(key), false);
 					sickThisCycle.remove(key);
+					cycleCounted.put(key, produceOf(previous, current));
+				}
+				break;
+
+			case GROWING:
+				// A seed going into bare ground is the start of a cycle, and the clearest signal
+				// of one there is. Only from empty or dead: a bush restocking and a cured patch
+				// both arrive here too, and neither is a new planting.
+				if (previous.getCropState() == CropState.EMPTY
+					|| previous.getCropState() == CropState.DEAD)
+				{
+					cycleCounted.remove(key);
 				}
 				break;
 
 			case EMPTY:
 				sickThisCycle.remove(key);
+				cycleCounted.remove(key);
 				break;
 
 			default:
 				break;
 		}
+	}
+
+	/**
+	 * Whether this patch reaching harvestable is the same planting restocking itself.
+	 *
+	 * <h2>The javadoc was right and the guard did not implement it</h2>
+	 *
+	 * "A bush going back to harvestable as it regrows is the same cycle continuing, not a new one
+	 * survived" — said directly above a test that only asked whether the previous state was
+	 * GROWING. It is, every time: a bush, a fruit tree and a tree all pass through GROWING while
+	 * they grow the next lot, so the guard excluded nothing it was written to exclude.
+	 *
+	 * <p>What that cost is a denominator made of restocks. {@code Maple|ULTRACOMPOST} carries
+	 * <b>37 "growth cycles"</b> in the store, from what is at most one or two trees — and each of
+	 * those 37 re-applied a whole plant-to-harvest survival probability, so the account-wide
+	 * "predicted 50 diseasings out of 136 cycles" was counting the same tree surviving the same
+	 * planting three dozen times over.
+	 *
+	 * <p>A disease roll happens per growth stage between planting and ripeness, so the cycle the
+	 * published rate describes is one <b>planting</b>, not one restock. The planting is what
+	 * {@link #cycleCounted} tracks, and it ends where the other flags end: the patch empties, dies,
+	 * or comes back holding a different crop.
+	 *
+	 * <p>Asked of the tracked planting rather than of whether the crop regrows, so it costs
+	 * nothing to be wrong about which crops those are — a herb or an allotment reaches harvestable
+	 * once per planting anyway, so the first time always counts and there is never a second.
+	 */
+	private boolean isARegrow(String key, ProduceState current)
+	{
+		Produce counted = cycleCounted.get(key);
+		// Same patch, same crop, and we have already counted this planting reaching ripeness.
+		// A different crop is a new planting however it got there, even if the empty in between
+		// happened while nobody was watching.
+		return counted != null && counted == current.getProduce();
 	}
 
 	/** Records one finished growth cycle against the crop and tier it happened under. */
@@ -249,6 +309,7 @@ public class DiseaseStatsStore extends com.dooglemaps.state.ProfileJsonStore
 	{
 		stats.clear();
 		sickThisCycle.clear();
+		cycleCounted.clear();
 	}
 
 	@Override
@@ -279,6 +340,7 @@ public class DiseaseStatsStore extends com.dooglemaps.state.ProfileJsonStore
 		{
 			stats.clear();
 			sickThisCycle.clear();
+			cycleCounted.clear();
 		}
 		save();
 	}

@@ -237,6 +237,12 @@ public class HarvestLog
 		// A pick awards its item and its experience in the same tick, so the patch that just
 		// took an item is the one that earned this.
 		double gained = total - previous;
+
+		// Before any attribution, and whether or not any is possible. A run is a sitting of
+		// farming, and most of the experience in one is check-health on a tree that no harvest
+		// record can ever see - see HarvestHistory.recordFarmingXp.
+		history.recordFarmingXp(gained);
+
 		HarvestRecord active = activeRecord();
 		if (active == null)
 		{
@@ -555,8 +561,10 @@ public class HarvestLog
 	 * The patch currently holding this crop, ready to pick, and near enough to be picking it.
 	 *
 	 * <p>Ambiguity is real but rare — two ranarr patches both ripe, both being picked in the
-	 * same few ticks. When it happens the first is taken and the second's record simply never
-	 * opens, which costs a data point and cannot corrupt one.
+	 * same few ticks. When it happens the nearer is taken, and where they are genuinely the same
+	 * distance away the one with no record open wins: a patch can only be picked clean once, so
+	 * the second of a pair is the one still owed a record. Losing the tie costs a data point and
+	 * cannot corrupt one.
 	 */
 	@Nullable
 	private FarmPatch findPatchHolding(Produce produce)
@@ -587,7 +595,12 @@ public class HarvestLog
 			}
 
 			int distance = distanceTo(player, patch);
-			if (distance < bestDistance)
+			boolean nearer = distance < bestDistance;
+			// Equal distances used to be settled by iteration order, which is how a north and a
+			// south allotment - identical in every signal this has - funnelled into one record.
+			boolean tiedAndUnclaimed = distance == bestDistance && best != null
+				&& open.containsKey(best.getKey()) && !open.containsKey(patch.getKey());
+			if (nearer || tiedAndUnclaimed)
 			{
 				bestDistance = distance;
 				best = patch;
@@ -605,28 +618,62 @@ public class HarvestLog
 	/**
 	 * How far the player is from a patch, for attributing a pick.
 	 *
-	 * <p>Matching regions counts as zero, and is checked first because it is the more
-	 * trustworthy signal: a patch's region is the one whose varbits carry it, which is exact,
-	 * whereas its coordinates may be a learned position or merely the region's centre.
+	 * <h2>A real coordinate first, and that is the fix</h2>
 	 *
-	 * <p>Falling back to real coordinates matters because a region match is not guaranteed
-	 * even when standing at the patch — some farming regions span more than one map square,
-	 * and the plugin mirrors only the canonical id. Without a second signal those patches
-	 * always tied, and the tie-break was what funnelled a whole run into one record.
+	 * This used to answer <b>zero for every patch in the player's region</b> and only fall back to
+	 * coordinates when the regions differed. The reasoning was that a region is exact where a
+	 * position may be a guess — true when it was written, and it stopped being true once
+	 * {@code MeasuredPatchLocations} shipped a tile for every patch. What it cost in the meantime
+	 * is that <i>every allotment location has a north and a south patch in one region</i>: plant
+	 * the same crop in both and both scored zero, {@link #findPatchHolding} took the first
+	 * minimum, and all the produce from both patches landed in one record while the second patch
+	 * never opened one at all.
+	 *
+	 * <p>The signature in the log is unmistakable and it is the whole of the remaining "luck"
+	 * after the compost fix: {@code Watermelon Catherby South actual 77 predicted 22.93},
+	 * {@code Strawberry Kourend SW actual 70}, {@code Snape grass Farming Guild N actual 72}.
+	 * Seventy-seven melons out of six lives is a seven-sigma patch; two patches booked as one is
+	 * an ordinary Tuesday. The experience on those rows matches the item count exactly, so the
+	 * items were real — only the attribution was wrong.
+	 *
+	 * <p>So a patch whose tile is <i>known</i> — learned from watching its object spawn, or from
+	 * the shipped table — is measured. The region has not been thrown away: it still guarantees
+	 * that a patch you are standing among stays inside {@link #MAX_ATTRIBUTION_DISTANCE}, which is
+	 * what the old rule was really buying. Some farming regions span more than one map square and
+	 * the plugin mirrors only the canonical id, and the hespori's cave is instanced so a
+	 * coordinate read there is meaningless — in both cases the region is the trustworthy signal
+	 * and the coordinate is not.
 	 */
 	private int distanceTo(WorldPoint player, FarmPatch patch)
 	{
-		if (player.getRegionID() == patch.getRegion().getRegionId())
+		boolean sameRegion = player.getRegionID() == patch.getRegion().getRegionId();
+		int measured = locations.isExact(patch)
+			? separation(player, locations.getLocation(patch))
+			: Integer.MAX_VALUE;
+
+		if (sameRegion)
 		{
-			return 0;
+			// A region match is a fact about the varbits and cannot be wrong; a coordinate can
+			// be. The hespori's cave is instanced, so a position read there means nothing on the
+			// world map, and a patch you are provably standing in must never be measured out of
+			// range by one. So the region caps the distance at the attribution limit rather than
+			// replacing it: within the limit the real separation still orders the patches, which
+			// is the whole point, and beyond it the region keeps the patch in play exactly as it
+			// used to.
+			return Math.min(measured, MAX_ATTRIBUTION_DISTANCE);
 		}
 
-		WorldPoint location = locations.getLocation(patch);
-		if (location == null || location.getPlane() != player.getPlane())
-		{
-			return Integer.MAX_VALUE;
-		}
-		return player.distanceTo(location);
+		return measured != Integer.MAX_VALUE
+			? measured
+			: separation(player, locations.getLocation(patch));
+	}
+
+	/** Tiles between two points, or unreachable when they are not on the same floor. */
+	private static int separation(WorldPoint player, @Nullable WorldPoint location)
+	{
+		return location == null || location.getPlane() != player.getPlane()
+			? Integer.MAX_VALUE
+			: player.distanceTo(location);
 	}
 
 	private static Map<Integer, Integer> countItems(@Nullable ItemContainer container)
@@ -670,6 +717,14 @@ public class HarvestLog
 			return;
 		}
 
+		if (!isAHarvest(record))
+		{
+			return;
+		}
+
+		// Before anything is scored, because every figure below is derived from the tier.
+		applyCompostWeMissed(record);
+
 		// The rolled-up totals are the part that outlives this session and can be shown back
 		// to the player; the CSV is the raw trail behind them, and since the runs and the level
 		// curve are reconstructed from it, it is a store rather than a debug artifact.
@@ -685,6 +740,7 @@ public class HarvestLog
 		}
 
 		double predicted = record.getPredictedYield();
+		warnIfCompostWasMissed(record, predicted);
 		log.info("Harvest: {} x{} from {} — predicted {}, {} at level {}{}{}",
 			record.getProduce().getName(),
 			record.getItemsHarvested(),
@@ -694,8 +750,6 @@ public class HarvestLog
 			record.getFarmingLevel(),
 			describeBonuses(record),
 			record.isCompleted() ? "" : " (left standing, not picked clean)");
-
-		warnIfCompostWasMissed(record, predicted);
 
 		double predictedXp = record.getPredictedXp();
 		// Skipped when the count came from the experience, because then the prediction is that
@@ -710,6 +764,102 @@ public class HarvestLog
 				record.getProduce().getName(), predictedXp, record.getItemsHarvested(),
 				record.getXpGained());
 		}
+	}
+
+	/**
+	 * Whether what has been assembled here is a harvest at all.
+	 *
+	 * <h2>No farming experience means nothing was picked</h2>
+	 *
+	 * Picking pays, every time, for every crop that has a harvest award — so a record holding
+	 * hundreds of items and <b>zero</b> experience did not come from a patch. It came from the
+	 * inventory: {@link #IDLE_TICKS_BEFORE_ABANDON} is a hundred ticks, a full minute, and a
+	 * record left open while its patch stands ripe will credit whatever arrives in that minute
+	 * to the patch. A bank withdrawal at the Farming Guild is the shape that was found —
+	 * <b>three limpwurt records of 908, 266 and 238 roots against a predicted 6.91, all with
+	 * {@code xp:0.0}</b>, and between them 1,412 of the 1,965 items the panel was reporting as
+	 * "left standing on patches you should go back to". The one actionable line on the tab was
+	 * telling the player to go and re-pick their own bank.
+	 *
+	 * <p>Only where the crop <i>has</i> an award to pay, so a crop the plugin has no experience
+	 * figure for is not silently thrown away.
+	 *
+	 * <h2>And a farmed tree is chopped, not harvested</h2>
+	 *
+	 * Teak, maple, yew, magic and camphor rows in the store carry farming xp of zero and one to
+	 * thirty-eight items: they are <i>woodcutting</i> logs from felling the tree the patch grew.
+	 * {@link CropYieldModel#hasMeaningfulYield} has always said a tree has no per-patch yield
+	 * worth quoting; nothing asked it before writing, so those logs were scored against a
+	 * predicted yield of 1 and contributed +144 to the account's "items over expectation".
+	 */
+	private boolean isAHarvest(HarvestRecord record)
+	{
+		Seed seed = Seed.forProduce(record.getProduce());
+		if (seed != null && !CropYieldModel.hasMeaningfulYield(seed))
+		{
+			log.info("Not recording {} x{} at {}: a farmed tree is chopped for logs rather than "
+					+ "harvested, so there is no patch yield here to score",
+				record.getProduce().getName(), record.getItemsHarvested(),
+				record.getPatch().getDisplayName());
+			return false;
+		}
+
+		CropXp rates = CropXp.forProduce(record.getProduce());
+		if (rates != null && rates.getHarvestXp() > 0 && record.getXpGained() <= 0)
+		{
+			log.info("Not recording {} x{} at {}: no farming experience arrived, and picking "
+					+ "always pays {} an item - so these items were not picked here",
+				record.getProduce().getName(), record.getItemsHarvested(),
+				record.getPatch().getDisplayName(), rates.getHarvestXp());
+			return false;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Tags a harvest with a compost tier the capture never saw, from whoever does know.
+	 *
+	 * <p>The record takes its tier from the patch snapshot when the first item lands, and the
+	 * snapshot only holds a bucket this plugin watched go in. A patch composted in a previous
+	 * session and ripe at login has nothing there — which is the ordinary shape of a herb run,
+	 * and why {@link #warnIfCompostWasMissed} fired eighty times in the surviving client logs on
+	 * exactly the crops whose "luck" then read 99th percentile.
+	 *
+	 * <p>Warning about it was the wrong response to knowing it. {@link PatchStateStore#knownCompost}
+	 * can answer from Time Tracking, which has been recording the bucket for years and keeps its
+	 * key until the patch is replanted — so the fact is available at the one moment the record
+	 * needs it, and the prediction can be made against the patch that actually existed instead of
+	 * against a three-life patch nobody planted.
+	 *
+	 * <p>Only ever NONE to a real tier, and only for crops where compost changes the yield: on
+	 * everything else the tier is a label rather than an input, and re-labelling a finished
+	 * harvest from another plugin's cache would buy nothing and could be wrong.
+	 */
+	private void applyCompostWeMissed(HarvestRecord record)
+	{
+		if (record.getCompost() != CompostTier.NONE)
+		{
+			return;
+		}
+
+		Seed seed = Seed.forProduce(record.getProduce());
+		if (seed == null || !CropYieldModel.respondsToCompost(seed))
+		{
+			return;
+		}
+
+		CompostTier known = patches.knownCompost(record.getPatch());
+		if (known == null || known == CompostTier.NONE)
+		{
+			return;
+		}
+
+		record.adoptCompost(known);
+		log.info("Tagged the {} harvest at {} as {}: we never saw the bucket go in, but Time "
+				+ "Tracking has it recorded, and the tier is what the yield is predicted from",
+			record.getProduce().getName(), record.getPatch().getDisplayName(),
+			known.getDisplayName().toLowerCase());
 	}
 
 	/**
@@ -748,6 +898,12 @@ public class HarvestLog
 	 * and not a modelling one: the arithmetic was right for the inputs it was given. Only for
 	 * crops that respond to compost, and only when we recorded none, so a lucky roll on an
 	 * ultracomposted patch cannot trip it.
+	 *
+	 * <p>Now the <b>last</b> resort rather than the only response. {@link #applyCompostWeMissed}
+	 * runs first and takes the tier from Time Tracking where it has one, which clears the record's
+	 * NONE and so this with it. What is left here is the genuinely unknowable case — nobody saw
+	 * the bucket, including the plugin that has been watching for years — and there the yield is
+	 * still the evidence that one went in, which is worth saying out loud.
 	 */
 	private static void warnIfCompostWasMissed(HarvestRecord record, double predicted)
 	{

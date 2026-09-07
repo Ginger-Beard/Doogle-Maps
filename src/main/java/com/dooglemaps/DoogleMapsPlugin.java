@@ -1008,8 +1008,12 @@ public class DoogleMapsPlugin extends Plugin
 		harvestHistory.beginLoad();
 		executor.execute(() ->
 		{
+			// Scoped to where the rolled-up totals begin, so the tab's "since 14 August" is true
+			// of the Runs section as well. The file outlives a stats reset and used to be read
+			// whole, which had one column reporting 33 days under a date ten days later.
 			harvestHistory.load(
-				com.dooglemaps.validate.HarvestFiles.forProfile(configManager));
+				com.dooglemaps.validate.HarvestFiles.forProfile(configManager),
+				harvestStats.getFirstHarvest());
 			logStatsState();
 			refresh();
 		});

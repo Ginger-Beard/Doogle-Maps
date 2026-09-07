@@ -435,6 +435,11 @@ public class PatchStateStore extends ProfileJsonStore
 				// Tracking's key lifecycle is not ours to guarantee, so an unconditional fill
 				// resurrected spent protection on every reload — a promise of disease safety
 				// that no longer held, which is the wrong direction to be wrong in.
+				//
+				// The two facts expire at different moments, so one boolean could not answer for
+				// both — see applyVarbit's own note at :330. Protection is spent the instant the
+				// crop is ripe, so it stays gated on the growing states. Compost is spent one
+				// life per pick, which is to say entirely *after* the crop turns HARVESTABLE.
 				boolean protectable = snapshot.getCropState() == com.dooglemaps.data.CropState.GROWING
 					|| snapshot.getCropState() == com.dooglemaps.data.CropState.DISEASED;
 
@@ -446,7 +451,7 @@ public class PatchStateStore extends ProfileJsonStore
 				}
 
 				CompostTier tier = timeTracking.compost(patch);
-				if (tier != null && protectable && snapshot.getCompost() == CompostTier.NONE
+				if (tier != null && holdsACrop(snapshot) && snapshot.getCompost() == CompostTier.NONE
 					&& tier != CompostTier.NONE)
 				{
 					snapshot.setCompost(tier);
@@ -462,6 +467,29 @@ public class PatchStateStore extends ProfileJsonStore
 			log.info("Filled in {} compost and protection facts from Time Tracking", filled);
 			fireChanged();
 		}
+	}
+
+	/**
+	 * Whether this patch still holds a crop the compost could be working on.
+	 *
+	 * <p>The same test {@link #applyVarbit} uses to decide when to <i>clear</i> compost, asked
+	 * the other way round, so the fill and the expiry cannot disagree about the lifetime of the
+	 * fact. Deliberately not a list of states: an emptied allotment reads as weeds, and weeds
+	 * are not a crop, which is exactly the moment the treatment ends.
+	 *
+	 * <h2>Why HARVESTABLE had to be included</h2>
+	 *
+	 * A patch composted in a previous session and already ripe at login used to be skipped, and
+	 * that is the normal shape of a herb run — you log in to six ready patches. It stayed tagged
+	 * {@code NONE}, so every yield the plugin predicted for it assumed three harvest lives where
+	 * it had six, and the "luck" percentile that compared the two was measuring the missing
+	 * bucket rather than the player. The audit found the two arms identical in actual yield
+	 * (Avantoe 8.84 treated against 8.93 "untreated" over 46 patches) with the untreated arm's
+	 * prediction exactly half — which is the ratio of three lives to six, and nothing else.
+	 */
+	private static boolean holdsACrop(PatchSnapshot snapshot)
+	{
+		return snapshot.getProduce() != null && snapshot.getProduce().isCrop();
 	}
 
 	public void recordProtected(FarmPatch patch, boolean isProtected)
@@ -614,6 +642,36 @@ public class PatchStateStore extends ProfileJsonStore
 			seeded++;
 		}
 		return seeded;
+	}
+
+	/**
+	 * Everything anyone knows about this patch's compost, ours first and Time Tracking's after.
+	 *
+	 * <p>Exists because our own record has a shorter life than the fact does. Compost is cleared
+	 * the moment the crop leaves the patch (see {@link #applyVarbit}), and the harvest that took
+	 * it is written a tick <i>after</i> that — so a caller asking at the only moment it has a
+	 * finished harvest to tag would always be told NONE. Time Tracking keeps its key until the
+	 * patch is replanted, which covers exactly that gap.
+	 *
+	 * @return {@link CompostTier#NONE} when neither source names a tier
+	 */
+	public CompostTier knownCompost(FarmPatch patch)
+	{
+		if (patch == null)
+		{
+			return CompostTier.NONE;
+		}
+
+		synchronized (this)
+		{
+			PatchSnapshot snapshot = snapshots.get(patch.getKey());
+			if (snapshot != null && snapshot.getCompost() != null
+				&& snapshot.getCompost() != CompostTier.NONE)
+			{
+				return snapshot.getCompost();
+			}
+		}
+		return readTimeTrackingCompost(patch);
 	}
 
 	private CompostTier readTimeTrackingCompost(FarmPatch patch)

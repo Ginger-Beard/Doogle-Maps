@@ -227,6 +227,12 @@ public class HarvestLogTest
 	 * as a developer's log toggle silently emptied the whole Stats tab — and cost you months of
 	 * history you did not know you were not keeping. It now governs the client-log commentary
 	 * and nothing else.
+	 *
+	 * <p>The experience is emitted here where it used to be left out. That was harmless when
+	 * anything with items was recorded, and is not any more: a record holding items and <b>no
+	 * farming experience</b> is refused, because picking always pays and the three biggest
+	 * "left standing" rows in the real history were bank withdrawals credited to a ripe patch.
+	 * See {@code AWithdrawalIsNotAHarvestTest}. A fixture for a genuine harvest has to pay for it.
 	 */
 	@Test
 	public void statisticsAreRecordedWithVerboseLoggingOff()
@@ -235,7 +241,9 @@ public class HarvestLogTest
 
 		FarmPatch patch = ripePotatoPatch(CompostTier.NONE);
 		inventory();
+		farmingXp(1_000_000);
 		inventory(Produce.POTATO.getItemID(), 4);
+		farmingXp(1_000_036);   // four potatoes at 9 each
 
 		assertEquals("the harvest is still being watched", 1, log.getOpenHarvests().size());
 
@@ -265,7 +273,11 @@ public class HarvestLogTest
 		FarmPatch patch = ripeJangerberryPatch();
 
 		inventory();
+		farmingXp(1_000_000);
 		inventory(Produce.JANGERBERRIES.getItemID(), 4);
+		// Picking pays, and a record with items and no experience is now refused as a bank
+		// withdrawal rather than recorded - see AWithdrawalIsNotAHarvestTest.
+		farmingXp(1_000_128);
 		assertEquals(1, log.getOpenHarvests().size());
 
 		// Picked to nothing: the patch is not empty, it is growing the next lot.
@@ -308,7 +320,10 @@ public class HarvestLogTest
 		FarmPatch patch = ripePalmPatch();
 
 		inventory();
+		farmingXp(1_000_000);
 		inventory(Produce.PALM.getItemID(), 6);
+		// As above: a harvest that pays nothing is refused, so the fixture pays for its coconuts.
+		farmingXp(1_000_666);
 		assertEquals("fixture: the harvest opened", 1, log.getOpenHarvests().size());
 
 		ProduceState oneLeft = stockOf(patch, Produce.PALM, CropState.HARVESTABLE, 1);

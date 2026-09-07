@@ -121,10 +121,57 @@ public class CropHarvestStats
 	 */
 	public static final int MIN_PATCHES_FOR_LUCK = 20;
 
-	/** Items over what was predicted for the same patches; negative is under. */
+	/**
+	 * Completed patches needed before a plus-or-minus is worth quoting.
+	 *
+	 * <p>Much lower than {@link #MIN_PATCHES_FOR_LUCK} because it is answering a weaker question —
+	 * "how far off" rather than "where in the distribution" — but not zero, which is what it was.
+	 * A single herb patch scatters by three or four either way, so the one-patch rows in the luck
+	 * table were quoting the roll and calling it a tendency: seaweed +15 off one patch, torstol
+	 * +1.9 off one. The percentile column had a floor for exactly this reason and the surplus
+	 * column beside it had none.
+	 */
+	public static final int MIN_PATCHES_FOR_SURPLUS = 5;
+
+	/**
+	 * Whether a surplus for this crop would mean anything.
+	 *
+	 * <p>The same population {@link #hasLuckPercentile} has always required, and for the same
+	 * reason, minus the twenty-patch floor: a difference between actual and predicted is only a
+	 * <i>surplus</i> if the prediction is a real distribution's mean. Where
+	 * {@link #predictedVariance} is zero the plugin has no formula for the crop and
+	 * {@link com.dooglemaps.timer.CropYieldModel} fell back to a floor, a wiki average measured
+	 * at level 99 with a cape, or a flat one — none of which is an expectation this account's
+	 * harvest can be over or under.
+	 *
+	 * <h2>What that was costing</h2>
+	 *
+	 * The account-wide headline read "1,441 items over expectation". Decomposed, <b>+868 of it
+	 * was crops with the wrong yield family</b> and −273 was the same fault the other way:
+	 * whiteberry +449 against a "prediction" of 4, which the wiki gives as a bush's guaranteed
+	 * <i>minimum</i>; calquat +120 against a prediction of 1 for a tree that always gives six;
+	 * potato cactus −83 against an average the wiki measured at 99 with ultracompost, on an
+	 * account at 85. None of those are luck and none of them are model error the player can act
+	 * on. They are the plugin quoting a number it had already labelled a guess.
+	 */
+	public boolean hasSurplus()
+	{
+		return harvests >= MIN_PATCHES_FOR_SURPLUS
+			&& predicted > 0
+			&& variancePatches == harvests
+			&& predictedVariance > 0;
+	}
+
+	/**
+	 * Items over what was predicted for the same patches; negative is under.
+	 *
+	 * <p>Zero where {@link #hasSurplus} does not hold, so an unmodelled crop contributes nothing
+	 * to itself or to the account-wide total rather than contributing the whole gap between a
+	 * real harvest and a placeholder.
+	 */
 	public double getSurplus()
 	{
-		return predicted <= 0 ? 0 : items - predicted;
+		return hasSurplus() ? items - predicted : 0;
 	}
 
 	/**
@@ -136,9 +183,7 @@ public class CropHarvestStats
 	 */
 	public boolean hasLuckPercentile()
 	{
-		return harvests >= MIN_PATCHES_FOR_LUCK
-			&& variancePatches == harvests
-			&& predictedVariance > 0;
+		return hasSurplus() && harvests >= MIN_PATCHES_FOR_LUCK;
 	}
 
 	/**

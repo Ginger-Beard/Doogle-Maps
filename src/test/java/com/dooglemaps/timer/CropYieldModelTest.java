@@ -53,13 +53,29 @@ public class CropYieldModelTest
 			CropYieldModel.expected(Seed.LIMPWURT, 1, CompostTier.NONE, BARE) >= 3);
 	}
 
-	/** Belladonna works the same way, per Mod Ash: "Belladonna has something similar." */
+	/**
+	 * Belladonna does <b>not</b> share the rule, and this test used to assert that it did.
+	 *
+	 * <p>It was read in beside limpwurt on the strength of a Mod Ash quote that is about limpwurt,
+	 * and the player's own harvest log settles it: <b>exactly 1 nightshade on all fifteen
+	 * patches</b>, each paying 521 experience, which is one nightshade's harvest award and not the
+	 * six-and-three-quarters the level roll predicted. The wiki agrees — a belladonna patch is
+	 * picked once for a single cave nightshade. It was also worth roughly 575k of imaginary
+	 * experience in the "planting it all out" figure, off 173 banked seeds.
+	 *
+	 * <p>Kept as a test rather than deleted, because "these two crops work the same way" is
+	 * exactly the belief that has to stay refuted. The fixed figure is pinned in
+	 * {@code FixedYieldCropsPredictTheirFixedYieldTest}.
+	 */
 	@Test
-	public void belladonnaSharesTheRule()
+	public void belladonnaDoesNotShareLimpwurtsRule()
 	{
-		assertEquals(CropYieldModel.Basis.LEVEL_ROLL, CropYieldModel.basisFor(Seed.BELLADONNA));
-		assertEquals(CropYieldModel.expected(Seed.LIMPWURT, 99, CompostTier.NONE, BARE),
+		assertEquals(CropYieldModel.Basis.FIXED, CropYieldModel.basisFor(Seed.BELLADONNA));
+		assertEquals("one nightshade, not seven", 1.0,
 			CropYieldModel.expected(Seed.BELLADONNA, 99, CompostTier.NONE, BARE), 0.001);
+		assertTrue("and limpwurt keeps the roll it was quoted about",
+			CropYieldModel.expected(Seed.LIMPWURT, 99, CompostTier.NONE, BARE)
+				> CropYieldModel.expected(Seed.BELLADONNA, 99, CompostTier.NONE, BARE));
 	}
 
 	/** Compost buys harvest lives, and only the lives mechanic has any. */

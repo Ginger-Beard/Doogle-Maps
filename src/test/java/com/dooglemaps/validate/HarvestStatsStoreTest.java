@@ -223,6 +223,13 @@ public class HarvestStatsStoreTest
 	 * <p>The spread grows like the square root of the count while the total grows like the
 	 * count, so a percentile below the floor is noise presented as a finding — which is the one
 	 * way a stats page does real harm.
+	 *
+	 * <p>This used to assert that the surplus survived where the percentile did not, on the
+	 * reasoning that a cumulative difference needs no distribution behind it. It does need one to
+	 * be worth quoting: the luck table showed a plus-or-minus for crops with a <b>single</b>
+	 * completed patch — seaweed +15.1, torstol +1.9 — which is a roll being read as a tendency.
+	 * Four patches is still inside {@link CropHarvestStats#MIN_PATCHES_FOR_SURPLUS}, so both
+	 * figures are withheld now, and the percentile keeps its much higher floor of its own.
 	 */
 	@Test
 	public void aHandfulOfPatchesIsNotEnoughForAPercentile()
@@ -235,8 +242,9 @@ public class HarvestStatsStoreTest
 		}
 
 		CropHarvestStats stats = onlyEntry(store);
-		assertTrue("the cumulative figure is still true", stats.getSurplus() != 0);
-		assertTrue("but there is nowhere to place it", !stats.hasLuckPercentile());
+		assertTrue("four patches is a roll, not a tendency", !stats.hasSurplus());
+		assertEquals(0.0, stats.getSurplus(), 1e-9);
+		assertTrue("and there is nowhere to place it either", !stats.hasLuckPercentile());
 	}
 
 	/**
@@ -247,6 +255,12 @@ public class HarvestStatsStoreTest
 	 * them would be overstated rather than merely noisy. The mismatch between the counts is what
 	 * detects it, and there is nothing to migrate: the parameters those patches were harvested
 	 * under were never stored.
+	 *
+	 * <p>Nor a surplus, which this used to assert survived. The same mismatch that overstates a
+	 * z-score overstates the difference it is drawn from — and the population it identifies is
+	 * exactly the one the account-wide "1,441 items over expectation" was made of: crops the
+	 * model has no formula for, scored against a floor or a wiki average and reported as luck.
+	 * See {@link CropHarvestStats#hasSurplus}.
 	 */
 	@Test
 	public void anOlderHistoryIsNotScoredAsThoughItHadASpread()
@@ -262,7 +276,7 @@ public class HarvestStatsStoreTest
 		assertEquals("well past the floor on count alone", 40, stats.getHarvests());
 		assertEquals(0, stats.getVariancePatches());
 		assertTrue("and still not scoreable", !stats.hasLuckPercentile());
-		assertEquals("the cumulative surplus needs no spread and survives", 60.0,
+		assertEquals("nor is the difference it would have been drawn from", 0.0,
 			stats.getSurplus(), 1e-9);
 	}
 

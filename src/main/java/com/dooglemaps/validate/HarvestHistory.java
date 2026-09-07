@@ -128,6 +128,15 @@ public class HarvestHistory
 	private boolean loaded;
 
 	/**
+	 * The earliest harvest this history will read back, as epoch seconds; 0 for all of it.
+	 *
+	 * <p>Set by {@link #load(File, long)} so the file-derived figures cover the same window as
+	 * the rolled-up ones. Only applied to rows <i>read from the file</i> — a harvest happening
+	 * now is by definition inside the window.
+	 */
+	private long notBefore;
+
+	/**
 	 * Package-private rather than private: it takes no dependencies, so a test can build one
 	 * directly instead of going through the reflection the injected stores need.
 	 */
@@ -150,11 +159,31 @@ public class HarvestHistory
 	 */
 	public synchronized void load(File file)
 	{
+		load(file, 0);
+	}
+
+	/**
+	 * The same, ignoring anything recorded before {@code notBefore} epoch seconds.
+	 *
+	 * <h2>One tab, two start dates</h2>
+	 *
+	 * The Stats tab prints "since 14 August" from {@link HarvestStatsStore#getFirstHarvest} and
+	 * then reports 63 runs covering 33 days, because the store was reset on the 14th and this
+	 * file goes back to the 4th. Every figure drawn from the rolled-up store and every figure
+	 * drawn from the file were describing different windows, in the same column, under one date.
+	 *
+	 * <p>The caller passes the store's own start, so the two agree. Zero means no floor, which is
+	 * what a fresh install and every test want: with nothing rolled up there is nothing to be
+	 * inconsistent with, and cutting the file down to an empty store would show no runs at all.
+	 */
+	public synchronized void load(File file, long notBefore)
+	{
 		runs.clear();
 		histograms.clear();
 		levelPatches.clear();
 		levelPredicted.clear();
 		loaded = true;
+		this.notBefore = notBefore;
 
 		read(file);
 	}
@@ -233,9 +262,21 @@ public class HarvestHistory
 		// Chronological, because runs are found in the gaps between consecutive patches and the
 		// file is only in order if nothing has ever been appended out of turn.
 		rows.sort(Comparator.comparingLong(HarvestRow::getAt));
+		int skipped = 0;
 		for (HarvestRow row : rows)
 		{
+			if (row.getAt() < notBefore)
+			{
+				skipped++;
+				continue;
+			}
 			fold(row);
+		}
+
+		if (skipped > 0)
+		{
+			log.debug("Skipped {} harvests older than the rolled-up totals, so the two describe "
+				+ "the same window", skipped);
 		}
 
 		log.debug("Read {} harvest rows into {} runs", rows.size(), runs.size());
@@ -290,6 +331,45 @@ public class HarvestHistory
 			record.getPatch().getDisplayName(), record.getFarmingLevel(),
 			record.getCompost().name(), record.getPredictedYield(), record.getItemsHarvested(),
 			record.getXpGained(), record.isCompleted()));
+	}
+
+	/**
+	 * Folds a Farming experience drop into the sitting it happened in.
+	 *
+	 * <h2>Why the runs cannot be built from harvest records alone</h2>
+	 *
+	 * They were, and it made every experience figure on the tab five times too small. A harvest
+	 * record only exists where a patch put an item in the inventory, and most farming experience
+	 * is not paid that way — <b>check-health on a tree or a fruit tree opens no record</b>, and it
+	 * is where the experience is: a yew check pays 7,069, a mahogany 15,720, a dragonfruit 17,335.
+	 * Measured over the audited month, the harvest log holds 710k of about 3.35M actually gained.
+	 *
+	 * <p>Every drop counts, not only the ones that could be attributed to a patch. Planting,
+	 * checking, curing and picking are all the same sitting from the player's side, and a run is a
+	 * cluster of farming activity — so the same {@link #RUN_GAP} that separates one sitting of
+	 * harvests from the next separates one sitting of anything from the next. A drop arriving
+	 * after the gap opens a run of its own, which is right: a trip that only checks trees is a
+	 * farm run, and it used to be invisible here.
+	 *
+	 * <p>Live only. The file records a row per harvested patch and nothing about what else was
+	 * earned beside it, so runs read back from it keep the figure they always had. See
+	 * {@link FarmRun#getXp}.
+	 */
+	public synchronized void recordFarmingXp(double gained)
+	{
+		if (gained <= 0)
+		{
+			return;
+		}
+
+		long at = Instant.now().getEpochSecond();
+		FarmRun current = runs.isEmpty() ? null : runs.get(runs.size() - 1);
+		if (current == null || at - current.getEndedAt() > RUN_GAP)
+		{
+			current = new FarmRun();
+			runs.add(current);
+		}
+		current.addSkillXp(at, gained);
 	}
 
 	/** Adds one row to the runs, the histogram and the level bands. */

@@ -28,7 +28,16 @@ public class HarvestRecord
 {
 	private final FarmPatch patch;
 	private final Produce produce;
-	private final CompostTier compost;
+
+	/**
+	 * What the patch was treated with, as far as anyone knows at the time of writing.
+	 *
+	 * <p>Not final, and that is the whole of the compost capture fix. It is read from the patch
+	 * snapshot when the first item lands, which is the earliest moment it can be — but the
+	 * snapshot only holds a bucket the plugin <i>watched</i> go in, and a patch composted last
+	 * session and already ripe at login has nothing there. See {@link #adoptCompost}.
+	 */
+	private CompostTier compost;
 	private final int farmingLevel;
 	private final FarmingBonuses bonuses;
 	private final long startedAt;
@@ -78,6 +87,27 @@ public class HarvestRecord
 		this.farmingLevel = farmingLevel;
 		this.bonuses = bonuses;
 		this.startedAt = startedAt;
+	}
+
+	/**
+	 * Takes a compost tier learned after the harvest started.
+	 *
+	 * <p>Only ever upwards, from NONE to a real tier: this supplies a fact that was missing, it
+	 * never overrules one that was observed. Everything the record derives — the predicted yield,
+	 * the lives, the variance — is computed on demand from this field, so adopting it re-scores
+	 * the harvest rather than leaving a prediction that was made against the wrong patch.
+	 *
+	 * <p>The alternative was to edit the observation instead, and that is the wrong half to
+	 * change: {@code itemsHarvested} is what actually came out of the ground. The compost is an
+	 * <i>input</i> to the model, and getting a late answer to "what was this patch treated with"
+	 * is not the same kind of thing as revising what was picked.
+	 */
+	void adoptCompost(CompostTier tier)
+	{
+		if (tier != null && tier != CompostTier.NONE && compost == CompostTier.NONE)
+		{
+			compost = tier;
+		}
 	}
 
 	void addItems(int count)

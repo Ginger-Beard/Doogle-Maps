@@ -136,7 +136,20 @@ public final class PlantOutEstimate
 		int seedsToMaxLevel;
 		double xpToMaxLevel;
 
-		/** What is left once 99 is behind you, and what it would add anyway. */
+		/**
+		 * What is left once 99 is behind you, and what it would add anyway.
+		 *
+		 * <p>Counted so that this and {@link #seedsToMaxLevel} add to the seeds the table lists,
+		 * which is what the panel prints them beside. They did not: the split was drawn from
+		 * seeds <b>planted</b> and the table totals seeds <b>held</b>, and the difference is the
+		 * remainder of every stack that cannot fill a whole patch — one potato seed in three, at
+		 * most two per crop, but 21 across a real bank. The panel then said "45,824 seeds" and
+		 * "8,768 to 99, the other 37,035" in the same paragraph, which do not add up.
+		 *
+		 * <p>Resolved in this direction rather than by shrinking the table, because the sentence
+		 * these two are used in is about the bank: the orphan seeds really are still in it once
+		 * 99 has been reached, and this is the half that says what is left over.
+		 */
 		int seedsBeyondMaxLevel;
 		double xpBeyondMaxLevel;
 
@@ -283,7 +296,7 @@ public final class PlantOutEstimate
 		}
 
 		return assemble(held, planted, xpBySeed, itemsBySeed, unlocks, patchesByType,
-			compostByType, bonuses, farmingXp, startLevel, gained, seedsPlanted,
+			compostByType, bonuses, farmingXp, startLevel, gained,
 			xpAtMaxLevel, seedsAtMaxLevel, remaining);
 	}
 
@@ -408,11 +421,14 @@ public final class PlantOutEstimate
 		Map<Seed, Double> xpBySeed, Map<Seed, Double> itemsBySeed, List<Unlock> unlocks,
 		Map<PatchImplementation, Integer> patchesByType,
 		Map<PatchImplementation, CompostTier> compostByType, FarmingBonuses bonuses,
-		int farmingXp, int startLevel, double gained, int seedsPlanted,
+		int farmingXp, int startLevel, double gained,
 		double xpAtMaxLevel, int seedsAtMaxLevel, Map<Seed, Integer> unplanted)
 	{
 		List<Line> lines = new ArrayList<>();
 		double naive = 0;
+		// The table's own total, kept here so the "N to 99, the other M" split can be drawn
+		// against the same counter the table sums. See Projection.seedsBeyondMaxLevel.
+		int seedsListed = 0;
 
 		for (Map.Entry<Seed, Integer> entry : planted.entrySet())
 		{
@@ -424,7 +440,9 @@ public final class PlantOutEstimate
 				: 0;
 			naive += atStart;
 
-			lines.add(new Line(seed, held.get(seed), entry.getValue(),
+			int seedsHeld = held.get(seed);
+			seedsListed += seedsHeld;
+			lines.add(new Line(seed, seedsHeld, entry.getValue(),
 				itemsBySeed.getOrDefault(seed, 0.0), xpBySeed.getOrDefault(seed, 0.0), atStart));
 		}
 
@@ -442,7 +460,7 @@ public final class PlantOutEstimate
 			levelAt(farmingXp + gained), reached,
 			reached ? seedsAtMaxLevel : 0,
 			reached ? xpAtMaxLevel : 0,
-			reached ? seedsPlanted - seedsAtMaxLevel : 0,
+			reached ? seedsListed - seedsAtMaxLevel : 0,
 			reached ? gained - xpAtMaxLevel : 0,
 			unplanted.size());
 	}

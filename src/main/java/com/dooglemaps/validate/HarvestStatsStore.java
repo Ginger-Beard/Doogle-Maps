@@ -212,10 +212,11 @@ public class HarvestStatsStore extends com.dooglemaps.state.ProfileJsonStore
 	/**
 	 * Items harvested over items predicted, summed across every crop.
 	 *
-	 * <p>The cumulative version of luck, and the only one that needs no variance at all — so it
-	 * works on a history recorded before the spread was captured, and on crops whose spread the
-	 * plugin cannot model. Crops with no prediction are excluded rather than counted as a
-	 * surplus of their whole harvest.
+	 * <p>The cumulative version of luck, over exactly the crops the percentile is drawn from —
+	 * see {@link CropHarvestStats#hasSurplus}. It used to run over every crop with a prediction
+	 * of any kind, which meant the headline was dominated by crops the plugin has no formula for:
+	 * of 1,441 "items over expectation", +868 was bushes, calquats and tree logs scored against a
+	 * floor or a placeholder, and the genuine luck left over was about zero.
 	 */
 	public synchronized double getTotalSurplus()
 	{

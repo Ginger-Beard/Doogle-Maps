@@ -21,9 +21,11 @@ import javax.annotation.Nullable;
  * <ul>
  *   <li><b>Harvest lives</b> — herbs, allotments, hops, giant seaweed. Computed from published
  *       chance-to-save constants, and the only family where compost and secateurs apply.</li>
- *   <li><b>A base plus a level roll</b> — limpwurt and belladonna. Mod Ash: <i>"That one
- *       doesn't have the 'life' mechanic... it just picks a number of roots and gives them to
- *       you. That's 3 + a random number."</i> Compost does nothing here.</li>
+ *   <li><b>A base plus a level roll</b> — limpwurt. Mod Ash: <i>"That one doesn't have the
+ *       'life' mechanic... it just picks a number of roots and gives them to you. That's 3 + a
+ *       random number."</i> Compost does nothing here. Said of limpwurt and only limpwurt:
+ *       belladonna used to be read in alongside it and gives exactly one, see
+ *       {@link #FIXED_YIELD}.</li>
  *   <li><b>Whatever is on the plant</b> — bushes, fruit trees, cacti and the like regrow, so a
  *       visit collects the current stock rather than rolling for it.</li>
  *   <li><b>Exactly one</b> — the ordinary flowers. A marigold patch gives one marigold, and
@@ -64,10 +66,38 @@ public final class CropYieldModel
 	 */
 	private static final Map<Seed, Double> EMPIRICAL = new EnumMap<>(Seed.class);
 
+	/**
+	 * Crops that give the same number every single time, whatever else is true of the patch.
+	 *
+	 * <p>Each one is here because the account's own harvest log says so without a single
+	 * exception, and in each case the rule the model was falling through to was a different
+	 * mechanic borrowed from a crop that looks similar:
+	 *
+	 * <ul>
+	 *   <li><b>Belladonna — 1.</b> It was in {@link #LEVEL_ROLL_BASE} beside limpwurt, on the
+	 *       strength of a Mod Ash quote that is about limpwurt. That predicted 6.77 nightshade a
+	 *       patch; the log has <b>1 on all fifteen patches</b>, each paying 521 experience, which
+	 *       is one nightshade's harvest award and not six. The wiki agrees — a belladonna patch
+	 *       is picked once for a single cave nightshade. Limpwurt's own level roll is left
+	 *       exactly as it was, because for limpwurt it is excellent: predicted 6.77 against 6.91
+	 *       observed, with a maximum of 11 at level 87 precisely as 3 + ⌊U(0,level−1)/10⌋ says.</li>
+	 *   <li><b>Calquat — 6.</b> A calquat does not regrow, so {@link #fullStock} gave it 1.
+	 *       Observed: <b>exactly 6 on all twenty-four patches.</b></li>
+	 *   <li><b>Mushroom — 6.</b> Same fall-through, same answer: <b>exactly 6 on all six.</b></li>
+	 * </ul>
+	 *
+	 * <p>Checked before the roll and the empirical average rather than after, because both of
+	 * those are estimates and these are counts.
+	 */
+	private static final Map<Seed, Double> FIXED_YIELD = new EnumMap<>(Seed.class);
+
 	static
 	{
 		LEVEL_ROLL_BASE.put(Seed.LIMPWURT, 3);
-		LEVEL_ROLL_BASE.put(Seed.BELLADONNA, 3);
+
+		FIXED_YIELD.put(Seed.BELLADONNA, 1.0);
+		FIXED_YIELD.put(Seed.CALQUAT, 6.0);
+		FIXED_YIELD.put(Seed.MUSHROOM, 6.0);
 
 		EMPIRICAL.put(Seed.CACTUS, 10.0);          // "Cacti give an average of 10 spines"
 		EMPIRICAL.put(Seed.POTATO_CACTUS, 17.5);   // "15-20 potato cacti"
@@ -97,6 +127,12 @@ public final class CropYieldModel
 			return YieldEstimate.expectedHarvest(yield, level, compost, bonuses);
 		}
 
+		Double fixed = FIXED_YIELD.get(seed);
+		if (fixed != null)
+		{
+			return fixed;
+		}
+
 		Integer base = LEVEL_ROLL_BASE.get(seed);
 		if (base != null)
 		{
@@ -123,6 +159,10 @@ public final class CropYieldModel
 		{
 			return Basis.COMPUTED;
 		}
+		if (FIXED_YIELD.containsKey(seed))
+		{
+			return Basis.FIXED;
+		}
 		if (LEVEL_ROLL_BASE.containsKey(seed))
 		{
 			return Basis.LEVEL_ROLL;
@@ -135,7 +175,7 @@ public final class CropYieldModel
 	}
 
 	/**
-	 * The average of the roll limpwurt and belladonna add to their base.
+	 * The average of the roll limpwurt adds to its base.
 	 *
 	 * <p>Mod Ash describes it as a random number from 0 to your level minus one, contributing
 	 * one per ten — <i>"if you boost to 101, it has a small chance to roll 100, which would
