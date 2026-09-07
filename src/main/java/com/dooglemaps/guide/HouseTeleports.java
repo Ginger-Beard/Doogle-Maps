@@ -456,6 +456,28 @@ public final class HouseTeleports
 		// Reported from play. A nexus holding a real "Varrock" row still wins over this: the
 		// direct-beats-aliased preference in GuideInventoryOverlay handles that.
 		PLACE_ALIASES.put("varrock", "grand exchange");
+
+		// The Fossil Island rowboat: Shortest Path has no transport entry for the legs between
+		// its three landings (barge, north of the island, camp), so no hop ever names a row here
+		// and the destination falls back to the stop's own name — which the "Select an option"
+		// menu never says verbatim. Reported from play, 2026-09-06: standing at the barge landing
+		// with the menu open, nothing lit.
+		//
+		// "fossil island" is the hardwood FarmRegion's name (region 14651, patches around
+		// 3709,3835, in the Mushroom Forest's south-east corner). The forest's own rowboat
+		// stands at its north-east corner, and the wiki's Mushroom Forest page says so in as
+		// many words: "if players have used the rowboat in the north-east corner of the Forest,
+		// they can row the boat from the Museum Camp to get there". So the landing the run
+		// wants is "the north of the island"; "the camp" is the Museum Camp on the far side,
+		// which is where a first draft of this alias sent the player. "row to the north of the
+		// island" names only this one row, so the alias cannot light anything else.
+		PLACE_ALIASES.put("fossil island", "row to the north of the island");
+
+		// The giant seaweed patches (FarmRegion "Seaweed", region 15008) are underwater, reached
+		// by diving from this same rowboat rather than rowing to any landing — see
+		// UnderwaterApproach.SEAWEED_ROWBOAT. "dive into the sea" likewise names only this one
+		// row.
+		PLACE_ALIASES.put("seaweed", "dive into the sea");
 	}
 
 	/**

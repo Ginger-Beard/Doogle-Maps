@@ -282,6 +282,36 @@ public class PlaceNameMatchTest
 			matchesDirectly("Grand Exchange", "Varrock"));
 	}
 
+	/**
+	 * The Fossil Island rowboat's "Select an option" menu, as reported from play 2026-09-06:
+	 * standing at the barge landing with the hardwood stop's own name as the only want, nothing
+	 * lit because none of "Row to the barge.", "Row to the north of the island.", "Row to the
+	 * camp." or "Dive into the sea." says "Fossil Island". "The north of the island" is the
+	 * Mushroom Forest's own rowboat, at the forest's north-east corner; "the camp" is the
+	 * Museum Camp on the far side, which a first draft of the alias wrongly chose. The seaweed
+	 * stop dives instead of rowing anywhere.
+	 */
+	@Test
+	public void theFossilIslandRowboatAliasesLandOnTheirOwnRowsOnly() throws Exception
+	{
+		assertTrue("the hardwood stop's own name stands in for the forest's landing",
+			matches("Fossil Island", "Row to the north of the island."));
+		assertFalse("but not the barge landing",
+			matches("Fossil Island", "Row to the barge."));
+		assertFalse("nor the Museum Camp, on the far side of the island from the patches",
+			matches("Fossil Island", "Row to the camp."));
+		assertFalse("nor the dive, which is the seaweed stop's row",
+			matches("Fossil Island", "Dive into the sea."));
+
+		assertTrue("the underwater seaweed stop dives rather than rows",
+			matches("Seaweed", "Dive into the sea."));
+		assertFalse("and does not light any of the rowboat's landings",
+			matches("Seaweed", "Row to the camp."));
+
+		assertFalse("a farming stop never lights the barge landing on its own",
+			matches("Fossil Island", "Row to the barge."));
+	}
+
 	private static boolean matchesDirectly(String a, String b) throws Exception
 	{
 		Method method = HouseTeleports.class
