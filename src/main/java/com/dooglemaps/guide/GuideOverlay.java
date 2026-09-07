@@ -1319,7 +1319,9 @@ public class GuideOverlay extends Overlay
 		found.add(object);
 	}
 
-	private void highlightHouseTeleports(Graphics2D graphics, Color colour)
+	// Package-private rather than private so a test can drive it directly with mocked
+	// furniture and hops, the same way standsInTheScene and objectIsThisPatch already are.
+	void highlightHouseTeleports(Graphics2D graphics, Color colour)
 	{
 		TravelHint hint = tracker.getStatus().getTravelHint();
 		if (hint == null)
@@ -1341,8 +1343,16 @@ public class GuideOverlay extends Overlay
 		// below must not judge "nothing serves the route" against hops that are a frame stale.
 		// See GuideTracker.liveTransports.
 		List<String> transports = tracker.liveTransports();
+
+		// Two tiers, named before merely-served. Shortest Path's hop names its vehicle as well
+		// as its destination, and when it names one, that vehicle is the route's choice — a
+		// second piece that only happens to reach the same place is noise, not an alternative.
+		// Reported from play: "Digsite Digsite Pendant - 1: Digsite" named the mounted pendant
+		// outright, and the portal nexus lit alongside it because the nexus's own destination
+		// list also carries "digsite" (the nexus can be attuned there). Trying the named tier
+		// first and only falling back when nothing is named is what keeps the nexus dark.
 		List<TileObject> furniture = house.matchingFurniture(name ->
-			transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)
+			transports.stream().anyMatch(hop -> HouseTeleports.furnitureNamedByHop(name, hop)
 				// ...and, for a spirit tree, only to somewhere a tree has actually been grown.
 				// Reported from play: the guild's tree was outlined for a hop through it while
 				// its patch sat at weeds. See GuideTracker.spiritTreeUsableFor.
@@ -1354,6 +1364,16 @@ public class GuideOverlay extends Overlay
 				// The jewellery box went dark with the route pointing straight at it. Reported
 				// from play. See HouseTeleports.isSpiritTree.
 				&& (!HouseTeleports.isSpiritTree(name) || tracker.spiritTreeUsableFor(hop))));
+
+		if (furniture.isEmpty())
+		{
+			// Nothing was named outright, so fall back to "reaches the same place" — the hop
+			// for a bare destination ("Digsite" with no vehicle in the text) still has to light
+			// whatever furniture actually gets there, named or not.
+			furniture = house.matchingFurniture(name ->
+				transports.stream().anyMatch(hop -> HouseTeleports.furnitureServesHop(name, hop)
+					&& (!HouseTeleports.isSpiritTree(name) || tracker.spiritTreeUsableFor(hop))));
+		}
 
 		// The destination gets a say before the way out does. The route's hops are Shortest
 		// Path's plan, and its model has no nexus — so a destination the player's own
