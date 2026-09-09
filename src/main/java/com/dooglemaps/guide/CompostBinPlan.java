@@ -242,6 +242,24 @@ public final class CompostBinPlan
 		// empty from one free slot, a bucket at a time - it is slow, not impossible.
 		if (carried.getFreeSlots() == 0)
 		{
+			// But a pack with no room is not stuck while there are still empty buckets in it. An
+			// empty bucket becomes a bucket of compost in the slot it is already sitting in, so
+			// the emptying carries on to the last one without a single slot being freed — the
+			// deadlock this branch exists for is a full pack with nothing left to fill, not a
+			// full pack.
+			//
+			// Reported from play at the guild's big bin: twenty-eight empties went in, the first
+			// one came out full, and on that tick the step stopped being "empty the bin" and
+			// became "store your buckets of compost with the tool leprechaun", with twenty-seven
+			// empties still in hand. "Shouldn't be prompted to drop buckets while I'm filling
+			// them for a compost run." Quite so — and the deposit the owner's order does want,
+			// the full buckets handed over before the bin is refilled, is the one addFillAndDeposit
+			// raises once the bin is EMPTY, which is where it belongs.
+			if (held > 0)
+			{
+				return false;
+			}
+
 			// Everything, keeping nothing back: with no free slot the run cannot proceed
 			// at all, and a bucket held for a patch four steps away is worth less than
 			// being able to take the next step. The leprechaun hands it straight back.
