@@ -32,6 +32,9 @@ public class RouteItemTest
 	private static final int NECKLACE = 3853;
 	private static final int HOUSE_TAB = 8013;
 	private static final int CLOAK = 13123;
+	private static final int PENDANT = 29893;
+	/** The pendant's other form, which is what the remembered bank was holding. */
+	private static final int PENDANT_BANKED_FORM = 29894;
 
 	@Test
 	public void theFirstItemShapedTransportWins() throws Exception
@@ -196,6 +199,34 @@ public class RouteItemTest
 		assertEquals(CLOAK, route.currentItemId());
 	}
 
+	/**
+	 * The one on the player wins over a same-named one in the bank.
+	 *
+	 * <p>The reported case: a Pendant of Ates round the player's neck, the route's first hop
+	 * <i>"Pendant of ates: 3. Ralos' Rise"</i>, and nothing lit anywhere — not the pack (it is
+	 * not in the pack) and not the worn-equipment tab stone. The pendant has two forms and the
+	 * remembered bank was holding the other one, so the name matched the <b>banked</b> id first
+	 * and the hop resolved as a detour to the bank. {@code GuideTracker.travelHint} then rightly
+	 * refused to point at a teleport that is not on you, and the leg travelled with no
+	 * highlight at all.
+	 *
+	 * <p>Which is the opposite of what this class says it does — "a carried item first, the
+	 * spell second, a banked item last". The order is decided before the carried test is
+	 * reached, so a bank id with the same name settles it.
+	 */
+	@Test
+	public void aWornTeleportBeatsTheSameNameSittingInTheBank() throws Exception
+	{
+		RouteItem route = routeWithBankAndCarried(
+			Collections.singletonList("Pendant of ates: 3. Ralos' Rise"),
+			names(PENDANT_BANKED_FORM, "Pendant of Ates", PENDANT, "Pendant of Ates"),
+			new int[]{PENDANT_BANKED_FORM},
+			new int[]{PENDANT});
+
+		assertEquals("the pendant round your neck is the click, not the one in the bank",
+			PENDANT, route.currentItemId());
+	}
+
 	// ------------------------------------------------------------------- helpers
 
 	private static Map<Integer, String> names(Object... idThenName)
@@ -242,6 +273,39 @@ public class RouteItemTest
 
 		return com.dooglemaps.Construct.construct(RouteItem.class, router, itemNames, bank,
 			carried, client, dailyTeleports);
+	}
+
+	/** The same, with a bank and a pack at once - for the hops both could answer. */
+	private static RouteItem routeWithBankAndCarried(java.util.List<String> transports,
+		Map<Integer, String> names, int[] bankedIds, int[] carriedIds) throws Exception
+	{
+		ShortestPathIntegration router = Mockito.mock(ShortestPathIntegration.class);
+		when(router.getCurrentTransports()).thenReturn(transports);
+
+		ItemNames itemNames = Mockito.mock(ItemNames.class);
+		when(itemNames.get(anyInt(), any())).thenAnswer(i ->
+			names.getOrDefault(i.<Integer>getArgument(0), i.getArgument(1)));
+
+		BankContents bank = Mockito.mock(BankContents.class);
+		java.util.LinkedHashSet<Integer> banked = new java.util.LinkedHashSet<>();
+		for (int id : bankedIds)
+		{
+			banked.add(id);
+		}
+		when(bank.getItemIds()).thenReturn(banked);
+
+		CarriedItems carried = Mockito.mock(CarriedItems.class);
+		java.util.Set<Integer> ids = new java.util.LinkedHashSet<>();
+		for (int id : carriedIds)
+		{
+			ids.add(id);
+		}
+		when(carried.getItemIds()).thenReturn(ids);
+		when(carried.has(Mockito.anyInt()))
+			.thenAnswer(i -> ids.contains(i.<Integer>getArgument(0)));
+
+		return com.dooglemaps.Construct.construct(RouteItem.class, router, itemNames, bank,
+			carried, Mockito.mock(Client.class), Mockito.mock(DailyTeleports.class));
 	}
 
 	/** The same, but the items are in the bank rather than on the player. */

@@ -127,8 +127,19 @@ public class RouteItem
 			return;
 		}
 
-		Set<Integer> owned = new LinkedHashSet<>(bank.getItemIds());
-		owned.addAll(carried.getItemIds());
+		// match() below latches the first prefix candidate it meets, so the order of this
+		// set decides which id a hop resolves to when two ids share a name. Bank-first meant
+		// a hop resolved to the bank's copy of a worn name, the carried check just below then
+		// failed on that id, and the hop was resolved as a banked teleport - nothing was
+		// highlighted for a pendant round the player's neck. Reported from play: "Pendant of
+		// ates: 3. Ralos' Rise" with the Pendant of Ates worn (id 29893) while the remembered
+		// bank held a second id with the same name (29894). Carried first puts the set in the
+		// order the loop's own comment below already prefers, which that comment could not
+		// enforce on its own - the choice between same-named ids had already been made by the
+		// time it ran. Same rule as RunLoadout.addListedTeleports: the pack's copy of a name
+		// is the one that counts, not the bank's.
+		Set<Integer> owned = new LinkedHashSet<>(carried.getItemIds());
+		owned.addAll(bank.getItemIds());
 
 		// Path order, so the first hop that is an item wins - it is the next thing the
 		// player will actually click.
@@ -150,7 +161,8 @@ public class RouteItem
 			// item unconditionally before the spell meant "Teleport to House" with tablets
 			// *in the bank* resolved to the tablets, the spell was never considered, and the
 			// travel hint — rightly refusing to highlight something not carried — showed
-			// nothing at all. Reported from play, on the way to Weiss.
+			// nothing at all. Reported from play, on the way to Weiss. (Which id match() lands
+			// on when two share a name is already settled by the owned set order above.)
 			int match = match(transport, owned);
 			if (match != -1 && carried.has(match))
 			{
