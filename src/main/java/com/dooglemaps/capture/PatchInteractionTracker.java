@@ -46,6 +46,10 @@ import net.runelite.client.eventbus.Subscribe;
  *       stale. We skip those ticks entirely.</li>
  *   <li>Some regions overlap or leak values from an upper floor, handled by
  *       {@code RegionBounds}.</li>
+ *   <li>"In or near it" is the region's own map square: a region registered under a
+ *       neighbouring square for naming and routing is not thereby readable from it. See
+ *       {@link #transmittingAt}, which is the tree run that finished a stop fifty tiles from
+ *       the patch.</li>
  * </ul>
  */
 @Slf4j
@@ -76,6 +80,9 @@ public class PatchInteractionTracker
 	/** Last raw varbit value seen per patch key, to spot transitions. */
 	private final Map<String, Integer> lastVarbitValues = new HashMap<>();
 
+	/** {@code regionId@mapSquare} pairs already reported as unreadable; see {@link #transmittingAt}. */
+	private final java.util.Set<String> skipsLogged = new java.util.HashSet<>();
+
 	private Collection<FarmRegion> lastRegions;
 	private boolean newRegionLoaded;
 	private int ticksSinceModalClose;
@@ -104,6 +111,7 @@ public class PatchInteractionTracker
 	public void reset()
 	{
 		lastVarbitValues.clear();
+		skipsLogged.clear();
 		lastRegions = null;
 		newRegionLoaded = false;
 		ticksSinceModalClose = 0;
@@ -166,9 +174,70 @@ public class PatchInteractionTracker
 		return false;
 	}
 
+	/**
+	 * The regions at this location whose varbits are the ones the server is actually sending.
+	 *
+	 * <h2>The reported dead end</h2>
+	 *
+	 * A tree run walking north out of Falador with Auburnvale and Taverley left. At 23:03:06 the
+	 * player crossed y=3392 into region 11829 — the strip between Falador's north wall and
+	 * Taverley — the log said {@code Entered farming region(s) [Taverley]}, and one tick later
+	 * {@code Stop at Taverley finished with nothing left to do}, with the Taverley patch fifty
+	 * tiles away and untouched. The run dropped the stop and re-routed to Auburnvale while the
+	 * infobox still said "Taverley".
+	 *
+	 * <h2>Why the scan believed it</h2>
+	 *
+	 * Every tree patch in the game answers on the same transmitted varbit
+	 * ({@code FARMING_TRANSMIT_A}), and the server sends it for the zone the player is in.
+	 * {@code FarmingWorldData} registers Taverley under 11829 as well as its own 11573, so the
+	 * first scan taken in 11829 read that one varbit and filed it under Taverley's key while it
+	 * still held Falador's tree. The session's writes are the swap table:
+	 *
+	 * <pre>
+	 *   23:03:05  11828.4771 = 26   Falador, a maple two stages in
+	 *   23:03:06  11573.4771 = 26   Taverley, handed Falador's number
+	 *   23:03:07  11573.4771 = 32   Taverley, once the player was in 11573
+	 * </pre>
+	 *
+	 * A growing maple is nothing to do, so the stop was finished by a patch the client had never
+	 * described. The game itself never claimed otherwise: a patch seen from outside its region
+	 * renders as a placeholder, and the real crop only appears on the way in.
+	 *
+	 * <p>So a region is scanned only where its varbits are the ones being transmitted — its own
+	 * map square, or a square it is vouched for by {@code RegionBounds}. The extra ids keep doing
+	 * what they were added for, naming the place and routing to it and matching its objects, and
+	 * stop being read as permission to record. Dropping the region here rather than inside
+	 * {@link #capture} also keeps the rest honest: no "entered" line, no backfill, and no
+	 * {@code newRegionLoaded} spent on a region we cannot see, so the first trusted read in
+	 * 11573 is still the arrival burst it is and not a growth tick.
+	 */
+	private Collection<FarmRegion> transmittingAt(WorldPoint location)
+	{
+		Collection<FarmRegion> here = FarmingWorldData.getRegionsForLocation(location);
+		java.util.List<FarmRegion> transmitting = new java.util.ArrayList<>(here.size());
+		for (FarmRegion region : here)
+		{
+			if (region.transmitsAt(location))
+			{
+				transmitting.add(region);
+			}
+			// Once per region per map square, because the alternative is a line every tick for
+			// as long as someone stands in the strip.
+			else if (skipsLogged.add(region.getRegionId() + "@" + location.getRegionID()))
+			{
+				log.debug("Standing in region {}, so not reading {} ({})'s patches: outside its "
+						+ "own region the transmitted varbit describes whichever region the "
+						+ "server has us in",
+					location.getRegionID(), region.getName(), region.getRegionId());
+			}
+		}
+		return transmitting;
+	}
+
 	private void scan(WorldPoint location)
 	{
-		Collection<FarmRegion> regions = FarmingWorldData.getRegionsForLocation(location);
+		Collection<FarmRegion> regions = transmittingAt(location);
 		if (regions.isEmpty())
 		{
 			lastRegions = regions;

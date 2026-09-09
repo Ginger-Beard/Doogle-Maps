@@ -50,6 +50,21 @@ public class FarmRegion
 	}
 
 	/**
+	 * Whether this region's patch varbits may be <b>recorded</b> from the given location.
+	 *
+	 * <p>Stricter than {@link #isInBounds}, and asked as well as it rather than instead of it.
+	 * Bounds settle which of two overlapping regions owns a tile; this settles whether the
+	 * transmitted varbits are describing our patches at all. The answer is yes inside our own
+	 * map square, and outside it only where the region is vouched for — see
+	 * {@code RegionBounds.carriesBeyondItsOwnMapSquare}.
+	 */
+	public boolean transmitsAt(WorldPoint location)
+	{
+		return location.getRegionID() == regionId
+			|| RegionBounds.carriesBeyondItsOwnMapSquare(regionId);
+	}
+
+	/**
 	 * Whether a scene object physically standing in {@code regionId} could belong to this
 	 * region: the canonical id, or any of the extra ids this region was registered with in
 	 * {@link FarmingWorldData}.
